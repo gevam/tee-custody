@@ -1,0 +1,153 @@
+"""Contract: teecustody-sim CLI token, profile and vectors (PROJECT.md §4.2; API.md §C, §E, §G)."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+from tc_contract_support import AUDIENCE, IMAGE_DIGEST, RunningSimulator, jws_payload
+
+from teecustody.wire import PROTO, DecodeLimits, decode
+from teecustody_sim import NEGATIVE_CASES, SIM_ISSUER
+from teecustody_sim.cli import main
+
+PROFILE_KEYS = {
+    "profile_version",
+    "profile_kind",
+    "token_type",
+    "issuer",
+    "discovery_url",
+    "jwks_origin",
+    "expected_audience",
+    "token_max_age_s",
+    "allowed_hwmodels",
+    "allowed_digests",
+    "signer_keys",
+    "signers_required",
+    "expected_args_hash",
+    "expected_env_hash",
+}
+NONCE = "b" * 64
+
+
+def _run(argv: Sequence[str]) -> int:
+    """Return the process exit code whether `main` returns it or argparse raises SystemExit."""
+    try:
+        return main(list(argv))
+    except SystemExit as exit_:
+        return int(exit_.code) if isinstance(exit_.code, int) else 2
+
+
+def _state_args(running: RunningSimulator) -> list[str]:
+    return ["--state-dir", str(running.config.state_dir)]
+
+
+def test_token_emits_a_nonce_bound_token(
+    running_simulator: RunningSimulator, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(
+        ["token", *_state_args(running_simulator), "--audience", AUDIENCE, "--nonce", NONCE]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    lines = out.splitlines()
+    assert len(lines) == 1
+    claims = jws_payload(lines[0])
+    assert claims["aud"] == AUDIENCE
+    assert claims["eat_nonce"] == NONCE
+
+
+@pytest.mark.parametrize(
+    ("flags", "path", "expected"),
+    [
+        (["--case", "dbgstat_enabled"], "dbgstat", "enabled"),
+        (["--alter", "secboot=false"], "secboot", False),
+        (["--alter", "dbgstat=enabled"], "dbgstat", "enabled"),
+    ],
+)
+def test_token_applies_one_alteration(
+    running_simulator: RunningSimulator,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    path: str,
+    expected: object,
+) -> None:
+    code = _run(
+        ["token", *_state_args(running_simulator), "--audience", AUDIENCE, "--nonce", NONCE, *flags]
+    )
+    assert code == 0
+    assert jws_payload(capsys.readouterr().out.strip())[path] == expected
+
+
+def test_token_drop_removes_the_claim(
+    running_simulator: RunningSimulator, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = ["token", *_state_args(running_simulator), "--audience", AUDIENCE, "--nonce", NONCE]
+    code = _run([*args, "--drop", "eat_nonce"])
+    assert code == 0
+    assert "eat_nonce" not in jws_payload(capsys.readouterr().out.strip())
+
+
+def test_alterations_are_mutually_exclusive(running_simulator: RunningSimulator) -> None:
+    args = ["token", *_state_args(running_simulator), "--audience", AUDIENCE]
+    assert _run([*args, "--alter", "secboot=false", "--drop", "dbgstat"]) == 2
+
+
+def test_unknown_case_is_a_usage_error(running_simulator: RunningSimulator) -> None:
+    args = ["token", *_state_args(running_simulator), "--audience", AUDIENCE]
+    assert _run([*args, "--case", "no_such_case"]) == 2
+
+
+def test_token_without_state_reports_a_single_code(
+    short_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(["token", "--state-dir", str(short_dir / "empty"), "--audience", AUDIENCE])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.err == "STATE_NOT_INITIALISED\n"
+    assert captured.out == ""
+
+
+def test_profile_writes_the_development_trust_profile(
+    running_simulator: RunningSimulator, short_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out_file = short_dir / "dev-profile.json"
+    code = _run(["profile", *_state_args(running_simulator), "--out", str(out_file)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    profile = json.loads(out_file.read_text())
+    assert set(profile) == PROFILE_KEYS
+    assert profile["profile_kind"] == "development"
+    assert profile["token_type"] == "OIDC"
+    assert profile["issuer"] == SIM_ISSUER
+    assert profile["discovery_url"] == running_simulator.simulator.discovery_url
+    assert profile["jwks_origin"] == running_simulator.simulator.issuer_origin
+    assert profile["expected_audience"] == AUDIENCE
+    assert profile["allowed_hwmodels"] == ["SIMULATED"]
+    assert profile["allowed_digests"] == [IMAGE_DIGEST]
+    assert profile["signers_required"] == running_simulator.config.signers_required
+    assert len(profile["signer_keys"]) == running_simulator.config.signers_required
+    assert "PRIVATE KEY" not in captured.out + captured.err + out_file.read_text()
+
+
+def test_vectors_writes_a_canonical_suite(
+    short_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(["vectors", "--out", str(short_dir)])
+    captured = capsys.readouterr()
+
+    suite_path = short_dir / "attestation" / "suite.cbor"
+    assert code == 0
+    assert captured.out.strip() == str(suite_path)
+    data = suite_path.read_bytes()
+    assert b"PRIVATE KEY" not in data
+    suite = decode(data, DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384))
+    assert isinstance(suite, dict)
+    assert suite["proto"] == PROTO
+    cases = suite["cases"]
+    assert isinstance(cases, list)
+    ids = [case["id"] for case in cases if isinstance(case, dict)]
+    assert ids == ["valid", *(case.case_id for case in NEGATIVE_CASES)]

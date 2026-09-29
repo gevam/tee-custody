@@ -264,3 +264,43 @@ Participants: Security Architect
 **Revisit when:** Any change under docs/security/ or a new High/Critical threat.
 
 **Follow-ups:** Architect and Security Architect clerical follow-ups before G4.
+
+## D-014 — Standing authority for traceability coverage columns (Project, 2026-09-30)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator
+
+**Options considered**
+1. Architect may edit only the Coverage type / Location / Status columns of `docs/security/traceability.md`, pointing at real tests or review-checklist items; everything else under docs/security/ stays human.
+2. Human approves matrix changes per increment.
+
+**Decision:** Option 1.
+
+**Reasoning:** Human decision. Avoids a per-increment stop for bookkeeping; requirement rows, doc version and all other docs/security/ files remain always-human. Security Reviewer verifies each such change at G7.
+
+**Dissent:** none
+
+**Revisit when:** Any matrix edit touches a requirement row or doc version.
+
+**Follow-ups:** —
+
+## D-015 — Configured test/coverage commands include tests/ and teecustody_sim (INC-1, 2026-09-30)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead
+
+**Options considered**
+1. Apply Tech Lead R-4: `test_command` adds `tests`; `coverage_command` adds `--cov=teecustody_sim` and `packages/teecustody-sim`.
+2. Leave commands; contract and acceptance tests invisible to the configured suite.
+
+**Decision:** Option 1; framework.yaml updated.
+
+**Reasoning:** G4/G5/G6 checks run the configured commands; contract and acceptance tests must be in them, and teecustody-sim is a security path requiring 100% coverage. Commands remain single-line and clean-checkout runnable. Mechanical, reversible; no scope change.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** —
