@@ -1,0 +1,156 @@
+# SDLC Framework — project configuration
+# Copy to the project root as framework.yaml and edit. Every value here is
+# referenced by core/PROCESS.md or a role prompt. Nothing project-specific
+# should live anywhere else in the framework.
+
+project:
+  name: "tee-custody"                     # short name, used in TEAM.md and tags
+  definition: PROJECT.md                  # product/scope input for the Product Analyst at G1
+  trunk_branch: main
+  tag_format: "inc-{n}"        # {n} = increment number
+  merge_strategy: merge        # merge | fast-forward
+
+# ---------------------------------------------------------------------------
+# Normative constraint documents (framework v1.1.0). When this list is
+# non-empty, roles/_security-constraints.md is appended to every role prompt,
+# the gate conditions it defines are in force, and any deviation is a
+# `constraint-deviation` record in DECISIONS.md decided by the human only.
+# ---------------------------------------------------------------------------
+constraints:
+  security:
+    - docs/security/tee-security-architecture.md
+  traceability: docs/security/traceability.md   # Architect owns; a GAP row blocks its gate
+  index: docs/security/README.md                # normative index, gate mapping, changelog
+
+# ---------------------------------------------------------------------------
+# Model tiers. Map each abstract tier to a concrete model id for the harness
+# you use. The Orchestrator copies this into docs/TEAM.md at project start.
+# ---------------------------------------------------------------------------
+tiers:
+  VERY_STRONG:
+    model: "fable"                  # e.g. the largest frontier model available
+    thinking: extended         # extended | standard
+    roles: [orchestrator, product-analyst]
+  STRONG:
+    model: "opus"                  # e.g. opus-class
+    thinking: extended
+    roles: [architect, security-architect, tech-lead, code-reviewer, security-reviewer]
+  MID:
+    model: "sonnet"                  # e.g. sonnet-class
+    thinking: standard
+    roles: [software-engineer, qa-engineer, retrospective-analyst]
+  FAST:
+    model: "haiku"                  # e.g. haiku-class
+    thinking: standard
+    roles: [release-engineer]
+
+# Per-task overrides the Tech Lead may apply (PROCESS.md §1 "cost of getting it wrong")
+tier_overrides:
+  security_critical_tasks: STRONG   # any task touching security.paths below, regardless of size
+  scaffold_from_exact_spec: FAST    # package skeletons, generated wire types from spec/wire, README stubs
+
+# ---------------------------------------------------------------------------
+# Stack constraints the human fixes. The Architect designs within these and
+# records disagreement in an ADR rather than overriding.
+# ---------------------------------------------------------------------------
+stack:
+  languages: [python, typescript]
+  frameworks: [fastapi]        # examples/notes-app gateway only; the TEE workload and both client packages are framework-free (spec §11: no inbound ports)
+  storage: [firestore, gcs, pubsub, cloud-kms]   # production adapters; in-memory and local equivalents ship in teecustody-sim
+  deployment: "google-cloud-confidential-space for the workload; docker/podman under teecustody-sim for dev and CI; npm packages for the client"
+  non_negotiables:
+    - no-inbound-connections-to-the-tee            # spec §1 topology; queue pull only
+    - per-client-sk-never-stored                    # spec I2, I3
+    - hpke-rfc9180-base-mode-only                   # spec §5; no hand-rolled key agreement or KDF
+    - audited-crypto-libraries-only                 # spec §0, §10.2, §11
+    - no-skip-verification-flag-in-any-build        # spec I13; trust profiles, not switches
+    - client-verifies-attestation-independently     # spec §6.8; server enforcement is not a substitute
+    - simulator-never-a-dependency-of-teecustody    # spec §15.5
+    - production-bundles-contain-no-simulator-anchors   # spec §13.10
+    - secrets-never-in-logs-fixtures-or-pr-text     # spec I1, §11
+    - reproducible-signed-images                    # spec §12
+    - teecustody-core-has-no-dom-fetch-or-storage   # PROJECT.md §4.3; mobile must plug in later
+    - wire-format-is-canonical-cbor-per-spec-wire   # PROJECT.md §5; both implementations pass the same vectors
+
+coding_standards:
+  style: "Python 3.12+: ruff (lint + format), line length 100, mypy --strict on src/; TypeScript 5.x: eslint with typescript-eslint strict, prettier, tsc --strict, no `any` in packages/"
+  architecture: hexagonal      # hexagonal | clean | layered — the layering the Architect must use; backends (Launcher, Queue, KeyWrapper, ShareStore, RecordStore, Directory, TrusteeStore, Notifier) are ports with GCP and simulator adapters
+  forbidden_dependencies:
+    - pycrypto                 # unmaintained
+    - pyaes                    # pure-Python AES
+    - tinyec                   # pure-Python EC
+    - crypto-js                # use WebCrypto
+    - node-forge               # use WebCrypto
+    - elliptic                 # pure-JS EC
+    - sjcl
+    - "teecustody-sim (as a dependency of teecustody or of any client package)"
+    - "any package that implements X25519, Ed25519, AES-GCM, HKDF or HPKE in pure Python or pure JS"
+  logging: "structured JSON via stdlib logging (Python) and a pino-compatible logger (TS) with an explicit allow-list of fields: client_id, request_id, session_id, prekey_id, epoch, timestamps, outcome codes; security audit records may additionally carry actor_client_id, subject_client_id and recovery_id (D-007, spec §11 identifier kinds); aggregate pre-authentication failure records may carry a non-negative integer count (D-012). Never payloads, keys, shares, nonces, ciphertext or request bodies. Secrets are held in teecustody.secrets.Secret, whose repr is redacted."
+
+# Commands the roles run. Must work from a clean checkout.
+test_command: "uv run pytest -q packages/teecustody-py packages/teecustody-sim && pnpm -r test && uv run pytest -q spec/vectors"
+lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src && pnpm -r lint && pnpm -r typecheck"
+coverage_command: "uv run pytest --cov=teecustody --cov-report=term-missing packages/teecustody-py && pnpm -r coverage"
+# The Architect may replace uv/pnpm in an ADR; the three commands stay single-line and clean-checkout runnable.
+
+# ---------------------------------------------------------------------------
+# Thresholds and limits referenced by gates and roles
+# ---------------------------------------------------------------------------
+coverage:
+  line_min: 80                 # % on new code, gate G5
+  security_paths_min: 100      # % on security-relevant paths (security.paths below); every branch in attestation checks is a negative test
+
+review:
+  max_rounds: 2                # REQUEST_CHANGES rounds before escalating to Tech Lead
+  tdd_spot_checks: 3           # tests the Code Reviewer reverts-and-reruns per branch; on security.paths the reviewer checks all tests named in the task contract
+
+parallelism:
+  max_engineers: 4             # concurrent Software Engineers per wave
+  worktrees: true              # use git worktrees rather than plain branches
+
+discussion:
+  default_rounds: 2
+  max_rounds: 3
+  words_per_round: 400
+  max_per_increment: 3
+  # Disputes about a constraint requirement are chaired by the Security Architect (design) or
+  # Security Reviewer (code); unresolved at the limit → constraint-deviation to the human.
+
+escalation:
+  effort_growth_pct: 30        # increment effort growth that triggers human escalation
+  max_review_failures: 3       # review failures on one task before human escalation
+  max_gate_failures: 3         # consecutive failures of one gate before human escalation
+  always_human:
+    - constraint-deviation                          # every one, no threshold
+    - any change under docs/security/
+    - any change to spec/wire or spec/vectors        # wire format is shared by two implementations
+    - any change to a digest allow-list, signer set or trust profile
+    - release approval
+
+security:
+  threat_model_method: STRIDE  # applied on top of spec §2, which is normative and takes precedence where they overlap
+  scanners: [bandit, pip-audit, gitleaks, semgrep, pnpm-audit, trivy]   # trivy on the workload image; gitleaks on every PR
+  dependency_policy: "OSI licences only; no package without a release in the last 18 months. Cryptographic dependencies are limited to: cryptography, pyhpke (or Tink), cbor2, a libsodium binding for Ristretto255, @hpke/core, cbor-x. Every crypto dependency is pinned by exact version and hash. Adding or replacing a crypto dependency requires an ADR and Security Architect sign-off."
+  residual_risk_acceptor: human   # who can accept High/Critical residual risk — always human
+  paths:                          # security-relevant paths: security_paths_min coverage, STRONG tier, full review
+    - packages/teecustody-py/src/teecustody/attest/**
+    - packages/teecustody-py/src/teecustody/channel/**
+    - packages/teecustody-py/src/teecustody/custody/**
+    - packages/teecustody-py/src/teecustody/recovery/**
+    - packages/teecustody-py/src/teecustody/secrets/**
+    - packages/teecustody-py/src/teecustody/wire/**
+    - packages/teecustody-sim/**
+    - packages/teecustody-core/src/attestation/**
+    - packages/teecustody-core/src/bundle/**
+    - packages/teecustody-core/src/channel/**
+    - packages/teecustody-core/src/custody/**
+    - packages/teecustody-core/src/wire/**
+    - packages/teecustody-web/src/vault/**
+    - packages/teecustody-web/src/profile/**
+    - spec/wire/**
+
+budget:
+  total_tokens: 0              # 0 = no cap; otherwise Orchestrator escalates before exceeding
+  per_increment_tokens: 0
+  currency_note: ""            # optional: $ equivalent for STATUS.md
+  

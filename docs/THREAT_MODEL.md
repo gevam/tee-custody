@@ -1,0 +1,173 @@
+# Threat Model — teecustody
+
+Method: STRIDE (on top of spec §2, which is normative and takes precedence)   Status: APPROVE (G3 passed; residual risks accepted by the human, D-010)   Last review: 2026-09-29 (re-review 2)
+
+Scope: design review of `docs/ARCHITECTURE.md` (incl. "Security boundary contracts"), `docs/REQUIREMENTS.md`, `docs/INCREMENTS.md`, ADR 0001–0008 and decisions D-003, D-007, D-008, against `docs/security/tee-security-architecture.md` (read, not changed). This model is the §13.8 deliverable; it includes the §10.3 web code-delivery limitation (T-19). No residual risk is accepted by this review; acceptance is the human's.
+
+## Assets
+| ID | Asset | Why it matters | Where it lives |
+|---|---|---|---|
+| A-1 | Client identity keys, client shares, reconstructed server keys, DEKs, session keys, recovery shares | Theft or misuse enables impersonation, data decryption, or custody takeover | Client vault, transient workload memory, KeyWrapper, ShareStore, TrusteeStore |
+| A-2 | Plaintext records and authenticated protocol messages | Confidentiality and integrity of client data and operations | Client, transient workload memory, encrypted Queue and RecordStore |
+| A-3 | Attestation trust profiles, signer keys, workload identity and signed images | Determines which workload the client trusts | Host/release configuration, simulator configuration, launcher, build/release system |
+| A-4 | Client-to-identity Directory bindings, epochs, pending recovery state and trustee decisions | Controls routing, tenant isolation, and recovery authorization | Directory, ShareStore, TrusteeStore |
+| A-5 | Availability and integrity of gateway, queue, workload, cloud adapters, pre-key supply, recovery admission, and notifications | Outage or message manipulation blocks custody operations or recovery | Gateway, Queue, workload, Google Cloud services, Notifier |
+| A-6 | Security events, audit records, alerts, dependency/build provenance, and release reputation | Needed to investigate abuse, attribute decisions, and prevent compromised artifacts | Workload audit bucket and `platform-audit` log bucket (Audit Project), CI, registries, release records |
+| A-7 | Web client code as delivered to the browser | The attestation checks run in this code (spec §10.3) | Web-app origin, CDN, browser |
+
+## Actors
+| Actor | Trust level | Access path | Assumed capability |
+|---|---|---|---|
+| Anonymous internet / unauthenticated caller | Untrusted | Reference Gateway routes, `POST /security-events`, any exposed simulator endpoint | Sends arbitrary, malformed, oversized, repeated, or cross-tenant requests; can seal garbage to any published pre-key; can send `recover_start` for any `owner_id` it knows |
+| Client application and authenticated client | Partially trusted | TypeScript Core, browser adapters, gateway, encrypted protocol | Controls its own inputs and can replay, reorder, or alter requests; may claim another client ID; anyone can enroll |
+| Host application / enrollment hook | Partially trusted | Enrollment and registered operations; Notifier delivery; security-event endpoint | Supplies metadata and handlers; delivers notifications; may be buggy or compromised |
+| Trustee | Partially trusted (below k) | Trustee approval/rejection and recovery flow | Approves, rejects, repeats, or delays actions; knows the owner's `client_id`; may be compromised or socially engineered |
+| Workload and gateway service identities | Trusted only for assigned permissions | Queue, Directory, KMS, stores, Notifier, workload audit bucket (create-only) | Can invoke APIs available to their assigned cloud identity |
+| Administrator / cloud operator / CI or release operator | Untrusted per spec §2 | Cloud IAM, configuration, signing, deployment, logs | Can read all server storage/queue/logs and change configuration within their privileges |
+| Folder/organization administrator | Untrusted, above the audit boundary | Resource hierarchy above the workload and Audit Projects | Can alter audit configuration and sink routing (T-05 residual) |
+| Web-app origin operator | Partially trusted for code delivery only (spec §1, §10.3) | Serves the web client JavaScript and CSP header | Can serve a client that skips checks or trusts a different digest |
+| Dependency or build-system attacker | Untrusted | Package registry, build inputs, CI, image publication | Attempts dependency substitution, build tampering, or signer misuse |
+
+## Trust boundaries
+| ID | Boundary | From → To | Data crossing |
+|---|---|---|---|
+| B-1 | Client/gateway | Internet client → Reference Gateway and host security-event endpoint | Route IDs, cursors, canonical envelopes, response polls, security-event codes |
+| B-2 | Gateway/queue/workload | Gateway and cloud Queue → queue-pulling workload | Opaque requests, responses, bundles, routing metadata |
+| B-3 | Client/workload cryptographic protocol | Untrusted transport → client verifier and workload dispatcher | Attestation tokens, signed bundles, authenticated frames, identities |
+| B-4 | Workload/domain/backend ports | Application services → production or simulator adapters | Tenant IDs, ciphertext, wrapped keys, sealed shares, state transitions, audit records |
+| B-5 | Browser/platform capabilities | TypeScript Core → WebAuthn, IndexedDB, WebCrypto, Fetcher, SecurityEventSink | User-presence requests, ciphertext, trust documents, network responses, event codes |
+| B-6 | Workload/platform identity | Confidential Space workload → launcher, KMS, Queue, storage, Directory, TrusteeStore, Notifier, AuditSink | Attestation, credentials, key and data operations |
+| B-7 | Configuration and secret provisioning | Operator/release → workload, gateway, simulator, client build | Trust profiles, signer configuration, audience, service configuration |
+| B-8 | Build and release | Source/dependency registries/CI → signer workstations → signed workload image, packages, web manifest | Source, dependencies, trust profile, artifacts, signatures, verification records |
+| B-9 | Runtime to observability | Components → workload audit bucket, `platform-audit` log bucket, alert policies | Allow-listed and D-007 identifiers, timestamps, outcome codes; IAM principals (platform audit only) |
+| B-10 | Code delivery | Web-app origin/CDN → browser | Client HTML/JS including the compiled trust profile; CSP header |
+| B-11 | Workload project → Audit Project | Workload/gateway/operator principals → audit storage and sink | Create-only audit objects; read-only audit access |
+
+## Entry points
+| ID | Entry point | Boundary | Actor(s) | Component |
+|---|---|---|---|---|
+| E-1 | `GET /bundles`, `POST /requests/{instance}`, `GET /responses/{client}` | B-1 | Internet callers, clients | Reference Gateway |
+| E-2 | OIDC discovery, JWKS, launcher socket, signer config, vector CLI/output | B-3, B-7 | Local clients, developers, operators | Simulator |
+| E-3 | Token, trust profile, discovery/JWKS and signed-prekey parsing | B-3, B-5 | Network attacker, client host | TypeScript Core / Fetcher |
+| E-4 | Queue pull, publish, acknowledge, and response polling | B-2, B-6 | Gateway, queue principal, workload principal | Queue adapters / workload |
+| E-5 | Canonical CBOR envelopes, HPKE open, session frames, operation registration and dispatch | B-3, B-4 | Clients, anonymous senders, host handlers | Workload and TypeScript Core |
+| E-6 | Enrollment metadata, Directory lookup/publication, host hook | B-4 | Client, host application | Enrollment service / Directory |
+| E-7 | Record operations, key wrapping, shares, epochs, rotation | B-4, B-6 | Authenticated client, workload identity, operators | Custody / RecordStore / KeyWrapper / ShareStore |
+| E-8 | `recover_start`, `release_share`, `recover_complete`, `recover_cancel`, expiry | B-3, B-4, B-6 | Owner, non-owner claiming an `owner_id`, trustee, workload identity | Recovery service / TrusteeStore / Notifier |
+| E-9 | WebAuthn PRF and IndexedDB vault operations | B-5 | User, browser extensions, same-origin code | Web adapter |
+| E-10 | Runtime configuration, trust profile, dependency and image build, signer reproduce-compare-sign, publication | B-7, B-8 | Operators, CI, package/build ecosystem, release signers and owners | Workload, client build, release pipeline |
+| E-11 | Audit append (`AuditSink`), alert emission, platform audit export, log-based alert policies | B-9, B-11 | All components, operators, folder administrators | Audit and alert emitter, Audit Project |
+| E-12 | Web client page and script load | B-10 | Web-app origin, CDN, injected scripts | Host web app using `@teecustody/web` |
+| E-13 | `POST /security-events` (notes-app host) and `BeaconSecurityEventSink` | B-1, B-5 | Clients, anonymous senders, origin/gateway attacker | Notes-app host, `@teecustody/web` |
+| E-14 | `teecustody-profile manifest / csp / check-html` CLI | B-8 | Host build, build dependencies | `@teecustody/web` build tool |
+
+## Threats
+| ID | Entry / boundary | STRIDE | Threat | Likelihood | Impact | Severity | Mitigation (design) | SR | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| T-01 | E-1 / B-1 | Spoofing | An unauthenticated caller supplies arbitrary route IDs or polls another client's response route. | Medium | Exposure of routed ciphertext/metadata and relay misuse | Medium | D-003: gateway stays an unauthenticated ciphertext relay; route IDs are hints only; independent client attestation; workload authorizes only authenticated protocol principals; per-source + global limits (ADR 0004). | SR-1, SR-2, SR-4 | residual; human acceptance required |
+| T-02 | E-5 / B-3 | Spoofing | Attacker forges workload or client identity in protocol traffic. | Medium | Impersonation or unauthorized dispatch | High | Explicit trust profile, independent fail-closed attestation checks, authenticated channel, Directory resolution before dispatch. | SR-1 | mitigated by design; test required |
+| T-03 | E-1, E-4, E-5 / B-1..B-4 | Tampering | Attacker alters a request, response, token, bundle, cursor, or backend result; an adapter accepts noncanonical or malformed data. | High | Protocol confusion, unauthorized action, corrupted custody state | High | Per-boundary validation in fixed order; canonical CBOR without fallback; single decode entry point per language (ADR 0004). | SR-3 | mitigated by design; test required |
+| T-04 | E-4, E-5 / B-2, B-3 | Replay / Tampering | Queue redelivery or repeated frames dispatch an operation more than once. | Medium | Duplicate custody or record operations | High | Authenticated sequence/replay checks before dispatch, idempotent retries, ack only after accept/permanent reject. | SR-3 | mitigated by design; test required |
+| T-05 | E-8, E-10, E-11 / B-4, B-6, B-9, B-11 | Repudiation | Trustee, owner or operator denies a recovery decision, state transition, or configuration change. | Medium | Disputes cannot be investigated; abuse undetected | Medium | ADR 0005 + amendments. Workload audit: create-only, retention-locked, create-if-absent objects in a separate Audit Project, with intent/outcome semantics and fail-closed denials. Role-qualified fields per D-007, sourced from authorized context. Operators: folder-level audit config and aggregated sink to a locked `platform-audit` bucket. Release/config sign-offs by two named owners under `release/`, with `TRUST_CONFIG_CHANGED` alerts. Pre-principal failures aggregated. | SR-6, SR-8 | mitigated by design; test required |
+| T-06 | E-3, E-5, E-7, E-8, E-11 / B-3, B-4, B-9 | Information disclosure | Secrets, payloads, tokens, provider exceptions or request contents escape via logs, errors, fixtures, context or audit. | Medium | Key/share theft or client-data disclosure | High | Redacted `Secret`, secret-free context, allow-listed logging, `AuditSink` rejects fields outside the allow-list, sanitized errors, no secret-bearing fixtures. | SR-7, SR-11 | mitigated by design; test required |
+| T-07 | E-1, E-2, E-4, E-8 / B-1, B-2, B-6 | Denial of Service | Unbounded polling, malformed requests, expensive verification, retries or recovery exhaust capacity. | High | Outage; blocked custody/recovery | Medium | Gateway per-source + global limits; bounded batches/waits/retries; per-principal + global budgets; `BoundaryLimits` startup-validated; `LIMIT_EXCEEDED` before mutation (ADR 0004). | SR-4 | mitigated by design; test required |
+| T-08 | E-6..E-8 / B-4, B-6 | Elevation of Privilege | A confused or compromised principal accesses another tenant's records, shares, or recovery state. | Medium | Cross-client disclosure or custody compromise | High | One authorization policy at dispatch taking `(principal, operation, loaded resource)`; tenant IDs from authorized context; adapters fail closed; per-identity least privilege. | SR-2, SR-8 | mitigated by design; test required |
+| T-09 | E-7, E-9 / B-4, B-5 | Information disclosure | A store persists plaintext, an unwrapped key, or a plaintext vault share. | Low | Data or custody compromise | High | Ciphertext/wrapped-only storage; transient server keys; PRF-derived vault key. | SR-5, SR-7 | mitigated by design; test required |
+| T-10 | E-1, E-3, E-4, E-10 / B-1..B-8 | Information disclosure / Tampering | Production network links are intercepted or downgraded. | Medium | Credential/data exposure, command tampering | High | Authenticated TLS with service-identity validation on every production adapter; no plaintext, downgrade or untrusted redirect; startup rejects non-`https`; static ban on TLS overrides. | SR-5 | mitigated by design; test required |
+| T-11 | E-2, E-10 / B-6..B-8 | Spoofing / Elevation of Privilege | Trust-profile, signer, credential or secret-source compromise changes what clients trust or grants custody access. | Medium | Workload impersonation or data access | High | No provisioned runtime secrets; KMS-only key access; config and trust profile versioned with the signed release and attested; simulator anchors rejected; human-approved changes; operator actions attributed in the platform audit sink. | SR-7, SR-8 | mitigated by design; test required |
+| T-12 | E-10 / B-8 | Tampering / Elevation of Privilege | Malicious, vulnerable, unlicensed or stale dependencies (including esbuild and Playwright, admitted by ADR 0008). | Medium | Code execution or cryptographic compromise | High | Dependency policy, exact pins/hashes, scanners, crypto sign-off; builder images pinned by digest in the reviewed commit. | SR-9 | mitigated by design; test required |
+| T-13 | E-10 / B-7, B-8 | Tampering / Spoofing | A build/release operator or signing credential is compromised and a malicious image or package is published. | Low | Full workload compromise and custody theft | Critical | ADR 0006 + amendment and ARCHITECTURE "Release signer governance". CI builds unsigned artifacts and holds no signing or publish credentials. Each of ≥ `SIGNERS_REQUIRED` signers rebuilds the approved commit on their own workstation outside CI and signs only on digest match. Keys are hardware-backed and non-exportable; no two signers share a build host. The deploy/publish gate requires signatures plus matching verification records, and clients and the WIP condition enforce again independently. | SR-10 | mitigated by design; test required; residual to human |
+| T-14 | E-1..E-10, E-13, E-14 / B-1..B-8 | Tampering / Denial of Service | A parser, configuration source, CLI, cloud response or adapter boundary lacks strict validation. | High | Parser abuse, exhaustion, inconsistent decisions | Medium | Same control as T-03, over the enumerated boundary list, including the security-event route (closed enum, ≤ 64 bytes) and `teecustody-profile` arguments. | SR-3, SR-13 | mitigated by design; test required |
+| T-15 | E-9 / B-5 | Information disclosure | Malicious same-origin code or a compromised browser uses an authorized vault session. | Medium | Client share theft | Medium | PRF/user presence and encrypted persistence; endpoint compromise is a spec §2 non-goal. | — | residual; human acceptance required |
+| T-16 | E-11 / B-9 | Information disclosure | Error messages expose internal causes or distinguish sensitive states. | Medium | Disclosure, targeted attacks | Medium | Stable sanitized categories; unknown vs. unauthorized `recovery_id` return the same `NOT_AUTHORIZED`. | SR-11 | mitigated by design; test required |
+| T-17 | E-1, E-5 / B-1, B-2 | Denial of Service | Anonymous sender seals garbage to published unused `prekey_id`s; spec §4/§5.4 step 14 destroys the pre-key after any `Open`. | Medium | New sessions to that instance fail until refresh | Medium | Gateway and global `Open` budgets, low-water refresh, `PREKEY_BURN_HIGH` alert (ADR 0007). Single-use is normative; availability is a spec §2 non-goal. | SR-4, SR-12 | residual; human acceptance required |
+| T-18 | E-8 / B-3, B-4 | Spoofing / Elevation of Privilege | A non-owner starts recovery for a victim's `owner_id` with an attacker `RIB` and socially engineers trustees. | Low | Takeover of one client's data | Medium | ADR 0004 amendment. `owner_id` is subject only. The owner is notified before trustees, and the start fails closed to `CANCELLED` if any notification fails. Pending recoveries and starts are bounded per owner. `recovery_id` grants nothing (policy has no `recovery_id` parameter; semgrep rule). Release needs a nominated trustee principal; completion needs the matching `RIB_priv`; `recover_cancel` needs the owner principal (D-008). | SR-2, SR-4 | mitigated by design; test required |
+| T-19 | E-12 / B-10 | Tampering / Spoofing | A compromised web-app origin, CDN or injected script serves a client that skips §6 checks or trusts another digest (spec §10.3). | Medium | Operator-side attacker holding `ss` decrypts the data of users who load that client | Critical | ADR 0008 and ARCHITECTURE "Web code delivery". Library lint bans and a shipped-output bundle scan. Reproducible notes-app build with a SHA-384 manifest that the signers reproduce. `check-html` enforces SRI, no inline script and no third-party origins. Hash-only `script-src` CSP served as a header (no `'self'`, no unsafe keywords). Enforce-mode browser test. README makes all of this required for hosts. | SR-13, SR-10 | mitigated by design; test required; residual High to human |
+| T-20 | E-3, E-7, E-8, E-11, E-13 / B-6, B-9 | Repudiation (detection) | Attacks on custody go unnoticed: WIP-denied KMS decrypt, `kcv` mismatch, rejected trustee share, debug-mode token (spec §12 line 303). | Medium | Active attacks undetected | Medium | ADR 0007. Every path ends in log-based policies on the protected sink: `KMS_DECRYPT_DENIED` (KMS or STS denial), `WORKLOAD_ALERT` (`alert/` objects), and `CLIENT_DEBUG_MODE_TOKEN` (required Core `SecurityEventSink`, reported only after signature and issuer pass). Pre-principal alerts are first-per-`(outcome, subject)` per interval, capped, with `ALERT_CAP_REACHED`. The cap never applies to authenticated or non-anonymous alerts (pinned by the SR-12 test). | SR-12 | mitigated by design; test required |
+| T-21 | E-8 / B-3, B-4 | Denial of Service | Anyone who knows an owner's `client_id` (e.g. a trustee or former contact) sends `recover_start` every `RECOVERY_START_WINDOW`, occupying `MAX_PENDING_RECOVERIES_PER_OWNER` and `RECOVERY_STARTS_PER_OWNER`. An owner who has lost their only device can neither cancel nor start a genuine recovery while this persists (spec G6). | Low | Recovery denied to one owner for as long as the attack continues; data inaccessible, not disclosed | Medium | D-011: optional host admission hook evaluates spec §8.3 `trigger_evidence` in `recover_start` before the per-owner bounds are charged. Starts the hook rejects never count toward `MAX_PENDING_RECOVERIES_PER_OWNER` or `RECOVERY_STARTS_PER_OWNER`. Existing controls remain: the bounds cap notification spam, owner and trustees see every pending start, and completion needs k trustees. Without a configured hook, T-21 behaves as before; the README must say so. | SR-2, SR-4 | mitigation scheduled INC-4 (D-011); test required |
+
+## Structural controls
+| Control | Enforced at | Component | Covers threats |
+|---|---|---|---|
+| Client/workload authentication | Independent client attestation verifier; authenticated workload protocol/dispatch boundary; gateway caller authentication intentionally absent (D-003) | TypeScript Core; Python workload | T-01, T-02 |
+| Caller and resource authorization | One policy function `(principal, operation, loaded resource)` at dispatch after frame auth, replay and Directory resolution. There is no `recovery_id` parameter (semgrep rule). Recovery operations are authorized per the ARCHITECTURE recovery table. Tenant IDs come from authorized context, and adapters fail closed | Workload dispatcher; tenant-scoped adapters; host handlers own host policy | T-08, T-18 |
+| Input validation | Per-boundary validator in fixed order (raw length, strict schema, canonical CBOR without fallback, `BoundaryLimits`); single CBOR decode entry point; closed-enum security-event route; validated profile-tool arguments | Gateway, `wire` modules, simulator, adapters, configuration, host hook, browser adapters, notes-app route, `teecustody-profile` | T-03, T-04, T-14 |
+| Rate limiting and resource budgets | Gateway and security-event route per-source + global; queue caps; finite retries; per-principal + global budgets; per-owner recovery bounds; audit aggregation and alert cap; all values are startup-validated `BoundaryLimits` | Gateway, workload ingress, TrusteeStore, audit emitter, simulator | T-07, T-17, T-18, T-21 (with the INC-4 admission hook, D-011) |
+| Secrets access | No provisioned runtime secrets; attested platform identity; KMS-only key access; config/trust profile versioned with the signed release and attested; simulator anchors rejected; redacted `Secret` | Workload assembly, KeyWrapper, release configuration | T-06, T-09, T-11 |
+| Data protection in transit and at rest | Authenticated TLS with service-identity validation on every production adapter; startup rejects non-`https`; static ban on overrides; ciphertext-only storage | Production adapters, vault, stores | T-09, T-10 |
+| Security audit | `AuditSink` (create-if-absent, allow-list-validated) to the retention-locked workload audit bucket in the Audit Project. D-007 role-qualified fields from authorized context. Folder-level audit config and aggregated sink to the locked `platform-audit` bucket. Two-owner `release/` sign-offs | Audit emitter, Audit Project, release process | T-05 |
+| Security alerting | Log-based alert policies in the Audit Project over the protected sink (`KMS_DECRYPT_DENIED`, `WORKLOAD_ALERT`, `CLIENT_DEBUG_MODE_TOKEN`, `TRUST_CONFIG_CHANGED`); required Core `SecurityEventSink`; pre-principal cap with `ALERT_CAP_REACHED` | Audit emitter, Core, notes-app route, Audit Project | T-20, T-17 |
+| Dependency admission | Exact pin/hash, license/age policy, scanners, crypto ADR sign-off | CI and package/image build | T-12 |
+| Service least privilege | Per-identity minimum sets. The only cross-project grants into the Audit Project are the workload's conditional create and read-only audit-reader (SR-8 check). Custody-key administration and decrypt are held by different principals. CI has no signing or publish credentials | IAM configuration, automated policy check | T-05, T-08, T-11, T-13 |
+| Release artifact authenticity | Independent reproduce-compare-sign by ≥ `SIGNERS_REQUIRED` hardware-key signers outside CI. The deploy/publish gate checks signatures and matching verification records. Clients and WIP re-verify | Signer workstations, release tooling, WIP, client verifier | T-13, T-19 |
+| Web code delivery | Library lint and bundle scan; `teecustody-profile manifest / check-html / csp`; hash-only `script-src` header; enforce-mode browser test; host README contract | `@teecustody/core`, `@teecustody/web`, notes-app, host build | T-19 |
+| Error sanitization | Stable public categories; indistinguishable unknown/unauthorized recovery IDs | Protocol, capability and gateway boundaries | T-06, T-16 |
+
+## Never log
+- Private keys, shares, reconstructed server keys, DEKs, session keys, nonces, ciphertext, plaintext payloads, request bodies, tokens, credentials, provider exception contents, secret-bearing configuration, or `trigger_evidence`.
+- General workload logs use only the configured allow-list (`client_id`, `request_id`, `session_id`, `prekey_id`, `epoch`, timestamps, outcome codes).
+- Audit records only (D-007) may additionally carry `actor_client_id`, `subject_client_id` and `recovery_id`, sourced as in ARCHITECTURE "Audit record fields" and never copied from the payload. `AGGREGATE` records only may carry a non-negative integer `count` (D-012).
+- For pre-principal `kcv` events, `subject_client_id` comes from the sender-chosen AAD. Investigators must treat it as claimed, not as proof that the named client's share was involved.
+- The client security-event log carries only `event`, `outcome`, `timestamp`.
+- Spec §11 governs the workload's logs; Cloud Audit Logs attribute operators by IAM principal and are required by spec §7.3 and §12.
+
+## Residual risks (for human acceptance at G3)
+| Threat | Severity | Why not fully mitigated | Accepted by | Date |
+|---|---|---|---|---|
+| T-19 | High | Spec §10.3 platform limit. With SRI, a hash-only CSP, published manifests and no third-party scripts, a compromised origin can still serve different code and a different header; hashes enable detection, not prevention. Mobile install-time signing is the long-term answer. | Human (D-010) | 2026-09-29 |
+| T-13 | Medium (Critical impact) | After ADR 0006, a malicious release requires compromise or collusion of ≥ `SIGNERS_REQUIRED` independent hardware-key signers, or a malicious change that passes code review into the approved commit, or a compromised pinned toolchain that reproduces identically. | Human (D-010) | 2026-09-29 |
+| T-01 | Medium | The unauthenticated relay (D-003) exposes ciphertext size/timing per known `client_id` and allows route probing; cryptography prevents any authorization from route possession. | Human (D-010) | 2026-09-29 |
+| T-15 | Medium | A compromised browser or same-origin script can abuse an authorized vault session; endpoint compromise is a spec §2 non-goal. | Human (D-010) | 2026-09-29 |
+| T-17 | Medium | Normative single-use pre-keys can be drained by distributed senders faster than refresh; availability only, which is a spec §2 non-goal. Detected by `PREKEY_BURN_HIGH`. | Human (D-010) | 2026-09-29 |
+| T-05 | Low | Principals above the folder can alter audit config or sink routing; retention lock protects records already written. The create-if-absent conflict alert can fire falsely after an ambiguous retry. In-memory aggregates are lost on crash. | Human (D-010) | 2026-09-29 |
+| T-20 | Low | Alert latency equals audit-log ingestion. The client debug-token path can be suppressed by an origin or gateway attacker and spoofed at rate-limited volume; the client still rejects the token. Under a deliberate flood above `AUDIT_ALERT_CAP`, per-subject `kcv` alerts degrade to `ALERT_CAP_REACHED` plus an aggregate. That loses specificity, not the alert. | Human (D-010) | 2026-09-29 |
+
+## Traceability matrix proposal (not applied)
+One row per SR, linked to the normative invariant or section:
+- `SR-1` independent authentication (D-003);
+- `SR-2` authorization and tenant isolation (I2, G5, §8.3);
+- `SR-3` validation (§5, §9);
+- `SR-4` limits;
+- `SR-5` transport/storage (§6.1, §7, §10.1);
+- `SR-6` audit (§7.3, §12, §13.6);
+- `SR-7` secrets (I1, §11);
+- `SR-8` least privilege (I4, §7.3);
+- `SR-9` dependencies (§0, §11);
+- `SR-10` release signing (I12, §12);
+- `SR-11` errors (I1);
+- `SR-12` alerting (§12);
+- `SR-13` web code delivery (§10.3, §13.8).
+
+Under D-004, only the §13.8 row may now be updated to reference this approved model. Nothing under `docs/security/` was changed.
+
+## Review log
+- 2026-09-29 — CHANGES_REQUIRED; findings: 1 Critical, 4 High, 3 Medium; residual risks: T-01 (Medium, pending human acceptance), T-13 (Critical, not accepted), T-15 (Medium, pending human review); Security Architect. T-01 was reclassified per human decision D-003; other findings remain open.
+- 2026-09-29 (re-review 1, ADR 0004–0006 and "Security boundary contracts") — CHANGES_REQUIRED; Security Architect.
+  - Closed as mitigated by design (tests required): T-03, T-07, T-08, T-10, T-11, T-14.
+  - Open or new findings:
+    - F-1 [Medium, T-05] audit attribution, platform audit path, sign-offs, isolation, aggregation;
+    - F-2 [Critical, T-13] independent reproduction by signers;
+    - F-3 [High, T-19] §10.3 web code-delivery controls;
+    - F-4 [Medium, T-20] §12 alerting path;
+    - F-5 [Medium, T-18] owner notification and bounds on `recover_start`.
+  - H-1 was put to the human.
+- 2026-09-29 (re-review 2: ADR 0004/0005/0006 amendments, ADR 0007, ADR 0008, ARCHITECTURE, INCREMENTS, D-007, D-008) — **APPROVE**; Security Architect.
+  - F-1..F-5 closed as mitigated by design; tests required. T-05, T-13, T-18, T-19 and T-20 are closed with SR-6/8/10/12/13 test descriptions.
+  - New boundaries reviewed, with no blocking finding:
+    - Client `SecurityEventSink` → `POST /security-events` (E-13): closed enum, ≤ 64 bytes, rate-limited. It is reported only after signature and issuer pass, so forged tokens cannot trigger it. Spoofing and suppression are the documented T-20 Low residual.
+    - `recover_cancel` (D-008): owner principal only; unknown and unauthorized IDs are indistinguishable; idempotent; deletes re-sealed shares.
+    - `teecustody-profile manifest/csp/check-html` (E-14): argument validation and header-injection rejection are pinned in the SR-13 test.
+    - Audit Project cross-project IAM (B-11): the exact invariant is pinned in the SR-8 test.
+  - Alert cap. Capping cannot suppress the spec §12 signal:
+    - The cap and dedup apply only to pre-principal alert-class events (in practice `kcv` mismatches).
+    - Dedup is per `(outcome, subject)`, so a spoofed first alert for a subject still alerts on that subject.
+    - `ALERT_CAP_REACHED` is exempt from the cap and fires whenever the cap is hit, so a flood is itself alerted.
+    - Crash resets increase alerts rather than reduce them.
+    - The `kcv` check fails closed regardless.
+    - A flood loses per-subject specificity only (T-20 Low residual).
+    - This depends on the cap scope in ARCHITECTURE being implemented as the SR-12 test pins it: `TRUSTEE_SHARE_REJECTED`, `AUDIT_WRITE_CONFLICT` and `PREKEY_BURN_HIGH` are never capped.
+  - New residual T-21 (Medium): recovery-start slot and rate exhaustion; human decision.
+  - H-2 (aggregate `count`) is not security-relevant for G3. Presence per interval, `ALERT_CAP_REACHED` and `PREKEY_BURN_HIGH` satisfy SR-6 and SR-12. A count is a non-identifier integer of anonymous traffic volume that operators can already see in queue metrics; it adds triage and forensic value only, with no confidentiality impact. It is outside §11's identifier kinds, so the human decides the classification. Recommendation: approve, but it does not block G3.
+  - Editorial for the Architect (non-blocking): ARCHITECTURE "Protected audit", paragraph 1, says "No principal holding any role on the workload project holds a role on the Audit Project". That contradicts the workload's conditional create grant and the applying operator's audit-reader role. Align it with the SR-8 invariant: no write, admin, IAM, retention, delete or sink permission.
+  - Residual risks for the human: T-19 High; T-13 Medium (Critical impact); T-21 Medium (decision); T-01, T-15, T-17 Medium.
+- 2026-09-29 (clerical, post-G3) — Residuals accepted by the human (D-010); T-21 moved to mitigation scheduled in INC-4 (D-011); aggregate `count` permitted (D-012); SR-2 and SR-6 amended; Security Architect.

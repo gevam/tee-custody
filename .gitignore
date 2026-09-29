@@ -1,0 +1,12 @@
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+coverage/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
