@@ -2,8 +2,8 @@
 
 
 def identity_nonce(identity_public_key: bytes) -> bytes:
-    raise NotImplementedError
+    raise NotImplementedError("T-06")
 
 
 def launcher_nonce(identity_nonce: bytes) -> str:
-    raise NotImplementedError
+    raise NotImplementedError("T-06")

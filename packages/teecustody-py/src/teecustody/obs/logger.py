@@ -7,13 +7,13 @@ from teecustody.obs.types import AllowListedLogger
 
 
 def get_logger(name: str) -> AllowListedLogger:
-    raise NotImplementedError
+    raise NotImplementedError("T-05")
 
 
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-05")
 
 
 def configure_logging(stream: TextIO, level: int = logging.INFO) -> None:
-    raise NotImplementedError
+    raise NotImplementedError("T-05")

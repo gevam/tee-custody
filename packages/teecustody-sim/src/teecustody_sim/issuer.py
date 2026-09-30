@@ -16,14 +16,14 @@ class IssuerServer:
         jwks: Mapping[str, JsonValue],
         limits: SimLimits,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def start(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def stop(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     @property
     def origin(self) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")

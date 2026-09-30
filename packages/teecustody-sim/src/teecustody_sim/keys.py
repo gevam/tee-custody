@@ -11,7 +11,7 @@ class SignerKeyMaterial:
     spki_der: bytes
 
     def sign(self, payload: bytes) -> bytes:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
 
 class SimKeys:
@@ -21,14 +21,14 @@ class SimKeys:
 
     @classmethod
     def generate(cls, signers_required: int) -> "SimKeys":
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
     @classmethod
     def load_or_create(cls, state_dir: Path, signers_required: int) -> "SimKeys":
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
     def issuer_jwks(self) -> dict[str, JsonValue]:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
     def sign_jws(self, signing_input: bytes) -> bytes:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")

@@ -14,10 +14,10 @@ class LauncherServer:
         mint: Callable[[str, Sequence[str]], str],
         limits: SimLimits,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def start(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def stop(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")

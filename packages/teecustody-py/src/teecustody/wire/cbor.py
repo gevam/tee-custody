@@ -4,8 +4,8 @@ from teecustody.wire.types import CanonicalValue, DecodeLimits
 
 
 def encode(value: CanonicalValue) -> bytes:
-    raise NotImplementedError
+    raise NotImplementedError("T-04")
 
 
 def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
-    raise NotImplementedError
+    raise NotImplementedError("T-04")

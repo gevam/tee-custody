@@ -10,15 +10,15 @@ from teecustody_sim.keys import SimKeys
 
 
 def image_signature_payload(image_reference: str, image_digest: str) -> bytes:
-    raise NotImplementedError
+    raise NotImplementedError("T-07")
 
 
 def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str:
-    raise NotImplementedError
+    raise NotImplementedError("T-07")
 
 
 def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration:
-    raise NotImplementedError
+    raise NotImplementedError("T-07")
 
 
 class TokenMinter:
@@ -31,10 +31,10 @@ class TokenMinter:
         ttl_s: int,
         token_max_age_s: int,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
     def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")
 
     def mint(
         self,
@@ -43,4 +43,4 @@ class TokenMinter:
         now: int,
         alteration: Alteration | None = None,
     ) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-07")

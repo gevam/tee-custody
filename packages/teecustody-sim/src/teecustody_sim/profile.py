@@ -9,7 +9,7 @@ from teecustody_sim.keys import SignerKeyMaterial
 
 
 def launch_config_hashes(args: Sequence[str], env: Sequence[tuple[str, str]]) -> tuple[str, str]:
-    raise NotImplementedError
+    raise NotImplementedError("T-17")
 
 
 def build_trust_profile(
@@ -22,4 +22,4 @@ def build_trust_profile(
     signers_required: int,
     token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S,
 ) -> dict[str, JsonValue]:
-    raise NotImplementedError
+    raise NotImplementedError("T-17")

@@ -13,10 +13,10 @@ class ContainerRuntime:
         *,
         run: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-16")
 
     def image_digest(self, image: str) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-16")
 
     def run_workload(
         self,
@@ -26,4 +26,4 @@ class ContainerRuntime:
         args: Sequence[str],
         env: Sequence[tuple[str, str]],
     ) -> int:
-        raise NotImplementedError
+        raise NotImplementedError("T-16")

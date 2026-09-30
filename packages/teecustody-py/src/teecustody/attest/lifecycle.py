@@ -25,17 +25,17 @@ class AttestationLifecycle:
         clock: Callable[[], float],
         logger: AllowListedLogger,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     @property
     def identity_nonce(self) -> bytes:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     def start(self) -> AttestationToken:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     def current(self) -> AttestationToken:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     def refresh_if_due(self) -> RefreshOutcome:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")

@@ -4,7 +4,7 @@
 class IdentityKey:
     @classmethod
     def generate(cls) -> "IdentityKey":
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     def public_bytes(self) -> bytes:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")

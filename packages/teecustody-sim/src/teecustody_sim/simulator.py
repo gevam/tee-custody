@@ -16,10 +16,10 @@ class Simulator:
         environ: Mapping[str, str] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def __enter__(self) -> "Simulator":
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def __exit__(
         self,
@@ -27,22 +27,22 @@ class Simulator:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def start(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     def stop(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     @property
     def issuer_origin(self) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     @property
     def discovery_url(self) -> str:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")
 
     @property
     def keys(self) -> SimKeys:
-        raise NotImplementedError
+        raise NotImplementedError("T-08")

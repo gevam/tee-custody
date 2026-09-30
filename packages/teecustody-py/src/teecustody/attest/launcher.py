@@ -15,9 +15,9 @@ class ConfidentialSpaceLauncher:
         timeout_s: float,
         max_response_bytes: int,
     ) -> None:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
 
     def get_attestation_token(
         self, audience: str, token_type: str, identity_nonce: bytes
     ) -> AttestationToken:
-        raise NotImplementedError
+        raise NotImplementedError("T-06")
