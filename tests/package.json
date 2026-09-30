@@ -1,0 +1,11 @@
+{
+    "name": "@teecustody/tests",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "test": "vitest run",
+        "lint": "eslint . && prettier --check .",
+        "typecheck": "tsc --noEmit -p tsconfig.json"
+    }
+}
