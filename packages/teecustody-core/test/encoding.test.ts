@@ -9,6 +9,7 @@ import {
     utf8DecodeStrict,
     utf8Encode,
 } from "../src/encoding.js";
+import { mapFetcher } from "./support/fetcher.js";
 import { generateRsaKey, signJws } from "./support/jws.js";
 import {
     RFC7515_A2_COMPACT,
@@ -214,5 +215,26 @@ describe("RFC 7515 A.2 known answer (ADR 0009) through testCrypto", () => {
         expect(Buffer.from(digest).toString("hex")).toBe(
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         );
+    });
+});
+
+describe("mapFetcher (test support)", () => {
+    const url = "https://issuer.unit.test/jwks";
+    const body = new Uint8Array([1, 2, 3]);
+
+    it("serves the exact URL with status 200 by default", async () => {
+        const response = await mapFetcher(new Map([[url, body]])).get(url);
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual(body);
+    });
+
+    it("uses the configured status for a URL", async () => {
+        const fetcher = mapFetcher(new Map([[url, body]]), new Map([[url, 404]]));
+        expect((await fetcher.get(url)).status).toBe(404);
+    });
+
+    it("rejects any other URL with HTTP_ERROR", async () => {
+        const fetcher = mapFetcher(new Map([[url, body]]));
+        await expect(fetcher.get(`${url}/`)).rejects.toThrow(new CapabilityError("HTTP_ERROR"));
     });
 });
