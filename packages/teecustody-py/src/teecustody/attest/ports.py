@@ -1,6 +1,6 @@
 """Launcher port (ARCHITECTURE "Attestation and launcher")."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
@@ -23,9 +23,9 @@ class LauncherError(Exception):
 
 @dataclass(frozen=True)
 class AttestationToken:
-    value: str
-    issued_at: int
-    expires_at: int
+    value: str = field(repr=False)  # compact JWS, never logged
+    issued_at: int  # `iat`, Unix s, parsed locally, untrusted
+    expires_at: int  # `exp`, Unix s, parsed locally, untrusted
 
 
 class Launcher(Protocol):

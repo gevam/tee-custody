@@ -305,3 +305,10 @@ def test_wire_error_str_is_code_value_only(code: WireErrorCode) -> None:
     assert err.code is code
     assert str(err) == code.value
     assert err.args == (code.value,)
+
+
+def test_attestation_token_repr_omits_the_token_value() -> None:
+    token = AttestationToken(value="SENTINEL", issued_at=1, expires_at=2)
+    assert "SENTINEL" not in repr(token)
+    assert "SENTINEL" not in str(token)
+    assert repr(token) == "AttestationToken(issued_at=1, expires_at=2)"
