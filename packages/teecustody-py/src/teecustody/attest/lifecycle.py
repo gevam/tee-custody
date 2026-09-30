@@ -1,0 +1,41 @@
+"""Attestation token lifecycle: start, current token and scheduled refresh."""
+
+from collections.abc import Callable
+from enum import StrEnum, auto
+
+from teecustody.attest.ports import AttestationToken, Launcher
+from teecustody.obs import AllowListedLogger
+
+
+class RefreshOutcome(StrEnum):
+    NOT_DUE = auto()
+    REFRESHED = auto()
+    FAILED_KEPT_CURRENT = auto()
+
+
+class AttestationLifecycle:
+    def __init__(
+        self,
+        launcher: Launcher,
+        *,
+        audience: str,
+        token_type: str,
+        identity_public_key: bytes,
+        refresh_margin_s: int,
+        clock: Callable[[], float],
+        logger: AllowListedLogger,
+    ) -> None:
+        raise NotImplementedError
+
+    @property
+    def identity_nonce(self) -> bytes:
+        raise NotImplementedError
+
+    def start(self) -> AttestationToken:
+        raise NotImplementedError
+
+    def current(self) -> AttestationToken:
+        raise NotImplementedError
+
+    def refresh_if_due(self) -> RefreshOutcome:
+        raise NotImplementedError

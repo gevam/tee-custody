@@ -1,0 +1,58 @@
+[project]
+name = "tee-custody-workspace"
+version = "0.0.0"
+description = "Workspace root for the teecustody Python packages; not a distributable package."
+requires-python = ">=3.12"
+dependencies = ["teecustody", "teecustody-sim"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.9",
+    "mypy==2.3.1",
+    "hypothesis==6.168.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/teecustody-py", "packages/teecustody-sim"]
+
+[tool.uv.sources]
+teecustody = { workspace = true }
+teecustody-sim = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Ruff's default `include` minus "*.md": Markdown code blocks in docs/ are illustrative, not source.
+include = ["*.py", "*.pyi", "*.pyw", "*.ipynb", "**/pyproject.toml", "**/ruff.toml", "**/.ruff.toml"]
+extend-exclude = [".semgrep", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "TID", "PT", "SIM", "RUF", "ANN", "BLE", "T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["teecustody", "teecustody_sim"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S105", "S106", "ANN"]
+"tests/**" = ["S101", "S105", "S106", "ANN"]
+"spec/vectors/**" = ["S101", "S105", "S106", "ANN"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+exclude_also = ["if TYPE_CHECKING:", "@overload"]
