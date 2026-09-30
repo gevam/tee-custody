@@ -27,4 +27,10 @@ class WireErrorCode(StrEnum):
 
 
 class WireError(Exception):
+    """Carries only a stable code; `str(err)` is the code value and nothing else."""
+
     code: WireErrorCode
+
+    def __init__(self, code: WireErrorCode) -> None:
+        super().__init__(code.value)
+        self.code = code

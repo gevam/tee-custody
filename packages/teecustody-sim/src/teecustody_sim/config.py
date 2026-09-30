@@ -52,4 +52,10 @@ class SimConfigErrorCode(StrEnum):
 
 
 class SimConfigError(Exception):
+    """Carries only a stable code; `str(err)` is the code value and nothing else."""
+
     code: SimConfigErrorCode
+
+    def __init__(self, code: SimConfigErrorCode) -> None:
+        super().__init__(code.value)
+        self.code = code

@@ -17,6 +17,7 @@ from teecustody.attest import (
     AttestationLifecycle,
     AttestationToken,
     ConfidentialSpaceLauncher,
+    LauncherError,
     LauncherErrorCode,
     RefreshOutcome,
     identity_nonce,
@@ -32,7 +33,7 @@ from teecustody.obs import (
     configure_logging,
     get_logger,
 )
-from teecustody.wire import PROTO, DecodeLimits, WireErrorCode, decode, encode
+from teecustody.wire import PROTO, DecodeLimits, WireError, WireErrorCode, decode, encode
 
 PUBLIC_NAMES: dict[str, tuple[str, ...]] = {
     "teecustody.attest": (
@@ -288,3 +289,19 @@ def test_signature_equals_api(
 ) -> None:
     actual = [(p.name, p.kind, p.default) for p in inspect.signature(func).parameters.values()]
     assert actual == params
+
+
+@pytest.mark.parametrize("code", list(LauncherErrorCode))
+def test_launcher_error_str_is_code_value_only(code: LauncherErrorCode) -> None:
+    err = LauncherError(code)
+    assert err.code is code
+    assert str(err) == code.value
+    assert err.args == (code.value,)
+
+
+@pytest.mark.parametrize("code", list(WireErrorCode))
+def test_wire_error_str_is_code_value_only(code: WireErrorCode) -> None:
+    err = WireError(code)
+    assert err.code is code
+    assert str(err) == code.value
+    assert err.args == (code.value,)

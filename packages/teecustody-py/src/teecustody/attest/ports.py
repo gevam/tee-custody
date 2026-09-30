@@ -12,7 +12,13 @@ class LauncherErrorCode(StrEnum):
 
 
 class LauncherError(Exception):
+    """Carries only a stable code; `str(err)` is the code value and nothing else."""
+
     code: LauncherErrorCode
+
+    def __init__(self, code: LauncherErrorCode) -> None:
+        super().__init__(code.value)
+        self.code = code
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ from teecustody_sim import (
     NamedCase,
     NegativeCase,
     SignerKeyMaterial,
+    SimConfigError,
     SimConfigErrorCode,
     SimKeys,
     SimLimits,
@@ -478,3 +479,11 @@ def test_signature_equals_api(
 ) -> None:
     actual = [(p.name, p.kind, p.default) for p in inspect.signature(func).parameters.values()]
     assert actual == params
+
+
+@pytest.mark.parametrize("code", list(SimConfigErrorCode))
+def test_sim_config_error_str_is_code_value_only(code: SimConfigErrorCode) -> None:
+    err = SimConfigError(code)
+    assert err.code is code
+    assert str(err) == code.value
+    assert err.args == (code.value,)
