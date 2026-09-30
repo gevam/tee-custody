@@ -31,3 +31,9 @@ No claim names, cryptographic values, or wire fields may be invented by implemen
 
   With text-only keys, bytewise key ordering and length-first key ordering coincide. Protocol-message CDDL (bundle, envelopes, share records) is added in INC-2 or later, in the increment that first uses it, under the same gate. This implements the "block rather than invent" rule: the binding is human-approved before any code depends on it.
 - 2026-09-30, INC-1 CI-4/5/9. The trust profile carries `profile_version`, `profile_kind`, `token_type`, `discovery_url` and `token_max_age_s` in addition to the spec §15.4 fields. `profile_kind` constrains only which anchor shapes `parseTrustProfile` accepts. No check reads it, so the check logic is identical under both profiles. `AttestationError` carries the failing check ID. `ExpectedAttestation` carries only the identity nonce. See ARCHITECTURE "Attestation and launcher".
+- 2026-09-30, D-016 (human constraint-deviation on spec §6.8). The token does not carry the signed image payload (FACTS F-12). The signer policy is therefore enforced client-side as follows:
+  - The client requires at least `SIGNERS_REQUIRED` distinct token `image_signatures[].key_id` values.
+  - Each must equal the `key_id` (SHA-256 of SPKI DER) of an embedded signer, with a matching `signature_algorithm`.
+  - Signature bytes are not re-verified by the client.
+
+  Trust-profile signer entries are `{key_id, algorithm}`. The simulator emits matching `key_id`s.

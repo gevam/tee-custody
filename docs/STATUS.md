@@ -8,7 +8,7 @@ Last gate passed: G3   Next gate: G4
 Increments merged: none
 
 ## Current increment — INC-1 (Attestation foundation)
-18 tasks + V-01 in 4 waves (docs/tasks/INC-1/WAVES.md); committed on `main` (e363986). No engineer started.
+18 tasks + V-01 in 4 waves (docs/tasks/INC-1/WAVES.md); committed on `main` (dd50b4f); V-01 facts verified on branch inc-1/V-01-facts. No engineer started.
 
 QA: not-started (authors after Wave 0)
 Reviews: —
@@ -16,10 +16,9 @@ Reviews: —
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
 |---|---|---|---|---|
-| CI-1..CI-10 | G4 (Wave-0 types) | Architect | 2026-09-30 | Ruling in progress |
-| JWS verification approach (ADR) | T-07, T-11 | Architect → Security Architect | 2026-09-30 | ADR, then sign-off |
-| TS CBOR codec vs cbor-x (CI-10, ADR) | Wave 0 | Architect → Security Architect | 2026-09-30 | ADR, then sign-off |
-| V-01 Confidential Space facts | Wave 1 | Engineer (STRONG) | 2026-09-30 | Verification in progress; F-12 may need a human decision |
+| ADR 0009 (JWS) / ADR 0010 (TS CBOR) sign-off | Wave 0 | Security Architect | 2026-09-30 | Review in progress |
+| F-12 design finalization (D-016 option a) | T-13, Wave 0 types | Architect | 2026-09-30 | In progress |
+| Contract amendments (CI rulings, D-016, V-01 rows) | G4 | Tech Lead | 2026-09-30 | After the two above |
 
 ## Open questions for the human
 | Id | Question | Blocking? | Options | Recommendation |
@@ -35,6 +34,7 @@ Reviews: —
 - D-010: human accepted residual risks T-19 (High), T-13, T-01, T-15, T-17, T-05, T-20.
 - D-011: T-21 mitigated by a host admission hook in INC-4. D-012: `count` on aggregate audit records.
 - D-013: G3 passed. D-014: standing authority for traceability coverage columns. D-015: test/coverage commands include tests/ and teecustody_sim.
+- D-016: constraint-deviation (human): §6.8 satisfied via Google-verified key_ids. D-017: CI-1..CI-10 rulings accepted.
 
 ## Debt
 Open entries: 0   Expired-unscheduled: 0

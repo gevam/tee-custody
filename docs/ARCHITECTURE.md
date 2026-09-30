@@ -98,6 +98,12 @@ Simulator HTTP/OIDC surface (loopback by default, spec §15.5):
 - `GET /.well-known/openid-configuration` returns `issuer` (`SIM_ISSUER`), `jwks_uri`, and signing metadata, which is `RS256` only.
 - `GET /jwks` returns only the public half of the simulator's **token-signing (issuer) key** (CI-8). Development image-signer public keys are never served by the issuer. They reach the client only through the development trust profile's `signer_keys`.
 - The local launcher socket returns signed tokens.
+- **Development signers** (spec §15.2 item 3; D-016). There are `SIGNERS_REQUIRED` of them, and each has a single F-11 algorithm (default `RSASSA_PSS_SHA256`). For each signer, the token's `submods.container.image_signatures` carries one entry `{key_id, signature, signature_algorithm}`:
+  - `key_id` is the lowercase hex SHA-256 of that signer's SPKI DER, the same value the development profile carries.
+  - `signature_algorithm` is the signer's algorithm.
+  - `signature` is the padded standard base64 of a real signature made with that key over simulator-chosen payload bytes. The payload format is simulator-internal and non-normative, and no client reads it.
+
+  The unknown signer's entry uses its own `key_id`. `teecustody-sim profile` computes `key_id` from the same SPKI DER the simulator used.
 - `teecustody-sim serve` runs the issuer and launcher socket without a container, for host-process workloads and credential-free tests (CI-6). `teecustody-sim up` also runs the workload image with the launcher directory mounted.
 
 `SIGNERS_REQUIRED` is enforced before startup. Signer private keys stay in simulator configuration and are never emitted by the CLI, issuer responses, logs, or vectors. The simulator supports named negative alterations/omissions for required checks and vector output to an explicit destination directory. Development keys are never accepted by a production trust profile.
@@ -127,7 +133,7 @@ VerifierLimits = { maxTokenBytes, maxDiscoveryBytes, maxJwksBytes }   // positiv
 - `issuer`, `discovery_url`, `jwks_origin` and `expected_audience`;
 - `token_max_age_s` (spec §14 `TOKEN_MAX_AGE`);
 - `allowed_hwmodels` and `allowed_digests`;
-- `signer_keys` (`{key_id, algorithm, spki}`) and `signers_required`;
+- `signer_keys` (`{key_id, algorithm}`; see "Image check" below) and `signers_required` (1 ≤ n ≤ number of signer keys);
 - `expected_args_hash` and `expected_env_hash`.
 
 Only `parseTrustProfile` creates a profile, and it rejects unknown keys at every level. `profile_kind` does one thing: it selects which anchor shapes `parseTrustProfile` accepts.
@@ -143,13 +149,32 @@ The two hashes are defined as follows:
 - `expected_args_hash` is the lowercase hex SHA-256 of the canonical CBOR encoding of `submods.container.args`, as an array of text strings in token order.
 - `expected_env_hash` is the same over `submods.container.env`, as a map from text to text.
 
-**Signer keys and the F-12 dependency.** `signer_keys[].algorithm` accepts every value FACTS F-11 documents: `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` and `ECDSA_P256_SHA256`. `key_id` is the lowercase hex SHA-256 of `spki` (F-11). The profile generator derives `key_id` from `spki`. It never copies it from input.
+**Image check (spec §6.8 as decided by D-016, a human constraint-deviation).** The token does not carry the signed payload (FACTS F-12), so the client cannot re-verify signature bytes. The Google attestation service verifies image signatures before it signs the token. The client independently requires that the token name enough of the client's own embedded signers.
 
-V-01 found that the signed image-signature payload is not in the token (F-12). How spec §6.8 "valid signatures" is met is therefore a pending human constraint-deviation, with two possible outcomes:
-- **(a)** The client requires at least `signers_required` distinct token `key_id`s that match profile keys.
-- **(b)** Payloads travel with the bundle and the client re-verifies them with `Crypto.verifySignature`.
+**Signer entry.** Each `signer_keys` entry is exactly `{ key_id, algorithm }`:
+- `key_id` is the signer fingerprint: lowercase hex SHA-256 of the signer public key's DER SubjectPublicKeyInfo (F-11), 64 characters, unique within the profile.
+- `algorithm` is the one algorithm that signer uses. It is one of `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` or `ECDSA_P256_SHA256` (F-11).
 
-The profile shape supports both outcomes: `spki` and `algorithm` are needed only for (b). `checkImage` keeps its `ExpectedAttestation` parameter, so that (b) can add payload evidence there. That would be an additive change, decided together with F-12. Until F-12 is decided, the §6.8 signature half (T-13) must not be implemented as signature-byte verification.
+The profile carries no public-key bytes. Profile generators (`teecustody-sim profile`, the `teecustody-profile` host tooling) take each signer's SPKI DER as input and compute `key_id` from it. They never copy a `key_id` from input.
+
+**`checkImage(token, profile) -> signerKeyIds`**. The check is synchronous and needs no crypto or network. Every failure is `AttestationError(code, "image")`. Steps, in order:
+1. `submods.container.image_digest`:
+   - absent → `CLAIM_MISSING`;
+   - not a string in `allowed_digests` (exact match) → `CLAIM_MISMATCH`.
+2. `submods.container.image_signatures`:
+   - absent → `CLAIM_MISSING`;
+   - not an array → `CLAIM_MISMATCH`.
+3. An entry **counts** only if all of the following hold:
+   - it is an object;
+   - its `key_id` is a string exactly equal (case-sensitive) to a profile `key_id`;
+   - its `signature_algorithm` is a string equal to that profile entry's `algorithm`;
+   - its `signature` is a non-empty string.
+
+   Entries that do not count are ignored: unknown signers, malformed entries and algorithm mismatches. Duplicate `key_id`s count once.
+4. Fewer than `signers_required` distinct counted `key_id`s → `UNTRUSTED_SIGNER`.
+5. Otherwise, return the distinct counted `key_id`s sorted ascending. They become `VerifiedAttestation.signerKeyIds`.
+
+The `signature` bytes are not decoded or verified by the client (D-016).
 
 **`ExpectedAttestation`** is `{ identityNonce }` (32 bytes) only (CI-9, amended). The workload-digest binding in spec §5.2 step 5 is not an input to `verifyAttestation`. Instead, INC-2 bundle verification compares the `image_digest` under each pre-key signature with `VerifiedAttestation.imageDigest`. That value has already been checked against the allow-list.
 
@@ -287,7 +312,7 @@ interface HpkeReceiverContext {
     destroy(): void;
 }
 
-type SignatureAlgorithm = "RSASSA_PKCS1V15_SHA256" | "RSASSA_PSS_SHA256";
+type SignatureAlgorithm = "RSASSA_PKCS1V15_SHA256"; // JWS RS256 only (ADR 0009; D-016 removed image-signature use)
 
 interface RsaPublicJwk {
     readonly kty: "RSA";
@@ -295,9 +320,7 @@ interface RsaPublicJwk {
     readonly e: string;
 }
 
-type PublicKeyInput =
-    | { readonly format: "spki"; readonly der: Bytes }
-    | { readonly format: "jwk"; readonly jwk: RsaPublicJwk };
+type PublicKeyInput = { readonly format: "jwk"; readonly jwk: RsaPublicJwk };
 
 type SecurityEventCode = "ATTESTATION_DEBUG_MODE";
 
@@ -332,15 +355,13 @@ interface Crypto {
 
 `Crypto` delegates to approved platform cryptography or maintained audited libraries; it does not implement primitives itself. HPKE setup uses RFC 9180 Base mode with the normative suite; `export` is performed on the same context as `seal`/`open`, and contexts are destroyed after use. Core supplies normative labels and the required 32-byte export length. AES-GCM uses the normative 256-bit keys and 96-bit nonces. Invalid lengths/inputs reject with `INVALID_ARGUMENT`, unavailable functionality with `UNSUPPORTED` or `UNAVAILABLE`, unsupported suites with `UNSUPPORTED_ALGORITHM`, and authentication failure rejects with `AUTHENTICATION_FAILED`; signature mismatch returns `false`. Context destruction is idempotent.
 
-`verifySignature` (CI-2) supports exactly two algorithms:
-- `RSASSA_PKCS1V15_SHA256`, used for JWS `RS256` and image signatures;
-- `RSASSA_PSS_SHA256` with salt length 32, used for image signatures.
+`verifySignature` (CI-2) exists only for the attestation-token JWS (`RS256`, ADR 0009). It supports exactly one algorithm, `RSASSA_PKCS1V15_SHA256`, with an RSA public JWK. Image signatures are never verified client-side (D-016), so no other algorithm or key format is needed.
 
 It is implemented with WebCrypto or Node `crypto` only. It resolves `false` when the signature does not match. It rejects in these cases:
 - `INVALID_ARGUMENT` for an unparseable key or an RSA modulus under 2048 bits. The modulus length is read from the imported key, and no ASN.1 is parsed in project code.
 - `UNSUPPORTED_ALGORITHM` for any other algorithm.
 
-ECDSA is deliberately absent from `verifySignature`. Verifying it would require project code to convert DER signatures to the raw form WebCrypto expects. JWS `RS256` needs only RSA whatever happens with F-12. Image-signature verification needs this method only under F-12 outcome (b). Under (b), either release image-signing keys are RSA, or an ADR adds ECDSA through audited DER handling (see "Release signer governance"). Under (a), the client never verifies image-signature bytes. Implementations must not expose provider-specific errors or log inputs.
+Implementations must not expose provider-specific errors or log inputs.
 
 ### Workload operations and session context
 
@@ -671,10 +692,7 @@ CI and cloud workloads build reproducible, unsigned artifacts from pinned source
 2. **Rebuild.** Run the published build recipe. All inputs are pinned by hash in the approved commit: the base image and builder image by digest, and lockfiles with hashes. The recipe sets `SOURCE_DATE_EPOCH` from the commit and has no unpinned network fetch.
 3. **Compare.** Compute the reproduced digest and compare it with the candidate digest, i.e. the CI-reported digest of the artifact proposed for release.
 4. **Refuse on mismatch.** On any difference, stop and do not sign. The mismatch is a release blocker and is reported as a security event.
-5. **Sign on match.** Sign the digest with the signer's image-signing key, using the signature format the Confidential Space image-signature claims require (spec §6.8, §12; format verified against current documentation at INC-5 per spec §0). The image-signing key algorithm depends on how F-12 is decided:
-- F-11 confirms that Confidential Space accepts `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` and `ECDSA_P256_SHA256`.
-- Under F-12 outcome (b), the client re-verifies signatures. Keys are then RSA (at least 2048 bits, PSS preferred) unless an ADR adds ECDSA verification to the client (CI-2).
-- Under outcome (a), any F-11 algorithm is acceptable.
+5. **Sign on match.** Sign the digest with the signer's image-signing key, using the signature format the Confidential Space image-signature claims require (spec §6.8, §12; format verified against current documentation at INC-5 per spec §0). Any F-11 algorithm is acceptable: `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` or `ECDSA_P256_SHA256`. The trust profile records each signer's `key_id` (SHA-256 of its SPKI DER) together with that algorithm (D-016).
 6. **Record.** Write a **verification record** signed with a separate record-signing key held on the same device. It contains: `artifact_kind`, `artifact_name`, `source_commit`, `recipe_version`, `builder_image_digest`, `reproduced_digest`, `candidate_digest`, `match: true`, `signer_id`, `signed_at`, and the signer's build-host OS. Publish it with the release artifacts, and write it to the protected audit bucket as class `RELEASE`.
 
 Signing keys are generated on, and non-exportable from, a hardware token held by the signer (the Security Architect's SHOULD, adopted as the default). Any exception is recorded in the release record. Image-signing keys sign only artifact digests. No two signers use the same build host.
@@ -683,7 +701,7 @@ Signing keys are generated on, and non-exportable from, a hardware token held by
 - ≥ `SIGNERS_REQUIRED` valid signatures from distinct approved signer identities over the artifact's digest;
 - the same number of verification records whose `reproduced_digest` equals that digest.
 
-The step rejects missing, invalid, tampered, wrong-key, single-identity-duplicate and digest-mismatched cases. The clients (spec §6.8) and the WIP condition enforce signatures again, independently.
+The step rejects missing, invalid, tampered, wrong-key, single-identity-duplicate and digest-mismatched cases. The WIP condition and the Google attestation service verify the image signatures again. The clients independently require at least `SIGNERS_REQUIRED` embedded signer `key_id`s in the Google-signed token (spec §6.8 per D-016).
 
 **Artifact scope ("where applicable").**
 

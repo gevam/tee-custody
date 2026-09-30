@@ -24,7 +24,7 @@ function bodies and add private helpers only; exported names, parameters and ret
 | `expected_args_hash` | lowercase hex `SHA-256(canonical CBOR of submods.container.args as an array of text strings, token order)` |
 | `expected_env_hash` | lowercase hex `SHA-256(canonical CBOR of submods.container.env as a map text→text)` |
 | signer `key_id` | FACTS F-11 |
-| image-signature payload | FACTS F-12 |
+| image-signature payload | not reconstructible from the token (FACTS F-12); simulator-internal and non-normative; the client never reads it (D-016) |
 
 Canonical CBOR is defined by `spec/wire/README.md` (T-03). `PROTO = "tee-chan-v1"` (spec §5.3 step 8).
 
@@ -224,7 +224,7 @@ type Alteration = AlterClaim | DropClaim | NamedCase
 @dataclass(frozen=True)
 class NegativeCase:
     case_id: str; check: str; error_code: str; altered: tuple[str, ...]; debug_event: bool
-NEGATIVE_CASES: Final[tuple[NegativeCase, ...]]   # §G rows 2..27, in table order
+NEGATIVE_CASES: Final[tuple[NegativeCase, ...]]   # §G rows 2..28, in table order
 
 # keys.py  (stub → T-07)
 class SignerKeyMaterial:                       # repr: "SignerKeyMaterial(key_id=<key_id>)"
@@ -242,7 +242,10 @@ class SimKeys:                                 # repr: "SimKeys(<redacted>)"
     def sign_jws(self, signing_input: bytes) -> bytes: ...
 
 # token.py  (stub → T-07)
-def image_signature_payload(image_reference: str, image_digest: str) -> bytes: ...
+def image_signature_payload(image_reference: str, image_digest: str) -> bytes: ...   # simulator-internal bytes each
+                                               # dev signer signs; non-normative, never read by a client (D-016)
+# Every image_signatures entry the minter emits: {"key_id": signer.key_id, "signature": padded std base64 of
+# signer.sign(payload), "signature_algorithm": signer.algorithm}; signer.key_id == sha256(signer.spki_der).hexdigest().
 def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration: ...
 class TokenMinter:
     def __init__(self, keys: SimKeys, launch: LaunchConfig, *, issuer: str = SIM_ISSUER,
@@ -331,17 +334,14 @@ No subcommand ever prints key material.
 
 ```ts
 // capabilities.ts additions [CI-2]
-export type SignatureAlgorithm = "RSASSA_PKCS1V15_SHA256" | "RSASSA_PSS_SHA256";
+export type SignatureAlgorithm = "RSASSA_PKCS1V15_SHA256";     // JWS RS256 only (ADR 0009); no image-signature use (D-016)
 export interface RsaPublicJwk { readonly kty: "RSA"; readonly n: string; readonly e: string }
-export type PublicKeyInput =
-    | { readonly format: "spki"; readonly der: Bytes }
-    | { readonly format: "jwk"; readonly jwk: RsaPublicJwk };
+export type PublicKeyInput = { readonly format: "jwk"; readonly jwk: RsaPublicJwk };
 // added to interface Crypto:
 //   verifySignature(algorithm: SignatureAlgorithm, key: PublicKeyInput, data: Bytes, signature: Bytes): Promise<boolean>;
 // Resolves false on mismatch. Rejects CapabilityError("INVALID_ARGUMENT") for an unparseable key or an RSA
-// modulus < 2048 bits, CapabilityError("UNSUPPORTED_ALGORITHM") for any other algorithm. PSS salt length 32.
-// Modulus length is read from the imported CryptoKey; no project-owned ASN.1 parsing. ECDSA is deliberately
-// absent (DER→raw conversion would be project code). JWS RS256 needs RSA only; image-signature use depends on F-12.
+// modulus < 2048 bits, CapabilityError("UNSUPPORTED_ALGORITHM") for any other algorithm.
+// Modulus length is read from the imported CryptoKey; no project-owned ASN.1 parsing.
 
 // encoding.ts (final)
 export class EncodingError extends Error {}
@@ -373,10 +373,10 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
 declare const parsedProfile: unique symbol;
 declare const verified: unique symbol;
 export type ProfileKind = "production" | "development";
-export type SignerAlgorithm = SignatureAlgorithm | "ECDSA_P256_SHA256";   // FACTS F-11 set (verified); profile accepts all
-export interface SignerKey { readonly key_id: string; readonly algorithm: SignerAlgorithm; readonly spki: Bytes }
-// key_id = lowercase hex SHA-256(spki DER) (F-11). Whether spki/algorithm are used at verify time depends on the
-// F-12 human decision (ARCHITECTURE "Signer keys and the F-12 dependency").
+export type SignerAlgorithm = "RSASSA_PSS_SHA256" | "RSASSA_PKCS1V15_SHA256" | "ECDSA_P256_SHA256";   // FACTS F-11
+export interface SignerKey { readonly key_id: string; readonly algorithm: SignerAlgorithm }   // D-016
+// key_id = signer fingerprint: lowercase hex SHA-256 of the signer's SPKI DER (F-11), ^[0-9a-f]{64}$, unique.
+// algorithm = the one algorithm that signer uses. No public-key bytes in the profile.
 export interface TrustProfile {                       // spec §15.4 fields + [CI-4] additions; only parseTrustProfile creates one
     readonly [parsedProfile]: true;
     readonly profile_version: 1; readonly profile_kind: ProfileKind; readonly token_type: "OIDC";
@@ -402,7 +402,7 @@ export class AttestationError extends Error {        // message === `${check}: $
     constructor(readonly code: AttestationErrorCode, readonly check: AttestationCheckId)
 }
 export type TrustProfileErrorCode = "INVALID_PROFILE" | "UNSUPPORTED_TOKEN_TYPE" | "UNSUPPORTED_ALGORITHM";
-export class TrustProfileError extends Error {       // message === `${field}: ${code}`; field is a JSON path like "signer_keys[0].spki"
+export class TrustProfileError extends Error {       // message === `${field}: ${code}`; field is a JSON path like "signer_keys[0].key_id"
     constructor(readonly code: TrustProfileErrorCode, readonly field: string)
 }
 export interface VerifierLimits { readonly maxTokenBytes: number; readonly maxDiscoveryBytes: number; readonly maxJwksBytes: number }
@@ -433,10 +433,9 @@ export function checkNonce(t: ParsedToken, e: ExpectedAttestation): void;       
 export function checkPlatform(t: ParsedToken, p: TrustProfile): void;                                // §6.6
 export function isDebugMode(t: ParsedToken): boolean;                                                 // §6.6 / SR-12
 export function checkSupportAttributes(t: ParsedToken): void;                                        // §6.7
-export function imageSignaturePayload(imageReference: string, imageDigest: string): Bytes;           // FACTS F-12
-export function checkImage(t: ParsedToken, p: TrustProfile, e: ExpectedAttestation,
-    deps: VerifierDeps): Promise<readonly string[]>;   // §6.8. `e` kept for F-12 outcome (b) payload evidence;
-                                                       // signature-byte verification (T-13) blocked on F-12
+export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[];
+    // §6.8 per D-016; exact steps in ARCHITECTURE "Image check". Sync; no crypto, no fetch. Returns the distinct
+    // counted key_ids sorted ascending. Signature bytes are never decoded or verified.
 export function launchConfigHash(v: readonly string[] | ReadonlyMap<string, string>,
     crypto: Pick<Crypto, "sha256">): Promise<string>;                                                 // §A
 export function checkLaunchConfig(t: ParsedToken, p: TrustProfile, deps: VerifierDeps): Promise<void>; // §6.9
@@ -462,7 +461,7 @@ Exactly these keys (spec §15.4 names, plus `profile_version`, `profile_kind`, `
  "jwks_origin": "http://127.0.0.1:8791",
  "expected_audience": "https://example.test/tee", "token_max_age_s": 3600,
  "allowed_hwmodels": ["SIMULATED"], "allowed_digests": ["sha256:<64 lowercase hex>"],
- "signer_keys": [{"key_id": "<64 lowercase hex>", "algorithm": "RSASSA_PSS_SHA256", "spki": "<RFC 4648 §4 base64 of SPKI DER>"}],
+ "signer_keys": [{"key_id": "<64 lowercase hex = SHA-256 of signer SPKI DER>", "algorithm": "RSASSA_PSS_SHA256"}],
  "signers_required": 2, "expected_args_hash": "<64 lowercase hex>", "expected_env_hash": "<64 lowercase hex>"}
 ```
 
@@ -506,7 +505,8 @@ unless it says otherwise. `altered` lists dotted claim paths that differ from th
 | 21 | `digest_unknown` | `image_digest` = `sha256:` + hex SHA-256(`b"teecustody-sim unknown image"`); signatures unchanged | image | CLAIM_MISMATCH | `submods.container.image_digest` | false |
 | 22 | `signatures_insufficient` | keep only the first `signers_required − 1` image signatures | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
 | 23 | `signer_unknown` | replace the last image signature with the unknown signer's signature over the same payload | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
-| 24 | `image_signature_corrupted` | flip bit 0 of the first decoded byte of the first image signature | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
+| 24 | `signature_algorithm_mismatch` | set the first image signature's `signature_algorithm` to `RSASSA_PKCS1V15_SHA256` (the profile says `RSASSA_PSS_SHA256`) (D-016; replaces `image_signature_corrupted`, which a client cannot detect) | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
 | 25 | `args_altered` | append `"--debug"` to `args` | launch_config | CLAIM_MISMATCH | `submods.container.args` | false |
 | 26 | `env_altered` | add `"TEECUSTODY_SIM_ALTERED": "1"` to `env` | launch_config | CLAIM_MISMATCH | `submods.container.env` | false |
 | 27 | `debug_bad_signature` | `dbgstat` = `enabled`, then corrupt as in #3 | signature | UNTRUSTED_SIGNER | `dbgstat` | false |
+| 28 | `key_id_duplicated` | set the last image signature's `key_id` to the first one's (signed by the first signer; duplicates count once) (D-016) | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
