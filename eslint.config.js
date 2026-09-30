@@ -21,7 +21,11 @@ export default tseslint.config(
         extends: [tseslint.configs.strictTypeChecked],
         languageOptions: {
             parserOptions: {
-                projectService: true,
+                project: [
+                    "packages/teecustody-core/tsconfig.json",
+                    "packages/teecustody-core/tsconfig.test.json",
+                    "tests/tsconfig.json",
+                ],
                 tsconfigRootDir: import.meta.dirname,
             },
         },
