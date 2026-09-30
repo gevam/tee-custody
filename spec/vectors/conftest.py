@@ -13,10 +13,12 @@ from typing import Any
 
 import pytest
 
-from teecustody.wire import DecodeLimits
+from teecustody.wire import DecodeLimits, decode
 
 VECTORS_DIR = Path(__file__).parent
 CANONICAL_CBOR_PATH = VECTORS_DIR / "wire" / "canonical-cbor.json"
+ATTESTATION_SUITE_PATH = VECTORS_DIR / "attestation" / "suite.cbor"
+SUITE_LIMITS = DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384)
 
 
 @cache
@@ -41,3 +43,15 @@ def canonical_vectors() -> dict[str, Any]:
 @pytest.fixture(scope="session")
 def canonical_limits(canonical_vectors: dict[str, Any]) -> DecodeLimits:
     return DecodeLimits(**canonical_vectors["limits"])
+
+
+@pytest.fixture(scope="session")
+def suite_bytes() -> bytes:
+    return ATTESTATION_SUITE_PATH.read_bytes()
+
+
+@pytest.fixture(scope="session")
+def suite(suite_bytes: bytes) -> dict[str, Any]:
+    decoded = decode(suite_bytes, SUITE_LIMITS)
+    assert isinstance(decoded, dict)
+    return decoded
