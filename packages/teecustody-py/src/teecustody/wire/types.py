@@ -1,7 +1,7 @@
 """Canonical wire value types and errors."""
 
 from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import StrEnum
 from typing import Final
 
 PROTO: Final = "tee-chan-v1"
@@ -19,11 +19,11 @@ class DecodeLimits:
 
 
 class WireErrorCode(StrEnum):
-    TOO_LARGE = auto()
-    MALFORMED = auto()
-    NONCANONICAL = auto()
-    UNSUPPORTED_TYPE = auto()
-    LIMIT_EXCEEDED = auto()
+    TOO_LARGE = "TOO_LARGE"
+    MALFORMED = "MALFORMED"
+    NONCANONICAL = "NONCANONICAL"
+    UNSUPPORTED_TYPE = "UNSUPPORTED_TYPE"
+    LIMIT_EXCEEDED = "LIMIT_EXCEEDED"
 
 
 class WireError(Exception):

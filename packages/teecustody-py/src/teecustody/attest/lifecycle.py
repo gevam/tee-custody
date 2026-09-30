@@ -1,16 +1,16 @@
 """Attestation token lifecycle: start, current token and scheduled refresh."""
 
 from collections.abc import Callable
-from enum import StrEnum, auto
+from enum import StrEnum
 
 from teecustody.attest.ports import AttestationToken, Launcher
 from teecustody.obs import AllowListedLogger
 
 
 class RefreshOutcome(StrEnum):
-    NOT_DUE = auto()
-    REFRESHED = auto()
-    FAILED_KEPT_CURRENT = auto()
+    NOT_DUE = "NOT_DUE"
+    REFRESHED = "REFRESHED"
+    FAILED_KEPT_CURRENT = "FAILED_KEPT_CURRENT"
 
 
 class AttestationLifecycle:

@@ -2,24 +2,37 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
+import inspect
 import io
 import logging
 from collections.abc import Callable
+from enum import StrEnum
 
 import pytest
 
 from teecustody.attest import (
+    DEFAULT_LAUNCHER_SOCKET,
     AttestationLifecycle,
     AttestationToken,
     ConfidentialSpaceLauncher,
+    LauncherErrorCode,
+    RefreshOutcome,
     identity_nonce,
     launcher_nonce,
     parse_token_metadata,
 )
 from teecustody.channel import IdentityKey
-from teecustody.obs import FieldValue, JsonLogFormatter, configure_logging, get_logger
-from teecustody.wire import DecodeLimits, decode, encode
+from teecustody.obs import (
+    ALLOWED_FIELDS,
+    OUTCOME_PATTERN,
+    FieldValue,
+    JsonLogFormatter,
+    configure_logging,
+    get_logger,
+)
+from teecustody.wire import PROTO, DecodeLimits, WireErrorCode, decode, encode
 
 PUBLIC_NAMES: dict[str, tuple[str, ...]] = {
     "teecustody.attest": (
@@ -172,3 +185,106 @@ def test_stub_raises_not_implemented_naming_its_owner(
     with pytest.raises(NotImplementedError) as raised:
         call()
     assert str(raised.value) == owner
+
+
+def test_constants_equal_api() -> None:
+    assert PROTO == "tee-chan-v1"
+    assert DEFAULT_LAUNCHER_SOCKET == "/run/container_launcher/teeserver.sock"
+    assert frozenset({"client_id", "request_id", "session_id", "prekey_id", "epoch"}) == (
+        ALLOWED_FIELDS
+    )
+    assert isinstance(ALLOWED_FIELDS, frozenset)
+    assert OUTCOME_PATTERN.pattern == r"^[A-Z][A-Z0-9_]{0,63}$"
+
+
+@pytest.mark.parametrize(
+    ("enum", "values"),
+    [
+        (LauncherErrorCode, ["UNAVAILABLE", "INVALID_CONFIGURATION", "TOKEN_REJECTED"]),
+        (RefreshOutcome, ["NOT_DUE", "REFRESHED", "FAILED_KEPT_CURRENT"]),
+        (
+            WireErrorCode,
+            ["TOO_LARGE", "MALFORMED", "NONCANONICAL", "UNSUPPORTED_TYPE", "LIMIT_EXCEEDED"],
+        ),
+    ],
+)
+def test_enum_values_equal_api(enum: type[StrEnum], values: list[str]) -> None:
+    assert [(member.name, member.value) for member in enum] == [(v, v) for v in values]
+
+
+@pytest.mark.parametrize(
+    ("cls", "fields"),
+    [
+        (AttestationToken, ["value", "issued_at", "expires_at"]),
+        (DecodeLimits, ["max_bytes", "max_depth", "max_items"]),
+    ],
+)
+def test_frozen_dataclass_fields_equal_api(cls: type, fields: list[str]) -> None:
+    params = cls.__dataclass_params__
+    assert params.frozen
+    assert [f.name for f in dataclasses.fields(cls)] == fields
+    assert all(f.default is dataclasses.MISSING for f in dataclasses.fields(cls))
+
+
+P = inspect.Parameter
+POS = P.POSITIONAL_OR_KEYWORD
+KW = P.KEYWORD_ONLY
+EMPTY = P.empty
+
+
+@pytest.mark.parametrize(
+    ("func", "params"),
+    [
+        (identity_nonce, [("identity_public_key", POS, EMPTY)]),
+        (launcher_nonce, [("identity_nonce", POS, EMPTY)]),
+        (
+            parse_token_metadata,
+            [
+                ("token", POS, EMPTY),
+                ("audience", KW, EMPTY),
+                ("expected_nonce", KW, EMPTY),
+                ("max_token_bytes", KW, EMPTY),
+            ],
+        ),
+        (
+            ConfidentialSpaceLauncher.__init__,
+            [
+                ("self", POS, EMPTY),
+                ("socket_path", POS, DEFAULT_LAUNCHER_SOCKET),
+                ("timeout_s", KW, EMPTY),
+                ("max_response_bytes", KW, EMPTY),
+            ],
+        ),
+        (
+            ConfidentialSpaceLauncher.get_attestation_token,
+            [
+                ("self", POS, EMPTY),
+                ("audience", POS, EMPTY),
+                ("token_type", POS, EMPTY),
+                ("identity_nonce", POS, EMPTY),
+            ],
+        ),
+        (
+            AttestationLifecycle.__init__,
+            [
+                ("self", POS, EMPTY),
+                ("launcher", POS, EMPTY),
+                ("audience", KW, EMPTY),
+                ("token_type", KW, EMPTY),
+                ("identity_public_key", KW, EMPTY),
+                ("refresh_margin_s", KW, EMPTY),
+                ("clock", KW, EMPTY),
+                ("logger", KW, EMPTY),
+            ],
+        ),
+        (encode, [("value", POS, EMPTY)]),
+        (decode, [("data", POS, EMPTY), ("limits", POS, EMPTY)]),
+        (get_logger, [("name", POS, EMPTY)]),
+        (configure_logging, [("stream", POS, EMPTY), ("level", POS, logging.INFO)]),
+    ],
+)
+def test_signature_equals_api(
+    func: Callable[..., object], params: list[tuple[str, object, object]]
+) -> None:
+    actual = [(p.name, p.kind, p.default) for p in inspect.signature(func).parameters.values()]
+    assert actual == params

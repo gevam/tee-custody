@@ -1,14 +1,14 @@
 """Launcher port (ARCHITECTURE "Attestation and launcher")."""
 
 from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import StrEnum
 from typing import Protocol
 
 
 class LauncherErrorCode(StrEnum):
-    UNAVAILABLE = auto()
-    INVALID_CONFIGURATION = auto()
-    TOKEN_REJECTED = auto()
+    UNAVAILABLE = "UNAVAILABLE"
+    INVALID_CONFIGURATION = "INVALID_CONFIGURATION"
+    TOKEN_REJECTED = "TOKEN_REJECTED"  # noqa: S105 - an error code
 
 
 class LauncherError(Exception):
