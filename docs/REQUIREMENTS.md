@@ -153,7 +153,8 @@ These requirements capture the structural controls needed by the threat model. A
     - (f) An uppercase-hex, 63- or 65-character, or `sha256:`-prefixed `key_id` does not match.
     - (g) An entry with a missing or non-string `key_id`/`signature`/`signature_algorithm` is skipped.
     - (h) `image_signatures` absent → `CLAIM_MISSING`; not an array → `CLAIM_MISMATCH`.
-    - (i) `parseTrustProfile` rejects a `key_id` that is not lowercase hex SHA-256 of its `spki`.
+    - (i) `parseTrustProfile` rejects a signer entry that is not exactly `{key_id, algorithm}`, a `key_id` that is not exactly 64 lowercase hex characters, a duplicate `key_id`, or an `algorithm` outside the allowed set.
+    - The profile tool derives each `key_id` as SHA-256 of the signer's SPKI DER at build time. Its test uses a known SPKI and expected hex, and it never accepts a caller-supplied `key_id`.
     - The client never calls `verifySignature` for image signatures.
     - The simulator issuer lists only `key_id`s whose signatures it verified.
 
@@ -200,7 +201,7 @@ These requirements capture the structural controls needed by the threat model. A
   - (ii) the read-only audit-reader role.
   
   It holds no admin, IAM-set, bucket-update, retention, delete, or sink/log-bucket permission there. Release owners and signers hold create-only on `release/` and no workload-project admin role.
-- Test description: automated IAM policy checks compare deployed roles with reviewed allow-lists; negative integration tests attempt cross-tenant storage/KMS/queue operations and build-job access to release signing credentials. The policy check evaluates the cross-project rule above exactly as written, including a fixture where a workload-project admin is granted `storage.buckets.update` in the Audit Project, which must fail the check. It also asserts that no principal holds both custody-key administration and decrypt (spec §7.3).
+- Test description: automated IAM policy checks compare deployed roles with reviewed allow-lists; negative integration tests attempt cross-tenant storage/KMS/queue operations and build-job access to release signing credentials. The policy check evaluates the cross-project rule above exactly as written, including a fixture where a workload-project admin is granted `storage.buckets.update` in the Audit Project, which must fail the check. It also asserts that no principal holds both custody-key administration and decrypt (spec §7.3). While FACTS F-16 is unconfirmed (T-22), the policy check fails if the custody-key WIP attribute condition lacks the `submods.container.image_digest in ALLOWED_DIGESTS` clause. A signature-only condition is rejected.
 
 **SR-9 [INC-1 onward] Dependency admission.** Runtime and build dependencies shall satisfy the OSI license, 18-month release, configured allow-list/forbidden-package, exact crypto version/hash, and scanner requirements in `framework.yaml`. Crypto dependency additions or replacements require the specified ADR and Security Architect sign-off before lock-file approval.
 - Given a dependency graph includes an unapproved, forbidden, stale, unlicensed, or incorrectly pinned package, when CI evaluates it, then the build fails before packaging or release.

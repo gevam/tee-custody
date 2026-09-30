@@ -1,40 +1,43 @@
 # Status — tee-custody
 
-Updated: 2026-09-30 during G4 (INC-1) by Orchestrator
+Updated: 2026-09-30 at G4 (INC-1 Wave 0) by Orchestrator
 
 ## Where we are
-Stage: INC-1 work breakdown — G4 blocked on contract issues
-Last gate passed: G3   Next gate: G4
+Stage: INC-1 wave 0 implementation
+Last gate passed: G4 (Wave 0; D-018 — Wave 1 re-checked after QA authors acceptance tests)   Next gate: G5
 Increments merged: none
 
 ## Current increment — INC-1 (Attestation foundation)
-18 tasks + V-01 in 4 waves (docs/tasks/INC-1/WAVES.md); committed on `main` (dd50b4f); V-01 facts verified on branch inc-1/V-01-facts. No engineer started.
+| Task | Wave | Tier | State | Branch | Notes |
+|---|---|---|---|---|---|
+| T-01 Python tooling + API stubs | 0 | STRONG | in-progress | inc-1/T-01-py-tooling | |
+| T-02 TS tooling + Core stubs | 0 | STRONG | in-progress | inc-1/T-02-ts-tooling | |
+| T-03 Wire binding + vectors harness | 0 | STRONG | in-progress | inc-1/T-03-wire-binding | Human approval before merge (spec/wire) |
+| V-01 Confidential Space facts | 0 | STRONG | F-01..F-15 done; F-16 re-run in progress | inc-1/V-01-facts | |
+| T-04..T-14 | 1 | STRONG/MID | not started | — | Needs QA acceptance tests first |
+| T-15..T-17 | 2 | STRONG | not started | — | |
+| T-18 vectors generation | 3 | FAST | not started | — | Human approval before merge (spec/vectors) |
 
-QA: not-started (authors after Wave 0)
+QA: not-started (authors after Wave 0 merges)
 Reviews: —
 
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
 |---|---|---|---|---|
-| ADR 0009 (JWS) / ADR 0010 (TS CBOR) sign-off | Wave 0 | Security Architect | 2026-09-30 | Review in progress |
-| F-12 design finalization (D-016 option a) | T-13, Wave 0 types | Architect | 2026-09-30 | In progress |
-| Contract amendments (CI rulings, D-016, V-01 rows) | G4 | Tech Lead | 2026-09-30 | After the two above |
+| — | | | | |
 
 ## Open questions for the human
 | Id | Question | Blocking? | Options | Recommendation |
 |---|---|---|---|---|
-| INC-4 VSS | Approve the concrete Feldman VSS / Ristretto255 proposal if it needs a constraint deviation or crypto dependency change | No, before INC-4 | Review then | Decide at the Security Architect review |
-| framework gap | `sdlc/roles/_security-constraints.md` is referenced by framework.yaml but missing; Orchestrator passes the spec explicitly meanwhile | No | Add the fragment / ignore | Add it when convenient |
-| spec/wire | INC-1 creates (T-03, T-18) `spec/wire` CDDL and `spec/vectors`; every such change is always-human | No, at INC-1 merge | Approve at G7/G8 | Review the INC-1 wire PR before merge |
+| spec/wire | Approve T-03's `spec/wire` + `spec/vectors` content (always-human) | Yes, for T-03 merge | Approve / request changes | Summary comes to you when T-03 reports |
+| INC-4 VSS | Approve the concrete Feldman VSS / Ristretto255 proposal if it needs a deviation or crypto dependency change | No, before INC-4 | Review then | Decide at Security Architect review |
+| framework gap | `sdlc/roles/_security-constraints.md` referenced by framework.yaml but missing; Orchestrator passes the spec explicitly | No | Add fragment / ignore | Add when convenient |
 
-## Decisions this stage
-- D-005/D-006: G3 findings routed to Architect twice; closed in re-review 2.
-- D-007: audit may carry actor_client_id, subject_client_id, recovery_id (human, §11 interpretation).
-- D-008: `recover_cancel` reserved. D-009: INCREMENTS.md is the sole increment source (blocker closed).
-- D-010: human accepted residual risks T-19 (High), T-13, T-01, T-15, T-17, T-05, T-20.
-- D-011: T-21 mitigated by a host admission hook in INC-4. D-012: `count` on aggregate audit records.
-- D-013: G3 passed. D-014: standing authority for traceability coverage columns. D-015: test/coverage commands include tests/ and teecustody_sim.
-- D-016: constraint-deviation (human): §6.8 satisfied via Google-verified key_ids. D-017: CI-1..CI-10 rulings accepted.
+## Decisions this increment
+- D-014: standing authority for traceability coverage columns. D-015: test/coverage commands cover tests/ and teecustody_sim.
+- D-016: constraint-deviation (human) — §6.8 via Google-verified key_ids (T-22, Low residual).
+- D-017: CI-1..CI-10 rulings; ADR 0009 (own RS256 JWS framing) and ADR 0010 (own TS CBOR codec, replaces cbor-x) — both Accepted by Security Architect.
+- D-018: G4 per wave; Wave 0 passed.
 
 ## Debt
 Open entries: 0   Expired-unscheduled: 0
@@ -42,6 +45,8 @@ Open entries: 0   Expired-unscheduled: 0
 ## Spend
 | Role | Tokens this increment | Tokens total | Budget |
 |---|---:|---:|---|
-| Security Architect | ~200k (G3 re-reviews) | not instrumented before this session | Unlimited |
-| Architect | ~195k (G3 fixes) | not instrumented before this session | Unlimited |
-| Total | ~395k this session | not instrumented | Unlimited |
+| Tech Lead | ~580k | ~580k | Unlimited |
+| Architect | ~450k | ~645k | Unlimited |
+| Security Architect | ~260k | ~460k | Unlimited |
+| Engineers (V-01) | ~105k | ~105k | Unlimited |
+| Total (this session, approx.) | ~1.4M | ~1.8M | Unlimited |
