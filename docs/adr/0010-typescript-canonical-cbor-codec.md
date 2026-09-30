@@ -1,6 +1,6 @@
 # ADR-0010: TypeScript canonical CBOR codec is project-owned; `cbor-x` is not used
 
-Status: Proposed — pending Security Architect sign-off   Date: 2026-09-30   Author: architect   (INC-1 CONTRACT_ISSUE CI-10; supersedes INC-2 verification V-2.1)
+Status: Accepted — Security Architect sign-off 2026-09-30 (test conditions: THREAT_MODEL.md review log 2026-09-30; SR-3)   Date: 2026-09-30   Author: architect   (INC-1 CONTRACT_ISSUE CI-10; supersedes INC-2 verification V-2.1)
 
 ## Context
 Core's use of CBOR differs by increment:

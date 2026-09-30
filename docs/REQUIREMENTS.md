@@ -136,6 +136,26 @@ These requirements capture the structural controls needed by the threat model. A
 - Given arbitrary, altered, or cross-client route IDs at the reference gateway, when ciphertext is relayed or polled, then route possession does not establish identity or authorize a workload operation; independent client attestation and authenticated protocol checks remain required.
 - Given missing, invalid, expired, or mismatched workload attestation, client protocol authentication, or production workload service identity, when the corresponding verifier or adapter boundary is reached, then the check fails before trust establishment, operation dispatch, or protected service access.
 - Test description: integration-test gateway routes without caller credentials and verify the gateway only performs bounded ciphertext relay, with route IDs treated solely as routing hints. Test clients against altered/missing workload attestation and authenticated protocol data; test workload dispatch to ensure route IDs cannot substitute for authenticated identity; verify production-adapter calls fail without the workload service identity. Exercise configured rate, size, and polling limits as specified by SR-4.
+  - Token JWS (ADR 0009), in addition to the ADR's own test list:
+    - Discovery `issuer` differs from the profile → `UNTRUSTED_SIGNER`.
+    - `jwks_uri` origin differs from `jwks_origin` → `UNTRUSTED_SIGNER`. Cover `http:`, a different port, userinfo, the suffix host `https://www.googleapis.com.evil.test`, and a path-only difference that still passes.
+    - A cross-origin redirect on either fetch → `UNTRUSTED_SIGNER`.
+    - Oversized or non-JSON discovery/JWKS documents → `UNTRUSTED_SIGNER`.
+    - Candidate filtering: matching `kid` with `kty` EC, `use` `enc`, `alg` `RS384`, missing `n`/`e`, or a duplicate `kid` → `UNTRUSTED_SIGNER`.
+    - Every header-rule failure asserts the Fetcher was never called.
+    - A production profile with `http:` discovery/JWKS URLs, and a development profile with non-loopback `http:` URLs, are rejected by `parseTrustProfile`.
+  - Image signer threshold (D-016, T-22), all with the `image_digest` on the allow-list:
+    - (a) `signers_required` distinct matching `key_id`s → accept.
+    - (b) One fewer → `UNTRUSTED_SIGNER`.
+    - (c) The same matching `key_id` repeated `signers_required` times counts once → `UNTRUSTED_SIGNER`.
+    - (d) Unknown `key_id`s are ignored and do not count.
+    - (e) A matching `key_id` whose `signature_algorithm` differs from the profile key's `algorithm`, or is outside the allowed set, does not count.
+    - (f) An uppercase-hex, 63- or 65-character, or `sha256:`-prefixed `key_id` does not match.
+    - (g) An entry with a missing or non-string `key_id`/`signature`/`signature_algorithm` is skipped.
+    - (h) `image_signatures` absent → `CLAIM_MISSING`; not an array → `CLAIM_MISMATCH`.
+    - (i) `parseTrustProfile` rejects a `key_id` that is not lowercase hex SHA-256 of its `spki`.
+    - The client never calls `verifySignature` for image signatures.
+    - The simulator issuer lists only `key_id`s whose signatures it verified.
 
 **SR-2 [INC-1 onward] Centralized authorization and tenant isolation.** A single boundary policy shall authorize the authenticated principal, operation, resource owner, epoch, and pending recovery state before dispatch or backend access. Adapters shall enforce tenant-scoped resource keys as defense in depth. Host application authorization remains host-owned and shall not be implied by successful library authentication.
 - Given an authenticated client or service principal, when it requests an operation or resource outside its tenant, role, epoch, or pending recovery, then the central policy rejects it before handler invocation or secret access.
@@ -151,6 +171,10 @@ These requirements capture the structural controls needed by the threat model. A
 **SR-3 [INC-1 onward] Validation at every trust boundary.** Every external or less-trusted boundary shall apply strict typed/schema validation and configured size, depth, count, and time bounds before domain processing. Canonical wire parsing shall follow the normative CDDL and reject noncanonical, unknown-invalid, truncated, or oversized values without fallback. Cloud adapter responses, simulator inputs, CLI arguments, host hooks, configuration, and browser capability responses shall be validated before use.
 - Given malformed, noncanonical, out-of-range, oversized, or structurally inconsistent input at any boundary, when it is parsed, then processing fails closed before state mutation or expensive unbounded work.
 - Test description: boundary-focused negative tests and fuzz/property tests exercise every parser/adapter contract, including truncated CBOR, excessive nesting/length/count, invalid IDs/cursors/configuration, and malformed cloud/browser responses; assert stable errors and unchanged state. A static rule (semgrep / eslint no-restricted-imports) fails CI if any module outside the `wire` packages imports or calls the CBOR library's decode functions directly.
+  - TypeScript codec (ADR 0010):
+    - The shared vectors include the integer boundaries 2^53−1, 2^53, 2^64−1, −2^64 (valid) and 2^64, −2^64−1 (invalid).
+    - The Python and TypeScript codecs agree on every case in the ≥ 500-case differential corpus.
+    - Before any INC-2 task decodes untrusted queue or gateway input, a scheduled CI job runs ≥ 100,000 mutation-fuzz cases of `decodeCanonical`, seeded from the valid vectors and the corpus. It asserts that decoding only returns a value or throws `WireError`, that accepted inputs re-encode byte-identically, and that the time per input stays bounded.
 
 **SR-4 [INC-1 onward] Abuse and resource controls.** Public and service ingress shall enforce centralized rate, concurrency, payload-size, polling, and expensive-operation budgets with bounded queues and retries. Limits shall not weaken protocol verification or silently drop custody state transitions.
 - Given a caller exceeds an ingress or operation budget, when further requests arrive, then excess work is rejected or delayed using a bounded policy before it exhausts shared service capacity.

@@ -1,6 +1,6 @@
 # ADR-0009: Attestation token JWS handling (RS256, no JOSE library)
 
-Status: Proposed — pending Security Architect sign-off   Date: 2026-09-30   Author: architect   (INC-1 CONTRACT_ISSUE R-2 / CI-2; WAVES.md)
+Status: Accepted — Security Architect sign-off 2026-09-30 (test conditions: THREAT_MODEL.md review log 2026-09-30; SR-1)   Date: 2026-09-30   Author: architect   (INC-1 CONTRACT_ISSUE R-2 / CI-2; WAVES.md)
 
 ## Context
 Confidential Space OIDC attestation tokens are compact JWS. V-01 verified the following on 2026-09-30:
