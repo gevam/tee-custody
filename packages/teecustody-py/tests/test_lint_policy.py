@@ -120,3 +120,16 @@ def test_crypto_dependency_is_locked_by_exact_version_and_hash(name: str, versio
     assert [entry["version"] for entry in entries] == [version]
     artifacts = [entries[0]["sdist"], *entries[0]["wheels"]]
     assert all(artifact["hash"].startswith("sha256:") for artifact in artifacts)
+
+
+@pytest.mark.parametrize("path", [".teecustody-sim/x", "htmlcov/index.html"])
+def test_simulator_state_and_coverage_html_are_git_ignored(path: str) -> None:
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        ["git", "check-ignore", path],  # noqa: S607 - git from PATH, as in every dev and CI shell
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == path

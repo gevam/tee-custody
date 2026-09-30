@@ -10,3 +10,5 @@ coverage/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.teecustody-sim/
+htmlcov/
