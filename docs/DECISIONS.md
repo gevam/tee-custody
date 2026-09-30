@@ -304,3 +304,48 @@ Participants: Tech Lead
 **Revisit when:** —
 
 **Follow-ups:** —
+
+## D-016 — constraint-deviation: spec §6.8 image-signature check via Google-verified key_ids (INC-1, 2026-09-30)
+
+Type: constraint-deviation
+Chair / decider: Human
+Participants: Orchestrator, Architect, Software Engineer (V-01)
+
+**Requirement:** Spec §6.8 — `submods.container.image_signatures` contains valid signatures from at least `SIGNERS_REQUIRED` of the signer public keys embedded in the client; the client enforces this independently.
+
+**Conflict:** V-01 (FACTS.md F-12, 2026-09-30, docs.cloud.google.com token-claims reference; go-tpm-tools@5d91b303) — the token carries `key_id`, `signature`, `signature_algorithm` per entry, but not the signed Simple Signing payload (an opaque registry blob the launcher forwards to the attestation service). The client cannot re-verify signature bytes from the token.
+
+**Options considered**
+1. Client requires ≥ `SIGNERS_REQUIRED` distinct `key_id`s in the Google-signed token equal to SHA-256(SPKI DER) fingerprints of embedded signer keys, with `signature_algorithm` in the allowed set (the check Google's documented WIP policy uses).
+2. Operator ships payloads with the bundle; client re-verifies signatures and payload digest (spec/wire change).
+3. Digest allow-list only; no client signature check.
+
+**Decision:** Option 1.
+
+**Security impact:** Signature validity is attested by Google's attestation service, which already underwrites every other token claim the client relies on; no new trusted party. The operator/server still cannot satisfy the check without the signers' keys. The client still enforces the signer set and threshold itself ("server enforces it" is not relied on). Residual: a compromised Google verifier could list unverified key_ids — but it could equally forge `image_digest`, so the attack surface is unchanged.
+
+**Dissent:** none
+
+**Revisit when:** Google documents the payload in the token or a verifiable payload retrieval path, or the threat model adds a Google-verifier-compromise threat.
+
+**Follow-ups:** Architect finalizes option 1 in ARCHITECTURE/API (drop option-2-only fields); Security Architect assesses and records in THREAT_MODEL.md; traceability §6.8 row notes D-016 when its test lands (D-014 authority covers Location/Status only).
+
+## D-017 — INC-1 contract rulings and V-01 routing (INC-1, 2026-09-30)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Architect, Tech Lead, Security Architect
+
+**Options considered**
+1. Accept the Architect's CI-1..CI-10 rulings; send ADR 0009 (project-owned RS256 JWS handling over audited RSA primitives) and ADR 0010 (project-owned TS canonical CBOR codec, replacing cbor-x, retiring V-2.1) to Security Architect for sign-off; then Tech Lead amends contracts for the rulings, D-016, and V-01 rows F-03/F-05/F-09/F-11/F-15 using conservative defaults.
+2. Re-open rulings.
+
+**Decision:** Option 1.
+
+**Reasoning:** Rulings resolve every Wave-0 type gap. ADR 0010 replaces an approved crypto-list dependency and ADR 0009 is security-critical parsing: dependency_policy requires ADR + Security Architect sign-off before Wave 0. V-01 non-F-12 rows are resolvable by the Tech Lead without spec change: accept both nonce encodings; nonce length within the intersection of documented ranges; production hwmodel allow-list from documented confidential values (no GCP_SHIELDED_VM); reject `swname`≠CONFIDENTIAL_SPACE and unexpected support attributes.
+
+**Dissent:** none
+
+**Revisit when:** Security Architect rejects either ADR.
+
+**Follow-ups:** G4 re-check after Tech Lead amendment.

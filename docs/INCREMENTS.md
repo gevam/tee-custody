@@ -17,7 +17,7 @@ The sequence and scope below preserve the approved INC-1 through INC-5 baseline 
 
 - SR-12 (client part): `verifyAttestation` reports `ATTESTATION_DEBUG_MODE` to the required `SecurityEventSink` when signature and issuer pass and `dbgstat` is wrong. `teecustody-sim token --alter dbgstat=enabled` drives the test with an in-memory sink and asserts that no token content is reported.
 
-**Contracts introduced:** `Launcher.get_attestation_token`; simulator discovery/JWKS and negative-token/vector CLI contracts; `verifyAttestation` (including the `events: SecurityEventSink` parameter); `SecurityEventSink`/`SecurityEvent`; TrustProfile/ExpectedAttestation/VerifiedAttestation and AttestationError; normative canonical-CBOR/vector/`proto` binding.
+**Contracts introduced:** `Launcher.get_attestation_token`; simulator discovery/JWKS and negative-token/vector CLI contracts; `verifyAttestation` (including the `events: SecurityEventSink` parameter); `SecurityEventSink`/`SecurityEvent`; TrustProfile/ExpectedAttestation/VerifiedAttestation and AttestationError; normative canonical-CBOR/vector/`proto` binding. INC-1 CONTRACT_ISSUE rulings (2026-09-30) also introduce: `VerifierDeps`, `Crypto.verifySignature` (RSA only), `AttestationError.check`, the extended trust-profile fields, `teecustody-sim serve`, RS256-pinned JWS handling (ADR 0009), and the project-owned TypeScript CBOR codec (ADR 0010).
 
 **Out of scope:** FR-4 onward except shared constraints. No WebAuthn vault, session channel, enrollment, custody, cloud production adapters, recovery, or notes app.
 
@@ -39,7 +39,7 @@ The sequence and scope below preserve the approved INC-1 through INC-5 baseline 
 
 | Id | Verify | Pass condition | If it fails |
 |---|---|---|---|
-| V-2.1 | `cbor-x` can encode and decode canonical CBOR per `spec/wire` without ever reaching `new Function`/`eval`, whether through a no-eval entry point or through options that disable record/structure code generation | The `@teecustody/core` bundle scan finds no `new Function`/`eval` from `cbor-x`, and the enforce-mode CSP harness shows zero violations while decoding the vectors | Stop and raise a CONTRACT_ISSUE to the Architect. Never add `'unsafe-eval'`. Replacing `cbor-x` is a crypto-dependency change needing an ADR, Security Architect sign-off and a human decision. |
+| V-2.1 | **Retired (ADR 0010).** Core and Web use the project-owned canonical CBOR codec delivered in INC-1, and no package depends on `cbor-x`. | — | — |
 | V-2.2 | Each target browser honors CSP `script-src` hash sources for external scripts that carry a matching SRI `integrity` attribute | In the headless-browser matrix, a page whose CSP lists only the script's `sha384` hash loads it, and loads nothing else | Record the browser as unsupported, failing closed, in the support matrix next to WebAuthn PRF (PROJECT.md R2). Never add `'self'` or host sources to `script-src`. If this excludes a browser the human expects to support, escalate. |
 
 **Contracts introduced:** signed pre-key bundle and session open; HPKE session-key export boundary; authenticated frame/sequence/replay contract; Queue port and Reference Gateway/Web Transport contracts; WebAuthn PRF and encrypted IndexedDB vault adapter contracts; `AuditSink`/`AuditKey`/`AuditRecord` and the aggregation/cap rules.

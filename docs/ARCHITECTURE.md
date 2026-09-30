@@ -13,7 +13,7 @@ The normative security architecture named by `framework.yaml` controls all secur
 | Requirement | Owning component(s) | Design evidence |
 |---|---|---|
 | FR-1 | Python Workload; Launcher port; Simulator Launcher | Workload obtains and refreshes launcher tokens using its public-identity-key hash as nonce; no inbound listener. |
-| FR-2 | TypeScript Core Attestation Verifier | Explicit trust profile and independent, fail-closed checks for claims, signer, nonce, audience, digest, and validity. |
+| FR-2 | TypeScript Core Attestation Verifier | Explicit trust profile and independent, fail-closed checks for claims, signer, nonce, audience, digest, and validity. JWS handling is pinned to RS256 over the `Crypto` capability (ADR 0009). |
 | FR-3 | Simulator; Vector CLI; Python and TypeScript test adapters | Local socket launcher, loopback OIDC discovery/JWKS, configured signers, negative tokens, shared vectors. |
 | FR-4 | TypeScript Core Channel; Python Workload Channel | Normative signed pre-key bundles, HPKE Base mode, exported session keys, authenticated sequence framing, replay rejection. |
 | FR-5 | Queue port/adapters; Reference Gateway; Web Transport | Publish/pull queue contract, correlation/routing IDs, browser-facing relay; workload remains pull-only. |
@@ -34,7 +34,7 @@ The normative security architecture named by `framework.yaml` controls all secur
 | NFR-4 | Crypto adapters and dependency manifests | RFC 9180 Base only; approved audited implementations; exact version/hash pins; no hand-rolled key agreement, KDF, or primitives. |
 | NFR-5 | TypeScript Core; build configuration | Independent verification always enabled; no skip-verification flag or bypass build. |
 | NFR-6 | Package graph; TypeScript Core | Simulator is not a runtime dependency of libraries; Core accepts platform capabilities through interfaces and has no DOM, `fetch`, or storage dependency. |
-| NFR-7 | Python and TypeScript Wire adapters; Vector CLI | Canonical CBOR per normative CDDL; both implementations consume and emit the same vectors; `proto` and vectors change atomically with wire changes. |
+| NFR-7 | Python and TypeScript Wire adapters; Vector CLI | Canonical CBOR per `spec/wire` (ADR 0002 amendment); both implementations consume and emit the same vectors and a differential corpus; `proto` and vectors change atomically with wire changes. The TypeScript codec is project-owned (ADR 0010). |
 | NFR-8 | Python and TypeScript logging adapters | Structured logs limited to the configured allow-list; never log payloads, keys, shares, nonces, ciphertext, or request bodies. |
 | NFR-9 | All packages | Configured Python 3.12+/Ruff/strict mypy and TypeScript 5+/ESLint/Prettier/strict TypeScript checks; no `any`. |
 | NFR-10 | CI, test suites, review gates | At least 80% new-code line coverage; 100% security-path coverage and a negative test per attestation branch; High/Critical risk blocks absent human acceptance. |
@@ -92,9 +92,15 @@ Launcher.get_attestation_token(
 LauncherError = UNAVAILABLE | INVALID_CONFIGURATION | TOKEN_REJECTED
 ```
 
-`identity_nonce` is the normative hash of the workload public identity key, with algorithm, byte encoding, and token claim mapping taken verbatim from the normative security architecture. `AttestationToken` is an opaque signed-token string plus locally parsed `issued_at` and `expires_at` metadata; parsed claims are untrusted until client verification. Startup fails if a token cannot be obtained. Refresh occurs before expiry using the normative/configured refresh parameters; refresh failure does not replace a still-valid token with an unverified token. The launcher adapter opens only the platform-provided socket and does not bind a listener.
+`identity_nonce` is `SHA-256` of the raw 32-byte Ed25519 identity public key (RFC 8032 encoding), which is spec §5.1 step 2's `H(IK_pub)`: 32 bytes. The launcher request carries it as one nonce string, its lowercase hex encoding (64 ASCII characters). The client compares `eat_nonce` against that same string (CI-7). The workload requests exactly one nonce. The client accepts `eat_nonce` in only two shapes: a string equal to that value, or an array of length 1 whose only element equals it. Anything else is `CLAIM_MISMATCH`. This covers both shapes that V-01 found possible, because F-05 is not documented. The 64-character value fits both of the conflicting documented length bounds in F-03 (10–74 and 8–88). `AttestationToken` is an opaque signed-token string plus locally parsed `issued_at` and `expires_at` metadata; parsed claims are untrusted until client verification. Startup fails if a token cannot be obtained. Refresh occurs before expiry using the normative/configured refresh parameters; refresh failure does not replace a still-valid token with an unverified token. The launcher adapter opens only the platform-provided socket and does not bind a listener.
 
-Simulator HTTP/OIDC surface: `GET /.well-known/openid-configuration` returns issuer, JWKS URI, and supported signing metadata; `GET /jwks` returns public keys for configured development signers. The local launcher socket returns signed tokens. `SIGNERS_REQUIRED` is enforced before startup. Signer private keys stay in simulator configuration and are never emitted by the CLI, issuer responses, logs, or vectors. The simulator supports named negative alterations/omissions for required checks and vector output to an explicit destination directory. Development keys are never accepted by a production trust profile.
+Simulator HTTP/OIDC surface (loopback by default, spec §15.5):
+- `GET /.well-known/openid-configuration` returns `issuer` (`SIM_ISSUER`), `jwks_uri`, and signing metadata, which is `RS256` only.
+- `GET /jwks` returns only the public half of the simulator's **token-signing (issuer) key** (CI-8). Development image-signer public keys are never served by the issuer. They reach the client only through the development trust profile's `signer_keys`.
+- The local launcher socket returns signed tokens.
+- `teecustody-sim serve` runs the issuer and launcher socket without a container, for host-process workloads and credential-free tests (CI-6). `teecustody-sim up` also runs the workload image with the launcher directory mounted.
+
+`SIGNERS_REQUIRED` is enforced before startup. Signer private keys stay in simulator configuration and are never emitted by the CLI, issuer responses, logs, or vectors. The simulator supports named negative alterations/omissions for required checks and vector output to an explicit destination directory. Development keys are never accepted by a production trust profile.
 
 TypeScript verifier:
 
@@ -103,19 +109,74 @@ verifyAttestation(
     token: string,
     profile: TrustProfile,
     expected: ExpectedAttestation,
-    events: SecurityEventSink
+    events: SecurityEventSink,
+    deps: VerifierDeps
 ) -> Promise<VerifiedAttestation>
+
+VerifierDeps   = { crypto: Pick<Crypto, "sha256" | "verifySignature">, fetcher: Fetcher,
+                   now: () => number /* Unix ms */, limits: VerifierLimits }
+VerifierLimits = { maxTokenBytes, maxDiscoveryBytes, maxJwksBytes }   // positive safe integers
 ```
+
+`deps` supplies every platform capability the checks need (CI-1). The verifier holds no state and does no caching. Compact-JWS parsing, header strictness, discovery/JWKS retrieval and key selection follow ADR 0009.
 
 `events` is required, not optional. Debug-mode reporting (SR-12, spec §6.6, §12 line 303) works like this. Once the signature check (§6.1) and the issuer check (§6.2) have both passed under `profile`, Core calls `events.report({ code: "ATTESTATION_DEBUG_MODE", at })` exactly once for that call if `dbgstat` is present and differs from the required value. This happens whatever the outcome of the other checks. Core does not await the report for the verification decision, and it catches and discards a rejected report. The token is still rejected with `CLAIM_MISMATCH`; the error contract below is unchanged. A token that fails signature or issuer verification never triggers a report, so forged tokens cannot raise alerts. The event carries no token content, claims, instance ID or key material.
 
-`TrustProfile` explicitly contains accepted signer/key identifiers, audience, token type, digest allow-list, and validity policy. `ExpectedAttestation` contains the expected identity nonce and workload digest. `VerifiedAttestation` is constructible only on success and contains the validated subject/digest, signer ID, audience, and expiry. Each required predicate has an independently testable check. Failure is `AttestationError` with one of `MALFORMED`, `UNTRUSTED_SIGNER`, `CLAIM_MISSING`, `CLAIM_MISMATCH`, `NOT_YET_VALID`, `EXPIRED`, or `UNSUPPORTED_ALGORITHM`; it exposes no token contents. Any failed/missing check rejects the whole token. There is no verification bypass.
+**`TrustProfile`** (CI-4; JSON form in `docs/tasks/INC-1/API.md` §E). It contains exactly the following fields:
+- `profile_version` (1), `profile_kind` (`production` | `development`) and `token_type` (`OIDC` only);
+- `issuer`, `discovery_url`, `jwks_origin` and `expected_audience`;
+- `token_max_age_s` (spec §14 `TOKEN_MAX_AGE`);
+- `allowed_hwmodels` and `allowed_digests`;
+- `signer_keys` (`{key_id, algorithm, spki}`) and `signers_required`;
+- `expected_args_hash` and `expected_env_hash`.
+
+Only `parseTrustProfile` creates a profile, and it rejects unknown keys at every level. `profile_kind` does one thing: it selects which anchor shapes `parseTrustProfile` accepts.
+- Production requires:
+  - the Google issuer and discovery URL;
+  - `jwks_origin` exactly `https://www.googleapis.com` (FACTS F-07, verified 2026-09-30; this origin differs from the issuer origin);
+  - `allowed_hwmodels` drawn from the F-09 documented values, never including `GCP_SHIELDED_VM`, which is not confidential hardware (spec §2).
+- Development requires a non-Google `https:` issuer and loopback discovery and JWKS URLs, which may be `http:`.
+
+No §6 check function reads `profile_kind`, so the check sequence is identical under both profiles (spec §6 preamble, §15.4, I13).
+
+The two hashes are defined as follows:
+- `expected_args_hash` is the lowercase hex SHA-256 of the canonical CBOR encoding of `submods.container.args`, as an array of text strings in token order.
+- `expected_env_hash` is the same over `submods.container.env`, as a map from text to text.
+
+**Signer keys and the F-12 dependency.** `signer_keys[].algorithm` accepts every value FACTS F-11 documents: `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` and `ECDSA_P256_SHA256`. `key_id` is the lowercase hex SHA-256 of `spki` (F-11). The profile generator derives `key_id` from `spki`. It never copies it from input.
+
+V-01 found that the signed image-signature payload is not in the token (F-12). How spec §6.8 "valid signatures" is met is therefore a pending human constraint-deviation, with two possible outcomes:
+- **(a)** The client requires at least `signers_required` distinct token `key_id`s that match profile keys.
+- **(b)** Payloads travel with the bundle and the client re-verifies them with `Crypto.verifySignature`.
+
+The profile shape supports both outcomes: `spki` and `algorithm` are needed only for (b). `checkImage` keeps its `ExpectedAttestation` parameter, so that (b) can add payload evidence there. That would be an additive change, decided together with F-12. Until F-12 is decided, the §6.8 signature half (T-13) must not be implemented as signature-byte verification.
+
+**`ExpectedAttestation`** is `{ identityNonce }` (32 bytes) only (CI-9, amended). The workload-digest binding in spec §5.2 step 5 is not an input to `verifyAttestation`. Instead, INC-2 bundle verification compares the `image_digest` under each pre-key signature with `VerifiedAttestation.imageDigest`. That value has already been checked against the allow-list.
+
+**`VerifiedAttestation`** can be constructed only on success. It contains `issuer`, `audience`, `imageDigest`, `signerKeyIds` (sorted ascending), `hwmodel`, `issuedAtMs` and `expiresAtMs`.
+
+Each required predicate has an independently testable check. Any failed or missing check rejects the whole token. There is no verification bypass.
+
+**`AttestationError`** is `{ code, check }` (CI-5):
+- `code` is one of `MALFORMED`, `UNTRUSTED_SIGNER`, `CLAIM_MISSING`, `CLAIM_MISMATCH`, `NOT_YET_VALID`, `EXPIRED` or `UNSUPPORTED_ALGORITHM`.
+- `check` is the failing check's ID: `profile`, `token`, `signature`, `issuer`, `audience`, `time`, `nonce`, `platform`, `support_attributes`, `image` or `launch_config`.
+- The message is exactly `"<check>: <code>"`, and the error exposes no token contents.
 
 ### Wire and vectors
 
 Both implementations consume and produce canonical CBOR conforming to the normative CDDL. The protocol identifier is the normative `proto` value. The simulator vector command takes `--out <path>` and writes the same named cases and expected canonical bytes consumed by Python and TypeScript tests; negative vector identifiers identify the single altered/omitted check without embedding signing secrets. A wire change requires, in the same change, updated CDDL, `proto`, generated vectors, and both implementation tests. Vector mismatch is a hard test failure; no permissive decoder fallback is allowed.
 
-The requirement inputs do not include the CDDL or concrete `proto`; these values must be copied from the normative wire specification before INC-1 implementation. They are not to be inferred or invented here.
+**Wire binding (CI-3; ADR 0002 amendment).** `spec/wire` is authored in this repository from the normative spec. Every change to it is human-gated (`escalation.always_human`).
+- `proto` is `"tee-chan-v1"`, from spec §5.3 step 8.
+- Canonical CBOR is RFC 8949 §4.2.1 Core Deterministic Encoding. Only these types are permitted: integers in [−2^64, 2^64−1], byte strings, UTF-8 text strings, arrays, maps with text keys only, `false`, `true` and `null`. Tags, floats, `undefined`, other simple values and indefinite lengths are forbidden. Duplicate keys and trailing bytes are also forbidden.
+- Decoders check the input length before parsing, enforce depth and item limits, and require re-encoding to reproduce the input exactly.
+
+INC-1 authors the canonical rules, `proto`, and the vector-suite CDDL. Protocol-message CDDL (bundle, envelopes, share records) is authored in the increment that first uses it, under the same gate.
+
+**Codecs.**
+- Python uses a project-owned structural pre-scan followed by `cbor2` (T-04).
+- TypeScript uses a project-owned strict codec with no dependency (ADR 0010). It is the single CBOR entry point in Core and Web.
+- Both codecs pass the same shared vectors and a differential corpus generated by the simulator.
 
 ### Queue and gateway
 
@@ -226,6 +287,18 @@ interface HpkeReceiverContext {
     destroy(): void;
 }
 
+type SignatureAlgorithm = "RSASSA_PKCS1V15_SHA256" | "RSASSA_PSS_SHA256";
+
+interface RsaPublicJwk {
+    readonly kty: "RSA";
+    readonly n: string;
+    readonly e: string;
+}
+
+type PublicKeyInput =
+    | { readonly format: "spki"; readonly der: Bytes }
+    | { readonly format: "jwk"; readonly jwk: RsaPublicJwk };
+
 type SecurityEventCode = "ATTESTATION_DEBUG_MODE";
 
 interface SecurityEvent {
@@ -241,6 +314,7 @@ interface Crypto {
     randomBytes(length: number): Bytes;
     sha256(data: Bytes): Promise<Bytes>;
     verifyEd25519(publicKey: Bytes, data: Bytes, signature: Bytes): Promise<boolean>;
+    verifySignature(algorithm: SignatureAlgorithm, key: PublicKeyInput, data: Bytes, signature: Bytes): Promise<boolean>;
     setupHpkeSender(recipientPublicKey: Bytes, info: Bytes): Promise<HpkeSenderContext>;
     setupHpkeReceiver(recipientPrivateKey: Bytes, encapsulatedKey: Bytes, info: Bytes): Promise<HpkeReceiverContext>;
     aes256GcmEncrypt(key: Bytes, nonce: Bytes, aad: Bytes, plaintext: Bytes): Promise<Bytes>;
@@ -252,11 +326,21 @@ interface Crypto {
 
 `ShareVault` scopes each value by `client`. `get` returns `undefined` only when no share is stored; otherwise it returns the 32-byte share after user presence is confirmed. `set` requires user presence, stores no plaintext, and does not retain the caller's mutable buffer. `clear` removes the scoped value and is idempotent when absent. Missing user presence rejects with `USER_PRESENCE_REQUIRED`; unavailable or unsupported protected storage rejects with `UNAVAILABLE` or `UNSUPPORTED`; invalid share length rejects with `INVALID_ARGUMENT`; authentication/decryption failure rejects with `AUTHENTICATION_FAILED`. No operation falls back to weaker storage.
 
-`Fetcher.get` performs HTTPS GET only. The Core supplies discovery/JWKS URLs from its configured trust profile and validates that each URL has the required trusted origin; the adapter must not follow a redirect to another origin. It returns the HTTP status and raw response bytes without interpreting JSON. Invalid URLs reject with `INVALID_ARGUMENT`, network failures with `UNAVAILABLE`, and non-success HTTP statuses with `HTTP_ERROR`; malformed successful discovery/JWKS data is rejected by the Core as `INVALID_RESPONSE`.
+`Fetcher.get` performs HTTPS GET only, with one exception: an adapter may also permit `http:` to the loopback hosts `127.0.0.1`, `[::1]` and `localhost`. Core requests such a URL only under a development profile, because `parseTrustProfile` rejects non-`https:` discovery and JWKS URLs in production profiles (ADR 0009 rule 9). The Core supplies discovery/JWKS URLs from its configured trust profile and validates that each URL has the required trusted origin; the adapter must not follow a redirect to another origin. It returns the HTTP status and raw response bytes without interpreting JSON. Invalid URLs reject with `INVALID_ARGUMENT`, network failures with `UNAVAILABLE`, and non-success HTTP statuses with `HTTP_ERROR`; malformed successful discovery/JWKS data is rejected by the Core as `INVALID_RESPONSE`.
 
-`SecurityEventSink` is supplied by the host through `TeeClient` configuration `{ trustProfile, transport, vault, securityEvents }`. All four are required, and Core passes `securityEvents` to every `verifyAttestation` call. `report` must not throw synchronously. It may reject with `CapabilityError` (`UNAVAILABLE`, `INTERNAL`), and Core ignores the rejection. Implementations send only `code` and `at`, and never block or alter protocol decisions. `@teecustody/web` provides `BeaconSecurityEventSink(endpoint: string)`. It requires a same-origin `https` endpoint, or a loopback endpoint under the development profile only. It POSTs `{"code":"<code>"}`, sends at most one report per code per 60 s per page, and swallows transport failures. A Node or test sink records events in memory.
+`SecurityEventSink` is supplied by the host through `TeeClient` configuration `{ trustProfile, transport, vault, securityEvents, crypto, fetcher }` (INC-2). All six are required. Core passes `securityEvents` to every `verifyAttestation` call, and builds `VerifierDeps` from `crypto`, `fetcher`, the platform clock and Core's documented default `VerifierLimits` (CI-1). `report` must not throw synchronously. It may reject with `CapabilityError` (`UNAVAILABLE`, `INTERNAL`), and Core ignores the rejection. Implementations send only `code` and `at`, and never block or alter protocol decisions. `@teecustody/web` provides `BeaconSecurityEventSink(endpoint: string)`. It requires a same-origin `https` endpoint, or a loopback endpoint under the development profile only. It POSTs `{"code":"<code>"}`, sends at most one report per code per 60 s per page, and swallows transport failures. A Node or test sink records events in memory.
 
-`Crypto` delegates to approved platform cryptography or maintained audited libraries; it does not implement primitives itself. HPKE setup uses RFC 9180 Base mode with the normative suite; `export` is performed on the same context as `seal`/`open`, and contexts are destroyed after use. Core supplies normative labels and the required 32-byte export length. AES-GCM uses the normative 256-bit keys and 96-bit nonces. Invalid lengths/inputs reject with `INVALID_ARGUMENT`, unavailable functionality with `UNSUPPORTED` or `UNAVAILABLE`, unsupported suites with `UNSUPPORTED_ALGORITHM`, and authentication failure rejects with `AUTHENTICATION_FAILED`; signature mismatch returns `false`. Context destruction is idempotent. Implementations must not expose provider-specific errors or log inputs.
+`Crypto` delegates to approved platform cryptography or maintained audited libraries; it does not implement primitives itself. HPKE setup uses RFC 9180 Base mode with the normative suite; `export` is performed on the same context as `seal`/`open`, and contexts are destroyed after use. Core supplies normative labels and the required 32-byte export length. AES-GCM uses the normative 256-bit keys and 96-bit nonces. Invalid lengths/inputs reject with `INVALID_ARGUMENT`, unavailable functionality with `UNSUPPORTED` or `UNAVAILABLE`, unsupported suites with `UNSUPPORTED_ALGORITHM`, and authentication failure rejects with `AUTHENTICATION_FAILED`; signature mismatch returns `false`. Context destruction is idempotent.
+
+`verifySignature` (CI-2) supports exactly two algorithms:
+- `RSASSA_PKCS1V15_SHA256`, used for JWS `RS256` and image signatures;
+- `RSASSA_PSS_SHA256` with salt length 32, used for image signatures.
+
+It is implemented with WebCrypto or Node `crypto` only. It resolves `false` when the signature does not match. It rejects in these cases:
+- `INVALID_ARGUMENT` for an unparseable key or an RSA modulus under 2048 bits. The modulus length is read from the imported key, and no ASN.1 is parsed in project code.
+- `UNSUPPORTED_ALGORITHM` for any other algorithm.
+
+ECDSA is deliberately absent from `verifySignature`. Verifying it would require project code to convert DER signatures to the raw form WebCrypto expects. JWS `RS256` needs only RSA whatever happens with F-12. Image-signature verification needs this method only under F-12 outcome (b). Under (b), either release image-signing keys are RSA, or an ADR adds ECDSA through audited DER handling (see "Release signer governance"). Under (a), the client never verifies image-signature bytes. Implementations must not expose provider-specific errors or log inputs.
 
 ### Workload operations and session context
 
@@ -587,7 +671,10 @@ CI and cloud workloads build reproducible, unsigned artifacts from pinned source
 2. **Rebuild.** Run the published build recipe. All inputs are pinned by hash in the approved commit: the base image and builder image by digest, and lockfiles with hashes. The recipe sets `SOURCE_DATE_EPOCH` from the commit and has no unpinned network fetch.
 3. **Compare.** Compute the reproduced digest and compare it with the candidate digest, i.e. the CI-reported digest of the artifact proposed for release.
 4. **Refuse on mismatch.** On any difference, stop and do not sign. The mismatch is a release blocker and is reported as a security event.
-5. **Sign on match.** Sign the digest with the signer's image-signing key, using the signature format the Confidential Space image-signature claims require (spec §6.8, §12; format verified against current documentation at INC-5 per spec §0).
+5. **Sign on match.** Sign the digest with the signer's image-signing key, using the signature format the Confidential Space image-signature claims require (spec §6.8, §12; format verified against current documentation at INC-5 per spec §0). The image-signing key algorithm depends on how F-12 is decided:
+- F-11 confirms that Confidential Space accepts `RSASSA_PSS_SHA256`, `RSASSA_PKCS1V15_SHA256` and `ECDSA_P256_SHA256`.
+- Under F-12 outcome (b), the client re-verifies signatures. Keys are then RSA (at least 2048 bits, PSS preferred) unless an ADR adds ECDSA verification to the client (CI-2).
+- Under outcome (a), any F-11 algorithm is acceptable.
 6. **Record.** Write a **verification record** signed with a separate record-signing key held on the same device. It contains: `artifact_kind`, `artifact_name`, `source_commit`, `recipe_version`, `builder_image_digest`, `reproduced_digest`, `candidate_digest`, `match: true`, `signer_id`, `signed_at`, and the signer's build-host OS. Publish it with the release artifacts, and write it to the protected audit bucket as class `RELEASE`.
 
 Signing keys are generated on, and non-exportable from, a hardware token held by the signer (the Security Architect's SHOULD, adopted as the default). Any exception is recorded in the release record. Image-signing keys sign only artifact digests. No two signers use the same build host.
@@ -618,14 +705,14 @@ The web client's §6 checks run in JavaScript served by the web-app origin, whic
 | Library code runs under strict CSP: no `eval`, no `new Function`, no inline script, no string-to-code timers, no dynamic `import()` of computed specifiers | `@teecustody/core` and `@teecustody/web`: ESLint `no-eval`, `no-implied-eval`, `no-new-func` and a `no-restricted-syntax` ban on `import()` with non-literal arguments; a post-build bundle scan over each package's shipped output **including bundled dependencies** | CI on every change from INC-2: the bundle scan fails on `eval(`, `new Function`, `Function(` or a computed `import(`. A headless-browser harness page runs the vault and transport under the strict CSP in enforce mode and asserts zero `securitypolicyviolation` events. |
 | Reproducible build with a published hash of every shipped bundle | `teecustody-profile manifest --dist <dir> --out bundle-manifest.json`. It emits sorted-key JSON `{source_commit, profile_kind, files:[{path, sha384}]}` for every shipped file. The build uses a pinned toolchain, `SOURCE_DATE_EPOCH`, content-hashed file names and no code splitting (dynamic chunks cannot carry SRI). | Two clean CI builds in separate containers produce identical manifests. Before release, signers reproduce and sign the manifest (ADR 0006). |
 | SRI on every script | `teecustody-profile check-html --dist <dir> --manifest bundle-manifest.json --key-pages <glob>`. It fails unless every `<script>` has a `src`, an `integrity="sha384-…"` equal to the manifest hash, and `crossorigin` where needed. Also fails on inline `<script>` bodies, inline event-handler attributes and `javascript:` URLs. | CI static check on the notes-app build; unit tests of the checker with violating fixtures |
-| Strict CSP, with `script-src` restricted to hashed or SRI-tagged resources | `teecustody-profile csp --manifest … --profile trust-profile.json --connect <origin>…` emits the header value: `default-src 'none'; script-src <'sha384-…' per manifest script>; connect-src <gateway origin> <JWKS origin from the trust profile> <security-event origin>; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`. There is no `'self'`, `'unsafe-inline'`, `'unsafe-eval'` or `'strict-dynamic'` in `script-src`. The notes-app static host sends it as an HTTP response header, not a meta tag. | Headless-browser test of the notes-app enroll → put → close → open → get flow with the header in enforce mode, asserting zero violation reports. A unit test asserts the emitted header grammar. |
+| Strict CSP, with `script-src` restricted to hashed or SRI-tagged resources | `teecustody-profile csp --manifest … --profile trust-profile.json --connect <origin>…` emits the header value: `default-src 'none'; script-src <'sha384-…' per manifest script>; connect-src <gateway origin> <discovery-URL origin and JWKS origin from the trust profile> <security-event origin>; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`. There is no `'self'`, `'unsafe-inline'`, `'unsafe-eval'` or `'strict-dynamic'` in `script-src`. The notes-app static host sends it as an HTTP response header, not a meta tag. | Headless-browser test of the notes-app enroll → put → close → open → get flow with the header in enforce mode, asserting zero violation reports. A unit test asserts the emitted header grammar. |
 | No third-party scripts on key-handling pages | `check-html` fails on any script origin other than the page origin on pages matching `--key-pages`. The default is every HTML file. In the notes-app, every page handles keys and all JavaScript is self-hosted. | Same CI static check |
 | State the residual limit | Host Integration README ("Web code delivery" section): the four controls above are **required** for hosts, and the README states that the origin remains trusted for code delivery; published hashes enable detection, not prevention; mobile is the long-term answer. | README review item in the INC-5 release checklist; the traceability row for §13.8 references T-19. |
 
 Hosts must run `manifest`, `check-html` and `csp` in their own build. They must serve the emitted header and must not relax it. The library cannot enforce a host server's headers, so this is a documented host contract. The notes-app demonstrates it. FR-15's anchor check (`teecustody-profile` production check) runs in the same build step.
 
 Verification items for INC-2 (spec §0 line 13), recorded in the task report:
-- `cbor-x` must be used through an entry point or option that never reaches `new Function`. Its record-structure optimization can generate code. If there is no such entry point, raise a CONTRACT_ISSUE, never `'unsafe-eval'`.
+- (Superseded by ADR 0010: no package uses `cbor-x`, so V-2.1 is retired. The bundle scan still covers every bundled dependency. A dependency that reaches `new Function` or `eval` is a CONTRACT_ISSUE and is never met with `'unsafe-eval'`.)
 - Target browsers must honor CSP hash sources for external scripts that carry SRI. Browsers that do not refuse to run the client (fail closed) and are recorded in the support matrix alongside WebAuthn PRF (PROJECT.md R2). Do not add `'self'` as a fallback.
 
 ## Deployment and integrations
@@ -639,7 +726,7 @@ The production deployment has three kinds of project under one folder:
 
 The folder-level audit configuration and aggregated sink are defined at that folder or above. The notes-app documents this setup and scripts it under `examples/notes-app/deploy/`. The scripting tool is an INC-3 task choice and adds no runtime dependency. Cloud Audit Logs, the Cloud Logging sink and log-based alerting in Cloud Monitoring are platform configuration mandated by spec §7.3 line 201, §12 lines 302–303 and §13.6 (D-006). No package calls them at runtime.
 
-Every runtime dependency must use an OSI-approved license and have a release within the configured 18-month window. Cryptographic dependencies are restricted to `cryptography`, `pyhpke` or Tink, `cbor2`, an approved libsodium Ristretto255 binding when required, `@hpke/core`, and `cbor-x`; pins include exact version and hash. Native WebCrypto may be used where the normative contract permits. No dependency implementing forbidden pure-Python/pure-JS primitives is allowed. Adding/replacing a crypto dependency needs an ADR and Security Architect sign-off. Final package/version selection and license/maintenance evidence must be recorded before dependency lock files are approved.
+Every runtime dependency must use an OSI-approved license and have a release within the configured 18-month window. Cryptographic dependencies are restricted to `cryptography`, `pyhpke` or Tink, `cbor2`, an approved libsodium Ristretto255 binding when required, `@hpke/core`, and `cbor-x`; pins include exact version and hash. Native WebCrypto may be used where the normative contract permits. No dependency implementing forbidden pure-Python/pure-JS primitives is allowed. Adding/replacing a crypto dependency needs an ADR and Security Architect sign-off. No JOSE library is used: JWS framing is project-owned and pinned to RS256 over audited RSA primitives (ADR 0009). No TypeScript package uses `cbor-x` (ADR 0010). Final package/version selection and license/maintenance evidence must be recorded before dependency lock files are approved.
 
 ## Testing strategy
 
@@ -683,4 +770,4 @@ CI runs the configured test, lint, strict type, coverage, and security scans wit
 
 ## Design boundary requiring normative binding
 
-This artifact intentionally does not replace the security architecture or wire specification. Before implementation contracts freeze, task contracts must copy the exact claim names, digest/nonce construction, CDDL field schemas and `proto`, cryptographic suites, AAD/key-check formats, and recovery/rotation algorithms from the normative documents. No change under `docs/security/` is required by this architecture. If an implementation reveals a conflict, stop and return it for the required human-controlled security decision; do not edit the normative documents under this task.
+This artifact intentionally does not replace the security architecture or wire specification. Before implementation contracts freeze, task contracts must copy the exact claim names, digest/nonce construction, CDDL field schemas and `proto`, cryptographic suites, AAD/key-check formats, and recovery/rotation algorithms from the normative documents. For the wire format, the normative document is the human-approved `spec/wire` binding (ADR 0002 amendment). External Confidential Space facts are copied from the verified `docs/tasks/INC-N/FACTS.md` record. No change under `docs/security/` is required by this architecture. If an implementation reveals a conflict, stop and return it for the required human-controlled security decision; do not edit the normative documents under this task.

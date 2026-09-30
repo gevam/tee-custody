@@ -2,7 +2,9 @@
 
 Owner: Tech Lead. Wave 0 (T-01, T-02) transcribes this file into code; every later task implements against it.
 Changing anything here after Wave 0 starts is a contract amendment (PROCESS.md §7). Items marked **[CI-n]**
-extend `docs/ARCHITECTURE.md` and are pending Architect ratification (see WAVES.md).
+extend `docs/ARCHITECTURE.md`. The Architect ruled on them on 2026-09-30 and ARCHITECTURE now agrees with this
+file. CI-9 was amended (see §D). JWS handling is governed by ADR 0009 and the TypeScript codec by ADR 0010. Both
+ADRs are Proposed, pending Security Architect sign-off.
 
 **Stub convention.** A "stub" is created in Wave 0 with its final signature and a body that raises
 `NotImplementedError("T-nn")` (Python) or throws `new Error("NOT_IMPLEMENTED: T-nn")` (TypeScript), where
@@ -338,10 +340,13 @@ export type PublicKeyInput =
 //   verifySignature(algorithm: SignatureAlgorithm, key: PublicKeyInput, data: Bytes, signature: Bytes): Promise<boolean>;
 // Resolves false on mismatch. Rejects CapabilityError("INVALID_ARGUMENT") for an unparseable key or an RSA
 // modulus < 2048 bits, CapabilityError("UNSUPPORTED_ALGORITHM") for any other algorithm. PSS salt length 32.
+// Modulus length is read from the imported CryptoKey; no project-owned ASN.1 parsing. ECDSA is deliberately
+// absent (DER→raw conversion would be project code). JWS RS256 needs RSA only; image-signature use depends on F-12.
 
 // encoding.ts (final)
 export class EncodingError extends Error {}
-export function base64UrlDecode(s: string): Bytes;   // RFC 4648 §5, no padding, strict alphabet
+export function base64UrlDecode(s: string): Bytes;   // RFC 4648 §5, no padding, strict alphabet, canonical:
+                                                     // length % 4 !== 1 and unused trailing bits zero (ADR 0009)
 export function base64Decode(s: string): Bytes;      // RFC 4648 §4, padding required, strict alphabet
 export function hexEncode(b: Bytes): string;         // lowercase
 export function utf8Encode(s: string): Bytes;
@@ -368,7 +373,10 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
 declare const parsedProfile: unique symbol;
 declare const verified: unique symbol;
 export type ProfileKind = "production" | "development";
-export interface SignerKey { readonly key_id: string; readonly algorithm: SignatureAlgorithm; readonly spki: Bytes }
+export type SignerAlgorithm = SignatureAlgorithm | "ECDSA_P256_SHA256";   // FACTS F-11 set (verified); profile accepts all
+export interface SignerKey { readonly key_id: string; readonly algorithm: SignerAlgorithm; readonly spki: Bytes }
+// key_id = lowercase hex SHA-256(spki DER) (F-11). Whether spki/algorithm are used at verify time depends on the
+// F-12 human decision (ARCHITECTURE "Signer keys and the F-12 dependency").
 export interface TrustProfile {                       // spec §15.4 fields + [CI-4] additions; only parseTrustProfile creates one
     readonly [parsedProfile]: true;
     readonly profile_version: 1; readonly profile_kind: ProfileKind; readonly token_type: "OIDC";
@@ -378,7 +386,8 @@ export interface TrustProfile {                       // spec §15.4 fields + [C
     readonly signer_keys: readonly SignerKey[]; readonly signers_required: number;
     readonly expected_args_hash: string; readonly expected_env_hash: string;
 }
-export interface ExpectedAttestation { readonly identityNonce: Bytes; readonly imageDigest: string | undefined }
+export interface ExpectedAttestation { readonly identityNonce: Bytes }   // [CI-9 amended] no digest input; INC-2
+                                                      // bundle verification binds pre-key digest to VerifiedAttestation.imageDigest
 export interface VerifiedAttestation {                // only verifyAttestation creates one
     readonly [verified]: true;
     readonly issuer: string; readonly audience: string; readonly imageDigest: string;
@@ -416,7 +425,7 @@ export function parseTrustProfile(input: unknown): TrustProfile;
 export function encodeIdentityNonce(identityNonce: Bytes): string;
 export function identityNonceFromPublicKey(crypto: Pick<Crypto, "sha256">, identityPublicKey: Bytes): Promise<Bytes>;
 // checks (stubs → T-11, T-12, T-13, T-15). Each throws AttestationError with its own check id.
-export function checkSignature(t: ParsedToken, p: TrustProfile, deps: VerifierDeps): Promise<void>;   // §6.1
+export function checkSignature(t: ParsedToken, p: TrustProfile, deps: VerifierDeps): Promise<void>;   // §6.1; ADR 0009 rules 2–5
 export function checkIssuer(t: ParsedToken, p: TrustProfile): void;                                   // §6.2
 export function checkAudience(t: ParsedToken, p: TrustProfile): void;                                 // §6.3
 export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void;                     // §6.4
@@ -426,7 +435,8 @@ export function isDebugMode(t: ParsedToken): boolean;                           
 export function checkSupportAttributes(t: ParsedToken): void;                                        // §6.7
 export function imageSignaturePayload(imageReference: string, imageDigest: string): Bytes;           // FACTS F-12
 export function checkImage(t: ParsedToken, p: TrustProfile, e: ExpectedAttestation,
-    deps: VerifierDeps): Promise<readonly string[]>;                                                  // §6.8
+    deps: VerifierDeps): Promise<readonly string[]>;   // §6.8. `e` kept for F-12 outcome (b) payload evidence;
+                                                       // signature-byte verification (T-13) blocked on F-12
 export function launchConfigHash(v: readonly string[] | ReadonlyMap<string, string>,
     crypto: Pick<Crypto, "sha256">): Promise<string>;                                                 // §A
 export function checkLaunchConfig(t: ParsedToken, p: TrustProfile, deps: VerifierDeps): Promise<void>; // §6.9

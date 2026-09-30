@@ -45,3 +45,7 @@ Neither is a cryptographic dependency. Both are admitted under SR-9 (OSI licence
   - `cbor-x` must be used without its code-generating path. If that is impossible, it is a CONTRACT_ISSUE, never `'unsafe-eval'`.
 - Security implications: the residual (T-19, High) remains. The origin is trusted for code delivery, and published hashes enable detection only. This is for human acceptance at G3.
 - What this makes harder later, and how we'd undo it: every host page change must go through the manifest and CSP tooling. A mobile package replaces this with install-time code signing (spec §10.3 last bullet) and does not use these subcommands.
+
+## Amendments
+- 2026-09-30: The `cbor-x` consequence above is superseded by ADR 0010. Core and Web use a project-owned canonical CBOR codec, and no package depends on `cbor-x`. INC-2 verification V-2.1 is retired. The bundle scan still applies to every other bundled dependency.
+- 2026-09-30: `connect-src` must include the origin of the trust profile's discovery URL as well as its JWKS origin. In production these differ: `confidentialcomputing.googleapis.com` and `www.googleapis.com` (FACTS F-07).
