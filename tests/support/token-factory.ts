@@ -21,6 +21,7 @@ export const ENV: Readonly<Record<string, string>> = { PYTHONUNBUFFERED: "1" };
 export const ARGS_HASH = "0d7b8d1aa29f148b5f78df8a6214175db1991281625e7727ce2ca5945f090c99";
 export const ENV_HASH = "942fabd2e68b234f374ade89d81e9adf3414e9603216bb66b8252ceff35f3ecb";
 export const NOW_MS = 1_900_000_000_000;
+export const SIGNER_ALGORITHMS = ["RSASSA_PSS_SHA256", "ECDSA_P256_SHA256"] as const;
 export const NOW_S = NOW_MS / 1000;
 export const ISSUED_AT_S = NOW_S - 60;
 export const EXPIRES_AT_S = NOW_S + 3540;
@@ -39,6 +40,7 @@ export interface Fixture {
     readonly http: ReadonlyMap<string, Bytes>;
     readonly identityNonce: Bytes;
     readonly signerKeyIds: readonly string[];
+    readonly signerAlgorithms: ReadonlyMap<string, string>;
     mint(options?: MintOptions): Promise<string>;
 }
 
@@ -64,19 +66,6 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
     return new Uint8Array(await subtle.digest("SHA-256", data.slice()));
 }
 
-/** FACTS F-12, written out independently of Core's imageSignaturePayload. */
-export function expectedImagePayload(reference: string, digest: string): Uint8Array {
-    const withoutDigest = reference.split("@")[0] ?? reference;
-    const colon = withoutDigest.lastIndexOf(":");
-    const repository =
-        colon > withoutDigest.lastIndexOf("/") ? withoutDigest.slice(0, colon) : withoutDigest;
-    return encoder.encode(
-        `{"critical":{"identity":{"docker-reference":"${repository}"},` +
-            `"image":{"docker-manifest-digest":"${digest}"},` +
-            `"type":"cosign container image signature"},"optional":null}`,
-    );
-}
-
 export function containerOf(claims: Claims): Claims {
     return (claims.submods as Claims).container as Claims;
 }
@@ -90,33 +79,20 @@ export async function buildFixture(): Promise<Fixture> {
     if (issuerJwk.n === undefined || issuerJwk.e === undefined) {
         throw new Error("RSA JWK export lacks n or e");
     }
+    // D-016: the client only counts key_ids (lowercase hex SHA-256 of a signer's SPKI DER) whose
+    // signature_algorithm matches the profile; signature bytes are opaque to it.
     const signers = await Promise.all(
-        [0, 1].map(async () => {
-            const pair = await subtle.generateKey({ name: "RSA-PSS", ...RSA_GEN }, true, [
-                "sign",
-                "verify",
-            ]);
-            const spki = new Uint8Array(await subtle.exportKey("spki", pair.publicKey));
-            return { privateKey: pair.privateKey, spki, keyId: hex(await sha256(spki)) };
+        SIGNER_ALGORITHMS.map(async (algorithm) => {
+            const spki = globalThis.crypto.getRandomValues(new Uint8Array(294));
+            return { algorithm, keyId: hex(await sha256(spki)) };
         }),
     );
     const identityNonce = await sha256(globalThis.crypto.getRandomValues(new Uint8Array(32)));
-    const payload = expectedImagePayload(IMAGE_REFERENCE, IMAGE_DIGEST);
-    const imageSignatures = await Promise.all(
-        signers.map(async (signer) => ({
-            key_id: signer.keyId,
-            signature: b64(
-                new Uint8Array(
-                    await subtle.sign(
-                        { name: "RSA-PSS", saltLength: 32 },
-                        signer.privateKey,
-                        payload.slice(),
-                    ),
-                ),
-            ),
-            signature_algorithm: "RSASSA_PSS_SHA256",
-        })),
-    );
+    const imageSignatures = signers.map((signer) => ({
+        key_id: signer.keyId,
+        signature: b64(globalThis.crypto.getRandomValues(new Uint8Array(256))),
+        signature_algorithm: signer.algorithm,
+    }));
 
     const baseClaims: Claims = {
         iss: ISSUER,
@@ -154,8 +130,7 @@ export async function buildFixture(): Promise<Fixture> {
         allowed_digests: [IMAGE_DIGEST],
         signer_keys: signers.map((signer) => ({
             key_id: signer.keyId,
-            algorithm: "RSASSA_PSS_SHA256",
-            spki: b64(signer.spki),
+            algorithm: signer.algorithm,
         })),
         signers_required: 2,
         expected_args_hash: ARGS_HASH,
@@ -187,6 +162,7 @@ export async function buildFixture(): Promise<Fixture> {
         http,
         identityNonce,
         signerKeyIds: signers.map((signer) => signer.keyId).sort(),
+        signerAlgorithms: new Map(signers.map((signer) => [signer.keyId, signer.algorithm])),
         async mint(options: MintOptions = {}): Promise<string> {
             const claims = structuredClone(baseClaims);
             options.mutate?.(claims);

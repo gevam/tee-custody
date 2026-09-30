@@ -31,12 +31,12 @@ async function productionProfileJson(): Promise<Record<string, unknown>> {
 }
 
 describe("parseTrustProfile", () => {
-    it("returns a frozen profile with signer keys as bytes", async () => {
+    it("returns a frozen profile whose signer entries are {key_id, algorithm}", async () => {
         const fixture = await buildFixture();
         const profile = parseTrustProfile(fixture.profileJson);
         expect(Object.isFrozen(profile)).toBe(true);
         expect(Object.isFrozen(profile.signer_keys)).toBe(true);
-        expect(profile.signer_keys[0]?.spki).toBeInstanceOf(Uint8Array);
+        expect(Object.keys(profile.signer_keys[0] ?? {}).sort()).toEqual(["algorithm", "key_id"]);
         expect(profile.signers_required).toBe(2);
     });
 
@@ -79,18 +79,63 @@ describe("parseTrustProfile", () => {
         expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "issuer"]);
     });
 
-    it("rejects ECDSA signer keys in INC-1", async () => {
+    it("accepts every F-11 signer algorithm and rejects any other (D-016)", async () => {
         const fixture = await buildFixture();
         const signerKeys = fixture.profileJson.signer_keys as readonly Record<string, unknown>[];
-        const json = {
+        for (const algorithm of [
+            "RSASSA_PSS_SHA256",
+            "RSASSA_PKCS1V15_SHA256",
+            "ECDSA_P256_SHA256",
+        ]) {
+            const json = {
+                ...fixture.profileJson,
+                signer_keys: signerKeys.map((key) => ({ ...key, algorithm })),
+            };
+            expect(parseTrustProfile(json).signer_keys[0]?.algorithm).toBe(algorithm);
+        }
+        const error = profileError({
             ...fixture.profileJson,
-            signer_keys: signerKeys.map((key) => ({ ...key, algorithm: "ECDSA_P256_SHA256" })),
-        };
-        const error = profileError(json);
+            signer_keys: signerKeys.map((key) => ({ ...key, algorithm: "ED25519" })),
+        });
         expect([error.code, error.field]).toEqual([
             "UNSUPPORTED_ALGORITHM",
             "signer_keys[0].algorithm",
         ]);
+    });
+
+    it("rejects public-key bytes in signer entries; the profile carries key_ids only (D-016)", async () => {
+        const fixture = await buildFixture();
+        const signerKeys = fixture.profileJson.signer_keys as readonly Record<string, unknown>[];
+        const error = profileError({
+            ...fixture.profileJson,
+            signer_keys: signerKeys.map((key) => ({ ...key, spki: "AAAA" })),
+        });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "signer_keys[0].spki"]);
+    });
+
+    it("rejects key_ids that are not 64 lowercase hex characters (SR-1 D-016 (f))", async () => {
+        const fixture = await buildFixture();
+        const signerKeys = fixture.profileJson.signer_keys as readonly Record<string, unknown>[];
+        const first = signerKeys[0]?.key_id as string;
+        for (const keyId of [first.toUpperCase(), first.slice(1), `${first}0`, `sha256:${first}`]) {
+            const error = profileError({
+                ...fixture.profileJson,
+                signer_keys: [{ ...signerKeys[0], key_id: keyId }, ...signerKeys.slice(1)],
+            });
+            expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "signer_keys[0].key_id"]);
+        }
+    });
+
+    it("pins the production JWKS origin and confidential hwmodels (F-07, F-09)", async () => {
+        const base = await productionProfileJson();
+        const origin = profileError({ ...base, jwks_origin: "https://keys.example.test" });
+        expect([origin.code, origin.field]).toEqual(["INVALID_PROFILE", "jwks_origin"]);
+        const shielded = profileError({ ...base, allowed_hwmodels: ["GCP_SHIELDED_VM"] });
+        expect([shielded.code, shielded.field]).toEqual(["INVALID_PROFILE", "allowed_hwmodels[0]"]);
+        expect(
+            parseTrustProfile({ ...base, allowed_hwmodels: ["GCP_AMD_SEV_ES", "GCP_INTEL_TDX"] })
+                .profile_kind,
+        ).toBe("production");
     });
 
     it("rejects signers_required above the number of signer keys", async () => {

@@ -23,7 +23,7 @@ import { readRepoFile } from "../../support/repo.js";
 
 const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 65_536, maxJwksBytes: 65_536 };
 const SUITE_LIMITS = { maxBytes: 1_048_576, maxDepth: 8, maxItems: 16_384 };
-const CASE_COUNT = 27; // API.md §G
+const CASE_COUNT = 28; // API.md §G
 
 interface VectorCase {
     readonly id: string;
@@ -168,7 +168,7 @@ describe("attestation vector suite", () => {
                 verifyAttestation(
                     vector.token,
                     profile,
-                    { identityNonce, imageDigest: undefined },
+                    { identityNonce },
                     recordingSink(events),
                     depsFor(suite),
                 ),
@@ -206,7 +206,7 @@ describe("attestation vector suite", () => {
             verifyAttestation(
                 valid.token,
                 production,
-                { identityNonce, imageDigest: undefined },
+                { identityNonce },
                 recordingSink(events),
                 depsFor(suite),
             ),

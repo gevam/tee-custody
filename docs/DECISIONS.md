@@ -349,3 +349,23 @@ Participants: Architect, Tech Lead, Security Architect
 **Revisit when:** Security Architect rejects either ADR.
 
 **Follow-ups:** G4 re-check after Tech Lead amendment.
+
+## D-018 — G4 applied per wave; INC-1 Wave 0 passes (INC-1, 2026-09-30)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead
+
+**Options considered**
+1. Apply G4 per wave: Wave 0 (tooling, API stubs, wire binding, facts) starts on contract-test stubs; no Wave 1+ task starts until QA acceptance tests covering it exist on trunk and fail for the right reason on post-Wave-0 trunk. V-01 branch merges with Wave 0.
+2. Require QA acceptance tests before Wave 0.
+
+**Decision:** Option 1; G4 passes for Wave 0.
+
+**Reasoning:** PROCESS.md §3.6 schedules QA authoring after Wave 0, and acceptance tests cannot import an API that Wave 0 creates; Wave 0 tasks deliver tooling and frozen stubs, whose acceptance evidence is the contract tests. Orchestrator verified: no same-wave file overlap (T-06/T-07/T-08 basename matches are in different packages; pytest importlib mode set in T-01); all dependencies point to earlier waves; contract stubs exist for every INC-1 boundary (tests/integration/contracts: launcher, sim OIDC, sim CLI, wire, trust-profile, verifier, vectors); Wave 0 is 4 items = max_engineers.
+
+**Dissent:** none
+
+**Revisit when:** A Wave 1 task is proposed to start without failing acceptance tests.
+
+**Follow-ups:** QA authors INC-1 acceptance tests once Wave 0 merges; G4 re-checked for Wave 1. Open non-blocking: F-16 verification (V-01 re-run); SR-1 test (i) wording (profiles carry no SPKI) → Security Architect; support_attributes override (Architect, only if a host needs it).

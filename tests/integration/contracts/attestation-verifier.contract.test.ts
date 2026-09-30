@@ -73,7 +73,7 @@ async function verify(
         verifyAttestation(
             token,
             fixture.profile,
-            { identityNonce: fixture.identityNonce, imageDigest: undefined },
+            { identityNonce: fixture.identityNonce },
             sink,
             depsFor(fixture),
         ),
@@ -98,7 +98,69 @@ interface FailureCase {
     readonly check: AttestationCheckId;
 }
 
+const signatures = (claims: Claims): Record<string, unknown>[] =>
+    containerOf(claims).image_signatures as Record<string, unknown>[];
+
 const SINGLE_CHECK_FAILURES: readonly FailureCase[] = [
+    {
+        name: "embedded jku header member (ADR 0009 rule 2.2)",
+        options: {
+            header: { alg: "RS256", kid: "contract-issuer", jku: "https://attacker.test/jwks" },
+        },
+        code: "UNSUPPORTED_ALGORITHM",
+        check: "signature",
+    },
+    {
+        name: "typ other than JWT (ADR 0009 rule 2.3)",
+        options: { header: { alg: "RS256", kid: "contract-issuer", typ: "at+jwt" } },
+        code: "MALFORMED",
+        check: "signature",
+    },
+    {
+        name: "EXPERIMENTAL support attribute (D-017)",
+        options: {
+            mutate: (c) => {
+                (c.submods as Claims).confidential_space = {
+                    support_attributes: ["STABLE", "EXPERIMENTAL"],
+                };
+            },
+        },
+        code: "CLAIM_MISMATCH",
+        check: "support_attributes",
+    },
+    {
+        name: "same signer key_id twice (D-016, duplicates count once)",
+        options: {
+            mutate: (c) => {
+                const list = signatures(c);
+                list[1] = { ...list[1], key_id: list[0]?.key_id };
+            },
+        },
+        code: "UNTRUSTED_SIGNER",
+        check: "image",
+    },
+    {
+        name: "signature_algorithm differs from the profile (D-016)",
+        options: {
+            mutate: (c) => {
+                const list = signatures(c);
+                list[0] = { ...list[0], signature_algorithm: "RSASSA_PKCS1V15_SHA256" };
+            },
+        },
+        code: "UNTRUSTED_SIGNER",
+        check: "image",
+    },
+    {
+        name: "uppercase key_id (D-016, exact match)",
+        options: {
+            mutate: (c) => {
+                const list = signatures(c);
+                list[0] = { ...list[0], key_id: String(list[0]?.key_id).toUpperCase() };
+            },
+        },
+        code: "UNTRUSTED_SIGNER",
+        check: "image",
+    },
     {
         name: "alg none",
         options: { header: { alg: "none", typ: "JWT" } },
@@ -243,7 +305,7 @@ describe("verifyAttestation", () => {
         const result = await verifyAttestation(
             await fixture.mint(),
             fixture.profile,
-            { identityNonce: fixture.identityNonce, imageDigest: IMAGE_DIGEST },
+            { identityNonce: fixture.identityNonce },
             sink,
             depsFor(fixture),
         );
@@ -256,6 +318,28 @@ describe("verifyAttestation", () => {
         expect(result.expiresAtMs).toBe(EXPIRES_AT_S * 1000);
         expect(Object.isFrozen(result)).toBe(true);
         expect(sink.events).toEqual([]);
+    });
+
+    it("ignores unknown signers and malformed entries when enough profile signers are listed (D-016)", async () => {
+        const fixture = await buildFixture();
+        const mutate = (claims: Claims): void => {
+            signatures(claims).push(
+                {
+                    key_id: "0".repeat(64),
+                    signature: "AAAA",
+                    signature_algorithm: "RSASSA_PSS_SHA256",
+                },
+                { key_id: 42 },
+            );
+        };
+        const result = await verifyAttestation(
+            await fixture.mint({ mutate }),
+            fixture.profile,
+            { identityNonce: fixture.identityNonce },
+            new RecordingSink(),
+            depsFor(fixture),
+        );
+        expect(result.signerKeyIds).toEqual(fixture.signerKeyIds);
     });
 
     it.each(SINGLE_CHECK_FAILURES)(
@@ -273,7 +357,7 @@ describe("verifyAttestation", () => {
             verifyAttestation(
                 "not-a-jws",
                 fixture.profile,
-                { identityNonce: fixture.identityNonce, imageDigest: undefined },
+                { identityNonce: fixture.identityNonce },
                 new RecordingSink(),
                 depsFor(fixture),
             ),
@@ -288,26 +372,12 @@ describe("verifyAttestation", () => {
             verifyAttestation(
                 await fixture.mint(),
                 counterfeit,
-                { identityNonce: fixture.identityNonce, imageDigest: undefined },
+                { identityNonce: fixture.identityNonce },
                 new RecordingSink(),
                 depsFor(fixture),
             ),
         );
         expect([error.check, error.code]).toEqual(["profile", "MALFORMED"]);
-    });
-
-    it("rejects when the expected image digest differs", async () => {
-        const fixture = await buildFixture();
-        const error = await rejection(
-            verifyAttestation(
-                await fixture.mint(),
-                fixture.profile,
-                { identityNonce: fixture.identityNonce, imageDigest: `sha256:${"ff".repeat(32)}` },
-                new RecordingSink(),
-                depsFor(fixture),
-            ),
-        );
-        expect([error.check, error.code]).toEqual(["image", "CLAIM_MISMATCH"]);
     });
 });
 

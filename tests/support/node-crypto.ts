@@ -1,4 +1,5 @@
-// Test-only Crypto capability over Node's WebCrypto (API.md §D [CI-2] semantics). Not shipped.
+// Test-only Crypto capability over Node's WebCrypto (API.md §D [CI-2]; ADR 0009). Not shipped.
+// verifySignature supports exactly RSASSA_PKCS1V15_SHA256 with an RSA public JWK.
 import {
     CapabilityError,
     type Bytes,
@@ -8,32 +9,17 @@ import {
 } from "@teecustody/core";
 
 const subtle = globalThis.crypto.subtle;
+const PARAMS: RsaHashedImportParams = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
 
-function importParams(algorithm: SignatureAlgorithm): RsaHashedImportParams {
-    return algorithm === "RSASSA_PSS_SHA256"
-        ? { name: "RSA-PSS", hash: "SHA-256" }
-        : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
-}
-
-function verifyParams(algorithm: SignatureAlgorithm): RsaPssParams | Algorithm {
-    return algorithm === "RSASSA_PSS_SHA256"
-        ? { name: "RSA-PSS", saltLength: 32 }
-        : { name: "RSASSA-PKCS1-v1_5" };
-}
-
-async function importKey(algorithm: SignatureAlgorithm, key: PublicKeyInput): Promise<CryptoKey> {
+async function importKey(key: PublicKeyInput): Promise<CryptoKey> {
     try {
-        return key.format === "spki"
-            ? await subtle.importKey("spki", key.der.slice(), importParams(algorithm), false, [
-                  "verify",
-              ])
-            : await subtle.importKey(
-                  "jwk",
-                  { kty: "RSA", n: key.jwk.n, e: key.jwk.e },
-                  importParams(algorithm),
-                  false,
-                  ["verify"],
-              );
+        return await subtle.importKey(
+            "jwk",
+            { kty: "RSA", n: key.jwk.n, e: key.jwk.e },
+            PARAMS,
+            false,
+            ["verify"],
+        );
     } catch {
         throw new CapabilityError("INVALID_ARGUMENT");
     }
@@ -50,20 +36,15 @@ export function nodeCrypto(): Pick<Crypto, "sha256" | "verifySignature"> {
             data: Bytes,
             signature: Bytes,
         ): Promise<boolean> {
-            if (algorithm !== "RSASSA_PSS_SHA256" && algorithm !== "RSASSA_PKCS1V15_SHA256") {
+            if ((algorithm as string) !== "RSASSA_PKCS1V15_SHA256" || key.format !== "jwk") {
                 throw new CapabilityError("UNSUPPORTED_ALGORITHM");
             }
-            const cryptoKey = await importKey(algorithm, key);
+            const cryptoKey = await importKey(key);
             const { modulusLength } = cryptoKey.algorithm as RsaHashedKeyAlgorithm;
             if (modulusLength < 2048) {
                 throw new CapabilityError("INVALID_ARGUMENT");
             }
-            return subtle.verify(
-                verifyParams(algorithm),
-                cryptoKey,
-                signature.slice(),
-                data.slice(),
-            );
+            return subtle.verify(PARAMS.name, cryptoKey, signature.slice(), data.slice());
         },
     };
 }

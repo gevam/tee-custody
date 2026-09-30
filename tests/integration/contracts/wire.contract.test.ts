@@ -1,5 +1,5 @@
 // Contract: normative canonical-CBOR binding, TypeScript side (API.md §D wire; spec/wire/README.md).
-// Expected red until T-03 (vectors) and T-09 (codec) merge.
+// Expected red until T-03 (vectors) and T-09 (codec) merge; the corpus test until T-18.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -23,6 +23,19 @@ interface CodecVectors {
         readonly id: string;
         readonly hex: string;
         readonly error: string;
+    }[];
+}
+
+interface DifferentialCorpus {
+    readonly limits: {
+        readonly max_bytes: number;
+        readonly max_depth: number;
+        readonly max_items: number;
+    };
+    readonly cases: readonly {
+        readonly id: string;
+        readonly hex: string;
+        readonly outcome: string;
     }[];
 }
 
@@ -69,6 +82,8 @@ describe("canonical CBOR binding", () => {
         const limits = { maxBytes: 64, maxDepth: 4, maxItems: 16 };
         expect(decodeCanonical(fromHex("1bffffffffffffffff"), limits)).toBe(18446744073709551615n);
         expect(decodeCanonical(fromHex("1a000f4240"), limits)).toBe(1000000);
+        expect(decodeCanonical(fromHex("1b001fffffffffffff"), limits)).toBe(9007199254740991);
+        expect(decodeCanonical(fromHex("1b0020000000000000"), limits)).toBe(9007199254740992n);
         expect(decodeCanonical(fromHex("a0"), limits)).toBeInstanceOf(Map);
         expect(decodeCanonical(fromHex("4401020304"), limits)).toEqual(
             new Uint8Array([1, 2, 3, 4]),
@@ -106,5 +121,21 @@ describe("canonical CBOR binding", () => {
     it("refuses values outside the data model when encoding", () => {
         expect(wireErrorCode(() => encodeCanonical(1.5))).toBe("UNSUPPORTED_TYPE");
         expect(wireErrorCode(() => encodeCanonical(2n ** 64n))).toBe("UNSUPPORTED_TYPE");
+    });
+
+    it("agrees with the Python codec on every differential-corpus case (ADR 0010)", () => {
+        const corpus = JSON.parse(
+            new TextDecoder().decode(readRepoFile("spec/vectors/wire/differential-corpus.json")),
+        ) as DifferentialCorpus;
+        expect(corpus.cases.length).toBeGreaterThanOrEqual(500);
+        const limits = {
+            maxBytes: corpus.limits.max_bytes,
+            maxDepth: corpus.limits.max_depth,
+            maxItems: corpus.limits.max_items,
+        };
+        for (const entry of corpus.cases) {
+            const outcome = wireErrorCode(() => decodeCanonical(fromHex(entry.hex), limits));
+            expect(outcome === "NO_ERROR" ? "accept" : outcome, entry.id).toBe(entry.outcome);
+        }
     });
 });

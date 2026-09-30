@@ -3,8 +3,12 @@
 Owner: Tech Lead. Wave 0 (T-01, T-02) transcribes this file into code; every later task implements against it.
 Changing anything here after Wave 0 starts is a contract amendment (PROCESS.md §7). Items marked **[CI-n]**
 extend `docs/ARCHITECTURE.md`. The Architect ruled on them on 2026-09-30 and ARCHITECTURE now agrees with this
-file. CI-9 was amended (see §D). JWS handling is governed by ADR 0009 and the TypeScript codec by ADR 0010. Both
-ADRs are Proposed, pending Security Architect sign-off.
+file. CI-9 was amended (see §D). JWS handling is governed by ADR 0009 and the TypeScript codec by ADR 0010, both
+Accepted (Security Architect sign-off 2026-09-30). §6.8 follows D-016.
+
+**Amendment 2026-09-30 (Tech Lead, D-017):** §C adds `frame_jws` (ADR 0009 known-answer test) and
+`generate_corpus` (ADR 0010 differential corpus); the minter lists only image signatures that verify (T-22
+simulator emulation of Google); `vectors` also writes the corpus; §F adds the corpus file.
 
 **Stub convention.** A "stub" is created in Wave 0 with its final signature and a body that raises
 `NotImplementedError("T-nn")` (Python) or throws `new Error("NOT_IMPLEMENTED: T-nn")` (TypeScript), where
@@ -246,6 +250,11 @@ def image_signature_payload(image_reference: str, image_digest: str) -> bytes: .
                                                # dev signer signs; non-normative, never read by a client (D-016)
 # Every image_signatures entry the minter emits: {"key_id": signer.key_id, "signature": padded std base64 of
 # signer.sign(payload), "signature_algorithm": signer.algorithm}; signer.key_id == sha256(signer.spki_der).hexdigest().
+# The minter lists an entry only if the signature verifies over payload under the key loaded from spki_der (emulates the
+# Google attestation service, which lists only verified key_ids; T-22). Named cases apply after this step.
+def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str: ...
+    # RFC 7515 §5.2 compact serialization: b64url(header) "." b64url(payload) "." b64url(sign(signing_input));
+    # base64url without padding; `sign` receives the ASCII signing input. Used by `mint` and the A.2 KAT (ADR 0009).
 def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration: ...
 class TokenMinter:
     def __init__(self, keys: SimKeys, launch: LaunchConfig, *, issuer: str = SIM_ISSUER,
@@ -295,6 +304,8 @@ def build_trust_profile(*, discovery_url: str, jwks_origin: str, expected_audien
                         signers_required: int,
                         token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S) -> dict[str, JsonValue]: ...
 def generate_suite(out_dir: Path, *, now: int | None = None) -> Path: ...
+def generate_corpus(out_dir: Path, *, seed: int = 1, count: int = 512) -> Path: ...
+    # writes out_dir/wire/differential-corpus.json (§F); count >= 500 else ValueError("INVALID_COUNT")
 ```
 
 **`sim-state.json`** (written by `Simulator.start()` into `state_dir`, mode 0600; read by the CLI):
@@ -314,7 +325,7 @@ No subcommand ever prints key material.
 | `up --image REF --audience AUD [--runtime docker\|podman] [--arg A]... [--env K=V]... [--issuer-port N] [--signers-required N]` | Resolves the image digest, serves as above with socket `STATE/launcher/teeserver.sock`, runs the container with that directory mounted at `/run/container_launcher`, `--network none`, only the given `--env`; exit code = container exit code. |
 | `token --audience AUD [--nonce N]... [--alter PATH=VALUE \| --drop PATH \| --case ID]` | Prints one token and `\n`. Uses the keys and `launch` from the state dir. `--alter`/`--drop`/`--case` are mutually exclusive. |
 | `profile --out FILE` | Writes the development trust profile (§E) built from the state dir. |
-| `vectors --out DIR` | Writes `DIR/attestation/suite.cbor` using freshly generated ephemeral keys (never the state dir); prints the path. |
+| `vectors --out DIR` | Writes `DIR/attestation/suite.cbor` using freshly generated ephemeral keys (never the state dir) and `DIR/wire/differential-corpus.json` (seed 1, 512 cases); prints the two paths, one per line, in that order. |
 
 ---
 
@@ -470,6 +481,14 @@ Exactly these keys (spec §15.4 names, plus `profile_version`, `profile_kind`, `
 ## F. Vector suite
 
 Schema: `spec/wire/attestation-vectors.cddl` (T-03). File: `spec/vectors/attestation/suite.cbor` (T-18).
+
+Differential corpus (ADR 0010; format documented in `spec/vectors/README.md` by T-03; file committed by T-18):
+`spec/vectors/wire/differential-corpus.json` =
+`{"format": "teecustody-cbor-differential-corpus", "version": 1, "seed": int, "limits": {"max_bytes": 1024,
+"max_depth": 8, "max_items": 256}, "cases": [{"id": "m0000", "hex": str, "outcome": "accept" | <WireErrorCode>}]}`.
+Each case is a seeded mutation (bit flip, byte insert, byte delete, truncation, header-byte substitution) of a
+valid canonical encoding of a generated value; `outcome` is the Python codec's result under `limits`. The
+TypeScript codec must produce the same outcome for every case.
 The suite's `http` map is served by a test Fetcher: exact URL match → `{status: 200, body}`; any other
 URL rejects with `CapabilityError("HTTP_ERROR")`.
 

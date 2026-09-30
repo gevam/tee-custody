@@ -130,6 +130,9 @@ def test_profile_writes_the_development_trust_profile(
     assert profile["allowed_digests"] == [IMAGE_DIGEST]
     assert profile["signers_required"] == running_simulator.config.signers_required
     assert len(profile["signer_keys"]) == running_simulator.config.signers_required
+    signer_ids = {signer.key_id for signer in running_simulator.simulator.keys.signers}
+    assert {entry["key_id"] for entry in profile["signer_keys"]} == signer_ids
+    assert all(set(entry) == {"key_id", "algorithm"} for entry in profile["signer_keys"])
     assert "PRIVATE KEY" not in captured.out + captured.err + out_file.read_text()
 
 
@@ -140,8 +143,12 @@ def test_vectors_writes_a_canonical_suite(
     captured = capsys.readouterr()
 
     suite_path = short_dir / "attestation" / "suite.cbor"
+    corpus_path = short_dir / "wire" / "differential-corpus.json"
     assert code == 0
-    assert captured.out.strip() == str(suite_path)
+    assert captured.out.splitlines() == [str(suite_path), str(corpus_path)]
+    corpus = json.loads(corpus_path.read_text())
+    assert corpus["format"] == "teecustody-cbor-differential-corpus"
+    assert len(corpus["cases"]) >= 500
     data = suite_path.read_bytes()
     assert b"PRIVATE KEY" not in data
     suite = decode(data, DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384))
