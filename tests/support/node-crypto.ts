@@ -36,7 +36,10 @@ export function nodeCrypto(): Pick<Crypto, "sha256" | "verifySignature"> {
             data: Bytes,
             signature: Bytes,
         ): Promise<boolean> {
-            if ((algorithm as string) !== "RSASSA_PKCS1V15_SHA256" || key.format !== "jwk") {
+            if (
+                (algorithm as string) !== "RSASSA_PKCS1V15_SHA256" ||
+                (key.format as string) !== "jwk"
+            ) {
                 throw new CapabilityError("UNSUPPORTED_ALGORITHM");
             }
             const cryptoKey = await importKey(key);
