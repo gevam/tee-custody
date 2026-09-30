@@ -17,6 +17,7 @@ from teecustody.wire import DecodeLimits, decode
 
 VECTORS_DIR = Path(__file__).parent
 CANONICAL_CBOR_PATH = VECTORS_DIR / "wire" / "canonical-cbor.json"
+DIFFERENTIAL_CORPUS_PATH = VECTORS_DIR / "wire" / "differential-corpus.json"
 ATTESTATION_SUITE_PATH = VECTORS_DIR / "attestation" / "suite.cbor"
 SUITE_LIMITS = DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384)
 
@@ -55,3 +56,10 @@ def suite(suite_bytes: bytes) -> dict[str, Any]:
     decoded = decode(suite_bytes, SUITE_LIMITS)
     assert isinstance(decoded, dict)
     return decoded
+
+
+@pytest.fixture(scope="session")
+def differential_corpus() -> dict[str, Any]:
+    loaded = json.loads(DIFFERENTIAL_CORPUS_PATH.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
