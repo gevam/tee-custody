@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Attested channel and split-key custody for Google Cloud Confidential Space workloads."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["cryptography==50.0.2", "cbor2==6.1.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/teecustody"]

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import importlib.metadata
 import inspect
 import io
 import logging
+import re
 from collections.abc import Callable
 from enum import StrEnum
 
@@ -312,3 +314,23 @@ def test_attestation_token_repr_omits_the_token_value() -> None:
     assert "SENTINEL" not in repr(token)
     assert "SENTINEL" not in str(token)
     assert repr(token) == "AttestationToken(issued_at=1, expires_at=2)"
+
+
+def _requirement_names(distribution: str) -> list[str]:
+    return [
+        re.split(r"[\s;<>=!~\[]", r, maxsplit=1)[0].lower()
+        for r in importlib.metadata.requires(distribution) or []
+    ]
+
+
+def test_teecustody_never_requires_the_simulator() -> None:
+    names = _requirement_names("teecustody")
+    assert "teecustody-sim" not in names
+    assert "teecustody_sim" not in names
+
+
+def test_teecustody_runtime_requirements_are_exact_pinned_crypto_and_cbor_only() -> None:
+    assert sorted(importlib.metadata.requires("teecustody") or []) == [
+        "cbor2==6.1.4",
+        "cryptography==50.0.2",
+    ]

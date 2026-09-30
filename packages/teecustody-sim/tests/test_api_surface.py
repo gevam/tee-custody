@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.metadata
 import inspect
 import time
 from collections.abc import Callable
@@ -487,3 +488,10 @@ def test_sim_config_error_str_is_code_value_only(code: SimConfigErrorCode) -> No
     assert err.code is code
     assert str(err) == code.value
     assert err.args == (code.value,)
+
+
+def test_simulator_runtime_requirements_are_exact_pinned() -> None:
+    assert sorted(importlib.metadata.requires("teecustody-sim") or []) == [
+        "cryptography==50.0.2",
+        "teecustody==0.1.0",
+    ]
