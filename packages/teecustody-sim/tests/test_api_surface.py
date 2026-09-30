@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import inspect
+import runpy
 import time
 from collections.abc import Callable
 from enum import StrEnum
@@ -495,3 +496,12 @@ def test_simulator_runtime_requirements_are_exact_pinned() -> None:
         "cryptography==50.0.2",
         "teecustody==0.1.0",
     ]
+
+
+def test_python_dash_m_exits_with_the_cli_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from teecustody_sim import cli
+
+    monkeypatch.setattr(cli, "main", lambda argv=None: 3)
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_module("teecustody_sim", run_name="__main__")
+    assert exited.value.code == 3

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -86,3 +87,36 @@ def test_simulator_source_rejects_cbor2(statement: str, use: str) -> None:
 def test_simulator_source_may_serve_loopback_listeners(statement: str, use: str) -> None:
     result = _ruff_stdin(f"{SIM_SRC}/x.py", _snippet(statement, use))
     assert result.returncode == 0, result.stdout
+
+
+PYTHON_LINT_COMMANDS = {
+    "ruff-check": ["ruff", "check", "."],
+    "ruff-format": ["ruff", "format", "--check", "."],
+    "mypy-strict": [
+        "mypy",
+        "--strict",
+        "packages/teecustody-py/src",
+        "packages/teecustody-sim/src",
+    ],
+}
+
+
+@pytest.mark.parametrize("argv", PYTHON_LINT_COMMANDS.values(), ids=PYTHON_LINT_COMMANDS.keys())
+def test_python_half_of_lint_command_is_clean(argv: list[str]) -> None:
+    result = subprocess.run(  # noqa: S603 - fixed argv: this interpreter running a linter
+        [sys.executable, "-m", *argv],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(("name", "version"), [("cryptography", "50.0.2"), ("cbor2", "6.1.4")])
+def test_crypto_dependency_is_locked_by_exact_version_and_hash(name: str, version: str) -> None:
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    entries = [package for package in lock["package"] if package["name"] == name]
+    assert [entry["version"] for entry in entries] == [version]
+    artifacts = [entries[0]["sdist"], *entries[0]["wheels"]]
+    assert all(artifact["hash"].startswith("sha256:") for artifact in artifacts)
