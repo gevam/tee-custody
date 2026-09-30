@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { CapabilityError } from "../src/capabilities.js";
-import { EncodingError, base64Decode, base64UrlDecode } from "../src/encoding.js";
+import {
+    EncodingError,
+    base64Decode,
+    base64UrlDecode,
+    hexEncode,
+    utf8DecodeStrict,
+    utf8Encode,
+} from "../src/encoding.js";
 import { generateRsaKey, signJws } from "./support/jws.js";
 import {
     RFC7515_A2_COMPACT,
@@ -82,6 +89,32 @@ describe("base64UrlDecode (RFC 4648 §5, unpadded, canonical)", () => {
         ["non-ASCII", "AQé"],
     ])("rejects %s", (_name, input) => {
         expect(() => base64UrlDecode(input)).toThrow(EncodingError);
+    });
+});
+
+describe("utf8DecodeStrict, utf8Encode, hexEncode", () => {
+    it.each([
+        ["an invalid continuation", [0xc3, 0x28]],
+        ["an overlong encoding", [0xc0, 0x80]],
+        ["a UTF-16 surrogate", [0xed, 0xa0, 0x80]],
+        ["a truncated sequence", [0xe2, 0x82]],
+    ])("rejects %s", (_name, bytes) => {
+        expect(() => utf8DecodeStrict(new Uint8Array(bytes))).toThrow(EncodingError);
+    });
+
+    it("decodes valid UTF-8 and keeps a leading BOM", () => {
+        expect(utf8DecodeStrict(new Uint8Array([0xe2, 0x82, 0xac]))).toBe("€");
+        expect(utf8DecodeStrict(new Uint8Array([0xef, 0xbb, 0xbf, 0x61]))).toBe("\ufeffa");
+    });
+
+    it("encodes UTF-8", () => {
+        expect([...utf8Encode("é€")]).toEqual([0xc3, 0xa9, 0xe2, 0x82, 0xac]);
+    });
+
+    it("hex-encodes in lowercase", () => {
+        expect(hexEncode(new Uint8Array([0, 255]))).toBe("00ff");
+        expect(hexEncode(new Uint8Array([0x0a, 0xbc]))).toBe("0abc");
+        expect(hexEncode(new Uint8Array())).toBe("");
     });
 });
 

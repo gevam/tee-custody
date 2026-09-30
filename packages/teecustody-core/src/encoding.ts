@@ -44,3 +44,23 @@ export function base64Decode(s: string): Bytes {
     }
     return decodeDigits(s.replace(/=+$/, ""), STANDARD);
 }
+
+export function hexEncode(b: Bytes): string {
+    let out = "";
+    for (const byte of b) {
+        out += byte.toString(16).padStart(2, "0");
+    }
+    return out;
+}
+
+export function utf8Encode(s: string): Bytes {
+    return new TextEncoder().encode(s);
+}
+
+export function utf8DecodeStrict(b: Bytes): string {
+    try {
+        return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(b);
+    } catch {
+        throw new EncodingError("invalid UTF-8");
+    }
+}
