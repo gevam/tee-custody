@@ -1,6 +1,6 @@
 # Status — tee-custody
 
-Updated: 2026-09-30 at G4 (INC-1 Wave 0) by Orchestrator
+Updated: 2026-10-01 (INC-1 Wave 0, resumed) by Orchestrator
 
 ## Where we are
 Stage: INC-1 wave 0 implementation
@@ -10,10 +10,10 @@ Increments merged: none
 ## Current increment — INC-1 (Attestation foundation)
 | Task | Wave | Tier | State | Branch | Notes |
 |---|---|---|---|---|---|
-| T-01 Python tooling + API stubs | 0 | STRONG | in-progress | inc-1/T-01-py-tooling | |
-| T-02 TS tooling + Core stubs | 0 | STRONG | in-progress | inc-1/T-02-ts-tooling | |
-| T-03 Wire binding + vectors harness | 0 | STRONG | in-progress | inc-1/T-03-wire-binding | Human approval before merge (spec/wire) |
-| V-01 Confidential Space facts | 0 | STRONG | F-01..F-15 done; F-16 re-run in progress | inc-1/V-01-facts | |
+| T-01 Python tooling + API stubs | 0 | STRONG | in-progress (engineer restarted 10-01) | inc-1/T-01-py-tooling | 9 commits |
+| T-02 TS tooling + Core stubs | 0 | STRONG | in-progress (engineer restarted 10-01) | inc-1/T-02-ts-tooling | 6 commits |
+| T-03 Wire binding + vectors harness | 0 | STRONG | in-progress (engineer restarted 10-01) | inc-1/T-03-wire-binding | Human approval before merge (spec/wire) |
+| V-01 Confidential Space facts | 0 | STRONG | done (F-16: not documented, covered by T-22) | inc-1/V-01-facts | |
 | T-04..T-14 | 1 | STRONG/MID | not started | — | Needs QA acceptance tests first |
 | T-15..T-17 | 2 | STRONG | not started | — | |
 | T-18 vectors generation | 3 | FAST | not started | — | Human approval before merge (spec/vectors) |
