@@ -130,4 +130,34 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
         const variant = sig(keyId, "RSASSA_PSS_SHA256");
         expectRejected(tokenWithSignatures([variant, sig(KEY_B)]), "UNTRUSTED_SIGNER");
     });
+
+    const withoutField = (field: string): JsonObject =>
+        Object.fromEntries(Object.entries(sig(KEY_A)).filter(([k]) => k !== field));
+    const withField = (field: string, value: JsonValue): JsonObject => ({
+        ...sig(KEY_A),
+        [field]: value,
+    });
+    it.each<[string, JsonValue]>([
+        ["a missing key_id", withoutField("key_id")],
+        ["a numeric key_id", withField("key_id", 1)],
+        ["a null key_id", withField("key_id", null)],
+        ["an array key_id", withField("key_id", [KEY_A])],
+        ["a missing signature", withoutField("signature")],
+        ["a numeric signature", withField("signature", 7)],
+        ["a null signature", withField("signature", null)],
+        ["an object signature", withField("signature", { b64: "c2ln" })],
+        ["an empty signature", withField("signature", "")],
+        ["a missing signature_algorithm", withoutField("signature_algorithm")],
+        ["a numeric signature_algorithm", withField("signature_algorithm", 0)],
+        ["an array signature_algorithm", withField("signature_algorithm", ["RSASSA_PSS_SHA256"])],
+        ["a null entry", null],
+        ["a string entry", KEY_A],
+        ["a number entry", 42],
+        ["a boolean entry", true],
+        ["an array entry", [KEY_A, "c2ln", "RSASSA_PSS_SHA256"]],
+    ])("(g) skips an entry with %s without failing", (_name, entry) => {
+        const t = tokenWithSignatures([entry, sig(KEY_B), sig(KEY_C)]);
+        expect(checkImage(t, profile())).toEqual([KEY_B, KEY_C]);
+        expectRejected(tokenWithSignatures([entry, sig(KEY_B)]), "UNTRUSTED_SIGNER");
+    });
 });

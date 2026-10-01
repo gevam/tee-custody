@@ -8,6 +8,29 @@ function isJsonArray(v: JsonValue | undefined): v is readonly JsonValue[] {
     return Array.isArray(v);
 }
 
+// The entry's key_id if it counts toward the threshold; undefined if it is ignored.
+function countedKeyId(
+    entry: JsonValue,
+    algorithmByKeyId: ReadonlyMap<string, string>,
+): string | undefined {
+    if (!isJsonObject(entry)) {
+        return undefined;
+    }
+    const keyId = getPath(entry, ["key_id"]);
+    const algorithm = getPath(entry, ["signature_algorithm"]);
+    const signature = getPath(entry, ["signature"]);
+    if (
+        typeof keyId !== "string" ||
+        typeof algorithm !== "string" ||
+        typeof signature !== "string" ||
+        signature.length === 0 ||
+        algorithmByKeyId.get(keyId) !== algorithm
+    ) {
+        return undefined;
+    }
+    return keyId;
+}
+
 // Synchronous and offline. Returns the distinct counted key_ids sorted ascending.
 // Signature bytes are never decoded or verified (D-016).
 export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
@@ -18,13 +41,9 @@ export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
     const counted = new Set<string>();
     if (isJsonArray(signatures)) {
         for (const entry of signatures) {
-            if (
-                isJsonObject(entry) &&
-                typeof entry["key_id"] === "string" &&
-                algorithmByKeyId.has(entry["key_id"]) &&
-                entry["signature_algorithm"] === algorithmByKeyId.get(entry["key_id"])
-            ) {
-                counted.add(entry["key_id"]);
+            const keyId = countedKeyId(entry, algorithmByKeyId);
+            if (keyId !== undefined) {
+                counted.add(keyId);
             }
         }
     }
