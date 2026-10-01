@@ -146,6 +146,16 @@ describe("checkTime (§6.4)", () => {
         expectRejected(time({ exp: NOW_S, iat: "1" }), "time", "EXPIRED");
     });
 
+    it.each([Number.NaN, Number.POSITIVE_INFINITY])("fails closed when nowMs is %s", (nowMs) => {
+        expectRejected(
+            () => {
+                checkTime(token({ ...FRESH, nbf: NOW_S }), PROFILE, nowMs);
+            },
+            "time",
+            "EXPIRED",
+        );
+    });
+
     it("checks iat before nbf", () => {
         expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 1 }), "time", "CLAIM_MISMATCH");
     });

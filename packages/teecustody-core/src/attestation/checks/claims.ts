@@ -29,7 +29,8 @@ export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void 
     if (exp === undefined) {
         throw new AttestationError("CLAIM_MISSING", "time");
     }
-    if (exp * 1000 <= nowMs) {
+    // Negated so that a NaN clock fails closed.
+    if (!(exp * 1000 > nowMs)) {
         throw new AttestationError("EXPIRED", "time");
     }
     const iat = numericDate(t, "iat");
