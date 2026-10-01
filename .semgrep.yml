@@ -182,3 +182,24 @@ rules:
       - pattern-regex: (?i)#\s*noqa\b(?!\s*:)
       - pattern-regex: (?i)#\s*noqa\s*:[^#\n]*\bTID
       - pattern-regex: (?i)#\s*(?:ruff|flake8)\s*:\s*(?:noqa|disable)\b
+
+  - id: tc-ts-no-global-object
+    message: >-
+      Core reaches no platform global through the global object or Reflect (NFR-6); platform
+      capabilities enter through injected ports.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern-regex: \bglobalThis\b
+      - pattern: Reflect
+      - patterns:
+          - pattern-either:
+              - pattern: self
+              - pattern: global
+              - pattern: window
+          # Class fields with these names are declarations, not references to the global.
+          - pattern-not-inside: self = $V
+          - pattern-not-inside: global = $V
+          - pattern-not-inside: window = $V
