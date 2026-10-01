@@ -1,6 +1,7 @@
 """Simulator issuer and development signer keys."""
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -54,8 +55,9 @@ def _read_owner_only_file(path: Path) -> bytes:
     """Read a regular file owned by this user with no group/other bits, through one fd."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        raise ValueError("INVALID_KEY_FILE") from None
+    except OSError as error:
+        code = "INSECURE_KEY_FILE" if error.errno == errno.ELOOP else "INVALID_KEY_FILE"
+        raise ValueError(code) from None
     try:
         status = os.fstat(fd)
         if not stat.S_ISREG(status.st_mode):

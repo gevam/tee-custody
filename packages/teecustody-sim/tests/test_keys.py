@@ -252,16 +252,29 @@ def _replace_with_encrypted_pem(path: Path) -> None:
     path.write_bytes(_encrypted_pem())
 
 
+def _make_unreadable(path: Path) -> None:
+    path.chmod(0o000)
+
+
 @pytest.mark.parametrize(
     "replace",
-    [
-        _replace_with_symlink_to_valid_key,
-        _replace_with_dangling_symlink,
-        _replace_with_directory,
-        _replace_with_fifo,
-        _replace_with_encrypted_pem,
-    ],
-    ids=["symlink", "dangling-symlink", "directory", "fifo", "encrypted-pem"],
+    [_replace_with_symlink_to_valid_key, _replace_with_dangling_symlink],
+    ids=["symlink", "dangling-symlink"],
+)
+def test_load_or_create_rejects_a_key_path_that_is_a_symlink(
+    tmp_path: Path, key_files: dict[str, bytes], replace: Callable[[Path], None]
+) -> None:
+    _seed_state(tmp_path, key_files)
+    replace(tmp_path / "keys" / "signer-1.pem")
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path, 2)
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [_replace_with_directory, _replace_with_fifo, _replace_with_encrypted_pem, _make_unreadable],
+    ids=["directory", "fifo", "encrypted-pem", "unreadable"],
 )
 def test_load_or_create_rejects_a_key_path_that_is_not_a_plain_unencrypted_key_file(
     tmp_path: Path, key_files: dict[str, bytes], replace: Callable[[Path], None]
