@@ -38,6 +38,12 @@ const PROFILE_KEYS = [
     "expected_env_hash",
 ] as const;
 const SIGNER_KEYS = ["key_id", "algorithm"] as const;
+// FACTS F-11; the algorithm a signer uses (D-016). The client never verifies image signatures.
+const SIGNER_ALGORITHMS: ReadonlySet<string> = new Set<SignerAlgorithm>([
+    "RSASSA_PSS_SHA256",
+    "RSASSA_PKCS1V15_SHA256",
+    "ECDSA_P256_SHA256",
+]);
 const MAX_AUDIENCE_LENGTH = 2048;
 const MAX_TOKEN_AGE_S = 86_400;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
@@ -138,17 +144,26 @@ function readStringSet(
     return out;
 }
 
+function readAlgorithm(value: unknown, field: string): SignerAlgorithm {
+    if (!SIGNER_ALGORITHMS.has(readString(value, field))) {
+        throw fail(field, "UNSUPPORTED_ALGORITHM");
+    }
+    return value as SignerAlgorithm;
+}
+
 function readSignerKeys(value: unknown): SignerKey[] {
     const out: SignerKey[] = [];
     readArray(value, "signer_keys").forEach((entry, index) => {
         const path = `signer_keys[${String(index)}]`;
         const record = readObject(entry, path, SIGNER_KEYS);
-        const keyId = readString(record.key_id, `${path}.key_id`);
+        const keyId = readHash(record.key_id, `${path}.key_id`);
         if (out.some((key) => key.key_id === keyId)) {
             throw fail(`${path}.key_id`);
         }
-        const algorithm = readString(record.algorithm, `${path}.algorithm`) as SignerAlgorithm;
-        out.push({ key_id: keyId, algorithm });
+        out.push({
+            key_id: keyId,
+            algorithm: readAlgorithm(record.algorithm, `${path}.algorithm`),
+        });
     });
     return out;
 }

@@ -647,3 +647,67 @@ describe("parseTrustProfile keeps development and production anchors apart", () 
         },
     );
 });
+
+// Criterion 6a (SR-1 D-016 (f), (i) as ruled): signer entries are {key_id, algorithm} with no key bytes.
+describe("parseTrustProfile enforces the signer entry shape", () => {
+    it.each([
+        [
+            "an spki member",
+            signer(0, { spki: "MCowBQYDK2VwAyEA" }),
+            "INVALID_PROFILE",
+            "signer_keys[0].spki",
+        ],
+        [
+            "a 63-char key_id",
+            signer(1, { key_id: KEY_B.slice(1) }),
+            "INVALID_PROFILE",
+            "signer_keys[1].key_id",
+        ],
+        [
+            "a 65-char key_id",
+            signer(1, { key_id: `${KEY_B}0` }),
+            "INVALID_PROFILE",
+            "signer_keys[1].key_id",
+        ],
+        [
+            "an uppercase key_id",
+            signer(0, { key_id: "0A".repeat(32) }),
+            "INVALID_PROFILE",
+            "signer_keys[0].key_id",
+        ],
+        [
+            "a sha256:-prefixed key_id",
+            signer(0, { key_id: `sha256:${KEY_A}` }),
+            "INVALID_PROFILE",
+            "signer_keys[0].key_id",
+        ],
+        ["an empty key_id", signer(0, { key_id: "" }), "INVALID_PROFILE", "signer_keys[0].key_id"],
+        [
+            "algorithm ED25519",
+            signer(2, { algorithm: "ED25519" }),
+            "UNSUPPORTED_ALGORITHM",
+            "signer_keys[2].algorithm",
+        ],
+        [
+            "algorithm HMAC_SHA256",
+            signer(0, { algorithm: "HMAC_SHA256" }),
+            "UNSUPPORTED_ALGORITHM",
+            "signer_keys[0].algorithm",
+        ],
+        [
+            "algorithm in lower case",
+            signer(0, { algorithm: "rsassa_pss_sha256" }),
+            "UNSUPPORTED_ALGORITHM",
+            "signer_keys[0].algorithm",
+        ],
+        [
+            "algorithm RS256 (the JWS name, not an F-11 value)",
+            signer(0, { algorithm: "RS256" }),
+            "UNSUPPORTED_ALGORITHM",
+            "signer_keys[0].algorithm",
+        ],
+    ] as const)("rejects %s", (_name, mutation, code, field) => {
+        const error = profileError(apply(developmentJson, mutation));
+        expect([error.code, error.field]).toEqual([code, field]);
+    });
+});
