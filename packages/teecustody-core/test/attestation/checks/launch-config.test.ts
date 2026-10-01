@@ -258,3 +258,46 @@ describe("checkLaunchConfig: edge cases", () => {
         ).resolves.toBeUndefined();
     });
 });
+
+// The profile pins exactly the value a coercing parser would produce, so only the type check can reject.
+describe("checkLaunchConfig: wrong types are rejected even when a coerced value would match", () => {
+    const coerced: readonly {
+        readonly name: string;
+        readonly pinnedArgs: readonly string[];
+        readonly pinnedEnv: Readonly<Record<string, string>>;
+        readonly container: JsonObject;
+    }[] = [
+        {
+            name: "args an object, profile pins []",
+            pinnedArgs: [],
+            pinnedEnv: ENV,
+            container: { args: {}, env: ENV },
+        },
+        {
+            name: "args [1], profile pins ['1']",
+            pinnedArgs: ["1"],
+            pinnedEnv: ENV,
+            container: { args: [1], env: ENV },
+        },
+        {
+            name: "env an array, profile pins {}",
+            pinnedArgs: ARGS,
+            pinnedEnv: {},
+            container: { args: ARGS, env: [] },
+        },
+        {
+            name: "env {A: 1}, profile pins {A: '1'}",
+            pinnedArgs: ARGS,
+            pinnedEnv: { A: "1" },
+            container: { args: ARGS, env: { A: 1 } },
+        },
+    ];
+
+    it.each(coerced)("$name → launch_config/CLAIM_MISMATCH", async (c) => {
+        const profile = await profileFor(c.pinnedArgs, c.pinnedEnv);
+        const err = await rejection(
+            checkLaunchConfig(tokenWithContainer(c.container), profile, DEPS),
+        );
+        expect([err.check, err.code]).toEqual(["launch_config", "CLAIM_MISMATCH"]);
+    });
+});
