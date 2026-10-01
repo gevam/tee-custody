@@ -1,15 +1,8 @@
 // T-09 unit criteria for the canonical CBOR codec (spec/wire/README.md rules 1-5, SR-3, SR-11).
 import { describe, expect, it } from "vitest";
 
-import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
-import { WireError, type CanonicalValue, type DecodeLimits } from "../../src/wire/types.js";
-
-// The limits of spec/vectors/wire/canonical-cbor.json.
-const VECTOR_LIMITS: DecodeLimits = { maxBytes: 1024, maxDepth: 4, maxItems: 64 };
-
-function fromHex(hex: string): Uint8Array {
-    return new Uint8Array(Buffer.from(hex, "hex"));
-}
+import { encodeCanonical } from "../../src/wire/cbor.js";
+import { WireError, type CanonicalValue } from "../../src/wire/types.js";
 
 function toHex(bytes: Uint8Array): string {
     return Buffer.from(bytes).toString("hex");
@@ -28,6 +21,11 @@ function wireErrorCode(action: () => unknown): string {
     return "NO_ERROR";
 }
 
+// Values a caller can only produce by bypassing the type system.
+function outsideModel(value: unknown): CanonicalValue {
+    return value as CanonicalValue;
+}
+
 describe("encodeCanonical", () => {
     it("orders map keys by their encoded bytes (criterion 3)", () => {
         const value: CanonicalValue = new Map<string, CanonicalValue>([
@@ -40,5 +38,22 @@ describe("encodeCanonical", () => {
             ["b", 1],
         ]);
         expect(toHex(encodeCanonical(reversed))).toBe("a261620162616102");
+    });
+
+    it.each([
+        ["1.5", 1.5],
+        ["-0", -0],
+        ["NaN", Number.NaN],
+        ["2n ** 64n", 2n ** 64n],
+        ["{a: 1}", outsideModel({ a: 1 })],
+        ["undefined", outsideModel(undefined)],
+        ["Map with a non-string key", outsideModel(new Map([[1, 2]]))],
+        ["Uint16Array", outsideModel(new Uint16Array(1))],
+    ])("refuses %s with UNSUPPORTED_TYPE (criterion 4)", (_name, value) => {
+        expect(wireErrorCode(() => encodeCanonical(value))).toBe("UNSUPPORTED_TYPE");
+    });
+
+    it("encodes true as f5 (criterion 4)", () => {
+        expect(toHex(encodeCanonical(true))).toBe("f5");
     });
 });

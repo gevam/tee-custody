@@ -12,6 +12,10 @@ const MAJOR_MAP = 5;
 const MAJOR_TAG = 6;
 const MAJOR_SIMPLE = 7;
 
+function fail(code: WireErrorCode): never {
+    throw new WireError(code);
+}
+
 class ByteWriter {
     private buffer = new Uint8Array(64);
     private length = 0;
@@ -71,7 +75,20 @@ function encodeText(writer: ByteWriter, text: string): void {
     writer.writeBytes(bytes);
 }
 
-type EncodeTask = { readonly raw: Bytes } | { readonly value: CanonicalValue };
+const INTEGER_BOUND = 2n ** 64n;
+
+function encodeInteger(writer: ByteWriter, integer: bigint): void {
+    if (integer >= INTEGER_BOUND || integer < -INTEGER_BOUND) {
+        fail("UNSUPPORTED_TYPE");
+    }
+    if (integer >= 0n) {
+        writer.writeHead(MAJOR_UNSIGNED, integer);
+    } else {
+        writer.writeHead(MAJOR_NEGATIVE, -1n - integer);
+    }
+}
+
+type EncodeTask = { readonly raw: Bytes } | { readonly value: unknown };
 
 export function encodeCanonical(value: CanonicalValue): Bytes {
     const writer = new ByteWriter();
@@ -86,39 +103,41 @@ export function encodeCanonical(value: CanonicalValue): Bytes {
             writer.writeByte(0xf6);
         } else if (typeof current === "boolean") {
             writer.writeByte(current ? 0xf5 : 0xf4);
-        } else if (typeof current === "number" || typeof current === "bigint") {
-            const integer = BigInt(current);
-            if (integer >= 0n) {
-                writer.writeHead(MAJOR_UNSIGNED, integer);
-            } else {
-                writer.writeHead(MAJOR_NEGATIVE, -1n - integer);
+        } else if (typeof current === "number") {
+            if (!Number.isSafeInteger(current) || Object.is(current, -0)) {
+                fail("UNSUPPORTED_TYPE");
             }
+            encodeInteger(writer, BigInt(current));
+        } else if (typeof current === "bigint") {
+            encodeInteger(writer, current);
         } else if (typeof current === "string") {
             encodeText(writer, current);
         } else if (current instanceof Uint8Array) {
             writer.writeHead(MAJOR_BYTES, current.length);
             writer.writeBytes(current);
         } else if (current instanceof Map) {
-            const entries: { key: Bytes; value: CanonicalValue }[] = [];
-            for (const [key, entryValue] of current as ReadonlyMap<string, CanonicalValue>) {
+            const entries: { key: Bytes; value: unknown }[] = [];
+            for (const [key, entryValue] of current as ReadonlyMap<unknown, unknown>) {
+                if (typeof key !== "string") {
+                    fail("UNSUPPORTED_TYPE");
+                }
                 const keyWriter = new ByteWriter();
                 encodeText(keyWriter, key);
                 entries.push({ key: keyWriter.finish(), value: entryValue });
             }
             entries.sort((a, b) => compareBytes(a.key, b.key));
             writer.writeHead(MAJOR_MAP, entries.length);
-            for (let index = entries.length - 1; index >= 0; index--) {
-                const entry = entries[index];
-                if (entry !== undefined) {
-                    tasks.push({ value: entry.value }, { raw: entry.key });
-                }
+            for (const entry of entries.reverse()) {
+                tasks.push({ value: entry.value }, { raw: entry.key });
             }
-        } else {
-            const items = current as readonly CanonicalValue[];
+        } else if (Array.isArray(current)) {
+            const items = current as readonly unknown[];
             writer.writeHead(MAJOR_ARRAY, items.length);
             for (let index = items.length - 1; index >= 0; index--) {
                 tasks.push({ value: items[index] ?? null });
             }
+        } else {
+            fail("UNSUPPORTED_TYPE");
         }
     }
     return writer.finish();
@@ -145,10 +164,6 @@ type Frame = ArrayFrame | MapFrame;
 
 // Smallest argument each additional-information width may carry in shortest form (rule 5c).
 const SHORTEST_MINIMUM: readonly bigint[] = [24n, 0x100n, 0x10000n, 0x100000000n];
-
-function fail(code: WireErrorCode): never {
-    throw new WireError(code);
-}
 
 class Reader {
     position = 0;
