@@ -104,7 +104,7 @@ describe("SR-1 discovery issuer and jwks_uri origin", () => {
         const http = httpWith({
             [DISCOVERY_URL]: json({ issuer: "https://other.invalid", jwks_uri: JWKS_URL }),
         });
-        expectCheck((await verifyWith(http)).err, "issuer", "UNTRUSTED_SIGNER");
+        expectCheck((await verifyWith(http)).err, "signature", "UNTRUSTED_SIGNER");
     });
 
     it.each([
@@ -115,7 +115,7 @@ describe("SR-1 discovery issuer and jwks_uri origin", () => {
         ["different host", "http://localhost:8791/jwks"],
     ])("rejects jwks_uri with %s", async (_n, uri) => {
         const http = httpWith({ [DISCOVERY_URL]: json({ issuer: ISSUER, jwks_uri: uri }) });
-        expectCheck((await verifyWith(http)).err, "issuer", "UNTRUSTED_SIGNER");
+        expectCheck((await verifyWith(http)).err, "signature", "UNTRUSTED_SIGNER");
     });
 
     it("accepts a path-only difference in jwks_uri", async () => {
@@ -137,7 +137,7 @@ describe("SR-1 discovery issuer and jwks_uri origin", () => {
 
     it("rejects an oversized discovery document", async () => {
         const { err } = await verifyWith(fx.http, undefined, 16);
-        expectCheck(err, "issuer", "UNTRUSTED_SIGNER");
+        expectCheck(err, "signature", "UNTRUSTED_SIGNER");
     });
 
     it.each(["not json", "[1,2,3]", "", "null"])(
