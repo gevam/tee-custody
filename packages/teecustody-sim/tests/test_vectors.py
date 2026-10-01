@@ -16,7 +16,14 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody.wire import DecodeLimits, decode, encode
-from teecustody_sim import NEGATIVE_CASES, generate_suite
+from teecustody_sim import (
+    NEGATIVE_CASES,
+    SIM_ISSUER,
+    LaunchConfig,
+    SimKeys,
+    build_trust_profile,
+    generate_suite,
+)
 
 NOW = 1_900_000_000
 SUITE_LIMITS = DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384)
@@ -35,6 +42,21 @@ SUITE_KEYS = {
 CASE_KEYS = {"id", "token", "expect", "check", "error_code", "altered", "debug_event"}
 AUDIENCE = "https://vectors.teecustody.test/tee"
 UNSIGNED_CASES = {"alg_none", "token_signature_corrupted", "debug_bad_signature"}
+VECTOR_LAUNCH = LaunchConfig(
+    "localhost/teecustody-vectors:1",
+    "sha256:" + hashlib.sha256(b"teecustody-sim vector image").hexdigest(),
+    ("/app/workload",),
+    (("PYTHONUNBUFFERED", "1"),),
+)
+DEV_DISCOVERY_URL = "http://127.0.0.1:8791/.well-known/openid-configuration"
+DEV_JWKS_ORIGIN = "http://127.0.0.1:8791"
+DEV_JWKS_URL = "http://127.0.0.1:8791/jwks"
+GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com"
+GOOGLE_DISCOVERY_URL = GOOGLE_ISSUER + "/.well-known/openid-configuration"
+GOOGLE_JWKS_URI = (
+    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/"
+    "signer@confidentialspace-sign.iam.gserviceaccount.com"
+)
 _ABSENT = object()
 
 
@@ -119,6 +141,29 @@ def suite_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def suite(suite_path: Path) -> dict[str, Any]:
     return _load(suite_path)
+
+
+class GeneratedSuite:
+    def __init__(self, suite: dict[str, Any], keys: list[SimKeys]) -> None:
+        self.suite = suite
+        self.keys = keys
+
+
+@pytest.fixture(scope="module")
+def observed(tmp_path_factory: pytest.TempPathFactory) -> GeneratedSuite:
+    """A suite plus the `SimKeys` the generator created, in creation order."""
+    created: list[SimKeys] = []
+    real_generate = SimKeys.generate
+
+    def spy(signers_required: int) -> SimKeys:
+        keys = real_generate(signers_required)
+        created.append(keys)
+        return keys
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SimKeys, "generate", spy)
+        path = generate_suite(tmp_path_factory.mktemp("observed"), now=NOW)
+    return GeneratedSuite(_load(path), created)
 
 
 def test_suite_is_written_under_attestation_in_the_output_directory(suite_path: Path) -> None:
@@ -221,3 +266,141 @@ def test_each_case_payload_differs_from_valid_exactly_at_its_altered_paths(
             assert _value_at(payload, path) != _value_at(valid, path), (case["id"], path)
             expected, actual = _without(expected, path), _without(actual, path)
         assert actual == expected, case["id"]
+
+
+def test_generator_uses_two_fresh_two_signer_key_sets(observed: GeneratedSuite) -> None:
+    assert len(observed.keys) == 2
+    assert [len(keys.signers) for keys in observed.keys] == [2, 2]
+
+
+def test_profile_json_is_the_development_profile_for_the_suite_keys_and_launch(
+    observed: GeneratedSuite,
+) -> None:
+    expected = build_trust_profile(
+        discovery_url=DEV_DISCOVERY_URL,
+        jwks_origin=DEV_JWKS_ORIGIN,
+        expected_audience=AUDIENCE,
+        launch=VECTOR_LAUNCH,
+        signers=observed.keys[0].signers,
+        signers_required=2,
+    )
+
+    assert json.loads(observed.suite["profile_json"]) == expected
+
+
+def test_development_profile_pins_the_signers_the_valid_token_lists(
+    suite: dict[str, Any],
+) -> None:
+    profile = json.loads(suite["profile_json"])
+    payload = _jws_part(suite["cases"][0]["token"], 1)
+    listed = payload["submods"]["container"]["image_signatures"]
+
+    assert [entry["key_id"] for entry in profile["signer_keys"]] == [
+        entry["key_id"] for entry in listed
+    ]
+
+
+def test_http_serves_the_simulator_discovery_document_and_issuer_jwks(
+    observed: GeneratedSuite,
+) -> None:
+    http = observed.suite["http"]
+
+    assert http[DEV_DISCOVERY_URL] == (
+        b'{"claims_supported":["aud","dbgstat","eat_nonce","exp","hwmodel","iat","iss","nbf",'
+        b'"secboot","submods","swname"],"id_token_signing_alg_values_supported":["RS256"],'
+        b'"issuer":"https://tee-sim.localhost","jwks_uri":"http://127.0.0.1:8791/jwks",'
+        b'"response_types_supported":["id_token"],"scopes_supported":["openid"],'
+        b'"subject_types_supported":["public"]}'
+    )
+    assert (
+        http[DEV_JWKS_URL]
+        == json.dumps(
+            observed.keys[0].issuer_jwks(), sort_keys=True, separators=(",", ":")
+        ).encode()
+    )
+
+
+def test_production_profile_is_the_production_shaped_fixture(observed: GeneratedSuite) -> None:
+    development = json.loads(observed.suite["profile_json"])
+    fixture_signers = observed.keys[1].signers
+
+    assert json.loads(observed.suite["production_profile_json"]) == {
+        "profile_version": 1,
+        "profile_kind": "production",
+        "token_type": "OIDC",
+        "issuer": GOOGLE_ISSUER,
+        "discovery_url": GOOGLE_DISCOVERY_URL,
+        "jwks_origin": "https://www.googleapis.com",
+        "expected_audience": AUDIENCE,
+        "token_max_age_s": 3600,
+        "allowed_hwmodels": ["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"],
+        "allowed_digests": [VECTOR_LAUNCH.image_digest],
+        "signer_keys": [
+            {"key_id": hashlib.sha256(signer.spki_der).hexdigest(), "algorithm": signer.algorithm}
+            for signer in fixture_signers
+        ],
+        "signers_required": 2,
+        "expected_args_hash": development["expected_args_hash"],
+        "expected_env_hash": development["expected_env_hash"],
+    }
+
+
+def test_production_profile_contains_no_development_anchor(suite: dict[str, Any]) -> None:
+    text = suite["production_profile_json"]
+    development_key_ids = [
+        entry["key_id"] for entry in json.loads(suite["profile_json"])["signer_keys"]
+    ]
+
+    assert SIM_ISSUER not in text
+    assert "tee-sim" not in text
+    assert "127.0.0.1" not in text
+    assert "localhost" not in text
+    assert "SIMULATED" not in text
+    assert all(key_id not in text for key_id in development_key_ids)
+
+
+def test_http_serves_the_google_discovery_and_a_public_fixture_jwks(
+    suite: dict[str, Any],
+) -> None:
+    http = suite["http"]
+    assert set(http) == {DEV_DISCOVERY_URL, DEV_JWKS_URL, GOOGLE_DISCOVERY_URL, GOOGLE_JWKS_URI}
+    assert (
+        http[GOOGLE_DISCOVERY_URL]
+        == json.dumps(
+            {"issuer": GOOGLE_ISSUER, "jwks_uri": GOOGLE_JWKS_URI},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+
+    (jwk,) = _served_json(suite, GOOGLE_JWKS_URI)["keys"]
+    assert set(jwk) == {"kty", "alg", "use", "kid", "n", "e"}
+    assert (jwk["kty"], jwk["alg"], jwk["use"], jwk["kid"]) == (
+        "RSA",
+        "RS256",
+        "sig",
+        "production-fixture",
+    )
+    assert int.from_bytes(_b64url_decode(jwk["n"]), "big").bit_length() == 2048
+    assert int.from_bytes(_b64url_decode(jwk["e"]), "big") == 65537
+
+
+def test_valid_token_does_not_verify_under_the_production_fixture_jwks(
+    suite: dict[str, Any],
+) -> None:
+    token = suite["cases"][0]["token"]
+    header_segment, payload_segment, signature_segment = token.split(".")
+    (jwk,) = _served_json(suite, GOOGLE_JWKS_URI)["keys"]
+    fixture_key = rsa.RSAPublicNumbers(
+        int.from_bytes(_b64url_decode(jwk["e"]), "big"),
+        int.from_bytes(_b64url_decode(jwk["n"]), "big"),
+    ).public_key()
+
+    assert _jws_part(token, 0)["kid"] != jwk["kid"]
+    with pytest.raises(InvalidSignature):
+        fixture_key.verify(
+            _b64url_decode(signature_segment),
+            f"{header_segment}.{payload_segment}".encode("ascii"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )

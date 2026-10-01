@@ -1,11 +1,13 @@
 """Cross-implementation vector suite and differential corpus generation."""
 
+import base64
 import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Final
 
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -16,6 +18,7 @@ from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
     DEFAULT_SIGNERS_REQUIRED,
     DEFAULT_TOKEN_MAX_AGE_S,
+    JWS_ALG,
     SIM_ISSUER,
     SIM_TOKEN_TTL_S,
 )
@@ -55,6 +58,20 @@ _DISCOVERY_DOCUMENT: Final[dict[str, JsonValue]] = {
     "subject_types_supported": ["public"],
 }
 
+# Production-shaped fixture (FACTS F-07, F-09 as amended). Its signer entries and JWKS key are
+# throwaway fixture keys: the profile only has to look like production, never to trust anything.
+_GOOGLE_ISSUER: Final = "https://confidentialcomputing.googleapis.com"
+_GOOGLE_DISCOVERY_URL: Final = _GOOGLE_ISSUER + "/.well-known/openid-configuration"
+_GOOGLE_JWKS_ORIGIN: Final = "https://www.googleapis.com"
+_GOOGLE_JWKS_URI: Final = (
+    _GOOGLE_JWKS_ORIGIN
+    + "/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
+)
+_PRODUCTION_HWMODELS: Final[list[JsonValue]] = ["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"]
+_FIXTURE_KID: Final = "production-fixture"
+_FIXTURE_RSA_BITS: Final = 2048
+_FIXTURE_RSA_PUBLIC_EXPONENT: Final = 65537
+
 
 def _json_text(value: JsonValue) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -62,6 +79,51 @@ def _json_text(value: JsonValue) -> str:
 
 def _json_bytes(value: JsonValue) -> bytes:
     return _json_text(value).encode()
+
+
+def _b64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _fixture_jwks() -> dict[str, JsonValue]:
+    """A JWKS holding one fresh RSA-2048 public key; the private half is discarded."""
+    numbers = (
+        rsa.generate_private_key(
+            public_exponent=_FIXTURE_RSA_PUBLIC_EXPONENT, key_size=_FIXTURE_RSA_BITS
+        )
+        .public_key()
+        .public_numbers()
+    )
+    return {
+        "keys": [
+            {
+                "kty": "RSA",
+                "alg": JWS_ALG,
+                "use": "sig",
+                "kid": _FIXTURE_KID,
+                "n": _b64url_uint(numbers.n),
+                "e": _b64url_uint(numbers.e),
+            }
+        ]
+    }
+
+
+def _production_profile() -> dict[str, JsonValue]:
+    profile = build_trust_profile(
+        discovery_url=_GOOGLE_DISCOVERY_URL,
+        jwks_origin=_GOOGLE_JWKS_ORIGIN,
+        expected_audience=_AUDIENCE,
+        launch=_LAUNCH,
+        signers=SimKeys.generate(DEFAULT_SIGNERS_REQUIRED).signers,
+        signers_required=DEFAULT_SIGNERS_REQUIRED,
+    )
+    profile.update(
+        profile_kind="production",
+        issuer=_GOOGLE_ISSUER,
+        allowed_hwmodels=_PRODUCTION_HWMODELS,
+    )
+    return profile
 
 
 def _cases(minter: TokenMinter, nonce: str, now: int) -> list[CanonicalValue]:
@@ -120,10 +182,14 @@ def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
         "verify_at_ms": now * 1000,
         "identity_public_key": identity_public_key,
         "profile_json": _json_text(profile),
-        "production_profile_json": "{}",
+        "production_profile_json": _json_text(_production_profile()),
         "http": {
             _DISCOVERY_URL: _json_bytes(_DISCOVERY_DOCUMENT),
             _JWKS_URL: _json_bytes(keys.issuer_jwks()),
+            _GOOGLE_DISCOVERY_URL: _json_bytes(
+                {"issuer": _GOOGLE_ISSUER, "jwks_uri": _GOOGLE_JWKS_URI}
+            ),
+            _GOOGLE_JWKS_URI: _json_bytes(_fixture_jwks()),
         },
         "cases": _cases(minter, nonce, now),
     }
