@@ -1,6 +1,6 @@
 // §6.3–§6.7 claim checks. Each throws AttestationError with its own check id. Implemented by T-12.
 import { hexEncode } from "../../encoding.js";
-import type { JsonValue } from "../../json.js";
+import { getPath, type JsonValue } from "../../json.js";
 import {
     AttestationError,
     type AttestationCheckId,
@@ -11,6 +11,10 @@ import {
 
 const IDENTITY_NONCE_BYTES = 32; // API.md §A: SHA-256(IK public key bytes)
 const DBGSTAT_PRODUCTION = "disabled-since-boot"; // FACTS F-14
+const SUPPORT_ATTRIBUTES_PATH = ["submods", "confidential_space", "support_attributes"];
+const REQUIRED_SUPPORT_ATTRIBUTE = "STABLE";
+// FACTS F-15 / D-017: fixed in code; EXPERIMENTAL and undocumented values are rejected.
+const ALLOWED_SUPPORT_ATTRIBUTES: ReadonlySet<string> = new Set(["LATEST", "STABLE", "USABLE"]);
 
 // §6.3
 export function checkAudience(t: ParsedToken, p: TrustProfile): void {
@@ -97,7 +101,17 @@ export function isDebugMode(t: ParsedToken): boolean {
 
 // §6.7
 export function checkSupportAttributes(t: ParsedToken): void {
-    throw new Error("NOT_IMPLEMENTED: T-12");
+    const attributes = getPath(t.claims, SUPPORT_ATTRIBUTES_PATH);
+    if (attributes === undefined) {
+        throw new AttestationError("CLAIM_MISSING", "support_attributes");
+    }
+    if (
+        !isJsonArray(attributes) ||
+        !attributes.includes(REQUIRED_SUPPORT_ATTRIBUTE) ||
+        !attributes.every((a) => typeof a === "string" && ALLOWED_SUPPORT_ATTRIBUTES.has(a))
+    ) {
+        throw new AttestationError("CLAIM_MISMATCH", "support_attributes");
+    }
 }
 
 function isJsonArray(v: JsonValue): v is readonly JsonValue[] {

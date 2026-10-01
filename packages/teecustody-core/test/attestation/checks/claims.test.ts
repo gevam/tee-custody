@@ -4,6 +4,7 @@ import {
     checkAudience,
     checkNonce,
     checkPlatform,
+    checkSupportAttributes,
     checkTime,
     isDebugMode,
 } from "../../../src/attestation/checks/claims.js";
@@ -269,5 +270,50 @@ describe("isDebugMode (§6.6 / SR-12)", () => {
         ["dbgstat as a one-element array", { dbgstat: ["disabled-since-boot"] }, true],
     ])("given %s returns %s and never throws", (_label, claims, debug) => {
         expect(isDebugMode(token(claims))).toBe(debug);
+    });
+});
+
+const supportAttributes = (claims: JsonObject) => (): void => {
+    checkSupportAttributes(token(claims));
+};
+
+function withAttributes(value: JsonValue): JsonObject {
+    return { submods: { confidential_space: { support_attributes: value } } };
+}
+
+describe("checkSupportAttributes (§6.7)", () => {
+    it.each<[string, JsonValue]>([
+        ["all documented production values", ["LATEST", "STABLE", "USABLE"]],
+        ["STABLE alone", ["STABLE"]],
+        ["USABLE and STABLE", ["USABLE", "STABLE"]],
+    ])("passes on %s", (_label, value) => {
+        expect(supportAttributes(withAttributes(value))).not.toThrow();
+    });
+
+    it.each<[string, JsonObject]>([
+        ["absent submods", {}],
+        ["absent confidential_space", { submods: { container: {} } }],
+        ["absent support_attributes", { submods: { confidential_space: {} } }],
+        ["submods not an object", { submods: "confidential_space" }],
+    ])("rejects %s with CLAIM_MISSING", (_label, claims) => {
+        expectRejected(supportAttributes(claims), "support_attributes", "CLAIM_MISSING");
+    });
+
+    it.each<[string, JsonValue]>([
+        ["no STABLE", ["LATEST", "USABLE"]],
+        ["a string instead of an array", "STABLE"],
+        ["EXPERIMENTAL alongside STABLE", ["STABLE", "EXPERIMENTAL"]],
+        ["an undocumented value alongside STABLE", ["STABLE", "FUTURE"]],
+        ["an empty array", []],
+        ["a non-string element", ["STABLE", 42]],
+        ["lowercase stable", ["stable"]],
+        ["the derivative concatenated form", ["LATEST=STABLE=USABLE"]],
+        ["null", null],
+    ])("rejects %s with CLAIM_MISMATCH", (_label, value) => {
+        expectRejected(
+            supportAttributes(withAttributes(value)),
+            "support_attributes",
+            "CLAIM_MISMATCH",
+        );
     });
 });
