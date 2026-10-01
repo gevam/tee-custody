@@ -21,7 +21,7 @@ types 0–6 (floats `UNSUPPORTED_TYPE` at any value), counts map keys toward dep
 (accept ⇒ re-encode equal) and 9 (integer fields are `int`, not `bool`/float). Human-gated (`spec/wire`,
 `spec/vectors`); no `proto` bump (accepted set unchanged, nothing merged). T-04/T-09 reproduce the new rule text
 and gain allocation-guard / 2^53+1 / `__proto__` criteria. T-14 (now STRONG) adds a two-language semgrep layer
-against lint-ban bypasses (rules 7–13, criterion 7); the ESLint tightening stays in T-02 (Wave 0). No ownership
+against lint-ban bypasses (rules 7–15, criterion 7); the ESLint tightening stays in T-02 (Wave 0). No ownership
 change; file sets remain disjoint per wave.
 
 ## Waves
