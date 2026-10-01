@@ -91,7 +91,7 @@ describe("NFR-7 given values with hand-derived canonical encodings", () => {
     });
 
     it("keeps the proto-polluting key __proto__ as ordinary data", () => {
-        const decoded = decodeCanonical(bytes("a1695f5f70726f746f5f01"), LIMITS) as ReadonlyMap<
+        const decoded = decodeCanonical(bytes("a1695f5f70726f746f5f5f01"), LIMITS) as ReadonlyMap<
             string,
             CanonicalValue
         >;
