@@ -46,6 +46,8 @@ _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
 _LAUNCHER_DIR_NAME: Final = "launcher"
 _DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
+_ERROR_CODE: Final = re.compile(r"[A-Z][A-Z0-9_]*", re.ASCII)
+_INTERNAL: Final = "INTERNAL"
 _STOP_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM)
 
 
@@ -279,6 +281,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _error_line(error: Exception) -> tuple[str, int]:
+    """The one stderr line and exit status for `error`: a stable code, never exception text."""
+    if isinstance(error, SimConfigError):
+        return error.code.value, 2
+    if type(error) is ValueError and _ERROR_CODE.fullmatch(str(error)):
+        return str(error), 2
+    return _INTERNAL, 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         options = _parser().parse_args(argv)
@@ -287,7 +298,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         code: int = options.handler(options)
-    except (SimConfigError, ValueError) as error:
-        sys.stderr.write(f"{error}\n")
-        return 2
+    except Exception as error:  # noqa: BLE001 - every failure is reduced to a code line
+        line, status = _error_line(error)
+        sys.stderr.write(f"{line}\n")
+        return status
     return code

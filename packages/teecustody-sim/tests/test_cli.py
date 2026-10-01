@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import shutil
 import signal
 import stat
@@ -18,6 +19,7 @@ import pytest
 
 from teecustody.attest import ConfidentialSpaceLauncher
 from teecustody_sim import (
+    NEGATIVE_CASES,
     ContainerRuntime,
     JsonValue,
     LaunchConfig,
@@ -108,11 +110,39 @@ def state_dir() -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+PRIVATE_JWK_MEMBERS = frozenset({"d", "p", "q", "dp", "dq", "qi", "oth", "k"})
+PRIVATE_JWK_MEMBER_TEXT = re.compile(r'"(?:d|p|q|dp|dq|qi|oth|k)"\s*:')
+# A compact JWS whose header and payload are JSON objects ('{"' encodes to "eyJ").
+JWS = re.compile(r"eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")
+
+
+def _json_members(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value).union(*(_json_members(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_json_members(item) for item in value))
+    return set()
+
+
+def assert_no_key_material(*texts: str) -> None:
+    """SR-7: no PEM private key and no private JWK member, also inside any JWS printed."""
+    for text in texts:
+        assert "PRIVATE KEY" not in text
+        assert PRIVATE_JWK_MEMBER_TEXT.search(text) is None
+        for token in JWS.findall(text):
+            header, payload = token.split(".")[:2]
+            for segment in (header, payload):
+                assert not _json_members(_segment(segment)) & PRIVATE_JWK_MEMBERS
+
+
 @pytest.fixture
 def cli(capsys: pytest.CaptureFixture[str]) -> Cli:
+    """Runs `main` and checks every invocation's stdout and stderr for key material (SR-7)."""
+
     def run(*argv: str) -> tuple[int, str, str]:
         code = main(list(argv))
         captured = capsys.readouterr()
+        assert_no_key_material(captured.out, captured.err)
         return code, captured.out, captured.err
 
     return run
@@ -266,6 +296,7 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert [signer.key_id for signer in call["signers"]] == expected_ids
     assert out_file.read_text() == json.dumps(builder(), indent=2, sort_keys=True) + "\n"
     assert stat.S_IMODE(out_file.stat().st_mode) == 0o644
+    assert_no_key_material(out_file.read_text())
 
 
 class RecordingGenerator:
@@ -525,6 +556,7 @@ def test_serve_runs_until_a_signal_then_stops_and_removes_the_socket(
     assert _serve_until_signal(argv, signals, signum, request_a_token) == 0
 
     captured = capsys.readouterr()
+    assert_no_key_material(captured.out, captured.err)
     assert captured.err == ""
     [line] = captured.out.splitlines()
     issuer, discovery, socket_field = line.split(" ")
@@ -559,7 +591,9 @@ def test_serve_with_allow_non_loopback_warns_on_stderr_at_every_start(
     warnings = []
     for _ in range(2):
         assert _serve_until_signal(argv, signals, signal.SIGTERM) == 0
-        warnings.append(json.loads(capsys.readouterr().err))
+        captured = capsys.readouterr()
+        assert_no_key_material(captured.out, captured.err)
+        warnings.append(json.loads(captured.err))
 
     assert [(w["level"], w["outcome"]) for w in warnings] == [
         ("WARNING", "SIM_NON_LOOPBACK_BIND"),
@@ -607,3 +641,44 @@ def test_serve_rejects_invalid_arguments_with_a_single_code_line(
 
     assert (code, out, err) == (2, "", "INVALID_ARGUMENT\n")
     assert not (short_dir / "state").exists()
+
+
+class Exploding:
+    """Raises an exception whose text must never reach the terminal."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----"),
+        ValueError('{"d": "c2VjcmV0"}'),
+        ValueError("INVALID_THING with detail"),
+        OSError(13, "Permission denied", "/secret/path"),
+        KeyError("d"),
+    ],
+)
+def test_an_unexpected_exception_prints_only_internal_and_exits_1(
+    cli: Cli, state_dir: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    monkeypatch.setattr(cli_module, "TokenMinter", Exploding(error))
+
+    code, out, err = cli(*_token_args(state_dir))
+
+    assert (code, out, err) == (1, "", "INTERNAL\n")
+
+
+@pytest.mark.parametrize("case_id", [case.case_id for case in NEGATIVE_CASES])
+def test_every_named_case_token_carries_no_key_material(
+    cli: Cli, state_dir: Path, case_id: str
+) -> None:
+    # The `cli` fixture applies the SR-7 check to stdout and stderr.
+    code, out, _ = cli(*_token_args(state_dir, "--case", case_id))
+
+    assert code == 0
+    assert JWS.fullmatch(out.strip()) is not None
