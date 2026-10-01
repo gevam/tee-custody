@@ -123,6 +123,18 @@ def _token(options: argparse.Namespace) -> int:
     return 0
 
 
+def _write_public_file(path: Path, text: str) -> None:
+    """Create or replace `path` with mode 0644, never following a symlink at `path`."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, _PROFILE_FILE_MODE)
+    except OSError:  # ELOOP for a symlink; also a missing parent or a directory at `path`
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        os.fchmod(descriptor, _PROFILE_FILE_MODE)
+        handle.write(text)
+
+
 def _profile(options: argparse.Namespace) -> int:
     state_dir: Path = options.state_dir
     document = _read_state(state_dir)
@@ -135,13 +147,7 @@ def _profile(options: argparse.Namespace) -> int:
         signers=keys.signers,
         signers_required=document["signers_required"],
     )
-    text = json.dumps(profile, indent=2, sort_keys=True) + "\n"
-    descriptor = os.open(
-        options.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _PROFILE_FILE_MODE
-    )
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        os.fchmod(descriptor, _PROFILE_FILE_MODE)
-        handle.write(text)
+    _write_public_file(options.out, json.dumps(profile, indent=2, sort_keys=True) + "\n")
     return 0
 
 

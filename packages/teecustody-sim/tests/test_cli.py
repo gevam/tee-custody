@@ -781,3 +781,56 @@ def test_vectors_writes_into_an_existing_real_output_tree(
 
     assert (code, err) == (0, "")
     assert [name for name, _, _ in recorded_generators] == ["suite", "corpus"]
+
+
+@pytest.fixture
+def recorded_profile(monkeypatch: pytest.MonkeyPatch) -> RecordingProfileBuilder:
+    builder = RecordingProfileBuilder()
+    monkeypatch.setattr(cli_module, "build_trust_profile", builder)
+    return builder
+
+
+@pytest.mark.usefixtures("recorded_profile")
+@pytest.mark.parametrize("dangling", [False, True])
+def test_profile_never_writes_through_a_symlink(
+    cli: Cli, state_dir: Path, tmp_path: Path, dangling: bool
+) -> None:
+    victim = tmp_path / "victim"
+    if not dangling:
+        victim.write_text("untouched")
+    out_file = tmp_path / "dev-profile.json"
+    out_file.symlink_to(victim)
+
+    code, out, err = cli("profile", "--state-dir", str(state_dir), "--out", str(out_file))
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
+    assert victim.exists() is not dangling
+    if not dangling:
+        assert victim.read_text() == "untouched"
+
+
+@pytest.mark.usefixtures("recorded_profile")
+def test_profile_replaces_an_existing_file_and_makes_it_0644(
+    cli: Cli, state_dir: Path, tmp_path: Path
+) -> None:
+    out_file = tmp_path / "dev-profile.json"
+    out_file.write_text("x" * 4096)
+    out_file.chmod(0o600)
+
+    code, _, err = cli("profile", "--state-dir", str(state_dir), "--out", str(out_file))
+
+    assert (code, err) == (0, "")
+    assert json.loads(out_file.read_text())["profile_kind"] == "development"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o644
+
+
+@pytest.mark.usefixtures("recorded_profile")
+@pytest.mark.parametrize("name", ["missing-dir/dev-profile.json", "is-a-dir"])
+def test_profile_reports_an_unusable_output_path_as_invalid_path(
+    cli: Cli, state_dir: Path, tmp_path: Path, name: str
+) -> None:
+    (tmp_path / "is-a-dir").mkdir()
+
+    code, out, err = cli("profile", "--state-dir", str(state_dir), "--out", str(tmp_path / name))
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
