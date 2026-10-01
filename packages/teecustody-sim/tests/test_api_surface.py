@@ -6,20 +6,26 @@ import dataclasses
 import importlib.metadata
 import inspect
 import runpy
+import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 import teecustody_sim
 from teecustody_sim import (
+    DEFAULT_TOKEN_MAX_AGE_S,
     NEGATIVE_CASES,
+    SIM_ISSUER,
+    Alteration,
     AlterClaim,
     ContainerRuntime,
     DropClaim,
     IssuerServer,
+    JsonValue,
     LaunchConfig,
     LauncherServer,
     NamedCase,
@@ -368,119 +374,170 @@ def test_negative_cases_equal_api_catalog_in_order() -> None:
     assert all(isinstance(c, NegativeCase) and isinstance(c.altered, tuple) for c in NEGATIVE_CASES)
 
 
-P = inspect.Parameter
-POS = P.POSITIONAL_OR_KEYWORD
-KW = P.KEYWORD_ONLY
-EMPTY = P.empty
+# API.md §C transcribed verbatim. Each spec is compared by `inspect.Signature` equality, which
+# covers parameter names, order, kinds, defaults, annotations and the return annotation.
+def _spec_image_signature_payload(image_reference: str, image_digest: str) -> bytes: ...
+def _spec_frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str: ...
+def _spec_parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration: ...
+def _spec_main(argv: Sequence[str] | None = None) -> int: ...
+def _spec_launch_config_hashes(
+    args: Sequence[str], env: Sequence[tuple[str, str]]
+) -> tuple[str, str]: ...
+def _spec_build_trust_profile(
+    *,
+    discovery_url: str,
+    jwks_origin: str,
+    expected_audience: str,
+    launch: LaunchConfig,
+    signers: Sequence[SignerKeyMaterial],
+    signers_required: int,
+    token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S,
+) -> dict[str, JsonValue]: ...
+def _spec_generate_suite(out_dir: Path, *, now: int | None = None) -> Path: ...
+def _spec_generate_corpus(out_dir: Path, *, seed: int = 1, count: int = 512) -> Path: ...
+
+
+class _SimConfigErrorSpec:
+    def __init__(self, code: SimConfigErrorCode) -> None: ...
+
+
+class _SignerKeyMaterialSpec:
+    def sign(self, payload: bytes) -> bytes: ...
+
+
+class _SimKeysSpec:
+    @classmethod
+    def generate(cls, signers_required: int) -> SimKeys: ...
+    @classmethod
+    def load_or_create(cls, state_dir: Path, signers_required: int) -> SimKeys: ...
+    def issuer_jwks(self) -> dict[str, JsonValue]: ...
+    def sign_jws(self, signing_input: bytes) -> bytes: ...
+
+
+class _TokenMinterSpec:
+    def __init__(
+        self,
+        keys: SimKeys,
+        launch: LaunchConfig,
+        *,
+        issuer: str = SIM_ISSUER,
+        ttl_s: int,
+        token_max_age_s: int,
+    ) -> None: ...
+    def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]: ...
+    def mint(
+        self,
+        audience: str,
+        nonces: Sequence[str],
+        now: int,
+        alteration: Alteration | None = None,
+    ) -> str: ...
+
+
+class _IssuerServerSpec:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        issuer: str,
+        jwks: Mapping[str, JsonValue],
+        limits: SimLimits,
+    ) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    @property
+    def origin(self) -> str: ...
+
+
+class _LauncherServerSpec:
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        mint: Callable[[str, Sequence[str]], str],
+        limits: SimLimits,
+    ) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+
+
+class _SimulatorSpec:
+    def __init__(
+        self,
+        config: SimulatorConfig,
+        *,
+        environ: Mapping[str, str] | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    @property
+    def issuer_origin(self) -> str: ...
+    @property
+    def discovery_url(self) -> str: ...
+    @property
+    def keys(self) -> SimKeys: ...
+
+
+class _ContainerRuntimeSpec:
+    def __init__(
+        self,
+        executable: Literal["docker", "podman"],
+        *,
+        run: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+    ) -> None: ...
+    def image_digest(self, image: str) -> str: ...
+    def run_workload(
+        self,
+        image: str,
+        *,
+        launcher_dir: Path,
+        args: Sequence[str],
+        env: Sequence[tuple[str, str]],
+    ) -> int: ...
+
+
+def _signature(obj: object) -> inspect.Signature:
+    target = obj.fget if isinstance(obj, property) else obj
+    assert callable(target)
+    return inspect.signature(target, eval_str=True)
+
+
+def _member_pairs(actual: type, spec: type) -> dict[str, tuple[object, object]]:
+    """Every public member (and `__init__`) the spec class declares, paired with the actual one."""
+    names = [n for n in vars(spec) if n == "__init__" or not n.startswith("_")]
+    return {f"{actual.__name__}.{n}": (vars(actual)[n], vars(spec)[n]) for n in names}
+
+
+FROZEN_SIGNATURES: dict[str, tuple[object, object]] = {
+    **_member_pairs(SimConfigError, _SimConfigErrorSpec),
+    **_member_pairs(SignerKeyMaterial, _SignerKeyMaterialSpec),
+    **_member_pairs(SimKeys, _SimKeysSpec),
+    "image_signature_payload": (image_signature_payload, _spec_image_signature_payload),
+    "frame_jws": (frame_jws, _spec_frame_jws),
+    "parse_alteration": (parse_alteration, _spec_parse_alteration),
+    **_member_pairs(TokenMinter, _TokenMinterSpec),
+    **_member_pairs(IssuerServer, _IssuerServerSpec),
+    **_member_pairs(LauncherServer, _LauncherServerSpec),
+    **_member_pairs(Simulator, _SimulatorSpec),
+    **_member_pairs(ContainerRuntime, _ContainerRuntimeSpec),
+    "main": (main, _spec_main),
+    "launch_config_hashes": (launch_config_hashes, _spec_launch_config_hashes),
+    "build_trust_profile": (build_trust_profile, _spec_build_trust_profile),
+    "generate_suite": (generate_suite, _spec_generate_suite),
+    "generate_corpus": (generate_corpus, _spec_generate_corpus),
+}
 
 
 @pytest.mark.parametrize(
-    ("func", "params"),
-    [
-        (SimKeys.generate, [("signers_required", POS, EMPTY)]),
-        (SimKeys.load_or_create, [("state_dir", POS, EMPTY), ("signers_required", POS, EMPTY)]),
-        (
-            image_signature_payload,
-            [("image_reference", POS, EMPTY), ("image_digest", POS, EMPTY)],
-        ),
-        (frame_jws, [("header", POS, EMPTY), ("payload", POS, EMPTY), ("sign", POS, EMPTY)]),
-        (parse_alteration, [("kind", POS, EMPTY), ("text", POS, EMPTY)]),
-        (
-            TokenMinter.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("keys", POS, EMPTY),
-                ("launch", POS, EMPTY),
-                ("issuer", KW, "https://tee-sim.localhost"),
-                ("ttl_s", KW, EMPTY),
-                ("token_max_age_s", KW, EMPTY),
-            ],
-        ),
-        (
-            TokenMinter.claims,
-            [
-                ("self", POS, EMPTY),
-                ("audience", POS, EMPTY),
-                ("nonces", POS, EMPTY),
-                ("now", POS, EMPTY),
-            ],
-        ),
-        (
-            TokenMinter.mint,
-            [
-                ("self", POS, EMPTY),
-                ("audience", POS, EMPTY),
-                ("nonces", POS, EMPTY),
-                ("now", POS, EMPTY),
-                ("alteration", POS, None),
-            ],
-        ),
-        (
-            IssuerServer.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("host", POS, EMPTY),
-                ("port", POS, EMPTY),
-                ("issuer", KW, EMPTY),
-                ("jwks", KW, EMPTY),
-                ("limits", KW, EMPTY),
-            ],
-        ),
-        (
-            LauncherServer.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("socket_path", POS, EMPTY),
-                ("mint", KW, EMPTY),
-                ("limits", KW, EMPTY),
-            ],
-        ),
-        (
-            Simulator.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("config", POS, EMPTY),
-                ("environ", KW, None),
-                ("clock", KW, time.time),
-            ],
-        ),
-        (
-            ContainerRuntime.__init__,
-            [("self", POS, EMPTY), ("executable", POS, EMPTY), ("run", KW, None)],
-        ),
-        (
-            ContainerRuntime.run_workload,
-            [
-                ("self", POS, EMPTY),
-                ("image", POS, EMPTY),
-                ("launcher_dir", KW, EMPTY),
-                ("args", KW, EMPTY),
-                ("env", KW, EMPTY),
-            ],
-        ),
-        (main, [("argv", POS, None)]),
-        (launch_config_hashes, [("args", POS, EMPTY), ("env", POS, EMPTY)]),
-        (
-            build_trust_profile,
-            [
-                ("discovery_url", KW, EMPTY),
-                ("jwks_origin", KW, EMPTY),
-                ("expected_audience", KW, EMPTY),
-                ("launch", KW, EMPTY),
-                ("signers", KW, EMPTY),
-                ("signers_required", KW, EMPTY),
-                ("token_max_age_s", KW, 3600),
-            ],
-        ),
-        (generate_suite, [("out_dir", POS, EMPTY), ("now", KW, None)]),
-        (generate_corpus, [("out_dir", POS, EMPTY), ("seed", KW, 1), ("count", KW, 512)]),
-    ],
+    ("actual", "spec"), FROZEN_SIGNATURES.values(), ids=FROZEN_SIGNATURES.keys()
 )
-def test_signature_equals_api(
-    func: Callable[..., object], params: list[tuple[str, object, object]]
-) -> None:
-    actual = [(p.name, p.kind, p.default) for p in inspect.signature(func).parameters.values()]
-    assert actual == params
+def test_full_signature_equals_api_transcription(actual: object, spec: object) -> None:
+    if isinstance(spec, classmethod):
+        assert isinstance(actual, classmethod)
+        actual, spec = actual.__func__, spec.__func__
+    assert _signature(actual) == _signature(spec)
 
 
 @pytest.mark.parametrize("code", list(SimConfigErrorCode))
