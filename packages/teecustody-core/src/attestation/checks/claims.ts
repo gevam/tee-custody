@@ -91,7 +91,8 @@ export function checkPlatform(t: ParsedToken, p: TrustProfile): void {
 
 // §6.6 / SR-12
 export function isDebugMode(t: ParsedToken): boolean {
-    throw new Error("NOT_IMPLEMENTED: T-12");
+    const dbgstat = t.claims["dbgstat"];
+    return dbgstat !== undefined && dbgstat !== DBGSTAT_PRODUCTION;
 }
 
 // §6.7

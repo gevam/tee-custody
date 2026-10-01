@@ -5,6 +5,7 @@ import {
     checkNonce,
     checkPlatform,
     checkTime,
+    isDebugMode,
 } from "../../../src/attestation/checks/claims.js";
 import {
     AttestationError,
@@ -254,5 +255,19 @@ describe("checkPlatform (§6.6)", () => {
             const claims = without({ ...PLATFORM, [name]: wrong[name] as JsonValue }, next);
             expectRejected(platform(claims), "platform", "CLAIM_MISMATCH");
         });
+    });
+});
+
+describe("isDebugMode (§6.6 / SR-12)", () => {
+    it.each<[string, JsonObject, boolean]>([
+        ["dbgstat enabled", { dbgstat: "enabled" }, true],
+        ["dbgstat disabled-since-boot", { dbgstat: "disabled-since-boot" }, false],
+        ["dbgstat absent", {}, false],
+        ["dbgstat a number", { dbgstat: 42 }, true],
+        ["dbgstat null", { dbgstat: null }, true],
+        ["dbgstat in another case", { dbgstat: "DISABLED-SINCE-BOOT" }, true],
+        ["dbgstat as a one-element array", { dbgstat: ["disabled-since-boot"] }, true],
+    ])("given %s returns %s and never throws", (_label, claims, debug) => {
+        expect(isDebugMode(token(claims))).toBe(debug);
     });
 });
