@@ -1,7 +1,17 @@
 // Full attestation verification [CI-1]: spec §6 checks as one fixed code path, parameterised by the profile.
 import type { SecurityEventSink } from "../capabilities.js";
 import { getPath } from "../json.js";
+import {
+    checkAudience,
+    checkNonce,
+    checkPlatform,
+    checkSupportAttributes,
+    checkTime,
+} from "./checks/claims.js";
 import { checkImage } from "./checks/image.js";
+import { checkIssuer } from "./checks/issuer.js";
+import { checkLaunchConfig } from "./checks/launch-config.js";
+import { checkSignature } from "./checks/signature.js";
 import { parseToken } from "./token.js";
 import {
     createVerifiedAttestation,
@@ -19,7 +29,15 @@ export async function verifyAttestation(
     deps: VerifierDeps,
 ): Promise<VerifiedAttestation> {
     const t = parseToken(token, deps.limits.maxTokenBytes);
+    await checkSignature(t, profile, deps);
+    checkIssuer(t, profile);
+    checkAudience(t, profile);
+    checkTime(t, profile, deps.now());
+    checkNonce(t, expected);
+    checkPlatform(t, profile);
+    checkSupportAttributes(t);
     const signerKeyIds = checkImage(t, profile);
+    await checkLaunchConfig(t, profile, deps);
     return createVerifiedAttestation({
         issuer: profile.issuer,
         audience: profile.expected_audience,

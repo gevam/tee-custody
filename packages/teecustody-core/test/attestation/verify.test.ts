@@ -12,7 +12,14 @@ import type {
 } from "../../src/capabilities.js";
 import { launchConfigHash } from "../../src/attestation/checks/launch-config.js";
 import { parseTrustProfile } from "../../src/attestation/profile.js";
-import type { TrustProfile, VerifierDeps } from "../../src/attestation/types.js";
+import {
+    AttestationError,
+    type AttestationCheckId,
+    type AttestationErrorCode,
+    type ExpectedAttestation,
+    type TrustProfile,
+    type VerifierDeps,
+} from "../../src/attestation/types.js";
 import { verifyAttestation } from "../../src/attestation/verify.js";
 import { hexEncode, utf8Encode } from "../../src/encoding.js";
 import { mapFetcher } from "../support/fetcher.js";
@@ -211,5 +218,144 @@ describe("verifyAttestation: valid token (criterion 3)", () => {
         expect(Object.isFrozen(result)).toBe(true);
         expect(Object.isFrozen(result.signerKeyIds)).toBe(true);
         expect(sink.events).toEqual([]);
+    });
+});
+
+async function rejection(promise: Promise<unknown>): Promise<AttestationError> {
+    const error: unknown = await promise.then(
+        () => undefined,
+        (e: unknown) => e,
+    );
+    if (!(error instanceof AttestationError)) {
+        throw new Error("expected an AttestationError rejection");
+    }
+    return error;
+}
+
+async function verifyWith(
+    token: string,
+    options: {
+        readonly profile?: TrustProfile;
+        readonly sink?: SecurityEventSink;
+        readonly deps?: VerifierDeps;
+        readonly expected?: ExpectedAttestation;
+    } = {},
+): Promise<AttestationError> {
+    return rejection(
+        verifyAttestation(
+            token,
+            options.profile ?? PROFILE,
+            options.expected ?? { identityNonce: IDENTITY_NONCE },
+            options.sink ?? new MemorySink(),
+            options.deps ?? harness().deps,
+        ),
+    );
+}
+
+function corruptSignature(token: string): string {
+    const [header = "", claims = "", signature = ""] = token.split(".");
+    const flipped = signature.startsWith("A") ? `B${signature.slice(1)}` : `A${signature.slice(1)}`;
+    return `${header}.${claims}.${flipped}`;
+}
+
+interface StepCase {
+    readonly name: string;
+    readonly token: () => Promise<string>;
+    readonly check: AttestationCheckId;
+    readonly code: AttestationErrorCode;
+}
+
+// One case per step 1–11, each failing exactly that step's check.
+const STEP_CASES: readonly StepCase[] = [
+    {
+        name: "(1) not a compact JWS",
+        token: () => Promise.resolve("not-a-jws"),
+        check: "token",
+        code: "MALFORMED",
+    },
+    {
+        name: "(1) larger than limits.maxTokenBytes",
+        token: () => mint((c) => (c.padding = "x".repeat(LIMITS.maxTokenBytes))),
+        check: "token",
+        code: "MALFORMED",
+    },
+    {
+        name: "(2) corrupted signature",
+        token: async () => corruptSignature(await mint()),
+        check: "signature",
+        code: "UNTRUSTED_SIGNER",
+    },
+    {
+        name: "(3) wrong iss",
+        token: () => mint((c) => (c.iss = "https://evil.example")),
+        check: "issuer",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(5) wrong aud",
+        token: () => mint((c) => (c.aud = "https://other.test/tee")),
+        check: "audience",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(6) expired",
+        token: () => mint((c) => (c.exp = NOW_MS / 1000 - 1)),
+        check: "time",
+        code: "EXPIRED",
+    },
+    {
+        name: "(7) wrong eat_nonce",
+        token: () => mint((c) => (c.eat_nonce = "08".repeat(32))),
+        check: "nonce",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(8) unlisted hwmodel",
+        token: () => mint((c) => (c.hwmodel = "GCP_INTEL_TDX")),
+        check: "platform",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(9) STABLE missing",
+        token: () =>
+            mint(
+                (c) =>
+                    (((c.submods as Claims).confidential_space as Claims).support_attributes = [
+                        "LATEST",
+                    ]),
+            ),
+        check: "support_attributes",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(10) digest not allow-listed",
+        token: () => mint((c) => (containerOf(c).image_digest = `sha256:${"cd".repeat(32)}`)),
+        check: "image",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(10) below signers_required",
+        token: () => mint((c) => (containerOf(c).image_signatures = [])),
+        check: "image",
+        code: "UNTRUSTED_SIGNER",
+    },
+    {
+        name: "(11) args altered",
+        token: () => mint((c) => (containerOf(c).args = [...ARGS, "--debug"])),
+        check: "launch_config",
+        code: "CLAIM_MISMATCH",
+    },
+    {
+        name: "(11) env altered",
+        token: () => mint((c) => (containerOf(c).env = { ...ENV, EXTRA: "1" })),
+        check: "launch_config",
+        code: "CLAIM_MISMATCH",
+    },
+];
+
+describe("verifyAttestation: one failing check per step (criterion 4)", () => {
+    it.each(STEP_CASES)("rejects $name as $check/$code", async ({ token, check, code }) => {
+        const err = await verifyWith(await token());
+        expect([err.check, err.code]).toEqual([check, code]);
     });
 });
