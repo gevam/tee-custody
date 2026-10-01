@@ -48,6 +48,15 @@ def _is_utf8(chunk: bytes) -> bool:
     return True
 
 
+def _is_unicode(text: str) -> bool:
+    """`text` has no lone surrogate (UTF-8 encodable). No exception context escapes (SR-11)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _scan(data: bytes, limits: DecodeLimits) -> None:
     """Iterative structural pre-scan enforcing rules 2, 3 and 5 in byte order, before cbor2."""
     end = len(data)
@@ -144,15 +153,18 @@ def _validate(value: object) -> None:
         item, depth = pending.pop()
         kind = type(item)
         children: list[object] = []
-        if item is None or kind in (bool, str, bytes):
+        if item is None or kind in (bool, bytes):
             pass
+        elif isinstance(item, str) and kind is str:
+            if not _is_unicode(item):
+                raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
         elif isinstance(item, int) and kind is int:
             if not _INT_MIN <= item <= _INT_MAX:
                 raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
         elif isinstance(item, list) and kind is list:
             children = item
         elif isinstance(item, dict) and kind is dict:
-            if any(type(key) is not str for key in item):
+            if any(type(key) is not str or not _is_unicode(key) for key in item):
                 raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
             children = list(item.values())
         else:

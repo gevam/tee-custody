@@ -377,3 +377,16 @@ def test_encode_accepts_exact_types_only_never_subclasses(value: object) -> None
     with pytest.raises(WireError) as caught:
         encode(value)  # type: ignore[arg-type]
     assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["\ud800", "x\udfff", {"\ud800": 1}, {"a": ["ok", "\udc00"]}],
+    ids=["high_surrogate", "low_surrogate_in_text", "map_key", "nested"],
+)
+def test_encode_refuses_text_that_is_not_valid_unicode_without_chaining_it(value: object) -> None:
+    with pytest.raises(WireError) as caught:
+        encode(value)  # type: ignore[arg-type]
+    assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
