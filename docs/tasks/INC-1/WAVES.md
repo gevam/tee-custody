@@ -14,6 +14,16 @@ guard; T-17/T-16/T-18 gained the differential corpus; T-07 gained Google-emulati
 RFC 7515 A.2 KAT; T-12 gained the D-017 `support_attributes` rule and an explicit zero `nbf` tolerance; T-14
 gained the `cbor-x` ban and the scheduled 100k fuzz job. No task was retired; none became moot.
 
+**Amendment log (2026-10-01, review round 1 on T-01/T-02/T-03).** T-03: rule 5 classifies two-byte simple
+values < 32 and additional-info 31 on major types 0/1/6 (`MALFORMED`), limits the shortest-form check to major
+types 0–6 (floats `UNSUPPORTED_TYPE` at any value), counts map keys toward depth, counts the container in
+"items so far", forbids overflow in 2 × count; +12 valid / +21 invalid codec vectors; harness criteria 8
+(accept ⇒ re-encode equal) and 9 (integer fields are `int`, not `bool`/float). Human-gated (`spec/wire`,
+`spec/vectors`); no `proto` bump (accepted set unchanged, nothing merged). T-04/T-09 reproduce the new rule text
+and gain allocation-guard / 2^53+1 / `__proto__` criteria. T-14 (now STRONG) adds a two-language semgrep layer
+against lint-ban bypasses (rules 7–13, criterion 7); the ESLint tightening stays in T-02 (Wave 0). No ownership
+change; file sets remain disjoint per wave.
+
 ## Waves
 
 | Wave | Task | Title | Tier | Depends on | Human-gated |
@@ -33,7 +43,7 @@ gained the `cbor-x` ban and the scheduled 100k fuzz job. No task was retired; no
 | 1 | T-11 | §6.1 signature + §6.2 issuer | STRONG | T-02, V-01 | |
 | 1 | T-12 | §6.3–§6.7 claim checks | STRONG | T-02, V-01 | |
 | 1 | T-13 | §6.8 image check (D-016 `key_id` threshold) | STRONG | T-02, V-01 | |
-| 1 | T-14 | CI, scanners, semgrep rules, dependency policy | MID | T-01, T-02 | |
+| 1 | T-14 | CI, scanners, semgrep rules (incl. lint-bypass layer), dependency policy | STRONG | T-01, T-02 | |
 | 2 | T-15 | §6.9 + `verifyAttestation` + SR-12 reporting | STRONG | T-09, T-10, T-11, T-12, T-13 | |
 | 2 | T-16 | Simulator CLI + container runtime | STRONG | T-07, T-08 | |
 | 2 | T-17 | Dev trust profile + vector-suite generator | STRONG | T-04, T-07, V-01 | |
@@ -141,6 +151,13 @@ generators compute `key_id` from SPKI and never copy it (T-17 criterion 2). Plea
 - **R-8 Contract length.** 570–1100 words because verbatim normative text is required.
 - **R-9 Container path.** A real `teecustody-sim up` run needs Docker/Podman; T-16 uses a fake runner. Trivy is
   deferred to INC-5.
+- **R-10 Build backend not hash-locked** (T-01 security review). `hatchling` is resolved at build time from
+  `[build-system] requires` and is not covered by `uv.lock` hashes. Accepted for INC-1 (no image is built);
+  must be closed by the INC-5 reproducible-build task (pinned + hashed build backend, D-019 follow-up).
+- **R-11 Semgrep outside `lint_command`.** T-14 runs semgrep in the CI `lint` job, but `framework.yaml →
+  lint_command` (Orchestrator-owned) does not include it, so local "lint clean" claims skip the bypass layer.
+  Recommend appending `&& uvx semgrep==<pin> --config .semgrep.yml --error --metrics=off` when T-14 merges
+  (T-14 reports the pin).
 - Closed since 2026-09-29: CI-1..CI-10 (ratified), JOSE approach (ADR 0009), `cbor-x` (ADR 0010), §6.8
   reconstructibility (D-016), `framework.yaml` commands (D-015), R-9 framework gap (tracked in STATUS).
 
