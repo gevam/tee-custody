@@ -369,3 +369,24 @@ Participants: Tech Lead
 **Revisit when:** A Wave 1 task is proposed to start without failing acceptance tests.
 
 **Follow-ups:** QA authors INC-1 acceptance tests once Wave 0 merges; G4 re-checked for Wave 1. Open non-blocking: F-16 verification (V-01 re-run); SR-1 test (i) wording (profiles carry no SPKI) → Security Architect; support_attributes override (Architect, only if a host needs it).
+
+## D-019 — SR-9 release-age rule scoped to shipped and build dependencies (Project, 2026-10-01)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Security Reviewer
+
+**Options considered**
+1. Apply the 18-month rule to runtime deps, build backends and anything in shipped artifacts; exempt dev/test tooling and its transitive deps from the age rule only (still OSI licence, exact lock, audit scanners).
+2. Keep the rule universal with named exceptions (sortedcontainers 2.4.0, colorama 0.4.6).
+3. Enforce strictly (drop hypothesis).
+
+**Decision:** Option 1; framework.yaml dependency_policy updated.
+
+**Reasoning:** Human decision. Raised by the T-01 security review (N1): two transitive dev-only packages exceed the age rule; neither ships; pip-audit clean.
+
+**Dissent:** none
+
+**Revisit when:** A dev tool is found to influence shipped artifacts (e.g. codegen), which would put it under the rule.
+
+**Follow-ups:** Security Architect aligns SR-9 wording in REQUIREMENTS.md at next touch. T-01 security Lows: import-ban bypasses (dynamic import, noqa, other listener APIs) → Tech Lead folds a semgrep rule into a Wave-1 tooling task; unlocked build backend (hatchling) → INC-5 reproducible-build scope.

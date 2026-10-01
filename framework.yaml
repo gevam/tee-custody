@@ -130,7 +130,7 @@ escalation:
 security:
   threat_model_method: STRIDE  # applied on top of spec §2, which is normative and takes precedence where they overlap
   scanners: [bandit, pip-audit, gitleaks, semgrep, pnpm-audit, trivy]   # trivy on the workload image; gitleaks on every PR
-  dependency_policy: "OSI licences only; no package without a release in the last 18 months. Cryptographic dependencies are limited to: cryptography, pyhpke (or Tink), cbor2, a libsodium binding for Ristretto255, @hpke/core, cbor-x. Every crypto dependency is pinned by exact version and hash. Adding or replacing a crypto dependency requires an ADR and Security Architect sign-off."
+  dependency_policy: "OSI licences only; no runtime, build-backend or shipped-artifact package without a release in the last 18 months (dev/test tooling and its transitive deps are exempt from the age rule but must still be OSI-licensed, exactly locked and pass pip-audit/pnpm-audit — D-019). Cryptographic dependencies are limited to: cryptography, pyhpke (or Tink), cbor2, a libsodium binding for Ristretto255, @hpke/core, cbor-x. Every crypto dependency is pinned by exact version and hash. Adding or replacing a crypto dependency requires an ADR and Security Architect sign-off."
   residual_risk_acceptor: human   # who can accept High/Critical residual risk — always human
   paths:                          # security-relevant paths: security_paths_min coverage, STRONG tier, full review
     - packages/teecustody-py/src/teecustody/attest/**
