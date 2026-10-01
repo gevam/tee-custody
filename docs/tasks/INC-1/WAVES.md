@@ -24,6 +24,14 @@ and gain allocation-guard / 2^53+1 / `__proto__` criteria. T-14 (now STRONG) add
 against lint-ban bypasses (rules 7–15, criterion 7); the ESLint tightening stays in T-02 (Wave 0). No ownership
 change; file sets remain disjoint per wave.
 
+**Amendment log (2026-10-01, T-08 final security review).** New task T-19 (Wave 2, STRONG, depends on T-08
+merged). It owns `teecustody_sim/simulator.py` (private helpers), `issuer.py` (`_BoundedServer._serve_one` and
+docstring), `tests/test_simulator.py` and `tests/test_launcher.py`. Within Wave 2 these are disjoint from T-16
+(`cli.py`, `runtime.py`, `test_cli.py`, `test_runtime.py`), T-17 (`profile.py`, `vectors.py`, their tests) and
+T-15 (TypeScript). It replaces the matching for R2/R3 in T-08's §15.5 refusal: values are JSON- and
+percent-decoded, and every `projects/` occurrence is checked. It also releases the slot before the connection
+is closed. No API change. T-18 does not depend on T-19, because vectors do not change.
+
 ## Waves
 
 | Wave | Task | Title | Tier | Depends on | Human-gated |
@@ -47,9 +55,10 @@ change; file sets remain disjoint per wave.
 | 2 | T-15 | §6.9 + `verifyAttestation` + SR-12 reporting | STRONG | T-09, T-10, T-11, T-12, T-13 | |
 | 2 | T-16 | Simulator CLI + container runtime | STRONG | T-07, T-08 | |
 | 2 | T-17 | Dev trust profile + vector-suite generator | STRONG | T-04, T-07, V-01 | |
+| 2 | T-19 | Simulator §15.5 refusal hardening + deterministic slot release (T-08 review follow-up) | STRONG | T-08 | |
 | 3 | T-18 | Generate and commit `spec/vectors/attestation/suite.cbor` and `spec/vectors/wire/differential-corpus.json` | FAST | T-15, T-16, T-17 | **YES** — `spec/vectors` |
 
-Counts: 19 items (18 tasks + V-01), 4 waves; largest wave is Wave 1 with 11 tasks.
+Counts: 20 items (19 tasks + V-01), 4 waves; largest wave is Wave 1 with 11 tasks; Wave 2 has 4.
 `parallelism.max_engineers` = 4, so Wave 1 runs in batches. Suggested order, critical path first:
 B1 T-04, T-07, T-09, T-10 · B2 T-08, T-11, T-12, T-13 · B3 T-05, T-06, T-14.
 Early starts are safe on these edges only: T-17 once T-04 and T-07 merge; T-16 once T-07 and T-08 merge;
@@ -57,7 +66,7 @@ T-15 once T-09..T-13 merge.
 
 Dependency edges (consumer ← producer): T-04←T-01,T-03 · T-05←T-01 · T-06←T-01,V-01 · T-07←T-01,V-01 ·
 T-08←T-01,V-01 · T-09←T-02,T-03 · T-10..T-13←T-02,V-01 · T-14←T-01,T-02 · T-15←T-09..T-13 · T-16←T-07,T-08 ·
-T-17←T-04,T-07,V-01 · T-18←T-15,T-16,T-17. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
+T-17←T-04,T-07,V-01 · T-19←T-08 · T-18←T-15,T-16,T-17. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
 through monkeypatched tests; their contracts say so.
 
 ## Ownership rules
