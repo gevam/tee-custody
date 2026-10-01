@@ -1,7 +1,7 @@
 // §6.1 token signature check; ADR 0009 rules 2–5.
 import { utf8DecodeStrict } from "../../encoding.js";
 import type { FetchResponse, RsaPublicJwk } from "../../capabilities.js";
-import { isJsonObject, type JsonObject, type JsonValue } from "../../json.js";
+import { getPath, isJsonObject, type JsonObject, type JsonValue } from "../../json.js";
 import {
     AttestationError,
     type AttestationErrorCode,
@@ -17,9 +17,16 @@ function reject(code: AttestationErrorCode): never {
     throw new AttestationError(code, "signature");
 }
 
+// Own property only (json.ts getPath); a value inherited from Object.prototype never counts.
+function own(object: JsonObject, member: string): JsonValue | undefined {
+    return getPath(object, [member]);
+}
+
 // ADR 0009 rule 2, in order; runs before any fetch. Returns the header kid.
 function checkHeader(t: ParsedToken): string {
-    const { alg, kid, typ } = t.header;
+    const alg = own(t.header, "alg");
+    const kid = own(t.header, "kid");
+    const typ = own(t.header, "typ");
     if (alg !== "RS256") {
         reject("UNSUPPORTED_ALGORITHM");
     }
@@ -68,8 +75,8 @@ async function fetchJsonObject(
 
 // ADR 0009 rule 3: the discovery issuer matches the profile; jwks_uri is on the profile's JWKS origin.
 function jwksUriOf(discovery: JsonObject, p: TrustProfile): string {
-    const { issuer, jwks_uri: jwksUri } = discovery;
-    if (issuer !== p.issuer || typeof jwksUri !== "string") {
+    const jwksUri = own(discovery, "jwks_uri");
+    if (own(discovery, "issuer") !== p.issuer || typeof jwksUri !== "string") {
         return reject("UNTRUSTED_SIGNER");
     }
     let url: URL;
@@ -89,10 +96,13 @@ function candidateKey(entry: JsonValue, kid: string): RsaPublicJwk | undefined {
     if (!isJsonObject(entry)) {
         return undefined;
     }
-    const { kid: entryKid, kty, use, alg, n, e } = entry;
+    const use = own(entry, "use");
+    const alg = own(entry, "alg");
+    const n = own(entry, "n");
+    const e = own(entry, "e");
     if (
-        entryKid !== kid ||
-        kty !== "RSA" ||
+        own(entry, "kid") !== kid ||
+        own(entry, "kty") !== "RSA" ||
         (use !== undefined && use !== "sig") ||
         (alg !== undefined && alg !== "RS256") ||
         typeof n !== "string" ||
@@ -105,7 +115,7 @@ function candidateKey(entry: JsonValue, kid: string): RsaPublicJwk | undefined {
 
 // ADR 0009 rule 4: exactly one candidate key; zero or duplicates reject.
 function selectKey(jwks: JsonObject, kid: string): RsaPublicJwk {
-    const keys = jwks["keys"];
+    const keys = own(jwks, "keys");
     if (!Array.isArray(keys)) {
         return reject("UNTRUSTED_SIGNER");
     }

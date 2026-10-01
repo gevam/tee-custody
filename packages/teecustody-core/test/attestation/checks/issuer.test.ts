@@ -86,3 +86,22 @@ describe("checkIssuer (criterion 7)", () => {
         expectNoContent(error, "issuer: CLAIM_MISMATCH");
     });
 });
+
+describe("checkIssuer: Object.prototype pollution is ignored", () => {
+    it("rejects claims lacking iss as CLAIM_MISSING when Object.prototype.iss is set", () => {
+        Object.defineProperty(Object.prototype, "iss", {
+            value: ISSUER,
+            configurable: true,
+            writable: true,
+            enumerable: false,
+        });
+        try {
+            const error = thrown(() => {
+                checkIssuer(tokenWithClaims({ aud: "x" }), PROFILE);
+            });
+            expectNoContent(error, "issuer: CLAIM_MISSING");
+        } finally {
+            Reflect.deleteProperty(Object.prototype, "iss");
+        }
+    });
+});

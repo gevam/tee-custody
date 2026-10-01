@@ -1,5 +1,5 @@
 // §6.1 token signature check (T-11; ADR 0009 rules 2–5; SR-1, SR-3, SR-4, SR-11).
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { Bytes, FetchResponse, Fetcher, RsaPublicJwk } from "../../../src/capabilities.js";
 import { checkSignature } from "../../../src/attestation/checks/signature.js";
@@ -557,5 +557,103 @@ describe("checkSignature: edge cases", () => {
                 token.signature,
             ],
         ]);
+    });
+});
+
+// Review round 1 (finding 1): only own properties of parsed JSON count; inherited values never do.
+const pollutedNames: string[] = [];
+
+function pollute(name: string, value: unknown): void {
+    Object.defineProperty(Object.prototype, name, {
+        value,
+        configurable: true,
+        writable: true,
+        enumerable: false,
+    });
+    pollutedNames.push(name);
+}
+
+// Isolates key selection: every key that reaches Crypto verifies.
+function acceptingDeps(fetcher: Fetcher): VerifierDeps {
+    return {
+        ...deps(fetcher),
+        crypto: { ...testCrypto(), verifySignature: () => Promise.resolve(true) },
+    };
+}
+
+function withoutMember(member: string): object {
+    const entry: Record<string, unknown> = { ...jwkEntry(issuerKey.jwk) };
+    return Object.fromEntries(Object.entries(entry).filter(([name]) => name !== member));
+}
+
+describe("checkSignature: Object.prototype pollution is ignored", () => {
+    afterEach(() => {
+        for (const name of pollutedNames.splice(0)) {
+            Reflect.deleteProperty(Object.prototype, name);
+        }
+    });
+
+    it("rejects a header lacking alg when Object.prototype.alg is RS256", async () => {
+        const token = await tokenWith({ kid: KID });
+        pollute("alg", "RS256");
+        await expectRejectedBeforeFetch(token, "UNSUPPORTED_ALGORITHM");
+    });
+
+    it("rejects a header lacking kid when Object.prototype.kid is set", async () => {
+        const token = await tokenWith({ alg: "RS256" });
+        pollute("kid", KID);
+        await expectRejectedBeforeFetch(token, "UNTRUSTED_SIGNER");
+    });
+
+    it("accepts a header lacking typ when Object.prototype.typ is not JWT", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute("typ", "at+jwt");
+        await expect(checkSignature(token, PROFILE, depsFor())).resolves.toBeUndefined();
+    });
+
+    it("rejects a discovery document lacking issuer when Object.prototype.issuer is set", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute("issuer", ISSUER);
+        const fetcher = mapFetcher(documents({ discovery: json({ jwks_uri: JWKS_URI }) }));
+        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+    });
+
+    it("rejects a discovery document lacking jwks_uri when Object.prototype.jwks_uri is set", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute("jwks_uri", JWKS_URI);
+        const fetcher = mapFetcher(documents({ discovery: json({ issuer: ISSUER }) }));
+        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+    });
+
+    it("rejects a JWKS lacking keys when Object.prototype.keys is set", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute("keys", [jwkEntry(issuerKey.jwk)]);
+        const fetcher = mapFetcher(documents({ jwks: json({}) }));
+        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+    });
+
+    it.each([
+        ["kid", KID],
+        ["kty", "RSA"],
+        ["n", "AQAB"],
+        ["e", "AQAB"],
+    ])("rejects a JWK lacking %s when Object.prototype supplies it", async (member, value) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute(member, value);
+        const fetcher = mapFetcher(documents({ jwks: jwksWith(withoutMember(member)) }));
+        const error = await rejection(checkSignature(token, PROFILE, acceptingDeps(fetcher)));
+        expect(error.code).toBe("UNTRUSTED_SIGNER");
+    });
+
+    it.each([
+        ["use", "enc"],
+        ["alg", "RS384"],
+    ])("accepts a JWK lacking %s when Object.prototype supplies %j", async (member, value) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        pollute(member, value);
+        const fetcher = mapFetcher(documents({ jwks: jwksWith(withoutMember(member)) }));
+        await expect(
+            checkSignature(token, PROFILE, acceptingDeps(fetcher)),
+        ).resolves.toBeUndefined();
     });
 });
