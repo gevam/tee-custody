@@ -112,6 +112,13 @@ function depsFor(overrides: Documents = {}): VerifierDeps {
     return deps(mapFetcher(documents(overrides), overrides.statuses));
 }
 
+// Criterion 8 / SR-11: the message is exactly `check: CODE` and nothing else rides on the error.
+function expectNoContent(error: AttestationError, message: string): void {
+    expect(error.message).toBe(message);
+    expect(error.cause).toBeUndefined();
+    expect(Object.keys(error).sort()).toEqual(["check", "code"]);
+}
+
 async function rejection(promise: Promise<void>): Promise<AttestationError> {
     const error: unknown = await promise.then(
         () => undefined,
@@ -130,6 +137,7 @@ async function expectRejected(
 ): Promise<void> {
     const error = await rejection(checkSignature(token, PROFILE, deps(fetcher)));
     expect([error.code, error.check]).toEqual([code, "signature"]);
+    expectNoContent(error, `signature: ${code}`);
 }
 
 async function expectRejectedBeforeFetch(
@@ -469,6 +477,19 @@ describe("checkSignature: tampering (criterion 6)", () => {
         await expectRejected(
             { ...token, signingInput: flipBit(token.signingInput, last) },
             "UNTRUSTED_SIGNER",
+        );
+    });
+});
+
+describe("checkSignature: error content, SR-11 (criterion 8)", () => {
+    it("echoes neither the token, the kid nor fetched document content", async () => {
+        const marker = "MARKER-7f3a";
+        const token = await tokenWith({ alg: "RS256", kid: `${KID}${marker}` });
+        const fetcher = mapFetcher(documents({ discovery: utf8Encode(`{"issuer":"${marker}"`) }));
+        const error = await rejection(checkSignature(token, PROFILE, deps(fetcher)));
+        expectNoContent(error, "signature: UNTRUSTED_SIGNER");
+        expect(`${String(error)} ${JSON.stringify(error)} ${error.stack ?? ""}`).not.toContain(
+            marker,
         );
     });
 });

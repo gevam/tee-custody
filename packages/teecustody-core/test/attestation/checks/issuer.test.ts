@@ -38,6 +38,13 @@ function tokenWithClaims(claims: JsonObject): ParsedToken {
     };
 }
 
+// Criterion 8 / SR-11: the message is exactly `check: CODE` and nothing else rides on the error.
+function expectNoContent(error: AttestationError, message: string): void {
+    expect(error.message).toBe(message);
+    expect(error.cause).toBeUndefined();
+    expect(Object.keys(error).sort()).toEqual(["check", "code"]);
+}
+
 function thrown(run: () => void): AttestationError {
     try {
         run();
@@ -60,6 +67,7 @@ describe("checkIssuer (criterion 7)", () => {
             checkIssuer(tokenWithClaims({ aud: "x" }), PROFILE);
         });
         expect([error.code, error.check]).toEqual(["CLAIM_MISSING", "issuer"]);
+        expectNoContent(error, "issuer: CLAIM_MISSING");
     });
 
     it.each([
@@ -70,5 +78,6 @@ describe("checkIssuer (criterion 7)", () => {
             checkIssuer(tokenWithClaims({ iss }), PROFILE);
         });
         expect([error.code, error.check]).toEqual(["CLAIM_MISMATCH", "issuer"]);
+        expectNoContent(error, "issuer: CLAIM_MISMATCH");
     });
 });
