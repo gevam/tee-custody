@@ -441,3 +441,34 @@ describe("checkSignature: discovery and JWKS matrix, SR-1/SR-3/SR-4 (criterion 5
         expect(fetcher.calls).toEqual([DISCOVERY_URL, `${JWKS_ORIGIN}/other/path?x=1`]);
     });
 });
+
+function flipBit(bytes: Bytes, index: number): Bytes {
+    const copy = bytes.slice();
+    copy[index] = (copy[index] ?? 0) ^ 0x01;
+    return copy;
+}
+
+describe("checkSignature: tampering (criterion 6)", () => {
+    it.each([
+        ["first", 0],
+        ["last", 255],
+    ])(
+        "rejects a token with the %s signature byte's low bit flipped as UNTRUSTED_SIGNER",
+        async (_label, index) => {
+            const token = await tokenWith({ alg: "RS256", kid: KID });
+            await expectRejected(
+                { ...token, signature: flipBit(token.signature, index) },
+                "UNTRUSTED_SIGNER",
+            );
+        },
+    );
+
+    it("rejects a token whose signing input changed after signing as UNTRUSTED_SIGNER", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const last = token.signingInput.length - 1;
+        await expectRejected(
+            { ...token, signingInput: flipBit(token.signingInput, last) },
+            "UNTRUSTED_SIGNER",
+        );
+    });
+});
