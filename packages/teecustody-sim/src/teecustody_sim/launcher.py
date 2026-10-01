@@ -87,6 +87,7 @@ class _LauncherUnixServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
     limits: SimLimits
     mint: _Mint
+    slots: threading.BoundedSemaphore
 
 
 class _LauncherHandler(_SimRequestHandler):
@@ -104,7 +105,17 @@ class _LauncherHandler(_SimRequestHandler):
         except _Rejected as rejected:
             self.reply(rejected.status, rejected.body)
             return
-        self.reply(HTTPStatus.OK, server.mint(audience, nonces).encode())
+        if not server.slots.acquire(blocking=False):
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
+            return
+        try:
+            token = server.mint(audience, nonces)
+        except Exception:  # noqa: BLE001 - a minting failure's detail is never echoed or logged
+            self.reply(HTTPStatus.INTERNAL_SERVER_ERROR, b"INTERNAL_ERROR")
+            return
+        finally:
+            server.slots.release()
+        self.reply(HTTPStatus.OK, token.encode())
 
     def _read_body(self, max_bytes: int) -> bytes:
         lengths = self.headers.get_all("Content-Length")
@@ -140,6 +151,7 @@ class LauncherServer:
         self._socket_path.chmod(0o666)
         server.limits = self._limits
         server.mint = self._mint
+        server.slots = threading.BoundedSemaphore(self._limits.max_concurrent_requests)
         self._server = server
         threading.Thread(
             target=server.serve_forever, kwargs={"poll_interval": _POLL_INTERVAL_S}, daemon=True

@@ -1,17 +1,20 @@
 """T-08 criteria 2-3: the simulated launcher token socket (spec §15.2 item 1; FACTS F-02, F-03)."""
 
+import concurrent.futures
 import http.client
 import json
 import shutil
 import socket
 import stat
 import tempfile
+import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
 
 from teecustody_sim import LauncherServer, SimLimits
+from teecustody_sim import issuer as issuer_module
 
 AUDIENCE = "https://launcher.teecustody.test/tee"
 NONCE = "ab" * 32
@@ -288,3 +291,96 @@ def test_stop_unlinks_the_socket_and_is_idempotent(short_dir: Path, mint: Record
     assert not socket_path.exists()
     with pytest.raises(FileNotFoundError):
         request(socket_path, token_request())
+
+
+class BlockingMint:
+    """Holds every call open until released, counting calls in flight."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+        self.calls = 0
+
+    def __call__(self, audience: str, nonces: Sequence[str]) -> str:
+        self.calls += 1
+        self.entered.release()
+        assert self.release.wait(timeout=10.0)
+        return TOKEN
+
+
+def test_requests_beyond_max_concurrent_get_503(short_dir: Path) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    mint = BlockingMint()
+    limit = 2
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=limit))
+    server.start()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=limit) as pool:
+            held = [pool.submit(request, socket_path, token_request()) for _ in range(limit)]
+            for _ in range(limit):
+                assert mint.entered.acquire(timeout=10.0)
+
+            extra_status, extra_type, extra_body = request(socket_path, token_request())
+
+            mint.release.set()
+            held_results = [future.result(timeout=10.0) for future in held]
+        after_status, _, _ = request(socket_path, token_request())
+    finally:
+        mint.release.set()
+        server.stop()
+
+    assert (extra_status, extra_type) == (503, "text/plain")
+    assert extra_body == b"SERVICE_UNAVAILABLE"
+    assert [status for status, _, _ in held_results] == [200] * limit
+    assert after_status == 200
+    assert mint.calls == limit + 1
+
+
+class FailingMint:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, audience: str, nonces: Sequence[str]) -> str:
+        self.calls += 1
+        raise RuntimeError("-----BEGIN PRIVATE KEY----- leaked detail")
+
+
+def test_mint_failure_is_500_without_detail_and_releases_its_slot(
+    short_dir: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    mint = FailingMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=1))
+    server.start()
+    try:
+        results = [request(socket_path, token_request()) for _ in range(3)]
+    finally:
+        server.stop()
+
+    assert results == [(500, "text/plain", b"INTERNAL_ERROR")] * 3
+    assert mint.calls == 3
+    captured = capfd.readouterr()
+    assert "PRIVATE KEY" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [b"", b"POST /v1/token HTTP/1.1\r\n", _post_head(len(token_request())) + b'{"aud'],
+    ids=["nothing", "partial-head", "partial-body"],
+)
+def test_stalled_client_is_disconnected(
+    short_dir: Path, mint: RecordingMint, monkeypatch: pytest.MonkeyPatch, partial: bytes
+) -> None:
+    monkeypatch.setattr(issuer_module, "_IO_TIMEOUT_S", 0.2)
+    socket_path = short_dir / "teeserver.sock"
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+    server.start()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(5.0)
+            sock.connect(str(socket_path))
+            sock.sendall(partial)
+            assert sock.recv(65536) == b""
+    finally:
+        server.stop()
+    assert mint.calls == []
