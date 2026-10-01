@@ -249,10 +249,13 @@ class SimKeys:                                 # repr: "SimKeys(<redacted>)"
     def generate(cls, signers_required: int) -> "SimKeys": ...
     @classmethod
     def load_or_create(cls, state_dir: Path, signers_required: int) -> "SimKeys": ...
-    # ValueError("INSECURE_KEY_FILE"): key file with wider than owner-only permissions (T-07 contract).
-    # ValueError("INVALID_KEY_FILE") [2026-10-01, T-07, accepted by Orchestrator]: an existing key file that is
-    # not RSA-2048 with e=65537, is encrypted, is not owner-only, is a dangling symlink, or is owned by another
-    # user. Raised before any key is used; str(err) is the code only, with no path or key bytes.
+    # [2026-10-01, Orchestrator ruling] Two error codes for an existing key file, raised before any key is used.
+    # str(err) is the code only, with no path or key bytes.
+    #  ValueError("INSECURE_KEY_FILE"): a permission, owner or link problem. The mode is not owner-only (this
+    #    includes group/other bits and any write or exec bit beyond 0600), the file is owned by another user, or
+    #    it is a symlink (dangling or not).
+    #  ValueError("INVALID_KEY_FILE"): a content or format problem. The key is not RSA-2048 with e=65537, the
+    #    PEM is encrypted, or the file cannot be parsed.
     def issuer_jwks(self) -> dict[str, JsonValue]: ...
     def sign_jws(self, signing_input: bytes) -> bytes: ...
 
