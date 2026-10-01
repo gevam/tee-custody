@@ -1,10 +1,14 @@
-// §6.3–§6.7 claim checks. Each throws AttestationError with its own check id. Stubs → T-12.
+// §6.3–§6.7 claim checks. Each throws AttestationError with its own check id. Implemented by T-12.
+import { hexEncode } from "../../encoding.js";
+import type { JsonValue } from "../../json.js";
 import {
     AttestationError,
     type ExpectedAttestation,
     type ParsedToken,
     type TrustProfile,
 } from "../types.js";
+
+const IDENTITY_NONCE_BYTES = 32; // API.md §A: SHA-256(IK public key bytes)
 
 // §6.3
 export function checkAudience(t: ParsedToken, p: TrustProfile): void {
@@ -57,7 +61,19 @@ function numericDate(t: ParsedToken, name: string): number | undefined {
 
 // §6.5
 export function checkNonce(t: ParsedToken, e: ExpectedAttestation): void {
-    throw new Error("NOT_IMPLEMENTED: T-12");
+    if (e.identityNonce.length !== IDENTITY_NONCE_BYTES) {
+        throw new AttestationError("MALFORMED", "nonce");
+    }
+    const expected = hexEncode(e.identityNonce);
+    const eatNonce = t.claims["eat_nonce"];
+    if (eatNonce === undefined) {
+        throw new AttestationError("CLAIM_MISSING", "nonce");
+    }
+    // FACTS F-05 / D-017: the expected string, or an array of exactly that one string.
+    const value = isJsonArray(eatNonce) && eatNonce.length === 1 ? eatNonce[0] : eatNonce;
+    if (value !== expected) {
+        throw new AttestationError("CLAIM_MISMATCH", "nonce");
+    }
 }
 
 // §6.6
@@ -73,4 +89,8 @@ export function isDebugMode(t: ParsedToken): boolean {
 // §6.7
 export function checkSupportAttributes(t: ParsedToken): void {
     throw new Error("NOT_IMPLEMENTED: T-12");
+}
+
+function isJsonArray(v: JsonValue): v is readonly JsonValue[] {
+    return Array.isArray(v);
 }

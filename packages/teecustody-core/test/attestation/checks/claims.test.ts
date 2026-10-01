@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkAudience, checkTime } from "../../../src/attestation/checks/claims.js";
+import { checkAudience, checkNonce, checkTime } from "../../../src/attestation/checks/claims.js";
 import {
     AttestationError,
     brandTrustProfile,
@@ -141,5 +141,51 @@ describe("checkTime (§6.4)", () => {
 
     it("checks iat before nbf", () => {
         expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 1 }), "time", "CLAIM_MISMATCH");
+    });
+});
+
+const IDENTITY_NONCE = Uint8Array.from({ length: 32 }, (_, i) => (0xa0 + i * 7) % 256);
+const EXPECTED_NONCE = Buffer.from(IDENTITY_NONCE).toString("hex");
+
+const nonce =
+    (claims: JsonObject, identityNonce: Uint8Array = IDENTITY_NONCE) =>
+    (): void => {
+        checkNonce(token(claims), { identityNonce });
+    };
+
+describe("checkNonce (§6.5)", () => {
+    it.each<[string, JsonValue]>([
+        ["the expected lowercase hex string", EXPECTED_NONCE],
+        ["a one-element array holding it", [EXPECTED_NONCE]],
+    ])("passes on %s", (_label, value) => {
+        expect(nonce({ eat_nonce: value })).not.toThrow();
+    });
+
+    it("rejects an absent eat_nonce with CLAIM_MISSING", () => {
+        expectRejected(nonce({}), "nonce", "CLAIM_MISSING");
+    });
+
+    it.each<[string, JsonValue]>([
+        ["a two-element array", [EXPECTED_NONCE, EXPECTED_NONCE]],
+        ["uppercase hex", EXPECTED_NONCE.toUpperCase()],
+        ["a number", 42],
+        ["an empty array", []],
+        ["an array holding a number", [42]],
+        ["a different nonce", "00".repeat(32)],
+        ["an array holding a different nonce", ["00".repeat(32)]],
+        ["an object", { nonce: EXPECTED_NONCE }],
+        ["null", null],
+    ])("rejects %s with CLAIM_MISMATCH", (_label, value) => {
+        expectRejected(nonce({ eat_nonce: value }), "nonce", "CLAIM_MISMATCH");
+    });
+
+    it.each([31, 33, 0])("rejects a %i-byte identityNonce with MALFORMED", (length) => {
+        const identityNonce = new Uint8Array(length);
+        const expected = Buffer.from(identityNonce).toString("hex");
+        expectRejected(nonce({ eat_nonce: expected }, identityNonce), "nonce", "MALFORMED");
+    });
+
+    it("checks the identityNonce length before the claim", () => {
+        expectRejected(nonce({}, new Uint8Array(31)), "nonce", "MALFORMED");
     });
 });
