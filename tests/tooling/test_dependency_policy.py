@@ -56,16 +56,21 @@ REGISTRY = FIXTURES / "registry"
 
 
 def recorded_fetch(url: str) -> object:
-    """Serve registry responses recorded under fixtures/registry; any other URL fails the test."""
+    """Serve registry responses recorded under fixtures/registry; any other URL fails the test.
+
+    Project documents are recorded; a version document is the recorded project document (PyPI, which
+    has the same shape) or its ``versions[v]`` entry (npm).
+    """
     pypi_prefix, npm_prefix = "https://pypi.org/pypi/", "https://registry.npmjs.org/"
     if url.startswith(pypi_prefix) and url.endswith("/json"):
-        path = REGISTRY / "pypi" / f"{url[len(pypi_prefix) : -len('/json')]}.json"
-    elif url.startswith(npm_prefix):
-        name = url[len(npm_prefix) :].replace("%2F", "/").replace("%2f", "/")
-        path = REGISTRY / "npm" / f"{name.replace('/', '__')}.json"
-    else:
-        raise AssertionError(f"unexpected URL {url}")
-    return json.loads(path.read_text())
+        name = url[len(pypi_prefix) : -len("/json")].split("/", 1)[0]
+        return json.loads((REGISTRY / "pypi" / f"{name}.json").read_text())
+    if url.startswith(npm_prefix):
+        name, _, version = url[len(npm_prefix) :].partition("/")
+        name = name.replace("%2F", "/").replace("%2f", "/")
+        document = json.loads((REGISTRY / "npm" / f"{name.replace('/', '__')}.json").read_text())
+        return document["versions"].get(version, {}) if version else document
+    raise AssertionError(f"unexpected URL {url}")
 
 
 def _apply_overlay(root: Path, case: str) -> None:
@@ -129,12 +134,37 @@ def _framework_forbidden_items() -> list[str]:
     return items
 
 
+# Pure-Python / pure-JS X25519, Ed25519, AES, HKDF or HPKE implementations (framework.yaml
+# forbidden_dependencies, last item); none is on the approved list.
+PURE_CRYPTO_IMPLEMENTATIONS = [
+    "pyaes",
+    "tinyec",
+    "pure25519",
+    "ed25519",
+    "x25519",
+    "hkdf",
+    "tweetnacl",
+    "js-nacl",
+    "aes-js",
+    "futoin-hkdf",
+    "@noble/curves",
+    "@noble/ciphers",
+    "@stablelib/x25519",
+    "@stablelib/ed25519",
+    "@stablelib/hkdf",
+    "@hpke/dhkem-x25519",
+    "@hpke/chacha20poly1305",
+]
+
+
 def test_every_framework_forbidden_dependency_is_enforced(tool: ModuleType) -> None:
     items = _framework_forbidden_items()
     assert len(items) >= 9
     for item in items:
         if item.startswith("any package that implements"):
-            assert tool.KNOWN_CRYPTO, item
+            for pure in PURE_CRYPTO_IMPLEMENTATIONS:
+                assert tool.is_known_crypto(pure), pure
+                assert pure not in tool.APPROVED_CRYPTO, pure
             continue
         name = item.split(" ", 1)[0]
         if " " in item:
@@ -184,7 +214,10 @@ def test_approved_crypto_absent_from_lock_is_unpinned(
     tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (clean_tree / "pnpm-lock.yaml").unlink()
-    assert _violations(tool, clean_tree, capsys) == ["VIOLATION crypto-unpinned @hpke/core"]
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION lock-unparseable pnpm-lock.yaml",
+        "VIOLATION crypto-unpinned @hpke/core",
+    ]
 
 
 def test_noble_scope_is_unapproved_crypto(
@@ -337,3 +370,144 @@ def test_non_object_registry_document_fails_closed(
     argv = ["--root", str(clean_tree), "--today", TODAY]
     assert tool.main(argv, fetch_json=listing) == 1
     assert capsys.readouterr().out == "VIOLATION licence typescript\n"
+
+
+def _reindent(text: str) -> str:
+    return "\n".join(line.replace("  ", "    ") for line in text.splitlines()) + "\n"
+
+
+def test_reindented_pnpm_lock_with_banned_packages_fails_closed(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    extra = (
+        "  node-forge@1.3.1:\n    resolution: {integrity: sha512-x}\n\n"
+        "  '@noble/curves@2.0.0':\n    resolution: {integrity: sha512-x}\n\n"
+    )
+    lock = lock.replace("packages:\n\n", "packages:\n\n" + extra, 1)
+    _write(clean_tree, "pnpm-lock.yaml", _reindent(lock))
+    lines = _violations(tool, clean_tree, capsys)
+    assert "VIOLATION lock-unparseable pnpm-lock.yaml" in lines
+
+
+def test_pnpm_lock_line_outside_the_grammar_fails_closed(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    lock = lock.replace("packages:\n\n", "packages:\n\n  stray line without a colon\n\n", 1)
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    # Nothing from an unparseable lock is trusted, so the approved crypto pin is unproven too.
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION lock-unparseable pnpm-lock.yaml",
+        "VIOLATION crypto-unpinned @hpke/core",
+    ]
+
+
+def test_importer_dependency_missing_from_packages_is_inconsistent(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    start = lock.index("  typescript@5.9.3:\n    resolution")
+    end = lock.index("\n\n", start) + 2
+    lock = lock[:start] + lock[end:]
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys) == ["VIOLATION lock-inconsistent typescript"]
+
+
+@pytest.mark.parametrize("text", ["version = 1\nrevision = 3\n", "[[package]\nname = "])
+def test_uv_lock_without_packages_or_not_toml_fails_closed(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str], text: str
+) -> None:
+    _write(clean_tree, "uv.lock", text)
+    assert "VIOLATION lock-unparseable uv.lock" in _violations(tool, clean_tree, capsys)
+
+
+def test_forbidden_and_unapproved_names_in_manifests_are_rejected(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = json.loads((clean_tree / "package.json").read_text())
+    manifest["devDependencies"].update({"node-forge": "1.3.1", "@noble/curves": "2.0.0"})
+    _write(clean_tree, "package.json", json.dumps(manifest))
+    root = (clean_tree / "pyproject.toml").read_text()
+    _write(
+        clean_tree,
+        "pyproject.toml",
+        root.replace('"pytest==9.1.1"', '"pytest==9.1.1", "PyAES==1.6.1"'),
+    )
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION forbidden node-forge",
+        "VIOLATION forbidden pyaes",
+        "VIOLATION crypto-unapproved @noble/curves",
+    ]
+
+
+@pytest.mark.parametrize("name", PURE_CRYPTO_IMPLEMENTATIONS)
+def test_pure_crypto_implementation_in_lock_is_rejected(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    entry = f"  '{name}@1.0.0':\n    resolution: {{integrity: sha512-x}}\n\n"
+    _write(clean_tree, "pnpm-lock.yaml", lock.replace("packages:\n\n", "packages:\n\n" + entry, 1))
+    rule = "forbidden" if name in tool.FORBIDDEN else "crypto-unapproved"
+    assert _violations(tool, clean_tree, capsys) == [f"VIOLATION {rule} {name}"]
+
+
+def _add_uv_package(lock: str, name: str, version: str, depender: str) -> str:
+    entry = (
+        f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        f'sdist = {{ url = "https://files.pythonhosted.org/packages/{name}.tar.gz", '
+        f'hash = "sha256:{"b" * 64}", size = 1 }}\n\n'
+    )
+    marker = f'name = "{depender}"\nversion = '
+    start = lock.index(marker)
+    source_end = lock.index("\n", lock.index("source = ", start)) + 1
+    lock = (
+        lock[:source_end] + f'dependencies = [\n    {{ name = "{name}" }},\n]\n' + lock[source_end:]
+    )
+    return lock.replace('[[package]]\nname = "pytest"', entry + '[[package]]\nname = "pytest"', 1)
+
+
+def test_transitive_runtime_python_dependency_is_age_checked(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "oldpkg", "0.1.0", "cbor2")
+    _write(clean_tree, "uv.lock", lock)
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION stale oldpkg"]
+
+
+def test_transitive_dev_python_dependency_is_licence_checked_but_age_exempt(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "gpl-old", "0.1.0", "pytest")
+    _write(clean_tree, "uv.lock", lock)
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION licence gpl-old"]
+
+
+def _add_npm_package(lock: str, name: str, version: str, depender: str) -> str:
+    entry = f"  {name}@{version}:\n    resolution: {{integrity: sha512-{'B' * 86}==}}\n\n"
+    lock = lock.replace("packages:\n\n", "packages:\n\n" + entry, 1)
+    lock = lock.replace(
+        f"  {depender}: {{}}", f"  {depender}:\n    dependencies:\n      {name}: {version}"
+    )
+    return lock.replace("snapshots:\n\n", f"snapshots:\n\n  {name}@{version}: {{}}\n\n", 1)
+
+
+def test_transitive_runtime_npm_dependency_is_age_checked(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_npm_package(
+        (clean_tree / "pnpm-lock.yaml").read_text(), "old-js", "1.0.0", "'@hpke/core@1.9.0'"
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION stale old-js"]
+
+
+def test_transitive_dev_npm_dependency_is_licence_checked_at_its_locked_version(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_npm_package(
+        (clean_tree / "pnpm-lock.yaml").read_text(), "relicensed", "1.0.0", "typescript@5.9.3"
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION licence relicensed"]
