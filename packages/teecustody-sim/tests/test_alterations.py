@@ -232,6 +232,7 @@ CLAIM_EDITS: dict[str, Callable[[Claims, SimKeys], None]] = {
     "kid_unknown": _unchanged,
 }
 CORRUPTED_SIGNATURE = {"token_signature_corrupted", "debug_bad_signature"}
+UNKNOWN_KID = "teecustody-sim-unknown-kid"
 CASE_IDS = [case.case_id for case in NEGATIVE_CASES]
 
 
@@ -278,15 +279,20 @@ def test_named_case_header_and_token_signature_are_as_specified(
 ) -> None:
     default_header, _ = default
 
-    header, _, signing_input, signature = split(
-        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
-    )
+    token = minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
+    header, _, signing_input, signature = split(token)
 
     if case_id == "alg_none":
         assert header == b'{"alg":"none","typ":"JWT"}'
         assert signature == b""
         return
-    assert header == default_header
+    if case_id == "kid_unknown":
+        assert keys.issuer_kid != UNKNOWN_KID
+        default_kid = f'"kid":"{keys.issuer_kid}"'.encode()
+        assert header == default_header.replace(default_kid, f'"kid":"{UNKNOWN_KID}"'.encode())
+        assert token.split(".")[1] == minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
+    else:
+        assert header == default_header
     correct = issuer_signature(keys, signing_input)
     if case_id in CORRUPTED_SIGNATURE:
         assert signature == bytes([correct[0] ^ 0x01]) + correct[1:]

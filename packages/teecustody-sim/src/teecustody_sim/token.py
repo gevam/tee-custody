@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Sequence
-from typing import Literal
+from typing import Final, Literal
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -42,6 +42,7 @@ _MISMATCHED_SIGNATURE_ALGORITHM = "RSASSA_PKCS1V15_SHA256"
 _CLAIM_PATH = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*")
 _CASE_IDS = frozenset(case.case_id for case in NEGATIVE_CASES)
 _CORRUPTED_SIGNATURE_CASES = frozenset({"token_signature_corrupted", "debug_bad_signature"})
+_UNKNOWN_KID: Final = "teecustody-sim-unknown-kid"
 
 type _Sign = Callable[[bytes], bytes]
 type _SignatureEntry = dict[str, JsonValue]
@@ -378,4 +379,6 @@ class TokenMinter:
                 sign = _empty_signature
             elif alteration.case_id in _CORRUPTED_SIGNATURE_CASES:
                 sign = _corrupted(sign)
+            elif alteration.case_id == "kid_unknown":
+                header = {"alg": JWS_ALG, "kid": _UNKNOWN_KID, "typ": "JWT"}
         return frame_jws(_json_bytes(header), _json_bytes(claims), sign)
