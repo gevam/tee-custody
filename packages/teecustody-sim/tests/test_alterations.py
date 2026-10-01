@@ -459,3 +459,9 @@ def test_entry_editing_case_without_listed_signatures_is_rejected(
 
     with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
         minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
+
+
+@pytest.mark.parametrize("case_id", ["alg_none", "token_signature_corrupted"])
+def test_signature_cases_keep_the_valid_payload_bytes(minter: TokenMinter, case_id: str) -> None:
+    valid = minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
+    assert minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id)).split(".")[1] == valid

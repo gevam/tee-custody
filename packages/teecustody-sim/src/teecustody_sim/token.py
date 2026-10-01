@@ -220,13 +220,16 @@ class TokenMinter:
         self._issuer = issuer
         self._ttl_s = ttl_s
         self._token_max_age_s = token_max_age_s
+        # Signed once, like a registry signature: every token from this minter lists the same
+        # verified entries, so a negative case differs from `valid` only where §G says.
+        self._image_signatures = _verified_image_signatures(keys.signers, self._image_payload())
 
     def _claims_and_signatures(
         self, audience: str, nonces: Sequence[str], now: int
     ) -> tuple[dict[str, JsonValue], list[_SignatureEntry]]:
         _check_nonces(nonces)
         launch = self._launch
-        signatures = _verified_image_signatures(self._keys.signers, self._image_payload())
+        signatures = [dict(entry) for entry in self._image_signatures]
         claims: dict[str, JsonValue] = {
             "iss": self._issuer,
             "aud": audience,

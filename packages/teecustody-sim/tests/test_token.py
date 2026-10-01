@@ -396,3 +396,34 @@ def test_a_signer_whose_spki_is_not_rsa_is_not_listed(
     monkeypatch.setattr(keys.signers[0], "spki_der", ec_spki)
 
     assert _listed_key_ids(keys) == [keys.signers[1].key_id]
+
+
+def test_one_minter_carries_the_same_image_signatures_in_every_token(
+    minter: TokenMinter,
+) -> None:
+    first = json.loads(decode(minter.mint(AUDIENCE, [NONCE], NOW))[1])
+    second = json.loads(decode(minter.mint(AUDIENCE, [NONCE], NOW + 1))[1])
+
+    container = first["submods"]["container"]
+    assert container["image_signatures"] == second["submods"]["container"]["image_signatures"]
+    assert minter.claims(AUDIENCE, [NONCE], NOW) == first
+
+
+def test_claims_returns_a_fresh_copy_each_call(minter: TokenMinter) -> None:
+    claims = minter.claims(AUDIENCE, [NONCE], NOW)
+    submods = claims["submods"]
+    assert isinstance(submods, dict)
+    container = submods["container"]
+    assert isinstance(container, dict)
+    entries = container["image_signatures"]
+    assert isinstance(entries, list)
+    entry = entries[0]
+    assert isinstance(entry, dict)
+    entry["key_id"] = "mutated"
+    entries.clear()
+
+    assert minter.claims(AUDIENCE, [NONCE], NOW) == json.loads(
+        decode(minter.mint(AUDIENCE, [NONCE], NOW))[1]
+    )
+    again = json.loads(decode(minter.mint(AUDIENCE, [NONCE], NOW))[1])
+    assert len(again["submods"]["container"]["image_signatures"]) == 2
