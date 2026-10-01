@@ -26,6 +26,15 @@ class _Parser(argparse.ArgumentParser):
         raise _UsageError(_USAGE_ERROR)
 
 
+def _text(value: str) -> str:
+    """Command-line text must be valid UTF-8; undecodable argv bytes arrive as lone surrogates."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise argparse.ArgumentTypeError(_USAGE_ERROR) from None
+    return value
+
+
 def _launch(document: dict[str, Any]) -> LaunchConfig:
     launch = document["launch"]
     return LaunchConfig(
@@ -69,12 +78,12 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     token = commands.add_parser("token")
     token.add_argument("--state-dir", type=Path, default=Path(DEFAULT_STATE_DIR))
-    token.add_argument("--audience", required=True)
-    token.add_argument("--nonce", action="append", default=[])
+    token.add_argument("--audience", type=_text, required=True)
+    token.add_argument("--nonce", type=_text, action="append", default=[])
     alteration = token.add_mutually_exclusive_group()
-    alteration.add_argument("--alter")
-    alteration.add_argument("--drop")
-    alteration.add_argument("--case")
+    alteration.add_argument("--alter", type=_text)
+    alteration.add_argument("--drop", type=_text)
+    alteration.add_argument("--case", type=_text)
     token.set_defaults(handler=_token)
     return parser
 
@@ -87,7 +96,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         code: int = options.handler(options)
-    except SimConfigError as error:
-        sys.stderr.write(f"{error.code.value}\n")
+    except (SimConfigError, ValueError) as error:
+        sys.stderr.write(f"{error}\n")
         return 2
     return code

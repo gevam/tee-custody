@@ -138,3 +138,41 @@ def test_token_without_state_reports_state_not_initialised(cli: Cli, tmp_path: P
 
     assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
     assert not missing.exists()
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_err"),
+    [
+        (("--case", "nope"), "INVALID_ALTERATION\n"),
+        (("--alter", "noequals"), "INVALID_ALTERATION\n"),
+        (("--drop", "Bad.Path"), "INVALID_ALTERATION\n"),
+        (("--nonce", "short"), "INVALID_NONCE\n"),
+    ],
+)
+def test_token_rejects_invalid_values_with_a_single_code_line(
+    cli: Cli, state_dir: Path, flags: tuple[str, str], expected_err: str
+) -> None:
+    code, out, err = cli("token", "--state-dir", str(state_dir), "--audience", AUDIENCE, *flags)
+
+    assert (code, out, err) == (2, "", expected_err)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--audience", "https://cli.teecustody.test/\udcff"),
+        ("--audience", AUDIENCE, "--alter", "dbgstat=\ud800"),
+        ("--audience", AUDIENCE, "--nonce", "\udcff" * 32),
+    ],
+)
+def test_token_rejects_text_that_is_not_utf8(
+    cli: Cli, state_dir: Path, flags: tuple[str, ...]
+) -> None:
+    # argv bytes that are not UTF-8 reach Python as lone surrogates (surrogateescape).
+    code, out, err = cli("token", "--state-dir", str(state_dir), *flags)
+
+    assert code == 2
+    assert out == ""
+    assert err.count("\n") == 1
+    assert "\\" not in err
+    assert "\udcff" not in err
