@@ -509,3 +509,23 @@ Participants: Tech Lead, Security Reviewer
 **Revisit when:** —
 
 **Follow-ups:** Tech Lead writes T-20.md; T-18 depends on T-20. Retro: catalog completeness should be reviewed at G4.
+
+## D-026 — Human approves T-20 spec/vectors change (INC-1, 2026-10-01)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Code Reviewer, Security Reviewer
+
+**Options considered**
+1. Approve the nine appended CatalogRows in spec/vectors/test_attestation_suite.py (§G rows 29–37).
+2. Request changes.
+
+**Decision:** Option 1.
+
+**Reasoning:** Human decision (always_human: spec/vectors). Both reviewers APPROVE; reviewers independently ran all 36 cases through main's verifyAttestation with the expected check/code.
+
+**Dissent:** none
+
+**Revisit when:** T-18 generated vector files (separate human approval).
+
+**Follow-ups:** Merge T-20. Retro: a shared-scratchpad script clash briefly mutated an inactive worktree (T-15) during T-17 work — restored clean; engineers must use task-specific scratch subdirectories.
