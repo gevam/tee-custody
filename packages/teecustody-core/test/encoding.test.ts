@@ -61,6 +61,8 @@ describe("base64Decode (RFC 4648 §4, strict)", () => {
         ["non-zero trailing bits", "AR=="],
         ["non-zero trailing bits, one pad", "AQJ="],
         ["too much padding", "A==="],
+        ["padding only", "===="],
+        ["a full quantum followed by padding only", "AAAA===="],
         ["padding in the middle", "AQ==AQID"],
         ["length not a multiple of 4", "AQIDA"],
     ])("rejects %s", (_name, input) => {
@@ -235,6 +237,6 @@ describe("mapFetcher (test support)", () => {
 
     it("rejects any other URL with HTTP_ERROR", async () => {
         const fetcher = mapFetcher(new Map([[url, body]]));
-        await expect(fetcher.get(`${url}/`)).rejects.toThrow(new CapabilityError("HTTP_ERROR"));
+        expect(await capabilityCode(fetcher.get(`${url}/`))).toBe("HTTP_ERROR");
     });
 });
