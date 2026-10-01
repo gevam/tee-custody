@@ -13,7 +13,7 @@ import {
     type VerifierDeps,
 } from "../../../src/attestation/types.js";
 import { hexEncode, utf8Encode } from "../../../src/encoding.js";
-import type { JsonObject } from "../../../src/json.js";
+import type { JsonObject, JsonValue } from "../../../src/json.js";
 import { mapFetcher } from "../../support/fetcher.js";
 import { testCrypto } from "../../support/webcrypto.js";
 
@@ -68,7 +68,7 @@ describe("launchConfigHash", () => {
 
 async function profileFor(
     args: readonly string[],
-    env: Record<string, string>,
+    env: Readonly<Record<string, string>> | ReadonlyMap<string, string>,
 ): Promise<TrustProfile> {
     return brandTrustProfile({
         profile_version: 1,
@@ -85,7 +85,10 @@ async function profileFor(
         signer_keys: [{ key_id: "01".repeat(32), algorithm: "RSASSA_PSS_SHA256" }],
         signers_required: 1,
         expected_args_hash: await launchConfigHash(args, crypto),
-        expected_env_hash: await launchConfigHash(new Map(Object.entries(env)), crypto),
+        expected_env_hash: await launchConfigHash(
+            env instanceof Map ? env : new Map(Object.entries(env)),
+            crypto,
+        ),
     });
 }
 
@@ -215,5 +218,43 @@ describe("checkLaunchConfig", () => {
             checkLaunchConfig(tokenWithContainer(inherited), profile, DEPS),
         );
         expect([err.check, err.code]).toEqual(["launch_config", "CLAIM_MISSING"]);
+    });
+});
+
+describe("checkLaunchConfig: edge cases", () => {
+    it("rejects a sparse args array instead of skipping the hole", async () => {
+        const sparse: JsonValue[] = ["/app/workload"];
+        sparse[2] = "0";
+        const profile = await profileFor(["/app/workload", "0"], ENV);
+        const err = await rejection(
+            checkLaunchConfig(tokenWithContainer({ args: sparse, env: ENV }), profile, DEPS),
+        );
+        expect([err.check, err.code]).toEqual(["launch_config", "CLAIM_MISMATCH"]);
+    });
+
+    it("hashes a JSON __proto__ env key as an ordinary own key", async () => {
+        const env = JSON.parse('{"__proto__":"x","A":"1"}') as JsonObject;
+        const profile = await profileFor(
+            ARGS,
+            new Map([
+                ["__proto__", "x"],
+                ["A", "1"],
+            ]),
+        );
+        await expect(
+            checkLaunchConfig(tokenWithContainer({ args: ARGS, env }), profile, DEPS),
+        ).resolves.toBeUndefined();
+        const without = await profileFor(ARGS, new Map([["A", "1"]]));
+        const err = await rejection(
+            checkLaunchConfig(tokenWithContainer({ args: ARGS, env }), without, DEPS),
+        );
+        expect([err.check, err.code]).toEqual(["launch_config", "CLAIM_MISMATCH"]);
+    });
+
+    it("accepts empty args and env when the profile pins them empty", async () => {
+        const profile = await profileFor([], {});
+        await expect(
+            checkLaunchConfig(tokenWithContainer({ args: [], env: {} }), profile, DEPS),
+        ).resolves.toBeUndefined();
     });
 });
