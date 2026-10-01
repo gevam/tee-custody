@@ -673,6 +673,11 @@ BYPASSES = {
     "json-escaped-kms": r'["projects\/p\/locations\/l\/keyRings\/r\/cryptoKeys\/k"]',
     "percent-kms": "projects%2Fp%2Flocations%2Fl%2FkeyRings%2Fr%2FcryptoKeys%2Fk",
     "json-too-deep": "[" * 100_000 + "]" * 100_000,
+    # Review round 1: an escaped key is reached only through key traversal; a percent-encoded
+    # member only through decoding JSON members (the second hides `%` behind a JSON escape).
+    "json-escaped-key": r'{"projects\/prod-proj\/topics\/b": 1}',
+    "json-percent-member": '["projects%2Fprod-proj%2Ftopics%2Fb"]',
+    "json-escaped-percent-member": r'["projects\u00252Fprod-proj\u00252Ftopics\u00252Fb"]',
 }
 BYPASS_CASES = {
     f"{label}-{place}": (extra, launch, value)
