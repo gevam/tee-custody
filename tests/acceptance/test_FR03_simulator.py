@@ -149,4 +149,14 @@ def test_FR03_development_profile_matches_running_simulator(running_sim: Running
     ]
     assert profile["expected_args_hash"] == args_hash
     assert profile["expected_env_hash"] == env_hash
-    assert "jwk" not in json.dumps(profile) and "PRIVATE" not in json.dumps(profile)
+    private_members = {"d", "p", "q", "dp", "dq", "qi", "k"}
+
+    def keys_of(node: object) -> set[str]:
+        if isinstance(node, dict):
+            return set(node) | {k for v in node.values() for k in keys_of(v)}
+        if isinstance(node, list):
+            return {k for v in node for k in keys_of(v)}
+        return set()
+
+    assert not private_members & keys_of(profile)
+    assert "PRIVATE KEY" not in json.dumps(profile)
