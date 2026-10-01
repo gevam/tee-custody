@@ -311,3 +311,25 @@ def test_encode_of_a_cyclic_value_terminates_with_limit_exceeded(make: Any) -> N
     assert len(outcome) == 1
     assert isinstance(outcome[0], WireError)
     assert outcome[0].code is WireErrorCode.LIMIT_EXCEEDED
+
+
+@pytest.mark.parametrize(
+    ("hex_input", "code"),
+    [
+        # array declares 2 children with 1 byte left; the tag after it is never reached
+        ("82c0", WireErrorCode.MALFORMED),
+        # bstr runs past the end before the unsorted map ends
+        ("a2616200616141", WireErrorCode.MALFORMED),
+        # inner map ends unsorted before `undefined` is read
+        ("82a2616200616100f7", WireErrorCode.NONCANONICAL),
+        # invalid UTF-8 text precedes the tag
+        ("8261ffc000", WireErrorCode.MALFORMED),
+    ],
+    ids=["children_beyond_input", "bstr_beyond_input", "map_order_at_map_end", "utf8_before_tag"],
+)
+def test_first_violation_in_byte_order_wins(
+    hex_input: str, code: WireErrorCode, vector_limits: DecodeLimits
+) -> None:
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex(hex_input), vector_limits)
+    assert caught.value.code is code
