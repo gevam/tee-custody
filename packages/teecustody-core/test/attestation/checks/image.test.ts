@@ -119,4 +119,15 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
         const t = tokenWithSignatures([sig(KEY_A, algorithm), sig(KEY_B), sig(KEY_C)]);
         expect(checkImage(t, profile())).toEqual([KEY_B, KEY_C]);
     });
+
+    it.each([
+        ["uppercase hex", KEY_A.toUpperCase()],
+        ["63 characters", KEY_A.slice(0, 63)],
+        ["65 characters", `${KEY_A}0`],
+        ["a sha256: prefix", `sha256:${KEY_A}`],
+        ["surrounding whitespace", ` ${KEY_A}`],
+    ])("(f) does not match a key_id with %s", (_name, keyId) => {
+        const variant = sig(keyId, "RSASSA_PSS_SHA256");
+        expectRejected(tokenWithSignatures([variant, sig(KEY_B)]), "UNTRUSTED_SIGNER");
+    });
 });
