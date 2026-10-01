@@ -359,3 +359,64 @@ describe("verifyAttestation: one failing check per step (criterion 4)", () => {
         expect([err.check, err.code]).toEqual([check, code]);
     });
 });
+
+// Image and claim defects that later steps would reject if they ran first.
+function laterDefects(c: Claims): void {
+    c.aud = "https://other.test/tee";
+    containerOf(c).image_digest = `sha256:${"cd".repeat(32)}`;
+    containerOf(c).image_signatures = [
+        { key_id: "0c".repeat(32), signature: "c2ln", signature_algorithm: "RSASSA_PSS_SHA256" },
+    ];
+    containerOf(c).args = ["/bin/sh"];
+}
+
+describe("verifyAttestation: signature and issuer run before claim checks (criterion 4a, SR-1)", () => {
+    it("rejects an invalid signature as signature, not audience, image or launch_config", async () => {
+        const err = await verifyWith(corruptSignature(await mint(laterDefects)));
+        expect([err.check, err.code]).toEqual(["signature", "UNTRUSTED_SIGNER"]);
+    });
+
+    it("rejects a valid signature with a wrong iss as issuer, not audience, image or launch_config", async () => {
+        const err = await verifyWith(
+            await mint((c) => {
+                laterDefects(c);
+                c.iss = "https://evil.example";
+            }),
+        );
+        expect([err.check, err.code]).toEqual(["issuer", "CLAIM_MISMATCH"]);
+    });
+
+    // Each mutation also fails every later step's check where it can; the earliest step wins.
+    const ORDER: readonly {
+        readonly check: AttestationCheckId;
+        readonly mutate: (c: Claims) => void;
+    }[] = [
+        { check: "issuer", mutate: (c) => (c.iss = "https://evil.example") },
+        { check: "audience", mutate: (c) => (c.aud = "https://other.test/tee") },
+        { check: "time", mutate: (c) => (c.exp = NOW_MS / 1000 - 1) },
+        { check: "nonce", mutate: (c) => (c.eat_nonce = "08".repeat(32)) },
+        { check: "platform", mutate: (c) => (c.secboot = false) },
+        {
+            check: "support_attributes",
+            mutate: (c) =>
+                (((c.submods as Claims).confidential_space as Claims).support_attributes = []),
+        },
+        { check: "image", mutate: (c) => (containerOf(c).image_digest = "sha256:00") },
+        { check: "launch_config", mutate: (c) => (containerOf(c).env = {}) },
+    ];
+
+    it.each(ORDER.slice(0, -1).map((step, i) => ({ step, rest: ORDER.slice(i + 1) })))(
+        "rejects as $step.check when every later check also fails",
+        async ({ step, rest }) => {
+            const err = await verifyWith(
+                await mint((c) => {
+                    for (const later of rest) {
+                        later.mutate(c);
+                    }
+                    step.mutate(c);
+                }),
+            );
+            expect(err.check).toBe(step.check);
+        },
+    );
+});
