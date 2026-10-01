@@ -1,0 +1,7 @@
+{
+    "name": "@teecustody/web",
+    "version": "0.0.0",
+    "devDependencies": {
+        "cbor-x": "1.6.0"
+    }
+}
