@@ -1,0 +1,158 @@
+# CI for tee-custody (T-14; SR-9, NFR-11). Runs against the simulator only: no cloud credentials and
+# no repository secrets. test/lint/coverage run framework.yaml's commands verbatim.
+# Every third-party action is pinned by full commit SHA; scanners run from exact pins via uvx.
+# Trivy is deferred to INC-5: it scans the workload image and INC-1 builds no image (WAVES.md R-9).
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+      - name: test_command
+        run: uv run pytest -q packages/teecustody-py packages/teecustody-sim tests && pnpm -r test && uv run pytest -q spec/vectors
+      - name: repository-level tests
+        run: uv run pytest -q tests
+
+  lint:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+      - name: lint_command
+        run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src && pnpm -r lint && pnpm -r typecheck
+      - name: semgrep static policy (bypass-resistant layer behind ruff and ESLint)
+        run: uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
+      - name: semgrep rule fixtures
+        run: uvx semgrep==1.178.0 --test .semgrep/
+
+  coverage:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+      - name: coverage_command
+        run: uv run pytest --cov=teecustody --cov=teecustody_sim --cov-report=term-missing packages/teecustody-py packages/teecustody-sim && pnpm -r coverage
+
+  security:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: gitleaks (full history)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          # The workflow's own read-only token (permissions above), used to read PR commits.
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: pip-audit (locked Python dependencies, hash-checked)
+        run: |
+          uv export --locked --no-emit-workspace --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r "$RUNNER_TEMP/requirements.txt"
+      - name: pnpm audit
+        run: pnpm audit --audit-level high
+      - name: bandit (Low findings are reported, Medium and above fail)
+        run: uvx bandit==1.9.4 --severity-level medium -r packages/teecustody-py/src packages/teecustody-sim/src
+      - name: semgrep static policy
+        run: uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
+      - name: semgrep rule fixtures
+        run: uvx semgrep==1.178.0 --test .semgrep/
+
+  deps:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - name: dependency policy (forbidden, crypto allow-list and pins, simulator separation, licence, age)
+        run: uv run python tools/dependency_policy.py
+
+  fuzz:
+    # SR-3 / ADR 0010: 100,000-case CBOR decoder fuzz, nightly and on demand only.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: CBOR fuzz (100,000 cases)
+        env:
+          TEECUSTODY_CBOR_FUZZ_CASES: "100000"
+        run: pnpm --filter @teecustody/core exec vitest run test/wire/cbor-fuzz.test.ts
