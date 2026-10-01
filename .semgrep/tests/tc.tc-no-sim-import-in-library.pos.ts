@@ -8,7 +8,7 @@ export { simProfile } from "teecustody-sim";
 // ruleid: tc-no-sim-import-in-library
 import "teecustody-sim";
 export async function load(): Promise<unknown> {
-    // ruleid: tc-no-sim-import-in-library
+    // ruleid: tc-no-sim-import-in-library, tc-ts-no-dynamic-import
     return import("teecustody-sim");
 }
 export const issuer = SIM_ISSUER + String(sim);

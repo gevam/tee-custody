@@ -219,3 +219,30 @@ rules:
       - pattern: $X?.constructor
       - pattern-regex: \?\.\s*constructor\b
       - pattern-regex: (["'`])constructor\1
+
+  - id: tc-ts-no-dynamic-import
+    message: >-
+      Core has no dynamic import or require, whatever the specifier (data:, blob:, http(s):, node:,
+      or a computed string); use a static import that ESLint and tsc can check (NFR-6, SR-3).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern: import(...)
+      - pattern-regex: \bimport\s*\(
+      - pattern: require
+      - pattern: $X.require
+
+  - id: tc-ts-no-lint-suppression
+    message: >-
+      ESLint and tsc suppression comments are not allowed in Core (NFR-6, SR-3); fix the finding or
+      change the policy file through review.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern-regex: eslint-disable
+      - pattern-regex: "@ts-ignore|@ts-nocheck|@ts-expect-error"
+      - pattern-regex: /\*\s*(?:eslint|globals?)\s
