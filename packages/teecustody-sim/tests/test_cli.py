@@ -2,16 +2,26 @@
 
 import base64
 import json
+import logging
 import shutil
 import stat
+import subprocess
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from teecustody_sim import JsonValue, LaunchConfig, SimKeys, Simulator, SimulatorConfig
+from teecustody.attest import ConfidentialSpaceLauncher
+from teecustody_sim import (
+    ContainerRuntime,
+    JsonValue,
+    LaunchConfig,
+    SimKeys,
+    Simulator,
+    SimulatorConfig,
+)
 from teecustody_sim import cli as cli_module
 from teecustody_sim.cli import main
 
@@ -44,6 +54,35 @@ def _segment(text: str) -> dict[str, Any]:
 
 def _payload(token: str) -> dict[str, Any]:
     return _segment(token.split(".")[1])
+
+
+@pytest.fixture(autouse=True)
+def _restore_library_logging() -> Iterator[None]:
+    """`serve`/`up` configure the library logger; later tests get the previous state back."""
+    base = logging.getLogger("teecustody")
+    handlers, level = list(base.handlers), base.level
+    try:
+        yield
+    finally:
+        base.handlers[:] = handlers
+        base.setLevel(level)
+
+
+@pytest.fixture
+def short_dir() -> Iterator[Path]:
+    root = _short_dir("t16u")
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
+def clean_environ(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Spec §15.5: the simulator refuses to start next to production credentials."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for name in ("CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(scope="module")
@@ -256,3 +295,156 @@ def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
     ]
     assert out == "/generated/suite\n/generated/corpus\n"
     assert not (tmp_path / ".teecustody-sim").exists()
+
+
+IMAGE = "localhost/teecustody-t16-up:2"
+IMAGE_ID = "sha256:" + "5a" * 32
+
+
+class FakeContainerRunner:
+    """Answers `image inspect`; on `run`, calls the launcher socket the way the workload would."""
+
+    def __init__(self, *, inspect_stdout: str = IMAGE_ID + "\n", exit_code: int = 5) -> None:
+        self.calls: list[list[str]] = []
+        self.seen_inside: dict[str, Any] = {}
+        self.inspect_stdout = inspect_stdout
+        self._exit_code = exit_code
+
+    def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        if argv[1] == "image":
+            return subprocess.CompletedProcess(list(argv), 0, self.inspect_stdout, "")
+        mount_source = Path(argv[argv.index("-v") + 1].split(":")[0])
+        launcher = ConfidentialSpaceLauncher(
+            str(mount_source / "teeserver.sock"), timeout_s=5.0, max_response_bytes=65536
+        )
+        token = launcher.get_attestation_token(AUDIENCE, "OIDC", bytes(32))
+        self.seen_inside["claims"] = _payload(token.value)
+        self.seen_inside["token_file"] = (
+            mount_source / "attestation_verifier_claims_token"
+        ).exists()
+        self.seen_inside["mode"] = stat.S_IMODE(mount_source.stat().st_mode)
+        return subprocess.CompletedProcess(list(argv), self._exit_code, None, None)
+
+
+@pytest.fixture
+def fake_runner(monkeypatch: pytest.MonkeyPatch) -> FakeContainerRunner:
+    runner = FakeContainerRunner()
+
+    def runtime(executable: Any) -> ContainerRuntime:
+        return ContainerRuntime(executable, run=runner)
+
+    monkeypatch.setattr(cli_module, "ContainerRuntime", runtime)
+    return runner
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_runs_the_image_against_a_live_launcher_and_returns_its_exit_code(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOST_ONLY_SECRET", "host-value")
+    state = short_dir / "state"
+
+    code, out, err = cli(
+        "up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE,
+        "--runtime", "podman", "--arg", "/app/workload", "--arg", "two words",
+        "--env", "MODE=test", "--env", "WITH_EQUALS=a=b", "--issuer-port", "0",
+    )  # fmt: skip
+
+    launcher_dir = state.resolve() / "launcher"
+    assert (code, err) == (5, "")
+    assert fake_runner.calls == [
+        ["podman", "image", "inspect", "--format", "{{.Id}}", IMAGE],
+        [
+            "podman", "run", "--rm", "--network", "none",
+            "-v", f"{launcher_dir}:/run/container_launcher",
+            "-e", "MODE=test", "-e", "WITH_EQUALS=a=b",
+            IMAGE, "/app/workload", "two words",
+        ],
+    ]  # fmt: skip
+    assert not any("host-value" in part for call in fake_runner.calls for part in call)
+    claims = fake_runner.seen_inside["claims"]
+    assert claims["aud"] == AUDIENCE
+    assert claims["submods"]["container"]["image_digest"] == IMAGE_ID
+    assert claims["submods"]["container"]["image_reference"] == IMAGE
+    assert claims["submods"]["container"]["args"] == ["/app/workload", "two words"]
+    assert claims["submods"]["container"]["env"] == {"MODE": "test", "WITH_EQUALS": "a=b"}
+    assert fake_runner.seen_inside["token_file"] is True
+    assert fake_runner.seen_inside["mode"] == 0o755
+    [line] = out.splitlines()
+    assert line.startswith("issuer=http://127.0.0.1:")
+    assert line.endswith(f" socket={launcher_dir / 'teeserver.sock'}")
+    assert not (launcher_dir / "teeserver.sock").exists()
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_with_a_bad_inspect_output_exits_2_before_serving_or_running(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner
+) -> None:
+    fake_runner.inspect_stdout = "Error: no such image\n"
+    state = short_dir / "state"
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "INVALID_LAUNCH_CONFIG\n")
+    assert [call[1] for call in fake_runner.calls] == ["image"]
+    assert not state.exists()
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--env", "NOEQUALS"),
+        ("--env", "BAD=\udcff"),
+        ("--arg", "\udcff"),
+        ("--image", "\udcff"),
+        ("--runtime", "sh"),
+        ("--issuer-port", "-1"),
+        ("--issuer-port", "٣"),
+        ("--signers-required", " 2"),
+        ("--signers-required", "+2"),
+        ("--audi", AUDIENCE),
+    ],
+)
+def test_up_rejects_invalid_arguments_with_a_single_code_line(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner, flags: tuple[str, str]
+) -> None:
+    code, out, err = cli(
+        "up", "--state-dir", str(short_dir / "state"), "--image", IMAGE, "--audience", AUDIENCE,
+        *flags,
+    )  # fmt: skip
+
+    assert (code, out, err) == (2, "", "INVALID_ARGUMENT\n")
+    assert fake_runner.calls == []
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_makes_an_existing_launcher_dir_0755(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner
+) -> None:
+    state = short_dir / "state"
+    (state / "launcher").mkdir(mode=0o700, parents=True)
+    state.chmod(0o700)
+
+    code, _, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE,
+                       "--issuer-port", "0")  # fmt: skip
+
+    assert (code, err) == (5, "")
+    assert fake_runner.seen_inside["mode"] == 0o755
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_refuses_a_launcher_dir_that_is_a_symlink(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner
+) -> None:
+    state = short_dir / "state"
+    state.mkdir(mode=0o700)
+    elsewhere = short_dir / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (state / "launcher").symlink_to(elsewhere)
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
+    assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o700
+    assert [call[1] for call in fake_runner.calls] == ["image"]

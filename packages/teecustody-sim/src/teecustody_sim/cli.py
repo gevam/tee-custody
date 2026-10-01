@@ -2,17 +2,35 @@
 
 import argparse
 import json
+import logging
 import os
+import re
+import stat
 import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Final, NoReturn
 
-from teecustody_sim.config import LaunchConfig, SimConfigError, SimConfigErrorCode
-from teecustody_sim.constants import DEFAULT_STATE_DIR, DEFAULT_TOKEN_MAX_AGE_S
+from teecustody.obs import configure_logging
+from teecustody_sim.config import (
+    LaunchConfig,
+    SimConfigError,
+    SimConfigErrorCode,
+    SimulatorConfig,
+)
+from teecustody_sim.constants import (
+    DEFAULT_ISSUER_PORT,
+    DEFAULT_SIGNERS_REQUIRED,
+    DEFAULT_STATE_DIR,
+    DEFAULT_TOKEN_FILE_NAME,
+    DEFAULT_TOKEN_MAX_AGE_S,
+    LAUNCHER_SOCKET_NAME,
+)
 from teecustody_sim.keys import SimKeys
 from teecustody_sim.profile import build_trust_profile
+from teecustody_sim.runtime import ContainerRuntime
+from teecustody_sim.simulator import Simulator
 from teecustody_sim.token import TokenMinter, parse_alteration
 from teecustody_sim.vectors import generate_corpus, generate_suite
 
@@ -21,6 +39,10 @@ _USAGE_ERROR: Final = "INVALID_ARGUMENT"
 _PROFILE_FILE_MODE: Final = 0o644
 _CORPUS_SEED: Final = 1
 _CORPUS_COUNT: Final = 512
+_STATE_DIR_MODE: Final = 0o700
+_LAUNCHER_DIR_MODE: Final = 0o755
+_LAUNCHER_DIR_NAME: Final = "launcher"
+_DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
 
 
 class _UsageError(Exception):
@@ -39,6 +61,20 @@ def _text(value: str) -> str:
     except UnicodeEncodeError:
         raise argparse.ArgumentTypeError(_USAGE_ERROR) from None
     return value
+
+
+def _env(value: str) -> tuple[str, str]:
+    name, separator, env_value = _text(value).partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError(_USAGE_ERROR)
+    return name, env_value
+
+
+def _decimal(value: str) -> int:
+    """ASCII digits only: `int()` alone would also accept signs, spaces and non-ASCII digits."""
+    if _DECIMAL.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(_USAGE_ERROR)
+    return int(value)
 
 
 def _launch(document: dict[str, Any]) -> LaunchConfig:
@@ -101,6 +137,52 @@ def _profile(options: argparse.Namespace) -> int:
     return 0
 
 
+def _launcher_dir(state_dir: Path) -> Path:
+    """`STATE/launcher`, a real directory (never a symlink) with mode 0755 for the container."""
+    state_dir.mkdir(mode=_STATE_DIR_MODE, parents=True, exist_ok=True)
+    launcher_dir = state_dir / _LAUNCHER_DIR_NAME
+    try:
+        launcher_dir.mkdir(mode=_LAUNCHER_DIR_MODE)
+    except FileExistsError:
+        if not stat.S_ISDIR(os.lstat(launcher_dir).st_mode):
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
+    descriptor = os.open(launcher_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(descriptor, _LAUNCHER_DIR_MODE)
+    finally:
+        os.close(descriptor)
+    return launcher_dir
+
+
+def _announce(simulator: Simulator, config: SimulatorConfig) -> None:
+    sys.stdout.write(
+        f"issuer={simulator.issuer_origin} discovery={simulator.discovery_url} "
+        f"socket={config.socket_path}\n"
+    )
+    sys.stdout.flush()
+
+
+def _up(options: argparse.Namespace) -> int:
+    configure_logging(sys.stderr, logging.WARNING)
+    runtime = ContainerRuntime(options.runtime)
+    digest = runtime.image_digest(options.image)
+    launcher_dir = _launcher_dir(options.state_dir.resolve())
+    config = SimulatorConfig(
+        state_dir=launcher_dir.parent,
+        socket_path=launcher_dir / LAUNCHER_SOCKET_NAME,
+        token_file_path=launcher_dir / DEFAULT_TOKEN_FILE_NAME,
+        launch=LaunchConfig(options.image, digest, tuple(options.arg), tuple(options.env)),
+        audience=options.audience,
+        issuer_port=options.issuer_port,
+        signers_required=options.signers_required,
+    )
+    with Simulator(config) as simulator:
+        _announce(simulator, config)
+        return runtime.run_workload(
+            options.image, launcher_dir=launcher_dir, args=options.arg, env=options.env
+        )
+
+
 def _vectors(options: argparse.Namespace) -> int:
     suite = generate_suite(options.out)
     corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
@@ -129,6 +211,14 @@ def _parser() -> argparse.ArgumentParser:
     alteration.add_argument("--alter", type=_text)
     alteration.add_argument("--drop", type=_text)
     alteration.add_argument("--case", type=_text)
+    up = _command(commands, "up", _up)
+    up.add_argument("--image", type=_text, required=True)
+    up.add_argument("--audience", type=_text, required=True)
+    up.add_argument("--runtime", choices=("docker", "podman"), default="docker")
+    up.add_argument("--arg", type=_text, action="append", default=[])
+    up.add_argument("--env", type=_env, action="append", default=[])
+    up.add_argument("--issuer-port", type=_decimal, default=DEFAULT_ISSUER_PORT)
+    up.add_argument("--signers-required", type=_decimal, default=DEFAULT_SIGNERS_REQUIRED)
     _command(commands, "profile", _profile).add_argument("--out", type=Path, required=True)
     _command(commands, "vectors", _vectors).add_argument("--out", type=Path, required=True)
     return parser
