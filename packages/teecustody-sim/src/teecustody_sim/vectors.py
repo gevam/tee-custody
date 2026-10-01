@@ -25,7 +25,7 @@ from teecustody_sim.constants import (
     SIM_TOKEN_TTL_S,
 )
 from teecustody_sim.keys import SimKeys
-from teecustody_sim.profile import build_trust_profile
+from teecustody_sim.profile import build_trust_profile, launch_config_hashes
 from teecustody_sim.token import TokenMinter
 
 _LAUNCH: Final = LaunchConfig(
@@ -69,7 +69,7 @@ _GOOGLE_JWKS_URI: Final = (
     _GOOGLE_JWKS_ORIGIN
     + "/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
 )
-_PRODUCTION_HWMODELS: Final[list[JsonValue]] = ["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"]
+_PRODUCTION_HWMODELS: Final = ("GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX")
 _FIXTURE_KID: Final = "production-fixture"
 _FIXTURE_RSA_BITS: Final = 2048
 _FIXTURE_RSA_PUBLIC_EXPONENT: Final = 65537
@@ -112,20 +112,29 @@ def _fixture_jwks() -> dict[str, JsonValue]:
 
 
 def _production_profile() -> dict[str, JsonValue]:
-    profile = build_trust_profile(
-        discovery_url=_GOOGLE_DISCOVERY_URL,
-        jwks_origin=_GOOGLE_JWKS_ORIGIN,
-        expected_audience=_AUDIENCE,
-        launch=_LAUNCH,
-        signers=SimKeys.generate(DEFAULT_SIGNERS_REQUIRED).signers,
-        signers_required=DEFAULT_SIGNERS_REQUIRED,
-    )
-    profile.update(
-        profile_kind="production",
-        issuer=_GOOGLE_ISSUER,
-        allowed_hwmodels=_PRODUCTION_HWMODELS,
-    )
-    return profile
+    """The production-shaped fixture (API.md §E fields); no development anchor appears in it."""
+    fixture_signers = SimKeys.generate(DEFAULT_SIGNERS_REQUIRED).signers
+    args_hash, env_hash = launch_config_hashes(_LAUNCH.args, _LAUNCH.env)
+    signer_keys: list[JsonValue] = [
+        {"key_id": hashlib.sha256(signer.spki_der).hexdigest(), "algorithm": signer.algorithm}
+        for signer in fixture_signers
+    ]
+    return {
+        "profile_version": 1,
+        "profile_kind": "production",
+        "token_type": "OIDC",
+        "issuer": _GOOGLE_ISSUER,
+        "discovery_url": _GOOGLE_DISCOVERY_URL,
+        "jwks_origin": _GOOGLE_JWKS_ORIGIN,
+        "expected_audience": _AUDIENCE,
+        "token_max_age_s": DEFAULT_TOKEN_MAX_AGE_S,
+        "allowed_hwmodels": list(_PRODUCTION_HWMODELS),
+        "allowed_digests": [_LAUNCH.image_digest],
+        "signer_keys": signer_keys,
+        "signers_required": DEFAULT_SIGNERS_REQUIRED,
+        "expected_args_hash": args_hash,
+        "expected_env_hash": env_hash,
+    }
 
 
 def _cases(minter: TokenMinter, nonce: str, now: int) -> list[CanonicalValue]:
