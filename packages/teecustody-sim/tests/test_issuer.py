@@ -357,3 +357,34 @@ def test_client_reset_mid_request_logs_a_fixed_code_and_nothing_on_stderr(
     assert captured.err == ""
     assert captured.out == ""
     assert records == [("sim", "warning", "SIM_REQUEST_FAILED", {})]
+
+
+STDLIB_ERRORS = {
+    "bad-request-line": (b"garbage<script>\r\n\r\n", b"400", b"BAD_REQUEST"),
+    "bad-version": (
+        b"GET /jwks HTTP/9.9<script>\r\n\r\n",
+        b"400",
+        b"BAD_REQUEST",
+    ),
+    "unsupported-version": (b"GET /jwks HTTP/2.0\r\n\r\n", b"505", b"HTTP_VERSION_NOT_SUPPORTED"),
+    "too-many-headers": (
+        b"GET /jwks HTTP/1.1\r\n" + b"X<script>: y\r\n" * 101 + b"\r\n",
+        b"431",
+        b"REQUEST_HEADER_FIELDS_TOO_LARGE",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("head", "status", "body"), STDLIB_ERRORS.values(), ids=STDLIB_ERRORS.keys()
+)
+def test_stdlib_error_pages_are_content_free(
+    issuer: IssuerServer, head: bytes, status: bytes, body: bytes
+) -> None:
+    response = _raw_exchange(issuer.origin, head)
+    status_line, _, rest = response.partition(b"\r\n")
+    headers, _, content = rest.partition(b"\r\n\r\n")
+    assert status_line.split()[1] == status
+    assert b"Content-Type: text/plain" in headers
+    assert content == body
+    assert b"script" not in response

@@ -204,6 +204,13 @@ class _SimRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """Stdlib parse errors: a fixed body naming the status, never the request (no HTML)."""
+        status = HTTPStatus(code)
+        self.close_connection = True
+        self.request_version = self.protocol_version  # always a status line, even for HTTP/0.9
+        self.reply(status, status.name.encode())
+
     def log_message(self, format: str, *args: object) -> None:
         """No access log: request lines are untrusted input and are never written out."""
 
