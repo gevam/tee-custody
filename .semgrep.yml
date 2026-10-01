@@ -96,3 +96,70 @@ rules:
       - pattern: getattr(runpy, ...)
       - pattern: exec(...)
       - pattern: eval(...)
+
+  # tc-py-banned-import, entry 1 of 3: teecustody source except the CBOR entry point.
+  - id: tc-py-banned-import
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+      exclude: ["/packages/teecustody-py/src/teecustody/wire/cbor.py"]
+    pattern-either:
+      - pattern: import cbor2
+      - pattern: from cbor2 import $X
+      - pattern: import teecustody_sim
+      - pattern: from teecustody_sim import $X
+      - pattern: import http.server
+      - pattern: from http.server import $X
+      - pattern: import socketserver
+      - pattern: from socketserver import $X
+      - pattern: import wsgiref
+      - pattern: from wsgiref import $X
+      - pattern: import xmlrpc.server
+      - pattern: from xmlrpc.server import $X
+      - pattern: import multiprocessing.connection
+      - pattern: from multiprocessing.connection import $X
+      - pattern: import multiprocessing.managers
+      - pattern: from multiprocessing.managers import $X
+
+  # tc-py-banned-import, entry 2 of 3: wire/cbor.py may import cbor2 and nothing else listed.
+  - id: tc-py-banned-import
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/teecustody/wire/cbor.py"]
+    pattern-either:
+      - pattern: import teecustody_sim
+      - pattern: from teecustody_sim import $X
+      - pattern: import http.server
+      - pattern: from http.server import $X
+      - pattern: import socketserver
+      - pattern: from socketserver import $X
+      - pattern: import wsgiref
+      - pattern: from wsgiref import $X
+      - pattern: import xmlrpc.server
+      - pattern: from xmlrpc.server import $X
+      - pattern: import multiprocessing.connection
+      - pattern: from multiprocessing.connection import $X
+      - pattern: import multiprocessing.managers
+      - pattern: from multiprocessing.managers import $X
+
+  # tc-py-banned-import, entry 3 of 3: the simulator may serve loopback listeners (spec §15) but
+  # decodes CBOR only through teecustody.wire.
+  - id: tc-py-banned-import
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-sim/src/**"]
+    pattern-either:
+      - pattern: import cbor2
+      - pattern: from cbor2 import $X
