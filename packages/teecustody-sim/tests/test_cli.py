@@ -947,3 +947,27 @@ def test_up_exits_with_the_shell_status_of_the_container(
                        "--audience", AUDIENCE, "--issuer-port", "0")  # fmt: skip
 
     assert (code, err) == (exit_code, "")
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_interrupted_by_ctrl_c_stops_the_simulator_and_exits_130_without_a_traceback(
+    cli: Cli, short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if argv[1] == "image":
+            return subprocess.CompletedProcess(list(argv), 0, IMAGE_ID + "\n", "")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        cli_module,
+        "ContainerRuntime",
+        lambda executable: ContainerRuntime(executable, run=interrupted),
+    )
+    state = short_dir / "state"
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE,
+                         "--issuer-port", "0")  # fmt: skip
+
+    assert (code, err) == (130, "")
+    assert out.startswith("issuer=")
+    assert not (state.resolve() / "launcher" / "teeserver.sock").exists()

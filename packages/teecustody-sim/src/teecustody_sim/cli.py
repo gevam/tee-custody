@@ -397,6 +397,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         code: int = options.handler(options)
+    except KeyboardInterrupt:
+        return _SIGNAL_STATUS_BASE + signal.SIGINT
     except Exception as error:  # noqa: BLE001 - every failure is reduced to a code line
         line, status = _error_line(error)
         sys.stderr.write(f"{line}\n")
