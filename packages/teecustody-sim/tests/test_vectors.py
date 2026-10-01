@@ -20,6 +20,7 @@ from teecustody_sim import (
     NEGATIVE_CASES,
     SIM_ISSUER,
     LaunchConfig,
+    NegativeCase,
     SimKeys,
     build_trust_profile,
     generate_suite,
@@ -97,13 +98,18 @@ def _served_json(suite: dict[str, Any], url: str) -> dict[str, Any]:
     return decoded
 
 
-def _issuer_key(suite: dict[str, Any], kid: str) -> rsa.RSAPublicKey:
-    """The JWKS key a client reaches via profile discovery URL -> jwks_uri -> kid."""
+def _issuer_jwks(suite: dict[str, Any]) -> list[dict[str, Any]]:
+    """The JWKS keys a client reaches via the development profile: discovery URL -> jwks_uri."""
     profile = json.loads(suite["profile_json"])
     discovery = _served_json(suite, profile["discovery_url"])
-    (jwk,) = [
-        key for key in _served_json(suite, discovery["jwks_uri"])["keys"] if key["kid"] == kid
-    ]
+    keys = _served_json(suite, discovery["jwks_uri"])["keys"]
+    assert isinstance(keys, list)
+    return keys
+
+
+def _issuer_key(suite: dict[str, Any]) -> rsa.RSAPublicKey:
+    """The suite's one JWKS key (CI-8: the JWKS holds the issuer key only)."""
+    (jwk,) = _issuer_jwks(suite)
     numbers = rsa.RSAPublicNumbers(
         int.from_bytes(_b64url_decode(jwk["e"]), "big"),
         int.from_bytes(_b64url_decode(jwk["n"]), "big"),
@@ -112,12 +118,12 @@ def _issuer_key(suite: dict[str, Any], kid: str) -> rsa.RSAPublicKey:
 
 
 def _signature_verifies(suite: dict[str, Any], token: str) -> bool:
+    """RS256 signature check against the suite's JWKS key, whatever the header `kid` says."""
     header_segment, payload_segment, signature_segment = token.split(".")
-    header = _jws_part(token, 0)
-    if header.get("alg") != "RS256":
+    if _jws_part(token, 0).get("alg") != "RS256":
         return False
     try:
-        _issuer_key(suite, header["kid"]).verify(
+        _issuer_key(suite).verify(
             _b64url_decode(signature_segment),
             f"{header_segment}.{payload_segment}".encode("ascii"),
             padding.PKCS1v15(),
@@ -146,6 +152,11 @@ def suite_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def suite(suite_path: Path) -> dict[str, Any]:
     return _load(suite_path)
+
+
+@pytest.fixture(scope="module")
+def cases_by_id(suite: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {case["id"]: case for case in suite["cases"]}
 
 
 class GeneratedSuite:
@@ -505,3 +516,35 @@ def test_suite_contains_no_private_key_material_of_the_keys_it_used(
         assert d_bytes not in observed.data
         assert base64.urlsafe_b64encode(d_bytes).rstrip(b"=") not in observed.data
         assert pkcs8 not in observed.data
+
+
+CLAIM_MISSING_ROWS = [row for row in NEGATIVE_CASES if row.error_code == "CLAIM_MISSING"]
+
+
+@pytest.mark.parametrize("row", CLAIM_MISSING_ROWS, ids=[row.case_id for row in CLAIM_MISSING_ROWS])
+def test_claim_missing_case_lacks_its_altered_paths_and_keeps_every_other_claim(
+    row: NegativeCase, cases_by_id: dict[str, dict[str, Any]]
+) -> None:
+    valid = _jws_part(cases_by_id["valid"]["token"], 1)
+    payload = _jws_part(cases_by_id[row.case_id]["token"], 1)
+
+    assert row.altered
+    for path in row.altered:
+        assert _value_at(payload, path) is _ABSENT, path
+        assert _value_at(valid, path) is not _ABSENT, path
+        valid = _without(valid, path)
+    assert payload == valid
+
+
+def test_kid_unknown_case_names_no_jwks_key_and_is_otherwise_the_valid_token(
+    suite: dict[str, Any], cases_by_id: dict[str, dict[str, Any]]
+) -> None:
+    """Data-driven: holds vacuously until the catalog carries `kid_unknown` (API.md §G row 37)."""
+    expected = [row.case_id for row in NEGATIVE_CASES if row.case_id == "kid_unknown"]
+    assert [case_id for case_id in cases_by_id if case_id == "kid_unknown"] == expected
+    for case_id in expected:
+        token = cases_by_id[case_id]["token"]
+        jwks_kids = {jwk["kid"] for jwk in _issuer_jwks(suite)}
+        assert _jws_part(token, 0)["kid"] not in jwks_kids
+        assert _jws_part(token, 1) == _jws_part(cases_by_id["valid"]["token"], 1)
+        assert _signature_verifies(suite, token)
