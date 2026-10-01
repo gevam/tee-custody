@@ -339,6 +339,33 @@ def test_requests_beyond_max_concurrent_get_503(short_dir: Path) -> None:
     assert mint.calls == limit + 1
 
 
+def test_stop_waits_for_the_request_in_flight(short_dir: Path) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    mint = BlockingMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+    server.start()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            in_flight = pool.submit(request_until_eof, socket_path, token_request())
+            assert mint.entered.acquire(timeout=10.0)
+            stopper = threading.Thread(target=server.stop)
+            stopper.start()
+            stopper.join(timeout=0.3)
+            still_stopping = stopper.is_alive()
+
+            mint.release.set()
+            stopper.join(timeout=5.0)
+            result = in_flight.result(timeout=5.0)
+    finally:
+        mint.release.set()
+        server.stop()
+
+    assert still_stopping
+    assert not stopper.is_alive()
+    assert result == (200, "text/plain", TOKEN.encode())
+    assert not socket_path.exists()
+
+
 class FailingMint:
     def __init__(self) -> None:
         self.calls = 0
