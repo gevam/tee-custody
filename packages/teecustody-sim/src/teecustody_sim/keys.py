@@ -3,6 +3,8 @@
 import base64
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -13,10 +15,53 @@ from teecustody_sim.constants import DEV_SIGNER_ALGORITHM, JWS_ALG, MAX_SIGNERS
 
 _RSA_BITS = 2048
 _RSA_PUBLIC_EXPONENT = 65537
+_PRIVATE_DIR_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
+_NOT_OWNER_BITS = 0o077
 
 
 def _new_rsa_key() -> rsa.RSAPrivateKey:
     return rsa.generate_private_key(public_exponent=_RSA_PUBLIC_EXPONENT, key_size=_RSA_BITS)
+
+
+def _check_signers_required(signers_required: int) -> None:
+    if not 1 <= signers_required <= MAX_SIGNERS:
+        raise ValueError("INVALID_SIGNERS_REQUIRED")
+
+
+def _ensure_private_dir(path: Path) -> None:
+    try:
+        path.mkdir(mode=_PRIVATE_DIR_MODE)
+    except FileExistsError:
+        return
+    path.chmod(_PRIVATE_DIR_MODE)
+
+
+def _load_key(path: Path) -> rsa.RSAPrivateKey:
+    if stat.S_IMODE(path.stat().st_mode) & _NOT_OWNER_BITS:
+        raise ValueError("INSECURE_KEY_FILE")
+    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError("INVALID_KEY_FILE")
+    return key
+
+
+def _load_or_create_key(path: Path) -> rsa.RSAPrivateKey:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, _PRIVATE_FILE_MODE)
+    except FileExistsError:
+        return _load_key(path)
+    key = _new_rsa_key()
+    with os.fdopen(fd, "wb") as file:
+        os.fchmod(file.fileno(), _PRIVATE_FILE_MODE)
+        file.write(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+    return key
 
 
 def _b64url(data: bytes) -> str:
@@ -76,8 +121,7 @@ class SimKeys:
 
     @classmethod
     def generate(cls, signers_required: int) -> "SimKeys":
-        if not 1 <= signers_required <= MAX_SIGNERS:
-            raise ValueError("INVALID_SIGNERS_REQUIRED")
+        _check_signers_required(signers_required)
         return cls(
             _new_rsa_key(),
             tuple(_new_rsa_key() for _ in range(signers_required)),
@@ -86,7 +130,18 @@ class SimKeys:
 
     @classmethod
     def load_or_create(cls, state_dir: Path, signers_required: int) -> "SimKeys":
-        raise NotImplementedError("T-07")
+        _check_signers_required(signers_required)
+        keys_dir = state_dir / "keys"
+        _ensure_private_dir(state_dir)
+        _ensure_private_dir(keys_dir)
+        return cls(
+            _load_or_create_key(keys_dir / "issuer.pem"),
+            tuple(
+                _load_or_create_key(keys_dir / f"signer-{index}.pem")
+                for index in range(1, signers_required + 1)
+            ),
+            _load_or_create_key(keys_dir / "unknown-signer.pem"),
+        )
 
     def issuer_jwks(self) -> dict[str, JsonValue]:
         return {

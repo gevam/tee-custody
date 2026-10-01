@@ -5,6 +5,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import stat
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -83,3 +87,99 @@ def test_reprs_expose_no_key_material(keys: SimKeys) -> None:
 def test_generate_rejects_signer_count_out_of_range(count: int) -> None:
     with pytest.raises(ValueError, match=r"^INVALID_SIGNERS_REQUIRED$"):
         SimKeys.generate(count)
+
+
+KEY_FILES = ("issuer.pem", "signer-1.pem", "signer-2.pem", "unknown-signer.pem")
+
+
+def _identity(keys: SimKeys) -> tuple[str, tuple[str, ...], str]:
+    return (
+        keys.issuer_kid,
+        tuple(signer.key_id for signer in keys.signers),
+        keys.unknown_signer.key_id,
+    )
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.fixture
+def permissive_umask() -> Iterator[None]:
+    previous = os.umask(0)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def test_load_or_create_twice_loads_the_same_keys_from_owner_only_files(
+    tmp_path: Path, permissive_umask: None
+) -> None:
+    state_dir = tmp_path / "state"
+
+    created = SimKeys.load_or_create(state_dir, 2)
+    loaded = SimKeys.load_or_create(state_dir, 2)
+
+    assert _identity(loaded) == _identity(created)
+    assert _mode(state_dir) == 0o700
+    assert _mode(state_dir / "keys") == 0o700
+    assert sorted(p.name for p in (state_dir / "keys").iterdir()) == sorted(KEY_FILES)
+    for name in KEY_FILES:
+        path = state_dir / "keys" / name
+        assert _mode(path) == 0o600
+        assert path.read_bytes().startswith(b"-----BEGIN PRIVATE KEY-----\n")
+
+
+def test_load_or_create_generates_only_missing_key_files(tmp_path: Path) -> None:
+    created = SimKeys.load_or_create(tmp_path, 2)
+    (tmp_path / "keys" / "signer-2.pem").unlink()
+
+    grown = SimKeys.load_or_create(tmp_path, 3)
+
+    assert grown.issuer_kid == created.issuer_kid
+    assert grown.signers[0].key_id == created.signers[0].key_id
+    assert grown.signers[1].key_id != created.signers[1].key_id
+    assert len(grown.signers) == 3
+    assert grown.unknown_signer.key_id == created.unknown_signer.key_id
+    assert _mode(tmp_path / "keys" / "signer-3.pem") == 0o600
+
+
+@pytest.fixture(scope="module")
+def key_files(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
+    state_dir = tmp_path_factory.mktemp("key-files")
+    SimKeys.load_or_create(state_dir, 2)
+    return {name: (state_dir / "keys" / name).read_bytes() for name in KEY_FILES}
+
+
+def _seed_state(state_dir: Path, key_files: dict[str, bytes]) -> None:
+    keys_dir = state_dir / "keys"
+    keys_dir.mkdir(mode=0o700)
+    for name, content in key_files.items():
+        (keys_dir / name).write_bytes(content)
+        (keys_dir / name).chmod(0o600)
+
+
+@pytest.mark.parametrize(
+    ("name", "mode"),
+    [(name, 0o644) for name in KEY_FILES] + [("issuer.pem", m) for m in (0o640, 0o604, 0o660)],
+)
+def test_load_or_create_rejects_a_key_file_readable_beyond_its_owner(
+    tmp_path: Path, key_files: dict[str, bytes], name: str, mode: int
+) -> None:
+    _seed_state(tmp_path, key_files)
+    SimKeys.load_or_create(tmp_path, 2)
+    (tmp_path / "keys" / name).chmod(mode)
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path, 2)
+
+
+@pytest.mark.parametrize("count", [0, 17])
+def test_load_or_create_rejects_signer_count_before_touching_disk(
+    tmp_path: Path, count: int
+) -> None:
+    state_dir = tmp_path / "state"
+    with pytest.raises(ValueError, match=r"^INVALID_SIGNERS_REQUIRED$"):
+        SimKeys.load_or_create(state_dir, count)
+    assert not state_dir.exists()
