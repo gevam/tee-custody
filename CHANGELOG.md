@@ -9,6 +9,7 @@
 - T-04: Python canonical CBOR codec (`teecustody.wire`)
 - T-05: Python allow-listed JSON logger
 - T-07: Simulator keys, token minting and alterations
+- T-09: TypeScript canonical CBOR codec with property tests, fuzz tests and vector harness
 - T-10: Token and trust-profile parsing with SR-1 checks
 - T-11: §6.1 signature verification and §6.2 issuer checks
 - T-12: §6.3–§6.7 claim checks (audience, time, nonce, platform, support attributes)
