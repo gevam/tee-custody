@@ -219,13 +219,15 @@ def test_suite_has_exactly_the_cddl_keys_and_constants(suite: dict[str, Any]) ->
         assert type(case["debug_event"]) is bool
 
 
-def test_generated_at_defaults_to_the_current_time(tmp_path: Path) -> None:
-    before = int(time.time())
-    suite = _load(generate_suite(tmp_path / "nested" / "out"))
-    after = int(time.time())
+def test_generated_at_defaults_to_the_current_time_in_whole_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(time, "time", lambda: 1_234_567_890.9)
 
-    assert before <= suite["generated_at"] <= after
-    assert suite["verify_at_ms"] == suite["generated_at"] * 1000
+    suite = _load(generate_suite(tmp_path / "nested" / "out"))
+
+    assert suite["generated_at"] == 1_234_567_890
+    assert suite["verify_at_ms"] == 1_234_567_890_000
 
 
 def test_cases_are_valid_then_the_negative_catalog_in_order(suite: dict[str, Any]) -> None:
