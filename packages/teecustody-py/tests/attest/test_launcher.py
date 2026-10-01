@@ -512,10 +512,18 @@ def test_deadline_already_spent_before_connecting_is_unavailable(
         def monotonic() -> float:
             return next(readings)
 
+    connect_calls: list[object] = []
+    real_connect = socket.socket.connect
+
+    def recording_connect(sock: socket.socket, address: object) -> None:
+        connect_calls.append(address)
+        real_connect(sock, address)  # type: ignore[arg-type]
+
     monkeypatch.setattr(launcher_module, "time", _Clock)
+    monkeypatch.setattr(socket.socket, "connect", recording_connect)
 
     _assert_code(client(fake_launcher.socket_path, timeout_s=1.0), LauncherErrorCode.UNAVAILABLE)
-    assert fake_launcher.connections == 0
+    assert connect_calls == []
 
 
 # Review R1 item 5: errors carry no chained exception (which could hold response bytes) -------
