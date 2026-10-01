@@ -11,8 +11,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, NoReturn
+from typing import Final, NoReturn
 
 from teecustody.obs import configure_logging
 from teecustody_sim.config import (
@@ -38,6 +39,13 @@ from teecustody_sim.token import TokenMinter, parse_alteration
 from teecustody_sim.vectors import generate_corpus, generate_suite
 
 _STATE_FILE_NAME: Final = "sim-state.json"
+_STATE_VERSION: Final = 1
+_MAX_STATE_BYTES: Final = 65536
+_STATE_TEXT_KEYS: Final = ("audience", "issuer", "discovery_url", "jwks_origin")
+_STATE_KEYS: Final = frozenset(
+    {"state_version", *_STATE_TEXT_KEYS, "signers_required", "token_ttl_s", "launch"}
+)
+_LAUNCH_KEYS: Final = frozenset({"image_reference", "image_digest", "args", "env"})
 _USAGE_ERROR: Final = "INVALID_ARGUMENT"
 _PROFILE_FILE_MODE: Final = 0o644
 _CORPUS_SEED: Final = 1
@@ -85,8 +93,36 @@ def _decimal(value: str) -> int:
     return int(value)
 
 
-def _launch(document: dict[str, Any]) -> LaunchConfig:
-    launch = document["launch"]
+@dataclass(frozen=True)
+class _State:
+    """`sim-state.json` (API.md §C), validated."""
+
+    audience: str
+    discovery_url: str
+    jwks_origin: str
+    signers_required: int
+    token_ttl_s: int
+    launch: LaunchConfig
+
+
+def _is_text_list(value: object) -> bool:
+    return isinstance(value, list) and all(type(item) is str for item in value)
+
+
+def _is_text_map(value: object) -> bool:
+    return isinstance(value, dict) and all(type(item) is str for item in value.values())
+
+
+def _parse_launch(launch: object) -> LaunchConfig:
+    if not (
+        isinstance(launch, dict)
+        and set(launch) == _LAUNCH_KEYS
+        and type(launch["image_reference"]) is str
+        and type(launch["image_digest"]) is str
+        and _is_text_list(launch["args"])
+        and _is_text_map(launch["env"])
+    ):
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
     return LaunchConfig(
         image_reference=launch["image_reference"],
         image_digest=launch["image_digest"],
@@ -95,24 +131,61 @@ def _launch(document: dict[str, Any]) -> LaunchConfig:
     )
 
 
-def _read_state(state_dir: Path) -> dict[str, Any]:
+def _parse_state(document: object) -> _State:
+    if not (
+        isinstance(document, dict)
+        and set(document) == _STATE_KEYS
+        and type(document["state_version"]) is int
+        and document["state_version"] == _STATE_VERSION
+        and all(type(document[name]) is str for name in _STATE_TEXT_KEYS)
+        and type(document["signers_required"]) is int
+        and type(document["token_ttl_s"]) is int
+        and document["token_ttl_s"] > 0
+    ):
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
+    return _State(
+        audience=document["audience"],
+        discovery_url=document["discovery_url"],
+        jwks_origin=document["jwks_origin"],
+        signers_required=document["signers_required"],
+        token_ttl_s=document["token_ttl_s"],
+        launch=_parse_launch(document["launch"]),
+    )
+
+
+def _read_state_bytes(path: Path) -> bytes:
+    """At most `_MAX_STATE_BYTES + 1` bytes of a regular file, never through a symlink."""
     try:
-        text = (state_dir / _STATE_FILE_NAME).read_text(encoding="utf-8")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED) from None
-    document: dict[str, Any] = json.loads(text)
-    return document
+    except OSError:
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return handle.read(_MAX_STATE_BYTES + 1)
+    finally:
+        os.close(descriptor)
+
+
+def _load_state(state_dir: Path) -> tuple[_State, SimKeys]:
+    data = _read_state_bytes(state_dir / _STATE_FILE_NAME)
+    try:
+        document: object = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED) from None
+    if len(data) > _MAX_STATE_BYTES:
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
+    state = _parse_state(document)
+    return state, SimKeys.load_or_create(state_dir, state.signers_required)
 
 
 def _token(options: argparse.Namespace) -> int:
-    state_dir: Path = options.state_dir
-    document = _read_state(state_dir)
-    keys = SimKeys.load_or_create(state_dir, document["signers_required"])
+    state, keys = _load_state(options.state_dir)
     minter = TokenMinter(
-        keys,
-        _launch(document),
-        ttl_s=document["token_ttl_s"],
-        token_max_age_s=DEFAULT_TOKEN_MAX_AGE_S,
+        keys, state.launch, ttl_s=state.token_ttl_s, token_max_age_s=DEFAULT_TOKEN_MAX_AGE_S
     )
     alteration = None
     for kind in ("alter", "drop", "case"):
@@ -136,16 +209,14 @@ def _write_public_file(path: Path, text: str) -> None:
 
 
 def _profile(options: argparse.Namespace) -> int:
-    state_dir: Path = options.state_dir
-    document = _read_state(state_dir)
-    keys = SimKeys.load_or_create(state_dir, document["signers_required"])
+    state, keys = _load_state(options.state_dir)
     profile = build_trust_profile(
-        discovery_url=document["discovery_url"],
-        jwks_origin=document["jwks_origin"],
-        expected_audience=document["audience"],
-        launch=_launch(document),
+        discovery_url=state.discovery_url,
+        jwks_origin=state.jwks_origin,
+        expected_audience=state.audience,
+        launch=state.launch,
         signers=keys.signers,
-        signers_required=document["signers_required"],
+        signers_required=state.signers_required,
     )
     _write_public_file(options.out, json.dumps(profile, indent=2, sort_keys=True) + "\n")
     return 0

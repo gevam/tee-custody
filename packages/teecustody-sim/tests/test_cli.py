@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import shutil
 import signal
@@ -832,5 +833,99 @@ def test_profile_reports_an_unusable_output_path_as_invalid_path(
     (tmp_path / "is-a-dir").mkdir()
 
     code, out, err = cli("profile", "--state-dir", str(state_dir), "--out", str(tmp_path / name))
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
+
+
+def _state_copy(state_dir: Path, tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    copy = tmp_path / "state"
+    shutil.copytree(state_dir, copy)
+    return copy, json.loads((copy / "sim-state.json").read_text())
+
+
+def _with(document: dict[str, Any], path: tuple[str, ...], value: object) -> dict[str, Any]:
+    edited = json.loads(json.dumps(document))
+    parent = edited
+    for part in path[:-1]:
+        parent = parent[part]
+    if value is KeyError:
+        del parent[path[-1]]
+    else:
+        parent[path[-1]] = value
+    return edited
+
+
+MALFORMED_STATE = [
+    (("state_version",), 2),
+    (("state_version",), True),
+    (("state_version",), KeyError),
+    (("audience",), 7),
+    (("issuer",), None),
+    (("discovery_url",), ["x"]),
+    (("jwks_origin",), KeyError),
+    (("signers_required",), "2"),
+    (("signers_required",), True),
+    (("token_ttl_s",), 0),
+    (("token_ttl_s",), 1.5),
+    (("launch",), "launch"),
+    (("launch", "image_reference"), 1),
+    (("launch", "image_digest"), KeyError),
+    (("launch", "args"), "/app/workload"),
+    (("launch", "args"), [1]),
+    (("launch", "env"), [["A", "B"]]),
+    (("launch", "env"), {"A": 1}),
+    (("launch", "extra"), "x"),
+    (("extra",), "x"),
+]
+
+
+@pytest.mark.parametrize(("path", "value"), MALFORMED_STATE)
+def test_a_malformed_state_file_is_state_not_initialised(
+    cli: Cli, state_dir: Path, tmp_path: Path, path: tuple[str, ...], value: object
+) -> None:
+    copy, document = _state_copy(state_dir, tmp_path)
+    (copy / "sim-state.json").write_text(json.dumps(_with(document, path, value)))
+
+    code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+
+
+@pytest.mark.parametrize("text", ["", "{", "[]", '"state"', "\xff", "{}" + " " * 70000])
+def test_a_state_file_that_is_not_a_json_object_is_state_not_initialised(
+    cli: Cli, state_dir: Path, tmp_path: Path, text: str
+) -> None:
+    copy, _ = _state_copy(state_dir, tmp_path)
+    (copy / "sim-state.json").write_bytes(text.encode("latin-1"))
+
+    code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+
+
+def test_a_symlinked_state_file_is_refused(cli: Cli, state_dir: Path, tmp_path: Path) -> None:
+    copy, _ = _state_copy(state_dir, tmp_path)
+    real = tmp_path / "real-state.json"
+    (copy / "sim-state.json").rename(real)
+    (copy / "sim-state.json").symlink_to(real)
+
+    code, out, err = cli("profile", "--state-dir", str(copy), "--out", str(tmp_path / "p.json"))
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
+    assert not (tmp_path / "p.json").exists()
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo"])
+def test_a_state_path_that_is_not_a_regular_file_is_refused(
+    cli: Cli, state_dir: Path, tmp_path: Path, kind: str
+) -> None:
+    copy, _ = _state_copy(state_dir, tmp_path)
+    (copy / "sim-state.json").unlink()
+    if kind == "directory":
+        (copy / "sim-state.json").mkdir()
+    else:
+        os.mkfifo(copy / "sim-state.json")
+
+    code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
 
     assert (code, out, err) == (2, "", "INVALID_PATH\n")
