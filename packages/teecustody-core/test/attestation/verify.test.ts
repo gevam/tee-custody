@@ -476,3 +476,56 @@ describe("verifyAttestation: SR-12 debug-mode reporting (criteria 5–7)", () =>
         expect(sink.events).toEqual([]);
     });
 });
+
+// Collects unhandled rejections raised while `body` runs and for a few macrotasks after it.
+async function unhandledDuring(body: () => Promise<void>): Promise<unknown[]> {
+    const seen: unknown[] = [];
+    const listener = (reason: unknown): void => {
+        seen.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+        await body();
+        for (let i = 0; i < 3; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+    } finally {
+        process.off("unhandledRejection", listener);
+    }
+    return seen;
+}
+
+describe("verifyAttestation: a failing sink never changes the decision (criterion 8)", () => {
+    const sinks: readonly { readonly name: string; readonly report: () => Promise<void> }[] = [
+        { name: "never settles", report: () => new Promise<void>(() => undefined) },
+        { name: "rejects", report: () => Promise.reject(new Error("sink unavailable")) },
+        {
+            name: "throws synchronously",
+            report: (): Promise<void> => {
+                throw new Error("sink exploded");
+            },
+        },
+    ];
+
+    it.each(sinks)(
+        "a sink that $name: platform/CLAIM_MISMATCH, one call, no unhandled rejection",
+        async ({ report }) => {
+            const calls: unknown[] = [];
+            const sink: SecurityEventSink = {
+                report: (event) => {
+                    calls.push(event);
+                    return report();
+                },
+            };
+            const token = await mint(debug);
+            let err: AttestationError | undefined;
+            const unhandled = await unhandledDuring(async () => {
+                err = await verifyWith(token, { sink });
+            });
+            expect([err?.check, err?.code]).toEqual(["platform", "CLAIM_MISMATCH"]);
+            expect(calls).toEqual([{ code: "ATTESTATION_DEBUG_MODE", at: NOW_MS }]);
+            expect(unhandled).toEqual([]);
+        },
+        2_000,
+    );
+});

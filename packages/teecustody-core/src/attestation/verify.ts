@@ -22,6 +22,18 @@ import {
     type VerifierDeps,
 } from "./types.js";
 
+// SR-12: fire and forget. Never awaited, so it cannot delay or change the decision; a rejection is
+// discarded and a synchronous throw is swallowed.
+function reportDebugMode(events: SecurityEventSink, deps: VerifierDeps): void {
+    try {
+        Promise.resolve(events.report({ code: "ATTESTATION_DEBUG_MODE", at: deps.now() })).catch(
+            () => undefined,
+        );
+    } catch {
+        // The sink's failure is its own; verification continues.
+    }
+}
+
 export async function verifyAttestation(
     token: string,
     profile: TrustProfile,
@@ -33,7 +45,7 @@ export async function verifyAttestation(
     await checkSignature(t, profile, deps);
     checkIssuer(t, profile);
     if (isDebugMode(t)) {
-        void events.report({ code: "ATTESTATION_DEBUG_MODE", at: deps.now() });
+        reportDebugMode(events, deps);
     }
     checkAudience(t, profile);
     checkTime(t, profile, deps.now());
