@@ -6,14 +6,24 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import DEFAULT_STATE_DIR, DEFAULT_TOKEN_MAX_AGE_S
 from teecustody_sim.keys import SimKeys
-from teecustody_sim.token import TokenMinter
+from teecustody_sim.token import TokenMinter, parse_alteration
 
 _STATE_FILE_NAME: Final = "sim-state.json"
+_USAGE_ERROR: Final = "INVALID_ARGUMENT"
+
+
+class _UsageError(Exception):
+    """Raised instead of argparse's own exit, so `main` returns and prints only a code."""
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise _UsageError(_USAGE_ERROR)
 
 
 def _launch(document: dict[str, Any]) -> LaunchConfig:
@@ -36,23 +46,35 @@ def _token(options: argparse.Namespace) -> int:
         ttl_s=document["token_ttl_s"],
         token_max_age_s=DEFAULT_TOKEN_MAX_AGE_S,
     )
-    token = minter.mint(options.audience, options.nonce, int(time.time()))
+    alteration = None
+    for kind in ("alter", "drop", "case"):
+        if getattr(options, kind) is not None:
+            alteration = parse_alteration(kind, getattr(options, kind))
+    token = minter.mint(options.audience, options.nonce, int(time.time()), alteration)
     sys.stdout.write(token + "\n")
     return 0
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="teecustody-sim")
+    parser = _Parser(prog="teecustody-sim")
     commands = parser.add_subparsers(dest="command", required=True)
     token = commands.add_parser("token")
     token.add_argument("--state-dir", type=Path, default=Path(DEFAULT_STATE_DIR))
     token.add_argument("--audience", required=True)
     token.add_argument("--nonce", action="append", default=[])
+    alteration = token.add_mutually_exclusive_group()
+    alteration.add_argument("--alter")
+    alteration.add_argument("--drop")
+    alteration.add_argument("--case")
     token.set_defaults(handler=_token)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options = _parser().parse_args(argv)
+    try:
+        options = _parser().parse_args(argv)
+    except _UsageError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
     code: int = options.handler(options)
     return code

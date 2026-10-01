@@ -81,3 +81,51 @@ def test_token_prints_one_jws_bound_to_the_audience_and_nonce(cli: Cli, state_di
     claims = _payload(out.strip())
     assert claims["aud"] == AUDIENCE
     assert claims["eat_nonce"] == NONCE
+
+
+def _token_args(state_dir: Path, *extra: str) -> list[str]:
+    return [
+        "token",
+        "--state-dir",
+        str(state_dir),
+        "--audience",
+        AUDIENCE,
+        "--nonce",
+        NONCE,
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("flags", "claim", "expected"),
+    [
+        (("--case", "dbgstat_enabled"), "dbgstat", "enabled"),
+        (("--alter", "secboot=false"), "secboot", False),
+        (("--drop", "eat_nonce"), "eat_nonce", KeyError),
+    ],
+)
+def test_token_applies_the_requested_alteration(
+    cli: Cli, state_dir: Path, flags: tuple[str, str], claim: str, expected: object
+) -> None:
+    code, out, err = cli(*_token_args(state_dir, *flags))
+
+    assert (code, err) == (0, "")
+    assert _payload(out.strip()).get(claim, KeyError) == expected
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--case", "dbgstat_enabled", "--alter", "secboot=false"),
+        ("--alter", "secboot=false", "--drop", "eat_nonce"),
+        ("--drop", "eat_nonce", "--case", "dbgstat_enabled"),
+    ],
+)
+def test_token_rejects_two_alterations_with_exit_2(
+    cli: Cli, state_dir: Path, flags: tuple[str, ...]
+) -> None:
+    code, out, err = cli(*_token_args(state_dir, *flags))
+
+    assert code == 2
+    assert out == ""
+    assert err.count("\n") == 1
