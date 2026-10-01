@@ -342,3 +342,34 @@ def test_attestation_needs_no_inbound_socket(
 
     assert lifecycle.refresh_if_due() is RefreshOutcome.REFRESHED
     assert fake_launcher.connections == 2
+
+
+# Criterion 9 -------------------------------------------------------------------------------
+
+
+def test_launcher_round_trip_writes_no_token_or_nonce(
+    fake_launcher: FakeLauncher,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    caplog.set_level("DEBUG")
+    fake_launcher.replies.extend(
+        [
+            Reply(http_response(200, make_token().encode())),
+            Reply(http_response(200, make_token(nonce="cd" * 32).encode())),
+            Reply(http_response(503, make_token().encode())),
+        ]
+    )
+    launcher = client(fake_launcher.socket_path)
+
+    token = launcher.get_attestation_token(AUD, "OIDC", NONCE)
+    errors = []
+    for _ in range(2):
+        with pytest.raises(LauncherError) as caught:
+            launcher.get_attestation_token(AUD, "OIDC", NONCE)
+        errors.append(caught.value)
+
+    out, err = capsys.readouterr()
+    captured = " ".join([caplog.text, out, err, repr(token), *map(str, errors), *map(repr, errors)])
+    for needle in (token.value, make_token(nonce="cd" * 32), HEX_NONCE, "cd" * 32, IK_PUB.hex()):
+        assert needle not in captured

@@ -235,3 +235,46 @@ def test_refresh_schedule_follows_the_newest_token() -> None:
     assert rig.lifecycle.current() == third
     assert len(rig.launcher.calls) == 3
     _assert_same_nonce_everywhere(rig)
+
+
+# Criterion 9: no token or nonce in logs ------------------------------------------------------
+
+
+def _secrets_in(text: str) -> list[str]:
+    nonce = identity_nonce(IK_PUB)
+    needles = [FIRST.value, SECOND.value, nonce.hex(), repr(nonce), IK_PUB.hex()]
+    return [needle for needle in needles if needle in text]
+
+
+def test_logs_never_carry_the_token_or_the_nonce(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("DEBUG")
+    failing = make_rig(UNAVAILABLE)
+    with pytest.raises(LauncherError) as start_error:
+        failing.lifecycle.start()
+    rig = started(SECOND, UNAVAILABLE, UNAVAILABLE)
+    rig.clock.now = FIRST.expires_at - MARGIN
+    rig.lifecycle.refresh_if_due()
+    rig.clock.now = SECOND.expires_at - 1
+    rig.lifecycle.refresh_if_due()
+    rig.clock.now = SECOND.expires_at
+    with pytest.raises(LauncherError) as expiry_error:
+        rig.lifecycle.refresh_if_due()
+
+    assert rig.logger.outcomes == [
+        "ATTESTATION_TOKEN_OBTAINED",
+        "ATTESTATION_TOKEN_REFRESHED",
+        "ATTESTATION_REFRESH_FAILED",
+        "ATTESTATION_TOKEN_EXPIRED",
+    ]
+    assert all(fields == {} for _, _, fields in failing.logger.records + rig.logger.records)
+    captured = " ".join(
+        [
+            repr(failing.logger.records),
+            repr(rig.logger.records),
+            caplog.text,
+            str(start_error.value),
+            str(expiry_error.value),
+            repr(rig.lifecycle.current()),
+        ]
+    )
+    assert _secrets_in(captured) == []
