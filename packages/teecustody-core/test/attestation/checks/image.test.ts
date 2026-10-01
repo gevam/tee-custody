@@ -87,4 +87,10 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
     it("(b) rejects a single matching entry with UNTRUSTED_SIGNER", () => {
         expectRejected(tokenWithSignatures([sig(KEY_A)]), "UNTRUSTED_SIGNER");
     });
+
+    it("(c) counts a repeated matching key_id once", () => {
+        expectRejected(tokenWithSignatures([sig(KEY_A), sig(KEY_A)]), "UNTRUSTED_SIGNER");
+        const t = tokenWithSignatures([sig(KEY_B), sig(KEY_A), sig(KEY_B)]);
+        expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+    });
 });
