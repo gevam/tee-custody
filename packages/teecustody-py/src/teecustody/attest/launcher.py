@@ -110,10 +110,9 @@ class ConfidentialSpaceLauncher:
             raise LauncherError(LauncherErrorCode.UNAVAILABLE)
         if status != 200 or len(raw) > self._max_response_bytes:
             raise LauncherError(LauncherErrorCode.TOKEN_REJECTED)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raise LauncherError(LauncherErrorCode.TOKEN_REJECTED) from None
+        text = _utf8_text(raw)
+        if text is None:
+            raise LauncherError(LauncherErrorCode.TOKEN_REJECTED)
         return parse_token_metadata(
             text,
             audience=audience,
@@ -132,21 +131,23 @@ class ConfidentialSpaceLauncher:
             self._timeout_s,
             _MAX_HEAD_BYTES + self._max_response_bytes + 1,
         )
+        failure = LauncherErrorCode.UNAVAILABLE  # also: a body cut short of its announced length
         try:
             connection.request(
                 "POST", _TOKEN_PATH, body=body, headers={"Content-Type": "application/json"}
             )
             with connection.getresponse() as response:
                 raw = response.read(self._max_response_bytes + 1)
-                if len(raw) <= self._max_response_bytes and response.length:
-                    raise http.client.IncompleteRead(raw, response.length)
-                return response.status, raw
+                if len(raw) > self._max_response_bytes or not response.length:
+                    return response.status, raw
         except _ResponseTooLarge:
-            raise LauncherError(LauncherErrorCode.TOKEN_REJECTED) from None
+            failure = LauncherErrorCode.TOKEN_REJECTED
         except (OSError, http.client.HTTPException):
-            raise LauncherError(LauncherErrorCode.UNAVAILABLE) from None
+            failure = LauncherErrorCode.UNAVAILABLE
         finally:
             connection.close()
+        # Raised outside the handlers so no exception holding response bytes is chained.
+        raise LauncherError(failure)
 
 
 def _is_int(value: object) -> bool:
@@ -155,3 +156,10 @@ def _is_int(value: object) -> bool:
 
 def _is_number(value: object) -> bool:
     return _is_int(value) or isinstance(value, float)
+
+
+def _utf8_text(raw: bytes) -> str | None:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None

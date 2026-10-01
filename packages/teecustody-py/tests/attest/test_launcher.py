@@ -516,3 +516,35 @@ def test_deadline_already_spent_before_connecting_is_unavailable(
 
     _assert_code(client(fake_launcher.socket_path, timeout_s=1.0), LauncherErrorCode.UNAVAILABLE)
     assert fake_launcher.connections == 0
+
+
+# Review R1 item 5: errors carry no chained exception (which could hold response bytes) -------
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        Reply(http_response(200, b"\xff" + make_token().encode())),
+        Reply(http_response(200, b"partial-token", content_length=50)),
+        Reply(b"not http at all\r\n\r\n"),
+        Reply(CONTINUE * 64, repeat=True),
+        Reply(http_response(200, make_token(aud="https://other.test").encode())),
+    ],
+    ids=["non-utf8", "truncated", "bad-status-line", "over-budget", "wrong-audience"],
+)
+def test_launcher_error_has_no_cause_or_context(fake_launcher: FakeLauncher, reply: Reply) -> None:
+    fake_launcher.replies.append(reply)
+
+    with pytest.raises(LauncherError) as caught:
+        client(fake_launcher.socket_path).get_attestation_token(AUD, "OIDC", NONCE)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_unavailable_socket_error_has_no_cause_or_context(short_dir: Path) -> None:
+    with pytest.raises(LauncherError) as caught:
+        client(short_dir / "absent.sock").get_attestation_token(AUD, "OIDC", NONCE)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None

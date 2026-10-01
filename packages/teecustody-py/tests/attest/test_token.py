@@ -255,3 +255,25 @@ def test_nonce_must_be_the_expected_string_or_a_one_element_array_of_it(
     claims: dict[str, object],
 ) -> None:
     _assert_rejected(_json_token(claims))
+
+
+# Review R1 item 5: errors carry no chained exception (which could hold the token) ------------
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        _json_token(_claims()) + "\ud800",
+        _token("e"),
+        _token(_b64(b"\xff\xfe")),
+        _token(_b64(b"not json")),
+        _token(_b64(b"[" * 100_000)),
+    ],
+    ids=["unencodable", "bad-base64", "non-utf8", "not-json", "too-deep"],
+)
+def test_rejection_has_no_cause_or_context(token: str) -> None:
+    with pytest.raises(LauncherError) as caught:
+        parse(token, audience=AUD, expected_nonce=NONCE, max_token_bytes=1_000_000)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None

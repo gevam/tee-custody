@@ -18,16 +18,15 @@ _BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 def parse_token_metadata(
     token: str, *, audience: str, expected_nonce: str, max_token_bytes: int
 ) -> AttestationToken:
-    try:
-        size = len(token.encode("utf-8"))
-    except UnicodeEncodeError:
-        raise _rejected() from None
-    if size > max_token_bytes:
+    size = _utf8_size(token)
+    if size is None or size > max_token_bytes:
         raise _rejected()
     segments = token.split(".")
     if len(segments) != 3:
         raise _rejected()
     claims = _decode_payload(segments[1])
+    if claims is None:
+        raise _rejected()
     issued_at = claims.get("iat")
     expires_at = claims.get("exp")
     if not (_is_int(issued_at) and _is_int(expires_at) and expires_at > issued_at):
@@ -40,23 +39,40 @@ def parse_token_metadata(
     return AttestationToken(value=token, issued_at=issued_at, expires_at=expires_at)
 
 
-def _decode_payload(segment: str) -> dict[str, object]:
+# The helpers below return None instead of raising, so a rejection is never chained to an
+# exception that holds token bytes.
+
+
+def _utf8_size(text: str) -> int | None:
+    try:
+        return len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+
+
+def _decode_payload(segment: str) -> dict[str, object] | None:
+    """Strict, canonical, unpadded base64url of a UTF-8 JSON object; otherwise None."""
     if _BASE64URL.fullmatch(segment) is None:
-        raise _rejected()
-    padded = segment + "=" * (-len(segment) % 4)
+        return None
+    raw = _b64url_decode(segment)
+    if raw is None or _b64url(raw) != segment:
+        return None
+    claims = _json_loads(raw)
+    return claims if isinstance(claims, dict) else None
+
+
+def _b64url_decode(segment: str) -> bytes | None:
     try:
-        raw = base64.urlsafe_b64decode(padded)
+        return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
     except binascii.Error:
-        raise _rejected() from None
-    if _b64url(raw) != segment:
-        raise _rejected()
+        return None
+
+
+def _json_loads(raw: bytes) -> object:
     try:
-        claims = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError):
-        raise _rejected() from None
-    if not isinstance(claims, dict):
-        raise _rejected()
-    return claims
+        return None
 
 
 def _b64url(raw: bytes) -> str:
