@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue, type DecodeLimits } from "../../src/wire/types.js";
 
+// The limits of spec/vectors/wire/canonical-cbor.json.
+const VECTOR_LIMITS: DecodeLimits = { maxBytes: 1024, maxDepth: 4, maxItems: 64 };
+
 function fromHex(hex: string): Uint8Array {
     return new Uint8Array(Buffer.from(hex, "hex"));
 }
@@ -73,5 +76,12 @@ describe("decodeCanonical bounds", () => {
         const limits: DecodeLimits = { maxBytes: 200_000, maxDepth: 200_000, maxItems: 200_000 };
         const hex = "81".repeat(100_000) + "00";
         expect(toHex(encodeCanonical(decodeCanonical(fromHex(hex), limits)))).toBe(hex);
+    });
+
+    it("copies decoded byte strings out of the input buffer (criterion 6)", () => {
+        const input = fromHex("4401020304");
+        const decoded = decodeCanonical(input, VECTOR_LIMITS);
+        input.fill(0xff);
+        expect(decoded).toEqual(new Uint8Array([1, 2, 3, 4]));
     });
 });
