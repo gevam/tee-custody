@@ -1,7 +1,7 @@
 // §6.1 token signature check; ADR 0009 rules 2–5.
 import { utf8DecodeStrict } from "../../encoding.js";
 import type { JsonObject } from "../../json.js";
-import type { ParsedToken, TrustProfile, VerifierDeps } from "../types.js";
+import { AttestationError, type ParsedToken, type TrustProfile, type VerifierDeps } from "../types.js";
 
 async function fetchJson(deps: VerifierDeps, url: string): Promise<JsonObject> {
     const response = await deps.fetcher.get(url);
@@ -13,6 +13,9 @@ export async function checkSignature(
     p: TrustProfile,
     deps: VerifierDeps,
 ): Promise<void> {
+    if (typeof t.header["kid"] !== "string") {
+        throw new AttestationError("UNTRUSTED_SIGNER", "signature");
+    }
     const discovery = await fetchJson(deps, p.discovery_url);
     const jwks = await fetchJson(deps, discovery["jwks_uri"] as string);
     const keys = jwks["keys"] as readonly JsonObject[];

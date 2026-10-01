@@ -14,6 +14,7 @@ import { base64UrlDecode, utf8DecodeStrict, utf8Encode } from "../../../src/enco
 import type { JsonObject } from "../../../src/json.js";
 import { mapFetcher } from "../../support/fetcher.js";
 import { generateRsaKey, signJws } from "../../support/jws.js";
+import { RFC7515_A2_COMPACT, RFC7515_A2_PUBLIC_JWK } from "../../support/rfc7515.js";
 import { testCrypto } from "../../support/webcrypto.js";
 
 const ISSUER = "https://confidentialcomputing.googleapis.com";
@@ -111,6 +112,35 @@ function depsFor(overrides: Documents = {}): VerifierDeps {
     return deps(mapFetcher(documents(overrides), overrides.statuses));
 }
 
+async function rejection(promise: Promise<void>): Promise<AttestationError> {
+    const error: unknown = await promise.then(
+        () => undefined,
+        (e: unknown) => e,
+    );
+    if (!(error instanceof AttestationError)) {
+        throw new Error("expected an AttestationError rejection");
+    }
+    return error;
+}
+
+async function expectRejected(
+    token: ParsedToken,
+    code: AttestationError["code"],
+    fetcher: Fetcher = mapFetcher(documents()),
+): Promise<void> {
+    const error = await rejection(checkSignature(token, PROFILE, deps(fetcher)));
+    expect([error.code, error.check]).toEqual([code, "signature"]);
+}
+
+async function expectRejectedBeforeFetch(
+    token: ParsedToken,
+    code: AttestationError["code"],
+): Promise<void> {
+    const fetcher = counting(mapFetcher(documents()));
+    await expectRejected(token, code, fetcher);
+    expect(fetcher.calls).toEqual([]);
+}
+
 describe("checkSignature: valid token (criterion 1)", () => {
     it("resolves for a token signed by the key the profile's JWKS publishes", async () => {
         const token = await tokenWith({ alg: "RS256", kid: KID, typ: "JWT" });
@@ -120,5 +150,17 @@ describe("checkSignature: valid token (criterion 1)", () => {
     it("resolves when the header has no typ", async () => {
         const token = await tokenWith({ alg: "RS256", kid: KID });
         await expect(checkSignature(token, PROFILE, depsFor())).resolves.toBeUndefined();
+    });
+});
+
+describe("checkSignature: RFC 7515 A.2 known-answer token (criterion 2)", () => {
+    it("rejects the kid-less A.2 token as UNTRUSTED_SIGNER without fetching", async () => {
+        const fetcher = counting(
+            mapFetcher(
+                documents({ jwks: json({ keys: [{ ...RFC7515_A2_PUBLIC_JWK, kid: KID }] }) }),
+            ),
+        );
+        await expectRejected(toParsed(RFC7515_A2_COMPACT), "UNTRUSTED_SIGNER", fetcher);
+        expect(fetcher.calls).toEqual([]);
     });
 });
