@@ -104,4 +104,19 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
     it("(d) rejects one matching plus one unknown key_id with UNTRUSTED_SIGNER", () => {
         expectRejected(tokenWithSignatures([sig(KEY_A), sig(UNKNOWN)]), "UNTRUSTED_SIGNER");
     });
+
+    it.each([
+        ["another signer's algorithm", "ECDSA_P256_SHA256"],
+        ["a third F-11 algorithm", "RSASSA_PKCS1V15_SHA256"],
+        ["ED25519", "ED25519"],
+        ["the right algorithm in lowercase", "rsassa_pss_sha256"],
+        ["an empty algorithm", ""],
+    ])("(e) does not count a matching key_id with %s", (_name, algorithm) => {
+        expectRejected(
+            tokenWithSignatures([sig(KEY_A, algorithm), sig(KEY_B)]),
+            "UNTRUSTED_SIGNER",
+        );
+        const t = tokenWithSignatures([sig(KEY_A, algorithm), sig(KEY_B), sig(KEY_C)]);
+        expect(checkImage(t, profile())).toEqual([KEY_B, KEY_C]);
+    });
 });

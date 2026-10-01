@@ -12,14 +12,17 @@ function isJsonArray(v: JsonValue | undefined): v is readonly JsonValue[] {
 // Signature bytes are never decoded or verified (D-016).
 export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
     const signatures = getPath(t.claims, [...CONTAINER, "image_signatures"]);
-    const profileKeyIds = new Set(p.signer_keys.map((k) => k.key_id));
+    const algorithmByKeyId = new Map<string, string>(
+        p.signer_keys.map((k) => [k.key_id, k.algorithm]),
+    );
     const counted = new Set<string>();
     if (isJsonArray(signatures)) {
         for (const entry of signatures) {
             if (
                 isJsonObject(entry) &&
                 typeof entry["key_id"] === "string" &&
-                profileKeyIds.has(entry["key_id"])
+                algorithmByKeyId.has(entry["key_id"]) &&
+                entry["signature_algorithm"] === algorithmByKeyId.get(entry["key_id"])
             ) {
                 counted.add(entry["key_id"]);
             }
