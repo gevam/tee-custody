@@ -442,3 +442,19 @@ def test_parse_alteration_keeps_non_integer_numbers_as_literal_text(value: str) 
 def test_parse_alteration_rejects_invalid_text(kind: Any, text: str) -> None:
     with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
         parse_alteration(kind, text)
+
+
+def test_parse_alteration_keeps_json_nested_beyond_the_parser_limit_as_literal_text() -> None:
+    deep = "[" * 100_000 + "]" * 100_000
+    assert parse_alteration("alter", f"aud={deep}") == AlterClaim(("aud",), deep)
+
+
+@pytest.mark.parametrize("case_id", ["signature_algorithm_mismatch", "key_id_duplicated"])
+def test_entry_editing_case_without_listed_signatures_is_rejected(
+    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch, case_id: str
+) -> None:
+    for signer in keys.signers:
+        monkeypatch.setattr(signer, "sign", lambda payload: b"\x00" * 256)
+
+    with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
+        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))

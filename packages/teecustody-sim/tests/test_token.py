@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from teecustody_sim import (
     DBGSTAT_DISABLED,
@@ -376,3 +376,21 @@ def test_nonces_outside_launcher_limits_are_rejected(
 def test_nonce_length_counts_utf8_bytes(minter: TokenMinter) -> None:
     assert _eat_nonce(minter, ["é" * 5]) == "é" * 5
     assert _eat_nonce(minter, ["é" * 37]) == "é" * 37
+
+
+def test_a_nonce_that_is_not_encodable_as_utf8_is_rejected(minter: TokenMinter) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_NONCE$"):
+        minter.mint(AUDIENCE, ["\udcff" * 12], NOW)
+
+
+def test_a_signer_whose_spki_is_not_rsa_is_not_listed(
+    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ec_spki = (
+        ec.generate_private_key(ec.SECP256R1())
+        .public_key()
+        .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    monkeypatch.setattr(keys.signers[0], "spki_der", ec_spki)
+
+    assert _listed_key_ids(minter) == [keys.signers[1].key_id]

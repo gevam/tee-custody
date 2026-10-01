@@ -80,7 +80,11 @@ def _check_nonces(nonces: Sequence[str]) -> None:
     if len(nonces) > _MAX_NONCES:
         raise ValueError("INVALID_NONCE")
     for nonce in nonces:
-        if not _MIN_NONCE_BYTES <= len(nonce.encode("utf-8")) <= _MAX_NONCE_BYTES:
+        try:
+            size = len(nonce.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise ValueError("INVALID_NONCE") from None
+        if not _MIN_NONCE_BYTES <= size <= _MAX_NONCE_BYTES:
             raise ValueError("INVALID_NONCE")
 
 
@@ -183,7 +187,7 @@ def _parse_claim_value(text: str) -> JsonValue:
             parse_float=_reject_non_integer_number,
             parse_constant=_reject_non_integer_number,
         )
-    except ValueError:
+    except (ValueError, RecursionError):
         return text
     return value
 
