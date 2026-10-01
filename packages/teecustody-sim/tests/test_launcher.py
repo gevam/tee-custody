@@ -5,6 +5,7 @@ import http.client
 import json
 import shutil
 import socket
+import socketserver
 import stat
 import tempfile
 import threading
@@ -16,6 +17,7 @@ import pytest
 
 from teecustody_sim import LauncherServer, SimLimits
 from teecustody_sim import issuer as issuer_module
+from teecustody_sim import launcher as launcher_module
 
 AUDIENCE = "https://launcher.teecustody.test/tee"
 NONCE = "ab" * 32
@@ -490,3 +492,28 @@ def test_client_gone_before_the_reply_logs_a_fixed_code_and_nothing_on_stderr(
     assert captured.err == ""
     assert TOKEN not in captured.out + captured.err
     assert records == [("sim", "warning", "SIM_REQUEST_FAILED", {})]
+
+
+def test_socket_mode_change_never_follows_a_swapped_in_symlink(
+    short_dir: Path, mint: RecordingMint, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    target = short_dir / "victim"
+    target.write_text("private")
+    target.chmod(0o600)
+    original_bind = launcher_module._LauncherUnixServer.server_bind
+
+    def bind_then_swap(server: socketserver.UnixStreamServer) -> None:
+        original_bind(server)
+        socket_path.unlink()
+        socket_path.symlink_to(target)
+
+    monkeypatch.setattr(launcher_module._LauncherUnixServer, "server_bind", bind_then_swap)
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+
+    with pytest.raises(OSError, match="not a socket"):
+        server.start()
+    server.stop()
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert socket_path.is_symlink()

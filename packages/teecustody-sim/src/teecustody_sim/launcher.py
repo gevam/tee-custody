@@ -1,6 +1,8 @@
 """Simulated Confidential Space launcher socket."""
 
+import errno
 import json
+import os
 import re
 import socketserver
 import threading
@@ -13,6 +15,7 @@ from teecustody_sim.config import SimLimits
 from teecustody_sim.issuer import _BoundedServer, _SimRequestHandler
 
 _POLL_INTERVAL_S: Final = 0.05
+_SOCKET_MODE: Final = 0o666
 _TOKEN_PATH: Final = "/v1/token"  # noqa: S105 - a URL path
 _REQUEST_KEYS: Final = frozenset({"audience", "token_type", "nonces"})
 _TOKEN_TYPE: Final = "OIDC"  # noqa: S105 - a token type name
@@ -83,6 +86,15 @@ def _parse_token_request(body: bytes) -> tuple[str, list[str]]:
     return audience, nonces
 
 
+def _make_connectable_by_anyone(socket_path: Path) -> None:
+    """Mode 0666 like the real launcher's socket, set without following a symlink (no lchmod
+    on Linux: glibc's fchmodat(AT_SYMLINK_NOFOLLOW) changes a socket and refuses a symlink)."""
+    try:
+        os.chmod(socket_path, _SOCKET_MODE, follow_symlinks=False)
+    except NotImplementedError:
+        raise OSError(errno.ELOOP, "launcher socket path is not a socket") from None
+
+
 class _LauncherUnixServer(_BoundedServer, socketserver.UnixStreamServer):
     mint: _Mint
 
@@ -141,8 +153,11 @@ class LauncherServer:
 
     def start(self) -> None:
         server = _LauncherUnixServer(str(self._socket_path), _LauncherHandler)
-        # The real launcher's socket is connectable by the workload's (non-root) user.
-        self._socket_path.chmod(0o666)
+        try:
+            _make_connectable_by_anyone(self._socket_path)
+        except BaseException:
+            server.server_close()
+            raise
         server.bound(self._limits, _LauncherHandler)
         server.mint = self._mint
         self._server = server
