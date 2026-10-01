@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, NoReturn
 
-from teecustody_sim.config import LaunchConfig
+from teecustody_sim.config import LaunchConfig, SimConfigError, SimConfigErrorCode
 from teecustody_sim.constants import DEFAULT_STATE_DIR, DEFAULT_TOKEN_MAX_AGE_S
 from teecustody_sim.keys import SimKeys
 from teecustody_sim.token import TokenMinter, parse_alteration
@@ -36,9 +36,18 @@ def _launch(document: dict[str, Any]) -> LaunchConfig:
     )
 
 
+def _read_state(state_dir: Path) -> dict[str, Any]:
+    try:
+        text = (state_dir / _STATE_FILE_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED) from None
+    document: dict[str, Any] = json.loads(text)
+    return document
+
+
 def _token(options: argparse.Namespace) -> int:
     state_dir: Path = options.state_dir
-    document = json.loads((state_dir / _STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document = _read_state(state_dir)
     keys = SimKeys.load_or_create(state_dir, document["signers_required"])
     minter = TokenMinter(
         keys,
@@ -76,5 +85,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except _UsageError as error:
         sys.stderr.write(f"{error}\n")
         return 2
-    code: int = options.handler(options)
+    try:
+        code: int = options.handler(options)
+    except SimConfigError as error:
+        sys.stderr.write(f"{error.code.value}\n")
+        return 2
     return code

@@ -129,3 +129,12 @@ def test_token_rejects_two_alterations_with_exit_2(
     assert code == 2
     assert out == ""
     assert err.count("\n") == 1
+
+
+def test_token_without_state_reports_state_not_initialised(cli: Cli, tmp_path: Path) -> None:
+    missing = tmp_path / "no-state"
+
+    code, out, err = cli("token", "--state-dir", str(missing), "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+    assert not missing.exists()
