@@ -500,6 +500,34 @@ describe("verifyAttestation: a failing sink never changes the decision (criterio
         { name: "never settles", report: () => new Promise<void>(() => undefined) },
         { name: "rejects", report: () => Promise.reject(new Error("sink unavailable")) },
         {
+            // Promise.resolve returns this object itself, so a handler attached through its own catch is lost.
+            name: "returns a rejected promise whose catch is overridden",
+            report: () => {
+                const hostile = Promise.reject(new Error("sink unavailable"));
+                hostile.catch = () => hostile;
+                hostile.then = () => hostile;
+                return hostile;
+            },
+        },
+        {
+            name: "returns a thenable whose then throws",
+            report: () =>
+                ({
+                    then: () => {
+                        throw new Error("hostile then");
+                    },
+                }) as unknown as Promise<void>,
+        },
+        {
+            name: "returns a thenable whose then getter throws",
+            report: () =>
+                Object.defineProperty({}, "then", {
+                    get: () => {
+                        throw new Error("hostile getter");
+                    },
+                }) as Promise<void>,
+        },
+        {
             name: "throws synchronously",
             report: (): Promise<void> => {
                 throw new Error("sink exploded");

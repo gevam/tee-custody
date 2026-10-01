@@ -25,16 +25,17 @@ import {
     type VerifierDeps,
 } from "./types.js";
 
-// SR-12: fire and forget. Never awaited, so it cannot delay or change the decision; a rejection is
-// discarded and a synchronous throw is swallowed.
+// SR-12: fire and forget. Never awaited, so it cannot delay or change the decision. The sink's return value
+// is only awaited inside this function and none of its own methods (catch, constructor) are relied on, so a
+// rejection, a hostile thenable or a synchronous throw is always discarded here.
 function reportDebugMode(events: SecurityEventSink, deps: VerifierDeps): void {
-    try {
-        Promise.resolve(events.report({ code: "ATTESTATION_DEBUG_MODE", at: deps.now() })).catch(
-            () => undefined,
-        );
-    } catch {
-        // The sink's failure is its own; verification continues.
-    }
+    void (async (): Promise<void> => {
+        try {
+            await events.report({ code: "ATTESTATION_DEBUG_MODE", at: deps.now() });
+        } catch {
+            // The sink's failure is its own; verification continues.
+        }
+    })();
 }
 
 // Runs one step; any failure that is not already an AttestationError becomes MALFORMED for that step's check.
