@@ -498,3 +498,152 @@ describe("parseTrustProfile rejects unknown keys", () => {
         expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "signer_keys[2].optional"]);
     });
 });
+
+// Criterion 6 (SR-1 ADR 0009 conditions; SR-7 dev/prod anchor separation; rulings 1 and 2; FACTS F-07, F-09).
+const ANCHOR_REJECTIONS: readonly (readonly [string, () => ProfileJson, ProfileJson, string])[] = [
+    [
+        "production loopback http: discovery",
+        productionJson,
+        { discovery_url: "http://127.0.0.1:8791/.well-known/openid-configuration" },
+        "discovery_url",
+    ],
+    [
+        "production http: discovery",
+        productionJson,
+        {
+            discovery_url:
+                "http://confidentialcomputing.googleapis.com/.well-known/openid-configuration",
+        },
+        "discovery_url",
+    ],
+    [
+        "production loopback JWKS",
+        productionJson,
+        { jwks_origin: "http://127.0.0.1:8791" },
+        "jwks_origin",
+    ],
+    [
+        "production http: JWKS",
+        productionJson,
+        { jwks_origin: "http://www.googleapis.com" },
+        "jwks_origin",
+    ],
+    [
+        "production other JWKS",
+        productionJson,
+        { jwks_origin: "https://keys.example.test" },
+        "jwks_origin",
+    ],
+    [
+        "production JWKS on the issuer origin",
+        productionJson,
+        { jwks_origin: GOOGLE_ISSUER },
+        "jwks_origin",
+    ],
+    [
+        "production hwmodel SIMULATED",
+        productionJson,
+        { allowed_hwmodels: ["GCP_AMD_SEV", "SIMULATED"] },
+        "allowed_hwmodels[1]",
+    ],
+    [
+        "production hwmodel GCP_SHIELDED_VM",
+        productionJson,
+        { allowed_hwmodels: ["GCP_SHIELDED_VM"] },
+        "allowed_hwmodels[0]",
+    ],
+    [
+        "production hwmodel INTEL_TDX",
+        productionJson,
+        { allowed_hwmodels: ["INTEL_TDX"] },
+        "allowed_hwmodels[0]",
+    ],
+    ["development Google issuer", developmentJson, { issuer: GOOGLE_ISSUER }, "issuer"],
+    [
+        "development Google issuer with trailing slash (ruling 2)",
+        developmentJson,
+        { issuer: `${GOOGLE_ISSUER}/` },
+        "issuer",
+    ],
+    [
+        "development Google issuer with a path (ruling 2)",
+        developmentJson,
+        { issuer: `${GOOGLE_ISSUER}/tenant` },
+        "issuer",
+    ],
+    [
+        "development Google issuer with :443 (ruling 2)",
+        developmentJson,
+        { issuer: "https://confidentialcomputing.googleapis.com:443" },
+        "issuer",
+    ],
+    [
+        "development non-loopback http: discovery",
+        developmentJson,
+        { discovery_url: "http://sim.example.test:8791/.well-known/openid-configuration" },
+        "discovery_url",
+    ],
+    [
+        "development non-loopback http: JWKS",
+        developmentJson,
+        { jwks_origin: "http://10.0.0.1:8791" },
+        "jwks_origin",
+    ],
+    [
+        "development non-loopback https: discovery (ruling 1)",
+        developmentJson,
+        { discovery_url: `${GOOGLE_ISSUER}/.well-known/openid-configuration` },
+        "discovery_url",
+    ],
+    [
+        "development non-loopback https: JWKS (ruling 1)",
+        developmentJson,
+        { jwks_origin: "https://www.googleapis.com" },
+        "jwks_origin",
+    ],
+    [
+        "development issuer with userinfo",
+        developmentJson,
+        { issuer: "https://user:secret@issuer.unit.test" },
+        "issuer",
+    ],
+    [
+        "development issuer with a username only",
+        developmentJson,
+        { issuer: "https://user@issuer.unit.test" },
+        "issuer",
+    ],
+    [
+        "development discovery with userinfo",
+        developmentJson,
+        { discovery_url: "http://user:secret@127.0.0.1:8791/.well-known/openid-configuration" },
+        "discovery_url",
+    ],
+    [
+        "development discovery with a password only",
+        developmentJson,
+        { discovery_url: "http://:secret@127.0.0.1:8791/.well-known/openid-configuration" },
+        "discovery_url",
+    ],
+    [
+        "development JWKS with userinfo",
+        developmentJson,
+        { jwks_origin: "http://user@127.0.0.1:8791" },
+        "jwks_origin",
+    ],
+];
+
+describe("parseTrustProfile keeps development and production anchors apart", () => {
+    it.each(ANCHOR_REJECTIONS)("%s", (_name, base, override, field) => {
+        const error = profileError({ ...base(), ...override });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
+    });
+
+    it.each([["GCP_AMD_SEV"], ["GCP_AMD_SEV_ES"], ["GCP_INTEL_TDX"]])(
+        "accepts production hwmodel %s (F-09)",
+        (hwmodel) => {
+            const profile = parseTrustProfile({ ...productionJson(), allowed_hwmodels: [hwmodel] });
+            expect(profile.allowed_hwmodels).toEqual([hwmodel]);
+        },
+    );
+});

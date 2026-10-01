@@ -12,6 +12,15 @@ import {
 
 const GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com";
 const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}/.well-known/openid-configuration`;
+const GOOGLE_JWKS_ORIGIN = "https://www.googleapis.com";
+// FACTS F-09 as amended: confidential hardware only (no GCP_SHIELDED_VM, no unprefixed INTEL_TDX).
+const PRODUCTION_HWMODELS: ReadonlySet<string> = new Set([
+    "GCP_AMD_SEV",
+    "GCP_AMD_SEV_ES",
+    "GCP_INTEL_TDX",
+]);
+// ADR 0009 rule 9 and T-10 ruling 1: development fetches only from the simulator on this host.
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const PROFILE_KEYS = [
     "profile_version",
     "profile_kind",
@@ -99,7 +108,7 @@ function readUrl(value: unknown, field: string): URL {
     } catch {
         throw fail(field);
     }
-    if (url.search !== "" || url.hash !== "") {
+    if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
         throw fail(field);
     }
     return url;
@@ -159,10 +168,14 @@ function readIssuer(value: unknown, kind: ProfileKind): string {
         return value;
     }
     const url = readUrl(value, "issuer");
-    if (url.protocol !== "https:") {
+    if (url.protocol !== "https:" || url.origin === GOOGLE_ISSUER) {
         throw fail("issuer");
     }
     return value as string;
+}
+
+function isLoopback(url: URL): boolean {
+    return FETCH_PROTOCOLS.has(url.protocol) && LOOPBACK_HOSTS.has(url.hostname);
 }
 
 function readDiscoveryUrl(value: unknown, kind: ProfileKind): string {
@@ -172,16 +185,21 @@ function readDiscoveryUrl(value: unknown, kind: ProfileKind): string {
         }
         return value;
     }
-    const url = readUrl(value, "discovery_url");
-    if (!FETCH_PROTOCOLS.has(url.protocol)) {
+    if (!isLoopback(readUrl(value, "discovery_url"))) {
         throw fail("discovery_url");
     }
     return value as string;
 }
 
-function readJwksOrigin(value: unknown): string {
+function readJwksOrigin(value: unknown, kind: ProfileKind): string {
+    if (kind === "production") {
+        if (value !== GOOGLE_JWKS_ORIGIN) {
+            throw fail("jwks_origin");
+        }
+        return value;
+    }
     const url = readUrl(value, "jwks_origin");
-    if (!FETCH_PROTOCOLS.has(url.protocol) || url.origin !== value) {
+    if (!isLoopback(url) || url.origin !== value) {
         throw fail("jwks_origin");
     }
     return value;
@@ -198,13 +216,15 @@ export function parseTrustProfile(input: unknown): TrustProfile {
     }
     const issuer = readIssuer(source.issuer, kind);
     const discoveryUrl = readDiscoveryUrl(source.discovery_url, kind);
-    const jwksOrigin = readJwksOrigin(source.jwks_origin);
+    const jwksOrigin = readJwksOrigin(source.jwks_origin, kind);
     const audience = readString(source.expected_audience, "expected_audience");
     if (audience.length === 0 || audience.length > MAX_AUDIENCE_LENGTH) {
         throw fail("expected_audience");
     }
     const tokenMaxAgeS = readInteger(source.token_max_age_s, "token_max_age_s", 1, MAX_TOKEN_AGE_S);
-    const hwmodels = readStringSet(source.allowed_hwmodels, "allowed_hwmodels", (h) => h !== "");
+    const hwmodels = readStringSet(source.allowed_hwmodels, "allowed_hwmodels", (h) =>
+        kind === "production" ? PRODUCTION_HWMODELS.has(h) : h !== "",
+    );
     const digests = readStringSet(source.allowed_digests, "allowed_digests", (d) =>
         IMAGE_DIGEST.test(d),
     );
