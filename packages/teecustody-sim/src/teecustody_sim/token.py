@@ -99,6 +99,14 @@ def _signature_verifies(signer: SignerKeyMaterial, signature: bytes, payload: by
     return True
 
 
+def _image_signature_entry(signer: SignerKeyMaterial, signature: bytes) -> _SignatureEntry:
+    return {
+        "key_id": signer.key_id,
+        "signature": base64.b64encode(signature).decode("ascii"),
+        "signature_algorithm": signer.algorithm,
+    }
+
+
 def _verified_image_signatures(
     signers: Sequence[SignerKeyMaterial], payload: bytes
 ) -> list[_SignatureEntry]:
@@ -109,14 +117,6 @@ def _verified_image_signatures(
         if _signature_verifies(signer, signature, payload):
             entries.append(_image_signature_entry(signer, signature))
     return entries
-
-
-def _image_signature_entry(signer: SignerKeyMaterial, signature: bytes) -> _SignatureEntry:
-    return {
-        "key_id": signer.key_id,
-        "signature": base64.b64encode(signature).decode("ascii"),
-        "signature_algorithm": signer.algorithm,
-    }
 
 
 def _parent(claims: dict[str, JsonValue], path: ClaimPath) -> dict[str, JsonValue]:
