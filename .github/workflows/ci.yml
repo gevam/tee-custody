@@ -62,6 +62,25 @@ jobs:
         run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src && pnpm -r lint && pnpm -r typecheck
       - name: semgrep static policy (bypass-resistant layer behind ruff and ESLint)
         run: uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
+      - name: semgrep ignore-list probe
+        # .semgrepignore must not hide src/**/{tests,test,vendor,build}; the probe copies are staged
+        # in this CI workspace only (semgrep scans tracked files) and never committed.
+        run: |
+          for d in tests test vendor build; do
+            mkdir -p "packages/teecustody-py/src/teecustody/$d"
+            cp .semgrep/tests/tc.tc-py-no-dynamic-import.pos.py "packages/teecustody-py/src/teecustody/$d/_semgrep_probe.py"
+            git add -f "packages/teecustody-py/src/teecustody/$d/_semgrep_probe.py"
+          done
+          uvx semgrep==1.178.0 --config .semgrep.yml --metrics=off --json > "$RUNNER_TEMP/probe.json" || true
+          python3 -c '
+          import json, sys
+          results = json.load(open(sys.argv[1]))["results"]
+          missing = [d for d in ("tests", "test", "vendor", "build") if not any(
+              r["check_id"].endswith("tc-py-no-dynamic-import")
+              and r["path"] == f"packages/teecustody-py/src/teecustody/{d}/_semgrep_probe.py" for r in results)]
+          print("probe paths without a finding:", missing or "none")
+          sys.exit(1 if missing else 0)
+          ' "$RUNNER_TEMP/probe.json"
       - name: semgrep rule fixtures
         run: uvx semgrep==1.178.0 --test .semgrep/
 
