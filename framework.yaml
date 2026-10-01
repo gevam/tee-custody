@@ -105,7 +105,7 @@ review:
   tdd_spot_checks: 3           # tests the Code Reviewer reverts-and-reruns per branch; on security.paths the reviewer checks all tests named in the task contract
 
 parallelism:
-  max_engineers: 4             # concurrent Software Engineers per wave
+  max_engineers: 8             # concurrent Software Engineers per wave (raised from 4 by human, D-023)
   worktrees: true              # use git worktrees rather than plain branches
 
 discussion:

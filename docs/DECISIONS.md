@@ -450,3 +450,22 @@ Participants: Security Reviewer, Tech Lead
 **Revisit when:** Profiles can be produced other than through the project tooling.
 
 **Follow-ups:** T-17 criterion 2a (`NONCANONICAL_SIGNER_SPKI`, `DUPLICATE_SIGNER_KEY`) — Tech Lead amendment. Architect: add the same rejection as an acceptance criterion of the INC-5 production profile tool in INCREMENTS.md at next touch (BACKLOG B-05 until then).
+
+## D-023 — Raise parallelism.max_engineers from 4 to 8 (INC-1, 2026-10-01)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator
+
+**Options considered**
+1. Raise to 8. 2. Raise to 6. 3. Keep 4.
+
+**Decision:** Option 1; framework.yaml updated.
+
+**Reasoning:** Human decision. Four independent review-fix rounds (T-07, T-11, T-12, T-09) plus T-05/T-14 were queued behind the cap; each is its own branch with disjoint file ownership. Budget is unlimited.
+
+**Dissent:** none
+
+**Revisit when:** Token spend becomes a constraint, or concurrent merges cause conflicts.
+
+**Follow-ups:** —
