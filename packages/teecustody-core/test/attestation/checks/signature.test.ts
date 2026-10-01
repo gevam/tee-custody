@@ -134,8 +134,9 @@ async function expectRejected(
     token: ParsedToken,
     code: AttestationError["code"],
     fetcher: Fetcher = mapFetcher(documents()),
+    crypto: VerifierDeps["crypto"] = testCrypto(),
 ): Promise<void> {
-    const error = await rejection(checkSignature(token, PROFILE, deps(fetcher)));
+    const error = await rejection(checkSignature(token, PROFILE, { ...deps(fetcher), crypto }));
     expect([error.code, error.check]).toEqual([code, "signature"]);
     expectNoContent(error, `signature: ${code}`);
 }
@@ -703,5 +704,20 @@ describe("checkSignature: the JWKS is fetched at the parsed jwks_uri (review rou
         );
         await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
         expect(fetcher.calls).toEqual([DISCOVERY_URL, canonical]);
+    });
+});
+
+describe("checkSignature: only a boolean true verifies (review round 1, finding 4)", () => {
+    it.each([
+        ["1", 1],
+        ['"true"', "true"],
+        ["an object", {}],
+    ])("rejects an adapter result of %s as UNTRUSTED_SIGNER", async (_label, result) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const truthy: VerifierDeps["crypto"] = {
+            ...testCrypto(),
+            verifySignature: () => Promise.resolve(result as unknown as boolean),
+        };
+        await expectRejected(token, "UNTRUSTED_SIGNER", undefined, truthy);
     });
 });

@@ -141,7 +141,8 @@ export async function checkSignature(
     const jwksUri = jwksUriOf(discovery, p);
     const jwks = await fetchJsonObject(deps, jwksUri, deps.limits.maxJwksBytes);
     const jwk = selectKey(jwks, kid);
-    let valid: boolean;
+    // unknown: an adapter is outside this module's control; only a boolean true verifies.
+    let valid: unknown;
     try {
         valid = await deps.crypto.verifySignature(
             "RSASSA_PKCS1V15_SHA256",
@@ -152,7 +153,7 @@ export async function checkSignature(
     } catch {
         return reject("UNTRUSTED_SIGNER");
     }
-    if (!valid) {
+    if (valid !== true) {
         reject("UNTRUSTED_SIGNER");
     }
 }
