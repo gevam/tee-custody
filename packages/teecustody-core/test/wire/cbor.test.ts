@@ -72,12 +72,6 @@ describe("decodeCanonical bounds", () => {
         expect(wireErrorCode(() => decodeCanonical(input, limits))).toBe("LIMIT_EXCEEDED");
     });
 
-    it("decodes and re-encodes 100,000 nested arrays when the limits allow it (no recursion)", () => {
-        const limits: DecodeLimits = { maxBytes: 200_000, maxDepth: 200_000, maxItems: 200_000 };
-        const hex = "81".repeat(100_000) + "00";
-        expect(toHex(encodeCanonical(decodeCanonical(fromHex(hex), limits)))).toBe(hex);
-    });
-
     it("copies decoded byte strings out of the input buffer (criterion 6)", () => {
         const input = fromHex("4401020304");
         const decoded = decodeCanonical(input, VECTOR_LIMITS);
@@ -94,10 +88,16 @@ describe("decodeCanonical limits validation", () => {
         ["maxDepth Infinity", { maxBytes: 1024, maxDepth: Infinity, maxItems: 64 }],
         ["maxItems -1", { maxBytes: 1024, maxDepth: 4, maxItems: -1 }],
         ["maxItems 2^53", { maxBytes: 1024, maxDepth: 4, maxItems: 2 ** 53 }],
+        ["maxDepth 65 (above the shared ceiling)", { maxBytes: 1024, maxDepth: 65, maxItems: 64 }],
     ])("throws RangeError(INVALID_LIMITS) for %s before parsing (criterion 9)", (_name, limits) => {
         expect(() => decodeCanonical(fromHex("00"), limits)).toThrow(
             new RangeError("INVALID_LIMITS"),
         );
+    });
+
+    it("accepts maxDepth 64, the shared ceiling (criterion 9)", () => {
+        const limits: DecodeLimits = { maxBytes: 1024, maxDepth: 64, maxItems: 64 };
+        expect(decodeCanonical(fromHex("00"), limits)).toBe(0);
     });
 });
 

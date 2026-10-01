@@ -12,6 +12,9 @@ const MAJOR_MAP = 5;
 const MAJOR_TAG = 6;
 const MAJOR_SIMPLE = 7;
 
+// Nesting ceiling shared with the Python codec (T-09 amendment 2026-10-01c); not exported.
+const MAX_DEPTH = 64;
+
 function fail(code: WireErrorCode): never {
     throw new WireError(code);
 }
@@ -247,6 +250,7 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
     if (
         !isPositiveSafeInteger(limits.maxBytes) ||
         !isPositiveSafeInteger(limits.maxDepth) ||
+        limits.maxDepth > MAX_DEPTH ||
         !isPositiveSafeInteger(limits.maxItems)
     ) {
         throw new RangeError("INVALID_LIMITS");
