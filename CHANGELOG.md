@@ -16,6 +16,8 @@
 - T-11: §6.1 signature verification and §6.2 issuer checks
 - T-12: §6.3–§6.7 claim checks (audience, time, nonce, platform, support attributes)
 - T-13: §6.8 image check (digest allow-list and signer threshold over Google-verified key_ids)
+- T-14: Add CI, security scanners, static policy rules and the dependency-policy check
 - T-15: Attestation verification orchestration, §6.9 launch config check, SR-12 debug-mode event reporting
+- T-17: Implement development trust-profile building and the attestation vector-suite generator
 - QA: Acceptance tests for INC-1 (expected red)
 
