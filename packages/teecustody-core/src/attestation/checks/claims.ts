@@ -3,20 +3,18 @@ import { hexEncode } from "../../encoding.js";
 import type { JsonValue } from "../../json.js";
 import {
     AttestationError,
+    type AttestationCheckId,
     type ExpectedAttestation,
     type ParsedToken,
     type TrustProfile,
 } from "../types.js";
 
 const IDENTITY_NONCE_BYTES = 32; // API.md §A: SHA-256(IK public key bytes)
+const DBGSTAT_PRODUCTION = "disabled-since-boot"; // FACTS F-14
 
 // §6.3
 export function checkAudience(t: ParsedToken, p: TrustProfile): void {
-    const aud = t.claims["aud"];
-    if (aud === undefined) {
-        throw new AttestationError("CLAIM_MISSING", "audience");
-    }
-    if (aud !== p.expected_audience) {
+    if (requiredClaim(t, "aud", "audience") !== p.expected_audience) {
         throw new AttestationError("CLAIM_MISMATCH", "audience");
     }
 }
@@ -65,10 +63,7 @@ export function checkNonce(t: ParsedToken, e: ExpectedAttestation): void {
         throw new AttestationError("MALFORMED", "nonce");
     }
     const expected = hexEncode(e.identityNonce);
-    const eatNonce = t.claims["eat_nonce"];
-    if (eatNonce === undefined) {
-        throw new AttestationError("CLAIM_MISSING", "nonce");
-    }
+    const eatNonce = requiredClaim(t, "eat_nonce", "nonce");
     // FACTS F-05 / D-017: the expected string, or an array of exactly that one string.
     const value = isJsonArray(eatNonce) && eatNonce.length === 1 ? eatNonce[0] : eatNonce;
     if (value !== expected) {
@@ -78,7 +73,20 @@ export function checkNonce(t: ParsedToken, e: ExpectedAttestation): void {
 
 // §6.6
 export function checkPlatform(t: ParsedToken, p: TrustProfile): void {
-    throw new Error("NOT_IMPLEMENTED: T-12");
+    const hwmodel = requiredClaim(t, "hwmodel", "platform");
+    if (typeof hwmodel !== "string" || !p.allowed_hwmodels.includes(hwmodel)) {
+        throw new AttestationError("CLAIM_MISMATCH", "platform");
+    }
+    // FACTS F-15: GCE marks a revoked image and is a mismatch like any other value.
+    if (requiredClaim(t, "swname", "platform") !== "CONFIDENTIAL_SPACE") {
+        throw new AttestationError("CLAIM_MISMATCH", "platform");
+    }
+    if (requiredClaim(t, "secboot", "platform") !== true) {
+        throw new AttestationError("CLAIM_MISMATCH", "platform");
+    }
+    if (requiredClaim(t, "dbgstat", "platform") !== DBGSTAT_PRODUCTION) {
+        throw new AttestationError("CLAIM_MISMATCH", "platform");
+    }
 }
 
 // §6.6 / SR-12
@@ -93,4 +101,12 @@ export function checkSupportAttributes(t: ParsedToken): void {
 
 function isJsonArray(v: JsonValue): v is readonly JsonValue[] {
     return Array.isArray(v);
+}
+
+function requiredClaim(t: ParsedToken, name: string, check: AttestationCheckId): JsonValue {
+    const value = t.claims[name];
+    if (value === undefined) {
+        throw new AttestationError("CLAIM_MISSING", check);
+    }
+    return value;
 }

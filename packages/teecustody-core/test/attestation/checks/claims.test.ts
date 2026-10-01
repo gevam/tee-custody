@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { checkAudience, checkNonce, checkTime } from "../../../src/attestation/checks/claims.js";
+import {
+    checkAudience,
+    checkNonce,
+    checkPlatform,
+    checkTime,
+} from "../../../src/attestation/checks/claims.js";
 import {
     AttestationError,
     brandTrustProfile,
@@ -187,5 +192,67 @@ describe("checkNonce (§6.5)", () => {
 
     it("checks the identityNonce length before the claim", () => {
         expectRejected(nonce({}, new Uint8Array(31)), "nonce", "MALFORMED");
+    });
+});
+
+const PLATFORM: JsonObject = {
+    hwmodel: "GCP_AMD_SEV",
+    swname: "CONFIDENTIAL_SPACE",
+    secboot: true,
+    dbgstat: "disabled-since-boot",
+};
+
+const platform = (claims: JsonObject) => (): void => {
+    checkPlatform(token(claims), PROFILE);
+};
+
+function without(claims: JsonObject, name: string): JsonObject {
+    return Object.fromEntries(Object.entries(claims).filter(([key]) => key !== name));
+}
+
+describe("checkPlatform (§6.6)", () => {
+    it.each(["GCP_AMD_SEV", "GCP_INTEL_TDX"])("passes with every field correct (%s)", (hwmodel) => {
+        expect(platform({ ...PLATFORM, hwmodel })).not.toThrow();
+    });
+
+    it.each(["hwmodel", "swname", "secboot", "dbgstat"])(
+        "rejects an absent %s with CLAIM_MISSING",
+        (name) => {
+            expectRejected(platform(without(PLATFORM, name)), "platform", "CLAIM_MISSING");
+        },
+    );
+
+    it.each<[string, JsonObject]>([
+        ["hwmodel not in allowed_hwmodels", { hwmodel: "GCP_ARM_CCA" }],
+        ["hwmodel in another case", { hwmodel: "gcp_amd_sev" }],
+        ["hwmodel as an array", { hwmodel: ["GCP_AMD_SEV"] }],
+        ["hwmodel as a number", { hwmodel: 42 }],
+        ["swname GCE (revoked image, F-15)", { swname: "GCE" }],
+        ["swname in another case", { swname: "confidential_space" }],
+        ["swname as an array", { swname: ["CONFIDENTIAL_SPACE"] }],
+        ["secboot false", { secboot: false }],
+        ["secboot as the string true", { secboot: "true" }],
+        ["secboot as 1", { secboot: 1 }],
+        ["dbgstat enabled", { dbgstat: "enabled" }],
+        ["dbgstat empty", { dbgstat: "" }],
+        ["dbgstat as a number", { dbgstat: 42 }],
+        ["dbgstat null", { dbgstat: null }],
+    ])("rejects %s with CLAIM_MISMATCH", (_label, change) => {
+        expectRejected(platform({ ...PLATFORM, ...change }), "platform", "CLAIM_MISMATCH");
+    });
+
+    it("checks hwmodel, swname, secboot, dbgstat in that order", () => {
+        const order = ["hwmodel", "swname", "secboot", "dbgstat"];
+        const wrong: JsonObject = {
+            hwmodel: "GCP_ARM_CCA",
+            swname: "GCE",
+            secboot: false,
+            dbgstat: "enabled",
+        };
+        order.slice(0, -1).forEach((name, index) => {
+            const next = order[index + 1] as string;
+            const claims = without({ ...PLATFORM, [name]: wrong[name] as JsonValue }, next);
+            expectRejected(platform(claims), "platform", "CLAIM_MISMATCH");
+        });
     });
 });
