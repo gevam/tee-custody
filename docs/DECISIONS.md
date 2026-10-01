@@ -549,3 +549,23 @@ Participants: Orchestrator, Release Engineer
 **Revisit when:** —
 
 **Follow-ups:** Release Engineer prompts now list the exact REQUIRED commands and the EXPECTED-RED paths, and forbid reverting. Retro: FAST-tier Release Engineer misjudged expected-red tests; consider STRONG-tier Release Engineer or a scripted merge gate.
+
+## D-028 — R-11 applied: semgrep in lint_command; Wave 1 complete (INC-1, 2026-10-01)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead
+
+**Options considered**
+1. Append `uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off` to framework.yaml lint_command now that T-14 is merged.
+2. Keep semgrep CI-only.
+
+**Decision:** Option 1.
+
+**Reasoning:** WAVES R-11; the semgrep layer is the structural fix for lint-ban bypasses (§6 recurring class). Verified: full lint_command exits 0 on main (17 rules, 0 findings). Single-line, clean-checkout runnable. All Wave 1 tasks (T-04..T-14) merged.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** —
