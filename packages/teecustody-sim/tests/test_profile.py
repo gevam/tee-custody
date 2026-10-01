@@ -259,16 +259,41 @@ def test_the_same_key_loaded_twice_from_state_is_rejected(tmp_path: Path) -> Non
         _profile([first.signers[0], second.signers[0]], 1)
 
 
-def test_signer_checks_precede_the_signers_required_check(
-    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    signer = keys.signers[0]
-    with pytest.raises(ValueError, match=r"^DUPLICATE_SIGNER_KEY$"):
-        _profile([signer, signer], 3)
+def _non_canonical(signer: SignerKeyMaterial) -> SignerKeyMaterial:
+    rewrapped = copy.copy(signer)
+    rewrapped.spki_der = _spki(RSASSA_PSS_OID, _rsa_public_key_der(signer))
+    return rewrapped
 
-    monkeypatch.setattr(signer, "spki_der", b"")
+
+def _ed25519_signer() -> SignerKeyMaterial:
+    return _signer(ed25519.Ed25519PrivateKey.generate().public_key(), "ECDSA_P256_SHA256")
+
+
+def test_canonical_pass_runs_over_every_signer_before_the_duplicate_pass(keys: SimKeys) -> None:
+    first, second = keys.signers
+
     with pytest.raises(ValueError, match=r"^NONCANONICAL_SIGNER_SPKI$"):
-        _profile([signer], 2)
+        _profile([first, first, _non_canonical(second)], 1)
+
+
+def test_duplicate_pass_runs_over_every_signer_before_the_algorithm_pass(keys: SimKeys) -> None:
+    first = keys.signers[0]
+
+    with pytest.raises(ValueError, match=r"^DUPLICATE_SIGNER_KEY$"):
+        _profile([_ed25519_signer(), first, first], 1)
+
+
+def test_algorithm_pass_runs_before_the_count_check() -> None:
+    with pytest.raises(ValueError, match=r"^UNSUPPORTED_SIGNER_KEY$"):
+        _profile([_ed25519_signer()], 5)
+
+
+def test_signer_passes_precede_the_count_check(keys: SimKeys) -> None:
+    first, second = keys.signers
+    with pytest.raises(ValueError, match=r"^DUPLICATE_SIGNER_KEY$"):
+        _profile([first, first], 3)
+    with pytest.raises(ValueError, match=r"^NONCANONICAL_SIGNER_SPKI$"):
+        _profile([_non_canonical(second)], 0)
 
 
 def test_generated_signers_pass_with_distinct_key_ids(keys: SimKeys) -> None:
