@@ -348,6 +348,15 @@ class FailingMint:
         raise RuntimeError("-----BEGIN PRIVATE KEY----- leaked detail")
 
 
+def request_until_eof(socket_path: Path, body: bytes) -> tuple[int, str, bytes]:
+    """POST /v1/token over a raw socket, reading until the server closes the connection."""
+    head = _post_head(len(body)).replace(b"\r\n\r\n", b"\r\nContent-Type: application/json\r\n\r\n")
+    response_head, _, response_body = _raw_exchange(socket_path, head + body).partition(b"\r\n\r\n")
+    status_line, *header_lines = response_head.decode("latin-1").split("\r\n")
+    headers = dict(line.split(": ", 1) for line in header_lines)
+    return int(status_line.split(" ")[1]), headers.get("Content-Type", ""), response_body
+
+
 def test_mint_failure_is_500_without_detail_and_releases_its_slot(
     short_dir: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
@@ -356,7 +365,7 @@ def test_mint_failure_is_500_without_detail_and_releases_its_slot(
     server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=1))
     server.start()
     try:
-        results = [request(socket_path, token_request()) for _ in range(3)]
+        results = [request_until_eof(socket_path, token_request()) for _ in range(3)]
     finally:
         server.stop()
 
@@ -364,6 +373,29 @@ def test_mint_failure_is_500_without_detail_and_releases_its_slot(
     assert mint.calls == 3
     captured = capfd.readouterr()
     assert "PRIVATE KEY" not in captured.out + captured.err
+
+
+def test_slot_is_free_once_the_client_sees_eof(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = launcher_module._LauncherUnixServer.shutdown_request
+
+    def slow_shutdown(server: socketserver.BaseServer, sock: socket.socket) -> None:
+        original(server, sock)
+        time.sleep(0.1)
+
+    monkeypatch.setattr(launcher_module._LauncherUnixServer, "shutdown_request", slow_shutdown)
+    socket_path = short_dir / "teeserver.sock"
+    mint = FailingMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=1))
+    server.start()
+    try:
+        results = [request_until_eof(socket_path, token_request()) for _ in range(3)]
+    finally:
+        server.stop()
+
+    assert results == [(500, "text/plain", b"INTERNAL_ERROR")] * 3
+    assert mint.calls == 3
 
 
 @pytest.mark.parametrize(

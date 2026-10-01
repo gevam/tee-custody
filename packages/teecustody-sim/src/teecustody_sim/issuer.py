@@ -60,8 +60,11 @@ class _BoundedServer(socketserver.BaseServer):
 
     Each accepted connection takes a slot (`max_concurrent_requests`) or, when none is free, an
     overflow slot (as many again) whose handler answers 503. Beyond both, the connection is closed
-    at accept time. Handler threads are therefore at most 2 x `max_concurrent_requests`, and each
-    is bounded by `_REQUEST_DEADLINE_S` plus the handler's own work.
+    at accept time. A slot is released after the handler returns (response flushed) and before
+    the connection is shut down, so a client that has seen EOF is guaranteed that its slot is free.
+    Threads holding slots are therefore at most 2 x `max_concurrent_requests`, plus threads that
+    have released their slot and are only closing their connection; each is bounded by
+    `_REQUEST_DEADLINE_S` plus the handler's own work.
     """
 
     limits: SimLimits
@@ -102,8 +105,10 @@ class _BoundedServer(socketserver.BaseServer):
         except Exception:  # noqa: BLE001 - reported as a fixed code by handle_error
             self.handle_error(request, client_address)
         finally:
-            self.shutdown_request(request)
-            slot.release()
+            try:
+                slot.release()
+            finally:
+                self.shutdown_request(request)
 
     def handle_error(self, request: _Request, client_address: _Address) -> None:
         """A fixed outcome code only: the stock handler prints a traceback, bypassing obs."""
