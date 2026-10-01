@@ -16,6 +16,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody_sim import (
     NEGATIVE_CASES,
+    AlterClaim,
+    DropClaim,
     LaunchConfig,
     NamedCase,
     SimKeys,
@@ -297,3 +299,72 @@ def test_unknown_case_id_is_rejected(minter: TokenMinter) -> None:
         minter.mint(AUDIENCE, [NONCE], NOW, NamedCase("valid"))
     with pytest.raises(ValueError, match=r"^UNKNOWN_CASE$"):
         minter.mint(AUDIENCE, [NONCE], NOW, NamedCase("nope"))
+
+
+def _verified_claims(keys: SimKeys, token: str) -> Claims:
+    header, claims, signing_input, signature = split(token)
+    assert json.loads(header) == {"alg": "RS256", "kid": keys.issuer_kid, "typ": "JWT"}
+    issuer_public_key(keys).verify(
+        signature, signing_input.encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+    return claims
+
+
+def test_alter_claim_sets_the_value_and_re_signs(
+    keys: SimKeys, minter: TokenMinter, default: tuple[bytes, Claims]
+) -> None:
+    token = minter.mint(AUDIENCE, [NONCE], NOW, AlterClaim(("dbgstat",), "enabled"))
+
+    claims = normalized(keys, _verified_claims(keys, token))
+    assert claims["dbgstat"] == "enabled"
+    assert changed_paths(default[1], claims) == {"dbgstat"}
+
+
+def test_alter_claim_may_add_a_leaf_under_an_existing_parent(
+    keys: SimKeys, minter: TokenMinter, default: tuple[bytes, Claims]
+) -> None:
+    token = minter.mint(
+        AUDIENCE, [NONCE], NOW, AlterClaim(("submods", "container", "extra"), [1, "a", None])
+    )
+
+    claims = normalized(keys, _verified_claims(keys, token))
+    assert claims["submods"]["container"]["extra"] == [1, "a", None]
+    assert changed_paths(default[1], claims) == {"submods.container.extra"}
+
+
+def test_drop_claim_removes_the_claim_and_re_signs(
+    keys: SimKeys, minter: TokenMinter, default: tuple[bytes, Claims]
+) -> None:
+    token = minter.mint(AUDIENCE, [NONCE], NOW, DropClaim(("submods", "container", "args")))
+
+    claims = normalized(keys, _verified_claims(keys, token))
+    assert "args" not in claims["submods"]["container"]
+    assert changed_paths(default[1], claims) == {"submods.container.args"}
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    [
+        AlterClaim((), "x"),
+        AlterClaim(("nope", "leaf"), "x"),
+        AlterClaim(("submods", "nope", "leaf"), "x"),
+        AlterClaim(("iss", "leaf"), "x"),
+        AlterClaim(("submods", "container", "args", "leaf"), "x"),
+        DropClaim(()),
+        DropClaim(("nope",)),
+        DropClaim(("submods", "container", "nope")),
+        DropClaim(("nope", "leaf")),
+        DropClaim(("aud", "leaf")),
+    ],
+    ids=repr,
+)
+def test_alteration_on_a_missing_path_is_rejected(
+    minter: TokenMinter, alteration: AlterClaim | DropClaim
+) -> None:
+    with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
+        minter.mint(AUDIENCE, [NONCE], NOW, alteration)
+
+
+def test_drop_of_an_absent_nonce_is_rejected(minter: TokenMinter) -> None:
+    with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
+        minter.mint(AUDIENCE, [], NOW, DropClaim(("eat_nonce",)))

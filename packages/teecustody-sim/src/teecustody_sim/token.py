@@ -301,7 +301,9 @@ class TokenMinter:
         claims, signatures = self._claims_and_signatures(audience, nonces, now)
         header: JsonValue = {"alg": JWS_ALG, "kid": self._keys.issuer_kid, "typ": "JWT"}
         sign: _Sign = self._keys.sign_jws
-        if isinstance(alteration, NamedCase):
+        if isinstance(alteration, AlterClaim | DropClaim):
+            _apply_edit(claims, alteration)
+        elif isinstance(alteration, NamedCase):
             for edit in self._case_edits(alteration.case_id, now, signatures):
                 _apply_edit(claims, edit)
             if alteration.case_id == "alg_none":
