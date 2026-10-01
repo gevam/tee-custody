@@ -219,6 +219,9 @@ rules:
       - pattern: $X?.constructor
       - pattern-regex: \?\.\s*constructor\b
       - pattern-regex: (["'`])constructor\1
+      # `constructor` as an object key: destructuring (`const { constructor: K } = f`), parameters
+      # and literals. Class `constructor(` declarations are followed by `(`, not `:`, `,`, `=` or `}`.
+      - pattern-regex: "[{,]\\s*constructor\\s*(?=[:,=}])"
 
   - id: tc-ts-no-dynamic-import
     message: >-

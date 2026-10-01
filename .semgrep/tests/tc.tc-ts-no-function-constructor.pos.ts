@@ -23,5 +23,14 @@ export function evaluate(x: Record<string, unknown>): unknown[] {
     const e: unknown = eval;
     // ruleid: tc-ts-no-function-constructor
     const evaluated: unknown = eval("1");
-    return [viaAlias, direct, called, arrow, C, indexed, optional, key, single, e, evaluated];
+    // ruleid: tc-ts-no-function-constructor
+    const { constructor: K } = (() => 0) as { constructor: unknown };
+    // ruleid: tc-ts-no-function-constructor
+    const { constructor } = x;
+    // ruleid: tc-ts-no-function-constructor
+    const { a, constructor: Ctor = null } = x;
+    // ruleid: tc-ts-no-function-constructor
+    const pick = ({ constructor: c }: { constructor: unknown }): unknown => c;
+    // ruleid: tc-ts-no-function-constructor
+    return [K, constructor, a, Ctor, pick, viaAlias, direct, called, arrow, C, indexed, optional, key, single, e, evaluated];
 }
