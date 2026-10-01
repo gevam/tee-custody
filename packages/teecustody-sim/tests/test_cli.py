@@ -3,6 +3,7 @@
 import base64
 import json
 import shutil
+import stat
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Any
 
 import pytest
 
-from teecustody_sim import LaunchConfig, Simulator, SimulatorConfig
+from teecustody_sim import JsonValue, LaunchConfig, SimKeys, Simulator, SimulatorConfig
+from teecustody_sim import cli as cli_module
 from teecustody_sim.cli import main
 
 AUDIENCE = "https://cli.teecustody.test/tee"
@@ -28,6 +30,10 @@ type Cli = Callable[..., tuple[int, str, str]]
 def _short_dir(prefix: str) -> Path:
     """AF_UNIX paths are limited to about 100 bytes, so sockets live under a short /tmp path."""
     return Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
+
+
+def _signers(state_dir: Path) -> tuple[Any, ...]:
+    return SimKeys.load_or_create(state_dir, 2).signers
 
 
 def _segment(text: str) -> dict[str, Any]:
@@ -176,3 +182,45 @@ def test_token_rejects_text_that_is_not_utf8(
     assert err.count("\n") == 1
     assert "\\" not in err
     assert "\udcff" not in err
+
+
+class RecordingProfileBuilder:
+    """Stands in for T-17 `build_trust_profile`."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, **kwargs: Any) -> dict[str, JsonValue]:
+        self.calls.append(kwargs)
+        return {"profile_kind": "development", "nested": {"b": [1, 2], "a": None}}
+
+
+def test_profile_writes_the_built_profile_from_the_state_values(
+    cli: Cli, state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = RecordingProfileBuilder()
+    monkeypatch.setattr(cli_module, "build_trust_profile", builder)
+    out_file = tmp_path / "dev-profile.json"
+    state = json.loads((state_dir / "sim-state.json").read_text())
+
+    code, out, err = cli("profile", "--state-dir", str(state_dir), "--out", str(out_file))
+
+    assert (code, out, err) == (0, "", "")
+    [call] = builder.calls
+    assert set(call) == {
+        "discovery_url",
+        "jwks_origin",
+        "expected_audience",
+        "launch",
+        "signers",
+        "signers_required",
+    }
+    assert call["discovery_url"] == state["discovery_url"]
+    assert call["jwks_origin"] == state["jwks_origin"]
+    assert call["expected_audience"] == AUDIENCE
+    assert call["launch"] == LAUNCH
+    assert call["signers_required"] == state["signers_required"] == 2
+    expected_ids = [signer.key_id for signer in _signers(state_dir)]
+    assert [signer.key_id for signer in call["signers"]] == expected_ids
+    assert out_file.read_text() == json.dumps(builder(), indent=2, sort_keys=True) + "\n"
+    assert stat.S_IMODE(out_file.stat().st_mode) == 0o644

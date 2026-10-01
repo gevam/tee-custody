@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -11,10 +12,12 @@ from typing import Any, Final, NoReturn
 from teecustody_sim.config import LaunchConfig, SimConfigError, SimConfigErrorCode
 from teecustody_sim.constants import DEFAULT_STATE_DIR, DEFAULT_TOKEN_MAX_AGE_S
 from teecustody_sim.keys import SimKeys
+from teecustody_sim.profile import build_trust_profile
 from teecustody_sim.token import TokenMinter, parse_alteration
 
 _STATE_FILE_NAME: Final = "sim-state.json"
 _USAGE_ERROR: Final = "INVALID_ARGUMENT"
+_PROFILE_FILE_MODE: Final = 0o644
 
 
 class _UsageError(Exception):
@@ -73,6 +76,28 @@ def _token(options: argparse.Namespace) -> int:
     return 0
 
 
+def _profile(options: argparse.Namespace) -> int:
+    state_dir: Path = options.state_dir
+    document = _read_state(state_dir)
+    keys = SimKeys.load_or_create(state_dir, document["signers_required"])
+    profile = build_trust_profile(
+        discovery_url=document["discovery_url"],
+        jwks_origin=document["jwks_origin"],
+        expected_audience=document["audience"],
+        launch=_launch(document),
+        signers=keys.signers,
+        signers_required=document["signers_required"],
+    )
+    text = json.dumps(profile, indent=2, sort_keys=True) + "\n"
+    descriptor = os.open(
+        options.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _PROFILE_FILE_MODE
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        os.fchmod(descriptor, _PROFILE_FILE_MODE)
+        handle.write(text)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="teecustody-sim")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -85,6 +110,10 @@ def _parser() -> argparse.ArgumentParser:
     alteration.add_argument("--drop", type=_text)
     alteration.add_argument("--case", type=_text)
     token.set_defaults(handler=_token)
+    profile = commands.add_parser("profile")
+    profile.add_argument("--state-dir", type=Path, default=Path(DEFAULT_STATE_DIR))
+    profile.add_argument("--out", type=Path, required=True)
+    profile.set_defaults(handler=_profile)
     return parser
 
 
