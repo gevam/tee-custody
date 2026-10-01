@@ -1,0 +1,12 @@
+{
+    "extends": "../tsconfig.base.json",
+    "compilerOptions": {
+        "lib": ["ES2022", "DOM"],
+        "types": ["node"],
+        "noEmit": true,
+        "paths": {
+            "@teecustody/core": ["../packages/teecustody-core/src/index.ts"]
+        }
+    },
+    "include": ["**/*.ts"]
+}

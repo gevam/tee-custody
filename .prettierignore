@@ -1,0 +1,5 @@
+spec/vectors/**
+docs/**
+pnpm-lock.yaml
+.semgrep/**
+**/*.py

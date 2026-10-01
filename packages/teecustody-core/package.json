@@ -1,0 +1,19 @@
+{
+    "name": "@teecustody/core",
+    "version": "0.0.0",
+    "description": "Platform-agnostic attestation verifier, HPKE channel and custody client for tee-custody",
+    "type": "module",
+    "exports": {
+        ".": "./dist/index.js"
+    },
+    "types": "./dist/index.d.ts",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "test": "vitest run",
+        "coverage": "vitest run --coverage",
+        "lint": "eslint . && prettier --check .",
+        "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+    }
+}
