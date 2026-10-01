@@ -72,3 +72,27 @@ rules:
       # TypeScript: static, side-effect, re-export, dynamic and require forms.
       - pattern-regex: >-
           (?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*["'`]teecustody[-_]sim(?:/[^"'`]*)?["'`]
+
+  - id: tc-py-no-dynamic-import
+    message: >-
+      Dynamic import and code execution bypass the import bans (NFR-2, NFR-6, SR-3); import
+      statically so ruff TID251 and tc-py-banned-import can see the module.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+    pattern-either:
+      - pattern: importlib.import_module(...)
+      - pattern: importlib.__import__(...)
+      - pattern: importlib.util.spec_from_file_location(...)
+      - pattern: importlib.util.spec_from_loader(...)
+      - pattern: importlib.util.module_from_spec(...)
+      - pattern: importlib.machinery.SourceFileLoader(...)
+      - pattern: runpy.$F(...)
+      - pattern: __import__
+      - pattern: builtins.__import__
+      - pattern: getattr(importlib, ...)
+      - pattern: getattr(builtins, ...)
+      - pattern: getattr(runpy, ...)
+      - pattern: exec(...)
+      - pattern: eval(...)
