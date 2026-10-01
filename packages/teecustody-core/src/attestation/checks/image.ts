@@ -35,16 +35,20 @@ function countedKeyId(
 // Signature bytes are never decoded or verified (D-016).
 export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
     const signatures = getPath(t.claims, [...CONTAINER, "image_signatures"]);
+    if (signatures === undefined) {
+        throw new AttestationError("CLAIM_MISSING", "image");
+    }
+    if (!isJsonArray(signatures)) {
+        throw new AttestationError("CLAIM_MISMATCH", "image");
+    }
     const algorithmByKeyId = new Map<string, string>(
         p.signer_keys.map((k) => [k.key_id, k.algorithm]),
     );
     const counted = new Set<string>();
-    if (isJsonArray(signatures)) {
-        for (const entry of signatures) {
-            const keyId = countedKeyId(entry, algorithmByKeyId);
-            if (keyId !== undefined) {
-                counted.add(keyId);
-            }
+    for (const entry of signatures) {
+        const keyId = countedKeyId(entry, algorithmByKeyId);
+        if (keyId !== undefined) {
+            counted.add(keyId);
         }
     }
     if (counted.size < p.signers_required) {

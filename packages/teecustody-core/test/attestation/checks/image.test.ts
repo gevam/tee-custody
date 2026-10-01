@@ -161,3 +161,23 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
         expectRejected(tokenWithSignatures([entry, sig(KEY_B)]), "UNTRUSTED_SIGNER");
     });
 });
+
+describe("checkImage requires image_signatures to be an array (h)", () => {
+    it("rejects an absent image_signatures with CLAIM_MISSING", () => {
+        expectRejected(tokenWith({ image_digest: DIGEST }), "CLAIM_MISSING");
+    });
+
+    it.each<[string, JsonValue]>([
+        ["an object", {}],
+        ["a string", "x"],
+        ["null", null],
+        ["a number", 2],
+        ["a boolean", true],
+    ])("rejects image_signatures that is %s with CLAIM_MISMATCH", (_name, value) => {
+        expectRejected(tokenWithSignatures(value), "CLAIM_MISMATCH");
+    });
+
+    it("treats an empty array as zero signers (UNTRUSTED_SIGNER)", () => {
+        expectRejected(tokenWithSignatures([]), "UNTRUSTED_SIGNER");
+    });
+});
