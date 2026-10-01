@@ -265,3 +265,13 @@ rules:
       - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:var|let|function|enum)\b
       - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+const\s+(?!\w+\s*:\s*unique\s+symbol\s*;)
       - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:abstract\s+)?class\s+(?!(?:TextEncoder|TextDecoder|URL)\b)
+
+  - id: tc-ts-no-timers
+    message: >-
+      Core has no timers (NFR-6); a later need for scheduling comes through an injected port.
+      Matches the names anywhere, including string-keyed lookups.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-regex: \b(?:setTimeout|setInterval|setImmediate|queueMicrotask|execScript)\b
