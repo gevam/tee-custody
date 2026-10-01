@@ -410,3 +410,23 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
 **Revisit when:** Any later change to spec/wire or spec/vectors.
 
 **Follow-ups:** Release Engineer merges T-03, V-01, QA acceptance tests. Tech Lead adds `5b0000000100000000` → MALFORMED as a T-09 unit criterion (32-bit length truncation; security re-review Low) — not a spec/vectors change.
+
+## D-021 — G4 passes for INC-1 Wave 1 (INC-1, 2026-10-01)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead, QA Engineer
+
+**Options considered**
+1. Pass G4 for Wave 1 and start batch B1 (T-04, T-07, T-09, T-10).
+2. Hold.
+
+**Decision:** Option 1.
+
+**Reasoning:** Verified on main (04b5267): Wave 0 fully merged (T-01 e22c759, T-02 815f379, T-03 c9d0e95 after D-020, V-01 92538a0, QA 05ce1de). Wave-1 owned-file sets are pairwise disjoint (46 files; two same basenames are in different packages). All Wave-1 inputs exist. Acceptance tests exist and none passes on trunk (9 Python + 2 TS passes are harness/contract self-checks, not acceptance). Contract stubs exist and fail per WAVES.md expected-red table. DEBT: 0 open.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Retro: Release Engineer stashed an unrelated uncommitted edit (T-09.md) despite an explicit "never stash" instruction; restored by the Orchestrator (04b5267). Retro: eslint.config.js committed before its test (T-02, accepted as tooling).
