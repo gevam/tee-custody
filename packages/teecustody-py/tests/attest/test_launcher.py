@@ -18,10 +18,12 @@ from pathlib import Path
 import pytest
 
 from teecustody.attest import (
+    AttestationLifecycle,
     AttestationToken,
     ConfidentialSpaceLauncher,
     LauncherError,
     LauncherErrorCode,
+    RefreshOutcome,
     identity_nonce,
     launcher_nonce,
 )
@@ -300,3 +302,43 @@ def test_token_for_another_audience_or_nonce_is_rejected(
 ) -> None:
     fake_launcher.replies.append(Reply(http_response(200, token.encode())))
     _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.TOKEN_REJECTED)
+
+
+# Criterion 7 -------------------------------------------------------------------------------
+
+
+class _NullLogger:
+    def info(self, outcome: str, **fields: str | int) -> None:
+        del outcome, fields
+
+    def warning(self, outcome: str, **fields: str | int) -> None:
+        del outcome, fields
+
+    def error(self, outcome: str, **fields: str | int) -> None:
+        del outcome, fields
+
+
+def test_attestation_needs_no_inbound_socket(
+    fake_launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny(*args: object, **kwargs: object) -> None:
+        raise AssertionError("INBOUND_SOCKET")
+
+    monkeypatch.setattr(socket.socket, "bind", deny)
+    monkeypatch.setattr(socket.socket, "listen", deny)
+    now = [1_000.0]
+    lifecycle = AttestationLifecycle(
+        client(fake_launcher.socket_path),
+        audience=AUD,
+        token_type="OIDC",
+        identity_public_key=IK_PUB,
+        refresh_margin_s=300,
+        clock=lambda: now[0],
+        logger=_NullLogger(),
+    )
+
+    first = lifecycle.start()
+    now[0] = first.expires_at - 300
+
+    assert lifecycle.refresh_if_due() is RefreshOutcome.REFRESHED
+    assert fake_launcher.connections == 2
