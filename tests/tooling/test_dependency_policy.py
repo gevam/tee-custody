@@ -101,3 +101,36 @@ def test_clean_tree_online_passes_with_recorded_registry(
     argv = ["--root", str(clean_tree), "--today", TODAY]
     assert tool.main(argv, fetch_json=recorded_fetch) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_real_repository_passes_offline(tool: ModuleType) -> None:
+    assert tool.main(["--offline"]) == 0
+
+
+def _framework_forbidden_items() -> list[str]:
+    items: list[str] = []
+    in_block = False
+    for line in (REPO / "framework.yaml").read_text().splitlines():
+        if line.strip() == "forbidden_dependencies:":
+            in_block = True
+            continue
+        if in_block:
+            stripped = line.strip()
+            if not stripped.startswith("- "):
+                break
+            items.append(stripped[2:].split("#", 1)[0].strip().strip('"'))
+    return items
+
+
+def test_every_framework_forbidden_dependency_is_enforced(tool: ModuleType) -> None:
+    items = _framework_forbidden_items()
+    assert len(items) >= 9
+    for item in items:
+        if item.startswith("any package that implements"):
+            assert tool.KNOWN_CRYPTO, item
+            continue
+        name = item.split(" ", 1)[0]
+        if " " in item:
+            assert name in tool.FORBIDDEN_CONDITIONAL, item
+        else:
+            assert name in tool.FORBIDDEN, item
