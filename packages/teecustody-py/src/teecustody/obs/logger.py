@@ -8,6 +8,8 @@ from typing import TextIO
 from teecustody.obs.types import ALLOWED_FIELDS, OUTCOME_PATTERN, AllowListedLogger, FieldValue
 
 _MAX_STR = 128
+_MAX_INT = 2**64
+_SAFE_LINE = '{"outcome":"LOG_FORMAT_FAILED"}'
 _INVALID_OUTCOME = "INVALID_OUTCOME_CODE"
 
 
@@ -33,23 +35,30 @@ def get_logger(name: str) -> AllowListedLogger:
 
 
 def _field_ok(key: object, value: object) -> bool:
-    if key not in ALLOWED_FIELDS:
+    if type(key) is not str or key not in ALLOWED_FIELDS:
         return False
-    if isinstance(value, str):
+    if type(value) is str:
         return len(value) <= _MAX_STR
-    return isinstance(value, int) and not isinstance(value, bool)
+    return type(value) is int and 0 <= value < _MAX_INT
 
 
 class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        try:
+            return self._render(record)
+        except Exception:  # noqa: BLE001 - a log formatter must fail closed, never raise
+            return _SAFE_LINE
+
+    @staticmethod
+    def _render(record: logging.LogRecord) -> str:
         msg = record.msg
-        outcome = msg if isinstance(msg, str) and OUTCOME_PATTERN.match(msg) else _INVALID_OUTCOME
+        valid = type(msg) is str and OUTCOME_PATTERN.fullmatch(msg) is not None
         ts = datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds")
         obj: dict[str, FieldValue] = {
             "ts": ts.replace("+00:00", "Z"),
             "level": record.levelname,
             "logger": record.name,
-            "outcome": outcome,
+            "outcome": msg if valid else _INVALID_OUTCOME,
         }
         fields = getattr(record, "tc_fields", None)
         if isinstance(fields, dict):
@@ -58,6 +67,9 @@ class JsonLogFormatter(logging.Formatter):
 
 
 _handler: logging.Handler | None = None
+
+logging.getLogger("teecustody").addHandler(logging.NullHandler())
+logging.getLogger("teecustody").propagate = False
 
 
 def configure_logging(stream: TextIO, level: int = logging.INFO) -> None:
