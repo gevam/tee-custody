@@ -12,7 +12,12 @@ from typing import Final
 
 from teecustody.obs import get_logger
 from teecustody_sim.alterations import JsonValue
-from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimulatorConfig
+from teecustody_sim.config import (
+    LaunchConfig,
+    SimConfigError,
+    SimConfigErrorCode,
+    SimulatorConfig,
+)
 from teecustody_sim.constants import (
     DEFAULT_TOKEN_AUDIENCE,
     DEFAULT_TOKEN_MAX_AGE_S,
@@ -29,8 +34,18 @@ _LOOPBACK_V4: Final = ipaddress.IPv4Network("127.0.0.0/8")
 _LOOPBACK_V6: Final = ipaddress.IPv6Address("::1")
 _MAX_SOCKET_PATH_BYTES: Final = 100
 _MAX_PORT: Final = 65535
-_CREDENTIAL_VARIABLE: Final = "GOOGLE_APPLICATION_CREDENTIALS"
+# §15.5 environment refusal (T-08 amendment 2026-10-01): R1 names, R2 KMS, R3 Pub/Sub, R4 ADC file.
+_CREDENTIAL_NAMES: Final = frozenset(
+    {"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+)
 _CREDENTIAL_PREFIX: Final = "CLOUDSDK_AUTH_"
+_KMS_KEY_NAME: Final = re.compile(
+    r"projects/[^/\s]+/locations/[^/\s]+/keyRings/[^/\s]+/cryptoKeys/[^/\s]+", re.ASCII
+)
+_PUBSUB_NAME: Final = re.compile(r"projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s]+", re.ASCII)
+# §15.2 item 5 namespace: not a valid GCP project id, and `.invalid` is RFC 6761-reserved.
+_SIM_QUEUE_PROJECT: Final = "teecustody-sim.invalid"
+_ADC_FILE_NAME: Final = "application_default_credentials.json"
 _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
 _LOGGER_NAME: Final = "sim"
 _STATE_FILE_NAME: Final = "sim-state.json"
@@ -49,6 +64,29 @@ def _is_loopback(host: str) -> bool:
     if isinstance(address, ipaddress.IPv4Address):
         return address in _LOOPBACK_V4
     return address == _LOOPBACK_V6
+
+
+def _adc_path(environ: Mapping[str, str]) -> Path:
+    """Where google-auth looks for the gcloud application-default credentials file."""
+    if environ.get("CLOUDSDK_CONFIG"):
+        return Path(environ["CLOUDSDK_CONFIG"]) / _ADC_FILE_NAME
+    home = Path(environ["HOME"]) if environ.get("HOME") else Path.home()
+    return home / ".config" / "gcloud" / _ADC_FILE_NAME
+
+
+def _production_configuration_present(environ: Mapping[str, str], launch: LaunchConfig) -> bool:
+    """§15.5: production credentials, KMS key names or queue names in the simulator's own
+    environment or in the workload launch configuration. Never reports what matched."""
+    names = [*environ, *(name for name, _ in launch.env)]
+    if any(name in _CREDENTIAL_NAMES or name.startswith(_CREDENTIAL_PREFIX) for name in names):
+        return True
+    values = [*environ.values(), *(value for _, value in launch.env), *launch.args]
+    for value in values:
+        if _KMS_KEY_NAME.search(value):
+            return True
+        if any(match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(value)):
+            return True
+    return os.path.lexists(_adc_path(environ))
 
 
 def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
@@ -74,9 +112,7 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
         raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
     if not 0 <= config.issuer_port <= _MAX_PORT:
         raise SimConfigError(SimConfigErrorCode.INVALID_PORT)
-    if _CREDENTIAL_VARIABLE in environ or any(
-        name.startswith(_CREDENTIAL_PREFIX) for name in environ
-    ):
+    if _production_configuration_present(environ, config.launch):
         raise SimConfigError(SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT)
 
 

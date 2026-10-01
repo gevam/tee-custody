@@ -127,6 +127,13 @@ def make_config(root: Path, **overrides: object) -> SimulatorConfig:
     return dataclasses.replace(config, **overrides)  # type: ignore[arg-type]
 
 
+def clean_environ(root: Path, **extra: str) -> dict[str, str]:
+    """An explicit environ whose HOME is an empty directory (never the developer's real one)."""
+    home = root / "home"
+    home.mkdir(exist_ok=True)
+    return {"HOME": str(home), **extra}
+
+
 def assert_nothing_created(config: SimulatorConfig) -> None:
     assert not config.socket_path.exists()
     assert not config.token_file_path.exists()
@@ -196,7 +203,7 @@ def test_invalid_config_is_refused_before_anything_is_created(
 ) -> None:
     config = make_config(short_dir, **overrides)
     with pytest.raises(SimConfigError) as caught:
-        Simulator(config, environ={}).start()
+        Simulator(config, environ=clean_environ(short_dir)).start()
     assert caught.value.code is code
     assert str(caught.value) == code.value
     assert_nothing_created(config)
@@ -209,7 +216,7 @@ def test_socket_path_over_100_bytes_is_invalid_path(short_dir: Path) -> None:
     config = dataclasses.replace(config, socket_path=socket_path)
     assert len(bytes(socket_path)) > 100
     with pytest.raises(SimConfigError) as caught:
-        Simulator(config, environ={}).start()
+        Simulator(config, environ=clean_environ(short_dir)).start()
     assert caught.value.code is SimConfigErrorCode.INVALID_PATH
     assert_nothing_created(config)
 
@@ -220,7 +227,7 @@ def test_missing_parent_directory_is_invalid_path(short_dir: Path, missing: str)
     config = make_config(short_dir)
     config = dataclasses.replace(config, **{missing: short_dir / "absent" / "file"})
     with pytest.raises(SimConfigError) as caught:
-        Simulator(config, environ={}).start()
+        Simulator(config, environ=clean_environ(short_dir)).start()
     assert caught.value.code is SimConfigErrorCode.INVALID_PATH
     assert_nothing_created(config)
 
@@ -234,7 +241,7 @@ def test_production_credentials_in_environ_are_refused(short_dir: Path, name: st
     config = make_config(short_dir)
     secret_value = "/synthetic/credential-value.json"
     with pytest.raises(SimConfigError) as caught:
-        Simulator(config, environ={"HOME": "/home/x", name: secret_value}).start()
+        Simulator(config, environ=clean_environ(short_dir, **{name: secret_value})).start()
     assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
     assert secret_value not in str(caught.value)
     assert name not in str(caught.value)
@@ -245,6 +252,7 @@ def test_production_credentials_in_environ_are_refused(short_dir: Path, name: st
 def test_process_environment_is_the_default(
     short_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("HOME", clean_environ(short_dir)["HOME"])
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/synthetic/credential-value.json")
     config = make_config(short_dir)
     with pytest.raises(SimConfigError) as caught:
@@ -288,7 +296,7 @@ def post_token(socket_path: Path, audience: str, nonces: list[str]) -> tuple[int
 @pytest.mark.usefixtures("fakes")
 def test_start_serves_discovery_jwks_and_the_launcher_socket(short_dir: Path) -> None:
     config = make_config(short_dir, signers_required=3, token_ttl_s=1200)
-    with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock) as simulator:
         origin = simulator.issuer_origin
         assert urlsplit(origin).hostname == "127.0.0.1"
         assert simulator.discovery_url == origin + "/.well-known/openid-configuration"
@@ -311,7 +319,7 @@ def test_start_serves_discovery_jwks_and_the_launcher_socket(short_dir: Path) ->
 @pytest.mark.usefixtures("fakes")
 def test_start_writes_the_default_token_file(short_dir: Path) -> None:
     config = make_config(short_dir)
-    with Simulator(config, environ={}, clock=fixed_clock):
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock):
         pass
 
     assert FakeMinter.minted[0] == (DEFAULT_TOKEN_AUDIENCE, [], NOW)
@@ -322,7 +330,7 @@ def test_start_writes_the_default_token_file(short_dir: Path) -> None:
 @pytest.mark.usefixtures("fakes")
 def test_start_writes_sim_state_matching_the_api_contract(short_dir: Path) -> None:
     config = make_config(short_dir, signers_required=4, token_ttl_s=900)
-    with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock) as simulator:
         origin = simulator.issuer_origin
 
     state_file = config.state_dir / "sim-state.json"
@@ -347,7 +355,7 @@ def test_start_writes_sim_state_matching_the_api_contract(short_dir: Path) -> No
 @pytest.mark.usefixtures("fakes")
 def test_stop_removes_the_socket_closes_the_issuer_and_is_idempotent(short_dir: Path) -> None:
     config = make_config(short_dir)
-    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
     simulator.stop()
     simulator.start()
     assert stat.S_ISSOCK(config.socket_path.stat().st_mode)
@@ -362,7 +370,7 @@ def test_stop_removes_the_socket_closes_the_issuer_and_is_idempotent(short_dir: 
 
 @pytest.mark.parametrize("name", ["issuer_origin", "discovery_url", "keys"])
 def test_properties_before_start_are_state_not_initialised(short_dir: Path, name: str) -> None:
-    simulator = Simulator(make_config(short_dir), environ={})
+    simulator = Simulator(make_config(short_dir), environ=clean_environ(short_dir))
     with pytest.raises(SimConfigError) as caught:
         getattr(simulator, name)
     assert caught.value.code is SimConfigErrorCode.STATE_NOT_INITIALISED
@@ -382,7 +390,9 @@ ACCEPTED: dict[str, dict[str, object]] = {
 @pytest.mark.usefixtures("fakes")
 def test_boundary_values_are_accepted(short_dir: Path, overrides: dict[str, object]) -> None:
     config = make_config(short_dir, **overrides)
-    with Simulator(config, environ={"CLOUDSDK_CONFIG": "/x"}, clock=fixed_clock) as simulator:
+    with Simulator(
+        config, environ=clean_environ(short_dir, CLOUDSDK_CONFIG="/x"), clock=fixed_clock
+    ) as simulator:
         assert http_get_json(simulator.discovery_url) is not None
         assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
 
@@ -395,7 +405,7 @@ def test_socket_path_of_exactly_100_bytes_is_accepted(short_dir: Path) -> None:
         config, socket_path=config.socket_path.parent / ("s" * (100 - prefix))
     )
     assert len(bytes(config.socket_path)) == 100
-    with Simulator(config, environ={}, clock=fixed_clock):
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock):
         assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
 
 
@@ -403,7 +413,7 @@ def test_socket_path_of_exactly_100_bytes_is_accepted(short_dir: Path) -> None:
 def test_a_failed_start_stops_whatever_it_started(short_dir: Path) -> None:
     config = make_config(short_dir)
     config.socket_path.write_text("not a socket")
-    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
 
     with pytest.raises(OSError, match="Address already in use"):
         simulator.start()
@@ -423,7 +433,7 @@ def test_token_file_symlink_is_never_followed(short_dir: Path) -> None:
     target = short_dir / "elsewhere"
     target.write_text("untouched")
     config.token_file_path.symlink_to(target)
-    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
 
     with pytest.raises(OSError, match="Too many levels of symbolic links"):
         simulator.start()
@@ -461,7 +471,7 @@ def test_non_loopback_bind_warns_on_every_start(
     short_dir: Path, log_records: list[tuple[str, str, str, dict[str, str | int]]]
 ) -> None:
     config = make_config(short_dir, issuer_host="0.0.0.0", allow_non_loopback=True)  # noqa: S104
-    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
     for _ in range(2):
         simulator.start()
         assert urlsplit(simulator.issuer_origin).hostname == "0.0.0.0"  # noqa: S104
@@ -474,7 +484,7 @@ def test_non_loopback_bind_warns_on_every_start(
 def test_loopback_start_logs_nothing(
     short_dir: Path, log_records: list[tuple[str, str, str, dict[str, str | int]]]
 ) -> None:
-    with Simulator(make_config(short_dir), environ={}, clock=fixed_clock):
+    with Simulator(make_config(short_dir), environ=clean_environ(short_dir), clock=fixed_clock):
         pass
     assert log_records == []
 
@@ -516,14 +526,18 @@ def test_no_pem_private_jwk_member_or_token_reaches_logs_or_non_token_responses(
 
     rejected = make_config(short_dir, signers_required=0)
     with pytest.raises(SimConfigError):
-        Simulator(rejected, environ={"GOOGLE_APPLICATION_CREDENTIALS": FAKE_PEM}).start()
+        Simulator(
+            rejected, environ=clean_environ(short_dir, GOOGLE_APPLICATION_CREDENTIALS=FAKE_PEM)
+        ).start()
     with pytest.raises(SimConfigError) as refused:
-        Simulator(make_config(short_dir), environ={"CLOUDSDK_AUTH_X": FAKE_PEM}).start()
+        Simulator(
+            make_config(short_dir), environ=clean_environ(short_dir, CLOUDSDK_AUTH_X=FAKE_PEM)
+        ).start()
     responses.append(str(refused.value).encode())
 
     for host, allow in [("127.0.0.1", False), ("0.0.0.0", True)]:  # noqa: S104
         config = make_config(short_dir, issuer_host=host, allow_non_loopback=allow)
-        with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+        with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock) as simulator:
             origin = simulator.issuer_origin.replace("0.0.0.0", "127.0.0.1")  # noqa: S104
             for path in ["/.well-known/openid-configuration", "/jwks", "/missing"]:
                 responses.append(_raw(origin, f"GET {path} HTTP/1.1\r\n\r\n".encode()))
@@ -564,9 +578,159 @@ def test_pre_existing_files_end_with_the_contract_modes(short_dir: Path) -> None
     config.token_file_path.write_text("old")
     config.token_file_path.chmod(0o600)
 
-    with Simulator(config, environ={}, clock=fixed_clock):
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock):
         pass
 
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(config.token_file_path.stat().st_mode) == 0o644
     assert json.loads(state_file.read_text())["state_version"] == 1
+
+
+R1_NAMES = (
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CREDENTIALS",
+    "GOOGLE_OAUTH_ACCESS_TOKEN",
+    "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
+    "CLOUDSDK_AUTH_",
+)
+KMS_PLAIN = "projects/p/locations/global/keyRings/r/cryptoKeys/k"
+KMS_EMBEDDED = (
+    "//cloudkms.googleapis.com/projects/p/locations/global/keyRings/r/cryptoKeys/k"
+    "/cryptoKeyVersions/1"
+)
+PROD_TOPIC = "projects/prod-proj/topics/t"
+PROD_SUBSCRIPTION = "projects/prod-proj/subscriptions/s"
+SIM_TOPIC = "projects/teecustody-sim.invalid/topics/t"
+MIXED = f"{SIM_TOPIC} projects/prod-proj/topics/u"  # two R3 matches, one namespaced
+ADC = "application_default_credentials.json"
+
+
+def _placements(value: str) -> dict[str, tuple[dict[str, str], LaunchConfig]]:
+    """`value` as an environ value, a launch.env value and a launch.args element."""
+    return {
+        "environ": ({"QUEUE": value}, LAUNCH),
+        "launch-env": ({}, _launch(env=(*LAUNCH.env, ("QUEUE", value)))),
+        "launch-args": ({}, _launch(args=(*LAUNCH.args, value))),
+    }
+
+
+def _refusals() -> dict[str, tuple[dict[str, str], LaunchConfig, str]]:
+    cases: dict[str, tuple[dict[str, str], LaunchConfig, str]] = {}
+    for name in R1_NAMES:
+        cases[f"r1-environ-{name}"] = ({name: ""}, LAUNCH, name)
+        cases[f"r1-launch-env-{name}"] = ({}, _launch(env=((name, "v"),)), name)
+    for label, value in [
+        ("r2-plain", KMS_PLAIN),
+        ("r2-embedded", KMS_EMBEDDED),
+        ("r3-topic", PROD_TOPIC),
+        ("r3-subscription", PROD_SUBSCRIPTION),
+        ("r3-mixed", MIXED),
+    ]:
+        for place, (extra, launch) in _placements(value).items():
+            cases[f"{label}-{place}"] = (extra, launch, value)
+    return cases
+
+
+REFUSALS = _refusals()
+
+
+@pytest.mark.parametrize(("extra", "launch", "offending"), REFUSALS.values(), ids=REFUSALS.keys())
+@pytest.mark.usefixtures("fakes")
+def test_production_configuration_is_refused(
+    short_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    extra: dict[str, str],
+    launch: LaunchConfig,
+    offending: str,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    config = make_config(short_dir, launch=launch)
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir, **extra)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert str(caught.value) == "PRODUCTION_CREDENTIALS_PRESENT"
+    assert offending not in caplog.text
+    assert_nothing_created(config)
+
+
+def _adc_file(directory: Path, *, dangling: bool = False) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / ADC
+    if dangling:
+        path.symlink_to(directory / "absent.json")
+    else:
+        path.write_text("{}")
+    return path
+
+
+@pytest.mark.parametrize("where", ["cloudsdk-config", "home", "home-dangling", "empty-cloudsdk"])
+@pytest.mark.usefixtures("fakes")
+def test_gcloud_adc_file_is_refused(
+    short_dir: Path, caplog: pytest.LogCaptureFixture, where: str
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    environ = clean_environ(short_dir)
+    home_gcloud = Path(environ["HOME"]) / ".config" / "gcloud"
+    if where == "cloudsdk-config":
+        adc = _adc_file(short_dir / "gcloud-config")
+        environ["CLOUDSDK_CONFIG"] = str(adc.parent)
+    elif where == "empty-cloudsdk":
+        adc = _adc_file(home_gcloud)
+        environ["CLOUDSDK_CONFIG"] = ""
+    else:
+        adc = _adc_file(home_gcloud, dangling=where == "home-dangling")
+    config = make_config(short_dir)
+
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=environ).start()
+
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert str(adc) not in str(caught.value) + caplog.text
+    assert_nothing_created(config)
+
+
+@pytest.mark.parametrize("home", [None, ""], ids=["no-home", "empty-home"])
+@pytest.mark.usefixtures("fakes")
+def test_gcloud_adc_file_under_path_home_is_refused(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch, home: str | None
+) -> None:
+    fake_home = short_dir / "process-home"
+    _adc_file(fake_home / ".config" / "gcloud")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    config = make_config(short_dir)
+    environ = {} if home is None else {"HOME": home}
+
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=environ).start()
+
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert_nothing_created(config)
+
+
+ALLOWED: dict[str, tuple[dict[str, str], LaunchConfig]] = {
+    "cloudsdk-core-project": ({"CLOUDSDK_CORE_PROJECT": "dev-proj"}, LAUNCH),
+    **{f"sim-topic-{place}": case for place, case in _placements(SIM_TOPIC).items()},
+    **{f"projects-alone-{place}": case for place, case in _placements("projects/p").items()},
+}
+
+
+@pytest.mark.parametrize(("extra", "launch"), ALLOWED.values(), ids=ALLOWED.keys())
+@pytest.mark.usefixtures("fakes")
+def test_non_production_configuration_is_allowed(
+    short_dir: Path, extra: dict[str, str], launch: LaunchConfig
+) -> None:
+    config = make_config(short_dir, launch=launch)
+    with Simulator(config, environ=clean_environ(short_dir, **extra), clock=fixed_clock):
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+@pytest.mark.usefixtures("fakes")
+def test_cloudsdk_config_without_adc_wins_over_home_with_adc(short_dir: Path) -> None:
+    environ = clean_environ(short_dir)
+    _adc_file(Path(environ["HOME"]) / ".config" / "gcloud")
+    empty_config = short_dir / "empty-gcloud-config"
+    empty_config.mkdir()
+    environ["CLOUDSDK_CONFIG"] = str(empty_config)
+    config = make_config(short_dir)
+    with Simulator(config, environ=environ, clock=fixed_clock):
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
