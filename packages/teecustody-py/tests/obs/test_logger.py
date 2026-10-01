@@ -161,6 +161,7 @@ def test_formatter_failure_yields_safe_line_and_no_stderr(
 def test_unconfigured_logging_writes_nothing_to_stderr() -> None:
     code = (
         "import logging\n"
+        "logging.basicConfig()\n"
         "from teecustody.obs import get_logger\n"
         "get_logger('x').error('token=SENTINEL', epoch=1)\n"
         "err = ValueError('SENTINEL')\n"
@@ -169,6 +170,8 @@ def test_unconfigured_logging_writes_nothing_to_stderr() -> None:
     done = subprocess.run(  # noqa: S603 - fixed argv, no untrusted input
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
+    assert "SENTINEL" not in done.stderr
+    assert "Traceback" not in done.stderr
     assert done.stderr == ""
     assert done.stdout == ""
 
