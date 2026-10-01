@@ -1,0 +1,74 @@
+# Static policy rules for tee-custody (T-14; NFR-2, NFR-5, NFR-6, SR-3, SR-5, §13.10).
+#
+# Semgrep is the structural layer behind ruff TID251 and ESLint: it ignores `# noqa` and
+# `eslint-disable`, so suppression comments cannot switch it off.
+# Fixtures: .semgrep/tests/tc.<rule-id>.{pos,neg}.<ext>; `semgrep --test .semgrep/` runs them through
+# the .semgrep/tests/tc.yaml link to this file. Test mode ignores `paths:`, so path scoping is
+# exercised by the trunk scan (`semgrep --config .semgrep.yml --error`).
+# A rule id listed more than once is one policy split by path; each entry has its own `paths:`.
+
+rules:
+  - id: tc-no-default-token-file
+    message: >-
+      The workload never reads the launcher's default token file; tokens come from the launcher
+      socket with a fresh nonce (spec §6.1).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+    pattern-regex: attestation_verifier_claims_token
+
+  - id: tc-no-listener-in-workload
+    message: The TEE workload accepts no inbound connections (NFR-2, spec §1).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+    pattern-either:
+      - pattern: $X.bind(...)
+      - pattern: $X.listen(...)
+      - pattern: asyncio.start_server(...)
+      - pattern: asyncio.start_unix_server(...)
+
+  - id: tc-no-tls-override
+    message: TLS certificate verification is never disabled (SR-5).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/**/*.py", "/packages/**/*.ts"]
+    pattern-either:
+      - pattern-regex: \bverify\s*=\s*False\b
+      - pattern-regex: \b_create_unverified_context\b
+      - pattern-regex: \bCERT_NONE\b
+      - pattern-regex: \brejectUnauthorized["']?\s*[:=]\s*false\b
+      - pattern-regex: \bNODE_TLS_REJECT_UNAUTHORIZED\b
+
+  - id: tc-no-sim-anchor-in-core
+    message: Core ships no simulator trust anchors (§13.10).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-regex: tee-sim\.localhost|SIMULATED
+
+  - id: tc-no-verification-skip
+    message: No build has a switch that skips verification (NFR-5, spec I13).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-py/src/**"]
+    pattern-regex: (?i)(skip|disable|bypass|no)_?verif|insecure
+
+  - id: tc-no-sim-import-in-library
+    message: The library never depends on the simulator (NFR-6, spec §15.5).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-py/**/*.py", "/packages/teecustody-core/**/*.ts"]
+    pattern-either:
+      # Python: every `import`/`from` form, including aliases and comma lists.
+      - pattern-regex: >-
+          (?m)^[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
+      # TypeScript: static, side-effect, re-export, dynamic and require forms.
+      - pattern-regex: >-
+          (?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*["'`]teecustody[-_]sim(?:/[^"'`]*)?["'`]
