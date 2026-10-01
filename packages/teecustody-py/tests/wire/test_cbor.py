@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -124,3 +125,65 @@ def test_limits_below_one_are_invalid_before_any_parsing(limits: DecodeLimits) -
     with pytest.raises(ValueError, match=r"^INVALID_LIMITS$") as caught:
         decode(b"\x00", limits)
     assert type(caught.value) is ValueError
+
+
+ALLOCATION_BOUND_BYTES = 64 * 1024
+
+
+@pytest.mark.parametrize(
+    ("hex_input", "code"),
+    [
+        ("9b0000000100000000", WireErrorCode.LIMIT_EXCEEDED),
+        ("bb8000000000000000", WireErrorCode.LIMIT_EXCEEDED),
+        ("5bffffffffffffffff", WireErrorCode.MALFORMED),
+    ],
+    ids=["array_2p32_items", "map_2p63_entries", "bstr_2p64m1_bytes"],
+)
+def test_declared_sizes_fail_before_anything_is_allocated_for_them(
+    hex_input: str, code: WireErrorCode, vector_limits: DecodeLimits
+) -> None:
+    data = bytes.fromhex(hex_input)
+    caught: WireError | None = None
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        try:
+            decode(data, vector_limits)
+        except WireError as error:
+            caught = error
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert caught is not None
+    assert caught.code is code
+    assert peak < ALLOCATION_BOUND_BYTES
+
+
+def test_byte_string_longer_than_the_input_is_malformed(vector_limits: DecodeLimits) -> None:
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex("590100"), vector_limits)
+    assert caught.value.code is WireErrorCode.MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("hex_input", "expected"),
+    [
+        ("1b001fffffffffffff", 2**53 - 1),
+        ("1b0020000000000000", 2**53),
+        ("1bffffffffffffffff", 2**64 - 1),
+        ("3bffffffffffffffff", -(2**64)),
+    ],
+    ids=["2p53m1", "2p53", "2p64m1", "minus_2p64"],
+)
+def test_integer_boundaries_decode_exactly(
+    hex_input: str, expected: int, vector_limits: DecodeLimits
+) -> None:
+    value = decode(bytes.fromhex(hex_input), vector_limits)
+    assert type(value) is int
+    assert value == expected
+
+
+def test_bignum_tag_is_unsupported(vector_limits: DecodeLimits) -> None:
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex("c249010000000000000000"), vector_limits)
+    assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
