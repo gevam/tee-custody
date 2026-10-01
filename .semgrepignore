@@ -1,0 +1,7 @@
+# T-14 (amendment 2026-10-01c): replaces semgrep's built-in ignore list; test roots are anchored so nothing under src/ is skipped.
+.git/
+node_modules/
+.venv/
+/tests/
+/packages/*/tests/
+/packages/*/test/

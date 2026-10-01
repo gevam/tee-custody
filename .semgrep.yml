@@ -1,0 +1,308 @@
+# Static policy rules for tee-custody (T-14; NFR-2, NFR-5, NFR-6, SR-3, SR-5, §13.10).
+#
+# Semgrep is the structural layer behind ruff TID251 and ESLint: it ignores `# noqa` and
+# `eslint-disable`, so suppression comments cannot switch it off.
+# Fixtures: .semgrep/tests/tc.<rule-id>.{pos,neg}.<ext>; `semgrep --test .semgrep/` runs them through
+# the .semgrep/tests/tc.yaml link to this file. Test mode ignores `paths:`, so path scoping is
+# exercised by the trunk scan (`semgrep --config .semgrep.yml --error`).
+#
+# Accepted residual (T-14 review round 1): names computed from strings cannot be caught statically,
+# e.g. getattr(sock, "bi" + "nd"), __import__ reached via ("__imp" + "ort__"), or a TS key built as
+# "constr" + "uctor". The rules block the direct, aliased and suppressed forms; code review stays the
+# primary control for computed names.
+
+rules:
+  - id: tc-no-default-token-file
+    message: >-
+      The workload never reads the launcher's default token file; tokens come from the launcher
+      socket with a fresh nonce (spec §6.1).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+    pattern-regex: attestation_verifier_claims_token
+
+  - id: tc-no-listener-in-workload
+    message: The TEE workload accepts no inbound connections (NFR-2, spec §1).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+    pattern-either:
+      - pattern: $X.bind(...)
+      - pattern: $X.listen(...)
+      - pattern: asyncio.start_server(...)
+      - pattern: asyncio.start_unix_server(...)
+      - pattern: socket.create_server(...)
+      - pattern: $LOOP.create_server(...)
+      - pattern: $LOOP.create_unix_server(...)
+      - pattern: multiprocessing.connection.Listener(...)
+
+  - id: tc-no-tls-override
+    message: TLS certificate verification is never disabled (SR-5).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/**/*.py", "/packages/**/*.ts"]
+    pattern-either:
+      - pattern-regex: \bverify\s*=\s*False\b
+      - pattern-regex: \bcheck_hostname\s*=\s*False\b
+      - pattern-regex: \b_create_unverified_context\b
+      - pattern-regex: \bCERT_NONE\b
+      - pattern-regex: \brejectUnauthorized["']?\s*[:=]\s*false\b
+      - pattern-regex: \bNODE_TLS_REJECT_UNAUTHORIZED\b
+
+  - id: tc-no-sim-anchor-in-core
+    message: Core ships no simulator trust anchors (§13.10).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-regex: tee-sim\.localhost|SIMULATED
+
+  - id: tc-no-verification-skip
+    message: No build has a switch that skips verification (NFR-5, spec I13).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-py/src/**"]
+    pattern-regex: (?i)(skip|disable|bypass|no)_?verif|insecure
+
+  - id: tc-no-sim-import-in-library
+    message: The library never depends on the simulator (NFR-6, spec §15.5).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-py/**/*.py", "/packages/teecustody-core/**/*.ts"]
+    pattern-either:
+      # Python: every `import`/`from` form, including aliases and comma lists.
+      - pattern-regex: >-
+          (?m)^[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
+      # TypeScript: static, side-effect, re-export, dynamic and require forms.
+      - pattern-regex: >-
+          (?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*["'`]teecustody[-_]sim(?:/[^"'`]*)?["'`]
+
+  - id: tc-py-no-dynamic-import
+    message: >-
+      Dynamic import and code execution bypass the import bans (NFR-2, NFR-6, SR-3); import
+      statically so ruff TID251 and tc-py-banned-import can see the module.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+    pattern-either:
+      - pattern: importlib.import_module(...)
+      - pattern: importlib.__import__(...)
+      - pattern: importlib.util.spec_from_file_location(...)
+      - pattern: importlib.util.spec_from_loader(...)
+      - pattern: importlib.util.module_from_spec(...)
+      - pattern: importlib.machinery.SourceFileLoader(...)
+      - pattern: runpy.$F(...)
+      - pattern: __import__
+      - pattern: builtins.__import__
+      - pattern: getattr(importlib, ...)
+      - pattern: getattr(builtins, ...)
+      - pattern: getattr(runpy, ...)
+      - pattern: __builtins__
+      - pattern: vars(builtins)
+      - pattern: builtins.__dict__
+      - pattern: pkgutil.resolve_name(...)
+      - pattern: importlib.util.find_spec(...)
+      - pattern: code.InteractiveInterpreter(...)
+      - pattern: code.InteractiveConsole(...)
+      - pattern: code.interact(...)
+      - pattern: zipimport.zipimporter(...)
+      - pattern: exec(...)
+      - pattern: eval(...)
+
+  # tc-py-banned-import (rule 8) is split by path into three ids: semgrep-core prefilters files per
+  # rule id, so two entries sharing an id silently drop findings.
+  # Entry 1: teecustody source except the CBOR entry point.
+  - id: tc-py-banned-import
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+      exclude: ["/packages/teecustody-py/src/teecustody/wire/cbor.py"]
+    pattern-either:
+      - pattern: import cbor2
+      - pattern: from cbor2 import $X
+      - pattern: import teecustody_sim
+      - pattern: from teecustody_sim import $X
+      - pattern: import http.server
+      - pattern: from http.server import $X
+      - pattern: import socketserver
+      - pattern: from socketserver import $X
+      - pattern: import wsgiref
+      - pattern: from wsgiref import $X
+      - pattern: import xmlrpc.server
+      - pattern: from xmlrpc.server import $X
+      - pattern: import multiprocessing.connection
+      - pattern: from multiprocessing.connection import $X
+      - pattern: import multiprocessing.managers
+      - pattern: from multiprocessing.managers import $X
+
+  # Entry 2: wire/cbor.py may import cbor2 and nothing else on the list.
+  - id: tc-py-banned-import-wire
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/teecustody/wire/cbor.py"]
+    pattern-either:
+      - pattern: import teecustody_sim
+      - pattern: from teecustody_sim import $X
+      - pattern: import http.server
+      - pattern: from http.server import $X
+      - pattern: import socketserver
+      - pattern: from socketserver import $X
+      - pattern: import wsgiref
+      - pattern: from wsgiref import $X
+      - pattern: import xmlrpc.server
+      - pattern: from xmlrpc.server import $X
+      - pattern: import multiprocessing.connection
+      - pattern: from multiprocessing.connection import $X
+      - pattern: import multiprocessing.managers
+      - pattern: from multiprocessing.managers import $X
+
+  # Entry 3: the simulator may serve loopback listeners (spec §15) but decodes CBOR only through
+  # teecustody.wire.
+  - id: tc-py-banned-import-sim
+    message: >-
+      Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
+      (NFR-2); teecustody never imports the simulator (NFR-6).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-sim/src/**"]
+    pattern-either:
+      - pattern: import cbor2
+      - pattern: from cbor2 import $X
+
+  - id: tc-py-no-lint-suppression
+    message: >-
+      Blanket `# noqa`, any `noqa` naming a TID code, and file- or block-level ruff/flake8
+      suppression switch off the import bans (NFR-2, NFR-6, SR-3); suppress a specific non-TID
+      code instead.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+    pattern-either:
+      - pattern-regex: (?i)#\s*noqa\b(?!\s*:)
+      - pattern-regex: (?i)#\s*noqa\s*:[^#\n]*\bTID
+      - pattern-regex: (?i)#\s*(?:ruff|flake8)\s*:\s*(?:noqa|disable)\b
+      # bandit suppression: bandit Lows are gated by ruff `S`, so no finding is silenced in source.
+      - pattern-regex: (?i)#\s*nosec\b
+
+  - id: tc-ts-no-global-object
+    message: >-
+      Core reaches no platform global through the global object or Reflect (NFR-6); platform
+      capabilities enter through injected ports.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern-regex: \bglobalThis\b
+      - pattern: Reflect
+      - patterns:
+          - pattern-either:
+              - pattern: self
+              - pattern: global
+              - pattern: window
+          # A class field named self/global/window is a declaration; only the name is excluded,
+          # never the initialiser (`self = window` still flags `window`).
+          - pattern-not:
+              patterns:
+                - pattern-inside: |
+                    class $C { ... }
+                - pattern: $F = $V
+                - focus-metavariable: $F
+
+  - id: tc-ts-no-function-constructor
+    message: >-
+      Core evaluates no code: no Function, no eval, and no constructor-chain access that reaches the
+      Function constructor (NFR-6). Class `constructor(...)` declarations are unaffected.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern: Function
+      - pattern: eval
+      - pattern: $X.constructor
+      - pattern: $X?.constructor
+      - pattern-regex: \?\.\s*constructor\b
+      - pattern-regex: (["'`])constructor\1
+      # `constructor` as an object key: destructuring (`const { constructor: K } = f`), parameters
+      # and literals. Class `constructor(` declarations are followed by `(`, not `:`, `,`, `=` or `}`.
+      - pattern-regex: "[{,]\\s*constructor\\s*(?=[:,=}])"
+      # Prototype walks toward the Function constructor without naming it.
+      - pattern: Object.getOwnPropertyDescriptor(...)
+      - pattern: Object.getOwnPropertyDescriptors(...)
+      - pattern: Object.getOwnPropertyNames(...)
+      - pattern-regex: \bObject\s*\.\s*getPrototypeOf\s*\(\s*(?:async\b|function\b|class\b|\(|Object\s*\.\s*getPrototypeOf\b)
+      - pattern-regex: \b__proto__\b
+
+  - id: tc-ts-no-dynamic-import
+    message: >-
+      Core has no dynamic import or require, whatever the specifier (data:, blob:, http(s):, node:,
+      or a computed string); use a static import that ESLint and tsc can check (NFR-6, SR-3).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern: import(...)
+      - pattern-regex: \bimport\s*\(
+      - pattern: require
+      - pattern: $X.require
+
+  - id: tc-ts-no-lint-suppression
+    message: >-
+      ESLint and tsc suppression comments are not allowed in Core (NFR-6, SR-3); fix the finding or
+      change the policy file through review.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern-regex: eslint-disable
+      - pattern-regex: "@ts-ignore|@ts-nocheck|@ts-expect-error"
+      - pattern-regex: /\*\s*(?:eslint|globals?)\s
+
+  - id: tc-ts-no-ambient-globals
+    message: >-
+      Core declares no ambient globals (NFR-6): no triple-slash directives, no declare
+      global/module/namespace, and no declare var/let/const/function/class/enum except brand symbols
+      (`declare const $N: unique symbol`) and the platform.d.ts classes TextEncoder, TextDecoder, URL.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    # Test mode ignores `paths:`, so the platform.d.ts allowance is by name (the copy of
+    # platform.d.ts in .semgrep/tests must stay clean); declaring those names elsewhere grants nothing
+    # platform.d.ts does not already grant.
+    pattern-either:
+      # Comments may sit between any two tokens (`declare /* x */ const`).
+      - pattern-regex: '(?m)^[ \t]*///[ \t]*<reference'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:global|module|namespace)\b'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:var|let|function|enum)\b'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+const(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?!\w+(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*:(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*unique(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+symbol(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*;)'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:abstract(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?class(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?!(?:TextEncoder|TextDecoder|URL)\b)'
+
+  - id: tc-ts-no-timers
+    message: >-
+      Core has no timers (NFR-6); a later need for scheduling comes through an injected port.
+      Matches the names anywhere, including string-keyed lookups.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-regex: \b(?:setTimeout|setInterval|setImmediate|queueMicrotask|execScript)\b

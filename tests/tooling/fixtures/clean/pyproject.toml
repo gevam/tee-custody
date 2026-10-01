@@ -1,0 +1,11 @@
+[project]
+name = "tee-custody-workspace"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["teecustody", "teecustody-sim"]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv.workspace]
+members = ["packages/teecustody-py", "packages/teecustody-sim"]

@@ -1,0 +1,63 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[manifest]
+members = [
+    "tee-custody-workspace",
+    "teecustody",
+    "teecustody-sim",
+]
+
+[[package]]
+name = "cbor2"
+version = "6.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cbor2-6.1.4.tar.gz", hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size = 1 }
+
+[[package]]
+name = "cryptography"
+version = "50.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cryptography-50.0.2.tar.gz", hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cryptography-50.0.2-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size = 1 },
+]
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/pytest-9.1.1.tar.gz", hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size = 1 }
+
+[[package]]
+name = "tee-custody-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "teecustody" },
+    { name = "teecustody-sim" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[[package]]
+name = "teecustody"
+version = "0.1.0"
+source = { editable = "packages/teecustody-py" }
+dependencies = [
+    { name = "cbor2" },
+    { name = "cryptography" },
+]
+
+[[package]]
+name = "teecustody-sim"
+version = "0.1.0"
+source = { editable = "packages/teecustody-sim" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "teecustody" },
+]
