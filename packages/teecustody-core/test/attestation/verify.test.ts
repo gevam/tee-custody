@@ -671,3 +671,58 @@ describe("verifyAttestation: any other failure in step k is MALFORMED/<check k>"
         expect(sink.events).toEqual([]);
     });
 });
+
+describe("verifyAttestation: errors carry no token content (criterion 10; SR-11)", () => {
+    // A marker long enough that it cannot collide with "check: CODE".
+    const MARKER = "zq7MARKERzq7";
+
+    function expectNoContent(err: AttestationError, token: string): void {
+        expect(err.message).toBe(`${err.check}: ${err.code}`);
+        expect(err.cause).toBeUndefined();
+        expect(Object.keys(err).sort()).toEqual(["check", "code"]);
+        expect(err.message).not.toContain(MARKER);
+        for (const segment of token.split(".").filter((s) => s.length > 0)) {
+            expect(err.message).not.toContain(segment);
+        }
+        // No 8-character window of the token appears in the message.
+        for (let i = 0; i + 8 <= token.length; i++) {
+            expect(err.message.includes(token.slice(i, i + 8))).toBe(false);
+        }
+    }
+
+    const leaky: readonly { readonly name: string; readonly mutate: (c: Claims) => void }[] = [
+        { name: "iss", mutate: (c) => (c.iss = `https://${MARKER}.example`) },
+        { name: "aud", mutate: (c) => (c.aud = MARKER) },
+        { name: "eat_nonce", mutate: (c) => (c.eat_nonce = MARKER) },
+        { name: "hwmodel", mutate: (c) => (c.hwmodel = MARKER) },
+        { name: "dbgstat", mutate: (c) => (c.dbgstat = MARKER) },
+        {
+            name: "support_attributes",
+            mutate: (c) =>
+                (((c.submods as Claims).confidential_space as Claims).support_attributes = [
+                    MARKER,
+                ]),
+        },
+        { name: "image_digest", mutate: (c) => (containerOf(c).image_digest = MARKER) },
+        { name: "args", mutate: (c) => (containerOf(c).args = [MARKER]) },
+        { name: "env", mutate: (c) => (containerOf(c).env = { [MARKER]: MARKER }) },
+        { name: "lone surrogate arg", mutate: (c) => (containerOf(c).args = [`${MARKER}\ud800`]) },
+    ];
+
+    it.each(leaky)("a rejected $name value does not appear in the error", async ({ mutate }) => {
+        const token = await mint(mutate);
+        expectNoContent(await verifyWith(token), token);
+    });
+
+    it.each(STEP_CASES)("$name: the error has no token content", async ({ token }) => {
+        const compact = await token();
+        expectNoContent(await verifyWith(compact), compact);
+    });
+
+    it("an invalid signature and an unbranded profile carry no token content", async () => {
+        const forged = corruptSignature(await mint((c) => (c.aud = MARKER)));
+        expectNoContent(await verifyWith(forged), forged);
+        const token = await mint((c) => (c.aud = MARKER));
+        expectNoContent(await verifyWith(token, { profile: { ...PROFILE } }), token);
+    });
+});
