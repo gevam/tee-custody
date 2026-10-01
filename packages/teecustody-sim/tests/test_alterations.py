@@ -451,10 +451,11 @@ def test_parse_alteration_keeps_json_nested_beyond_the_parser_limit_as_literal_t
 
 @pytest.mark.parametrize("case_id", ["signature_algorithm_mismatch", "key_id_duplicated"])
 def test_entry_editing_case_without_listed_signatures_is_rejected(
-    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch, case_id: str
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch, case_id: str
 ) -> None:
     for signer in keys.signers:
         monkeypatch.setattr(signer, "sign", lambda payload: b"\x00" * 256)
+    minter = TokenMinter(keys, LAUNCH, ttl_s=TTL_S, token_max_age_s=MAX_AGE_S)
 
     with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
         minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))

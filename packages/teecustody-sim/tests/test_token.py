@@ -310,27 +310,29 @@ def _broken_sign(payload: bytes) -> bytes:
     return secrets.token_bytes(256)
 
 
-def _listed_key_ids(minter: TokenMinter) -> list[str]:
+def _listed_key_ids(keys: SimKeys) -> list[str]:
+    """Image signatures listed by a minter created after the signers were (mis)configured."""
+    minter = TokenMinter(keys, LAUNCH, ttl_s=TTL_S, token_max_age_s=3600)
     _, payload, _ = decode(minter.mint(AUDIENCE, [NONCE], NOW))
     entries = json.loads(payload)["submods"]["container"]["image_signatures"]
     return [entry["key_id"] for entry in entries]
 
 
 def test_minter_omits_an_image_signature_that_does_not_verify(
-    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(keys.signers[1], "sign", _broken_sign)
 
-    assert _listed_key_ids(minter) == [keys.signers[0].key_id]
+    assert _listed_key_ids(keys) == [keys.signers[0].key_id]
 
 
 def test_minter_lists_no_image_signatures_when_every_signer_is_broken(
-    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for signer in keys.signers:
         monkeypatch.setattr(signer, "sign", _broken_sign)
 
-    assert _listed_key_ids(minter) == []
+    assert _listed_key_ids(keys) == []
 
 
 def _eat_nonce(minter: TokenMinter, nonces: list[str]) -> object:
@@ -384,7 +386,7 @@ def test_a_nonce_that_is_not_encodable_as_utf8_is_rejected(minter: TokenMinter) 
 
 
 def test_a_signer_whose_spki_is_not_rsa_is_not_listed(
-    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ec_spki = (
         ec.generate_private_key(ec.SECP256R1())
@@ -393,4 +395,4 @@ def test_a_signer_whose_spki_is_not_rsa_is_not_listed(
     )
     monkeypatch.setattr(keys.signers[0], "spki_der", ec_spki)
 
-    assert _listed_key_ids(minter) == [keys.signers[1].key_id]
+    assert _listed_key_ids(keys) == [keys.signers[1].key_id]
