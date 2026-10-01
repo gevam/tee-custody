@@ -1,4 +1,6 @@
 // T-13: checkImage — spec §6.8 as decided by D-016 (ARCHITECTURE "Image check"). Security path.
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { checkImage } from "../../../src/attestation/checks/image.js";
@@ -228,4 +230,26 @@ describe("checkImage never decodes signature bytes (D-016)", () => {
             expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
         },
     );
+});
+
+describe("checkImage is synchronous and offline (SR-1, D-016)", () => {
+    it("returns an array, not a Promise", () => {
+        const result: unknown = checkImage(
+            tokenWithSignatures([sig(KEY_A), sig(KEY_B)]),
+            profile(),
+        );
+        expect(result).not.toBeInstanceOf(Promise);
+        expect(Array.isArray(result)).toBe(true);
+    });
+
+    it("never calls verifySignature or any crypto/fetch capability for image signatures", () => {
+        const source = readFileSync(
+            new URL("../../../src/attestation/checks/image.ts", import.meta.url),
+            "utf8",
+        );
+        expect(source).not.toMatch(/verifySignature/);
+        expect(source).not.toMatch(/crypto/i);
+        expect(source).not.toMatch(/fetch/i);
+        expect(source).not.toMatch(/\bawait\b|\basync\b/);
+    });
 });
