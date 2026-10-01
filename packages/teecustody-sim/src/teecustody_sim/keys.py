@@ -41,8 +41,15 @@ def _ensure_private_dir(path: Path) -> None:
 def _load_key(path: Path) -> rsa.RSAPrivateKey:
     if stat.S_IMODE(path.stat().st_mode) & _NOT_OWNER_BITS:
         raise ValueError("INSECURE_KEY_FILE")
-    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
-    if not isinstance(key, rsa.RSAPrivateKey):
+    try:
+        key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    except ValueError:
+        raise ValueError("INVALID_KEY_FILE") from None
+    if (
+        not isinstance(key, rsa.RSAPrivateKey)
+        or key.key_size != _RSA_BITS
+        or key.public_key().public_numbers().e != _RSA_PUBLIC_EXPONENT
+    ):
         raise ValueError("INVALID_KEY_FILE")
     return key
 

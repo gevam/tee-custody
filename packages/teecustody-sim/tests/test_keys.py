@@ -7,11 +7,12 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from teecustody_sim import DEV_SIGNER_ALGORITHM, SimKeys
 
@@ -183,3 +184,35 @@ def test_load_or_create_rejects_signer_count_before_touching_disk(
     with pytest.raises(ValueError, match=r"^INVALID_SIGNERS_REQUIRED$"):
         SimKeys.load_or_create(state_dir, count)
     assert not state_dir.exists()
+
+
+def _pem(key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey) -> bytes:
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(lambda: b"not a pem file\n", id="garbage"),
+        pytest.param(lambda: _pem(ec.generate_private_key(ec.SECP256R1())), id="ec-p256"),
+        pytest.param(
+            lambda: _pem(rsa.generate_private_key(public_exponent=65537, key_size=1024)),  # noqa: S505
+            id="rsa-1024",
+        ),
+        pytest.param(
+            lambda: _pem(rsa.generate_private_key(public_exponent=3, key_size=2048)),
+            id="rsa-e3",
+        ),
+    ],
+)
+def test_load_or_create_rejects_a_key_file_that_is_not_rsa_2048_e65537(
+    tmp_path: Path, key_files: dict[str, bytes], content: Callable[[], bytes]
+) -> None:
+    _seed_state(tmp_path, {**key_files, "signer-2.pem": content()})
+
+    with pytest.raises(ValueError, match=r"^INVALID_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path, 2)
