@@ -246,3 +246,22 @@ rules:
       - pattern-regex: eslint-disable
       - pattern-regex: "@ts-ignore|@ts-nocheck|@ts-expect-error"
       - pattern-regex: /\*\s*(?:eslint|globals?)\s
+
+  - id: tc-ts-no-ambient-globals
+    message: >-
+      Core declares no ambient globals (NFR-6): no triple-slash directives, no declare
+      global/module/namespace, and no declare var/let/const/function/class/enum except brand symbols
+      (`declare const $N: unique symbol`) and the platform.d.ts classes TextEncoder, TextDecoder, URL.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    # Test mode ignores `paths:`, so the platform.d.ts allowance is by name (the copy of
+    # platform.d.ts in .semgrep/tests must stay clean); declaring those names elsewhere grants nothing
+    # platform.d.ts does not already grant.
+    pattern-either:
+      - pattern-regex: (?m)^[ \t]*///[ \t]*<reference
+      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:global|module|namespace)\b
+      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:var|let|function|enum)\b
+      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+const\s+(?!\w+\s*:\s*unique\s+symbol\s*;)
+      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:abstract\s+)?class\s+(?!(?:TextEncoder|TextDecoder|URL)\b)
