@@ -173,12 +173,12 @@ def _read_state_bytes(path: Path) -> bytes:
 
 def _load_state(state_dir: Path) -> tuple[_State, SimKeys]:
     data = _read_state_bytes(state_dir / _STATE_FILE_NAME)
+    if len(data) > _MAX_STATE_BYTES:
+        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
     try:
         document: object = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED) from None
-    if len(data) > _MAX_STATE_BYTES:
-        raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
     state = _parse_state(document)
     return state, SimKeys.load_or_create(state_dir, state.signers_required)
 

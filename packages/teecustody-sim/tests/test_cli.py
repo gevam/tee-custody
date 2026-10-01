@@ -895,7 +895,7 @@ def test_a_malformed_state_file_is_state_not_initialised(
     assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
 
 
-@pytest.mark.parametrize("text", ["", "{", "[]", '"state"', "\xff", "{}" + " " * 70000])
+@pytest.mark.parametrize("text", ["", "{", "[]", '"state"', "\xff"])
 def test_a_state_file_that_is_not_a_json_object_is_state_not_initialised(
     cli: Cli, state_dir: Path, tmp_path: Path, text: str
 ) -> None:
@@ -975,3 +975,17 @@ def test_up_interrupted_by_ctrl_c_stops_the_simulator_and_exits_130_without_a_tr
     assert (code, err) == (130, "")
     assert out.startswith("issuer=")
     assert not (state.resolve() / "launcher" / "teeserver.sock").exists()
+
+
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_valid_state_padded_past_64_kib_is_state_not_initialised(
+    cli: Cli, state_dir: Path, tmp_path: Path, where: str
+) -> None:
+    copy, document = _state_copy(state_dir, tmp_path)
+    padding = " " * 65536
+    text = json.dumps(document)
+    (copy / "sim-state.json").write_text(padding + text if where == "before" else text + padding)
+
+    code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
