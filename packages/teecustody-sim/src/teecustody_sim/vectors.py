@@ -10,7 +10,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from teecustody.wire import PROTO, CanonicalValue, encode
-from teecustody_sim.alterations import JsonValue
+from teecustody_sim.alterations import JsonValue, NamedCase
+from teecustody_sim.cases import NEGATIVE_CASES
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
     DEFAULT_SIGNERS_REQUIRED,
@@ -63,16 +64,33 @@ def _json_bytes(value: JsonValue) -> bytes:
     return _json_text(value).encode()
 
 
-def _case(case_id: str, token: str) -> dict[str, CanonicalValue]:
-    return {
-        "id": case_id,
-        "token": token,
-        "expect": "accept",
-        "check": "none",
-        "error_code": "none",
-        "altered": [],
-        "debug_event": False,
-    }
+def _cases(minter: TokenMinter, nonce: str, now: int) -> list[CanonicalValue]:
+    """`valid`, then every §G negative case in catalog order, each minted by the simulator."""
+    cases: list[CanonicalValue] = [
+        {
+            "id": "valid",
+            "token": minter.mint(_AUDIENCE, [nonce], now),
+            "expect": "accept",
+            "check": "none",
+            "error_code": "none",
+            "altered": [],
+            "debug_event": False,
+        }
+    ]
+    for row in NEGATIVE_CASES:
+        altered: list[CanonicalValue] = list(row.altered)
+        cases.append(
+            {
+                "id": row.case_id,
+                "token": minter.mint(_AUDIENCE, [nonce], now, NamedCase(row.case_id)),
+                "expect": "reject",
+                "check": row.check,
+                "error_code": row.error_code,
+                "altered": altered,
+                "debug_event": row.debug_event,
+            }
+        )
+    return cases
 
 
 def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
@@ -107,7 +125,7 @@ def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
             _DISCOVERY_URL: _json_bytes(_DISCOVERY_DOCUMENT),
             _JWKS_URL: _json_bytes(keys.issuer_jwks()),
         },
-        "cases": [_case("valid", minter.mint(_AUDIENCE, [nonce], now))],
+        "cases": _cases(minter, nonce, now),
     }
     path = out_dir / "attestation" / "suite.cbor"
     path.parent.mkdir(parents=True, exist_ok=True)
