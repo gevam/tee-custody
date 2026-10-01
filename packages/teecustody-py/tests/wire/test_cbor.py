@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from teecustody.wire import DecodeLimits, decode, encode
+from teecustody.wire import DecodeLimits, WireError, WireErrorCode, decode, encode
 
 VECTORS_PATH = (
     Path(__file__).resolve().parents[4] / "spec" / "vectors" / "wire" / "canonical-cbor.json"
@@ -56,3 +56,14 @@ def test_valid_vector_round_trips_to_identical_bytes_with_the_expected_type(
     value = decode(data, vector_limits)
     assert type(value) is _expected_type(data)
     assert encode(value) == data
+
+
+@pytest.mark.parametrize("case", _cases("invalid"), ids=_ids("invalid"))
+def test_invalid_vector_fails_closed_with_exactly_its_code_and_no_input_in_the_text(
+    case: dict[str, str], vector_limits: DecodeLimits
+) -> None:
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex(case["hex"]), vector_limits)
+    assert caught.value.code is WireErrorCode(case["error"])
+    assert str(caught.value) == case["error"]
+    assert caught.value.args == (case["error"],)
