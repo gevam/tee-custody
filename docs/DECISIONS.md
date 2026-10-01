@@ -469,3 +469,23 @@ Participants: Orchestrator
 **Revisit when:** Token spend becomes a constraint, or concurrent merges cause conflicts.
 
 **Follow-ups:** —
+
+## D-024 — T-05 third review round, scoped (INC-1, 2026-10-01)
+
+Type: gate-routing
+Chair / decider: Tech Lead (escalation at review.max_rounds)
+Participants: Code Reviewer, Security Reviewer, Orchestrator
+
+**Options considered**
+1. Authorise one round 3 limited to the propagate=False test (basicConfig before import, SENTINEL absent) plus re-check of e625149 by both reviewers.
+2. Other resolution.
+
+**Decision:** Option 1.
+
+**Reasoning:** Single Medium test gap with a known, local fix; implementation already correct. Further changes are not permitted in round 3.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Retro: review rounds frequently find test-gap Mediums (mutation survivors); consider requiring engineers to run their own revert checks per criterion before reporting DONE.
