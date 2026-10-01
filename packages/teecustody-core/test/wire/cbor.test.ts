@@ -85,3 +85,18 @@ describe("decodeCanonical bounds", () => {
         expect(decoded).toEqual(new Uint8Array([1, 2, 3, 4]));
     });
 });
+
+describe("decodeCanonical limits validation", () => {
+    it.each([
+        ["maxBytes 0", { maxBytes: 0, maxDepth: 1, maxItems: 1 }],
+        ["maxDepth 1.5", { maxBytes: 1024, maxDepth: 1.5, maxItems: 64 }],
+        ["maxBytes NaN", { maxBytes: Number.NaN, maxDepth: 4, maxItems: 64 }],
+        ["maxDepth Infinity", { maxBytes: 1024, maxDepth: Infinity, maxItems: 64 }],
+        ["maxItems -1", { maxBytes: 1024, maxDepth: 4, maxItems: -1 }],
+        ["maxItems 2^53", { maxBytes: 1024, maxDepth: 4, maxItems: 2 ** 53 }],
+    ])("throws RangeError(INVALID_LIMITS) for %s before parsing (criterion 9)", (_name, limits) => {
+        expect(() => decodeCanonical(fromHex("00"), limits)).toThrow(
+            new RangeError("INVALID_LIMITS"),
+        );
+    });
+});

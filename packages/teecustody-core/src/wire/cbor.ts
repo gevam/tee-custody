@@ -216,8 +216,19 @@ function sameBytes(a: Bytes, b: Bytes): boolean {
     return compareBytes(a, b) === 0;
 }
 
+function isPositiveSafeInteger(value: number): boolean {
+    return Number.isSafeInteger(value) && value > 0;
+}
+
 // ints: number if safe, else bigint
 export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalValue {
+    if (
+        !isPositiveSafeInteger(limits.maxBytes) ||
+        !isPositiveSafeInteger(limits.maxDepth) ||
+        !isPositiveSafeInteger(limits.maxItems)
+    ) {
+        throw new RangeError("INVALID_LIMITS");
+    }
     if (data.length > limits.maxBytes) {
         fail("TOO_LARGE");
     }
