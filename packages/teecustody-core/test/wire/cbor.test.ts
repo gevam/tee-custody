@@ -1,8 +1,12 @@
 // T-09 unit criteria for the canonical CBOR codec (spec/wire/README.md rules 1-5, SR-3, SR-11).
 import { describe, expect, it } from "vitest";
 
-import { encodeCanonical } from "../../src/wire/cbor.js";
-import { WireError, type CanonicalValue } from "../../src/wire/types.js";
+import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
+import { WireError, type CanonicalValue, type DecodeLimits } from "../../src/wire/types.js";
+
+function fromHex(hex: string): Uint8Array {
+    return new Uint8Array(Buffer.from(hex, "hex"));
+}
 
 function toHex(bytes: Uint8Array): string {
     return Buffer.from(bytes).toString("hex");
@@ -55,5 +59,19 @@ describe("encodeCanonical", () => {
 
     it("encodes true as f5 (criterion 4)", () => {
         expect(toHex(encodeCanonical(true))).toBe("f5");
+    });
+});
+
+describe("decodeCanonical bounds", () => {
+    it("rejects 10,000 nested arrays at maxDepth 16 without exhausting the call stack (criterion 5)", () => {
+        const limits: DecodeLimits = { maxBytes: 20_000, maxDepth: 16, maxItems: 20_000 };
+        const input = fromHex("81".repeat(10_000) + "00");
+        expect(wireErrorCode(() => decodeCanonical(input, limits))).toBe("LIMIT_EXCEEDED");
+    });
+
+    it("decodes and re-encodes 100,000 nested arrays when the limits allow it (no recursion)", () => {
+        const limits: DecodeLimits = { maxBytes: 200_000, maxDepth: 200_000, maxItems: 200_000 };
+        const hex = "81".repeat(100_000) + "00";
+        expect(toHex(encodeCanonical(decodeCanonical(fromHex(hex), limits)))).toBe(hex);
     });
 });
