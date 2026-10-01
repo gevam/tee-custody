@@ -61,7 +61,7 @@ class ByteWriter {
 function compareBytes(a: Bytes, b: Bytes): number {
     const shared = Math.min(a.length, b.length);
     for (let index = 0; index < shared; index++) {
-        const difference = (a[index] ?? 0) - (b[index] ?? 0);
+        const difference = (a[index] as number) - (b[index] as number);
         if (difference !== 0) {
             return difference;
         }
@@ -279,7 +279,7 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
         if (
             major !== MAJOR_SIMPLE &&
             info >= 24 &&
-            argument < (SHORTEST_MINIMUM[info - 24] ?? 0n)
+            argument < (SHORTEST_MINIMUM[info - 24] as bigint)
         ) {
             fail("NONCANONICAL");
         }
