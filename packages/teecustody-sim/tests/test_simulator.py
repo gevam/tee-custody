@@ -552,3 +552,21 @@ def test_no_pem_private_jwk_member_or_token_reaches_logs_or_non_token_responses(
         assert b"cHJpdmF0ZQ" not in text
         for token in tokens:
             assert token not in text
+
+
+@pytest.mark.usefixtures("fakes")
+def test_pre_existing_files_end_with_the_contract_modes(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    config.state_dir.mkdir(mode=0o700)
+    state_file = config.state_dir / "sim-state.json"
+    state_file.write_text("{}")
+    state_file.chmod(0o644)
+    config.token_file_path.write_text("old")
+    config.token_file_path.chmod(0o600)
+
+    with Simulator(config, environ={}, clock=fixed_clock):
+        pass
+
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(config.token_file_path.stat().st_mode) == 0o644
+    assert json.loads(state_file.read_text())["state_version"] == 1
