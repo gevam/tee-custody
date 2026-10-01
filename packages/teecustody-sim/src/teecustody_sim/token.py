@@ -197,7 +197,12 @@ def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alter
         path, separator, value = text.partition("=")
         if not separator:
             raise ValueError("INVALID_ALTERATION")
-        return AlterClaim(_parse_claim_path(path), _parse_claim_value(value))
+        claim_value = _parse_claim_value(value)
+        try:
+            _json_bytes(claim_value)
+        except UnicodeEncodeError:
+            raise ValueError("INVALID_ALTERATION") from None
+        return AlterClaim(_parse_claim_path(path), claim_value)
     if kind == "drop":
         return DropClaim(_parse_claim_path(text))
     if kind == "case" and text in _CASE_IDS:

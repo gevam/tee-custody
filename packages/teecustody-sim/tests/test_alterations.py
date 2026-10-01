@@ -465,3 +465,19 @@ def test_entry_editing_case_without_listed_signatures_is_rejected(
 def test_signature_cases_keep_the_valid_payload_bytes(minter: TokenMinter, case_id: str) -> None:
     valid = minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
     assert minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id)).split(".")[1] == valid
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "aud=\ud800",
+        "aud=x\udcff",
+        'aud="\\ud800"',
+        'submods.container.args=["\\udfff"]',
+        'submods.container.env={"\\ud800":"v"}',
+    ],
+    ids=["raw", "raw-surrogateescape", "json-escape", "json-in-array", "json-in-key"],
+)
+def test_parse_alteration_rejects_values_not_encodable_as_utf8(text: str) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
+        parse_alteration("alter", text)
