@@ -1,0 +1,18 @@
+attestation-vector-suite = {
+  "suite": "teecustody-attestation-vectors", "suite_version": 1, "proto": "tee-chan-v1",
+  "generated_at": uint,                  ; Unix s
+  "verify_at_ms": uint,                  ; = generated_at * 1000; client clock for every case
+  "identity_public_key": bstr .size 32,  ; raw Ed25519 IK_pub; SHA-256 of it is the expected nonce
+  "profile_json": tstr,                  ; development trust profile (docs/tasks/INC-1/API.md §E)
+  "production_profile_json": tstr,       ; production-shaped fixture profile, fixture keys
+  "http": { + tstr => bstr },            ; exact URL -> HTTP 200 body for the test Fetcher
+  "cases": [ + vector-case ]
+}
+vector-case = {
+  "id": tstr, "token": tstr, "expect": "accept" / "reject",
+  "check": check-id / "none", "error_code": error-code / "none",   ; "none" iff expect = "accept"
+  "altered": [ * tstr ],                 ; dotted claim paths differing from case "valid"
+  "debug_event": bool
+}
+check-id = "signature" / "issuer" / "audience" / "time" / "nonce" / "platform" / "support_attributes" / "image" / "launch_config"
+error-code = "MALFORMED" / "UNTRUSTED_SIGNER" / "CLAIM_MISSING" / "CLAIM_MISMATCH" / "NOT_YET_VALID" / "EXPIRED" / "UNSUPPORTED_ALGORITHM"
