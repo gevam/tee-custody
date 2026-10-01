@@ -69,6 +69,13 @@ through monkeypatched tests; their contracts say so.
   "Stub convention"). The named later-wave task owns it from that wave on and may change **function bodies and
   private helpers only**. That is the only way a later wave touches a Wave-0 file. Final Wave-0 files (types,
   ports, constants, helpers, `index.ts`, package `__init__.py`) are never modified in INC-1.
+- **Stub-throw assertions removed (2026-10-01, Tech Lead Wave-0 follow-up on main; T-10 CONTRACT_ISSUE,
+  Orchestrator ruling).** The `STUBS` tables and their "throws `NOT_IMPLEMENTED: T-nn`" /
+  `NotImplementedError('T-nn')` tests were deleted from `packages/teecustody-core/test/api-surface.test.ts`,
+  `packages/teecustody-py/tests/test_api_surface.py` and `packages/teecustody-sim/tests/test_api_surface.py`
+  (with fixtures used only by them). They would turn red as soon as any Wave-1+ task implemented its stub,
+  and no task owns those files. Every export, signature, type, enum, constant and dataclass pin is unchanged.
+  Expected-red behaviour stays covered by the contract and acceptance tests listed below.
 - `spec/wire/**` and `spec/vectors/**` belong to T-03 and T-18 only. The Orchestrator routes both diffs to
   the human before merge (`framework.yaml` → `escalation.always_human`).
 
