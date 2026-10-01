@@ -8,6 +8,7 @@
 - T-03: Canonical CBOR wire binding and vector harnesses
 - T-04: Python canonical CBOR codec (`teecustody.wire`)
 - T-10: Token and trust-profile parsing with SR-1 checks
+- T-11: §6.1 signature verification and §6.2 issuer checks
 - T-12: §6.3–§6.7 claim checks (audience, time, nonce, platform, support attributes)
 - T-13: §6.8 image check (digest allow-list and signer threshold over Google-verified key_ids)
 - QA: Acceptance tests for INC-1 (expected red)
