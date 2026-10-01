@@ -1,8 +1,24 @@
-// §6.8 image check per D-016 (ARCHITECTURE "Image check"). Stub → T-13.
+// §6.8 image check per D-016 (ARCHITECTURE "Image check").
+import { getPath, isJsonObject, type JsonValue } from "../../json.js";
 import type { ParsedToken, TrustProfile } from "../types.js";
 
-// Sync; no crypto, no fetch. Returns the distinct counted key_ids sorted ascending.
-// Signature bytes are never decoded or verified.
+const CONTAINER = ["submods", "container"] as const;
+
+function isJsonArray(v: JsonValue | undefined): v is readonly JsonValue[] {
+    return Array.isArray(v);
+}
+
+// Synchronous and offline. Returns the distinct counted key_ids sorted ascending.
+// Signature bytes are never decoded or verified (D-016).
 export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
-    throw new Error("NOT_IMPLEMENTED: T-13");
+    const signatures = getPath(t.claims, [...CONTAINER, "image_signatures"]);
+    const counted: string[] = [];
+    if (isJsonArray(signatures)) {
+        for (const entry of signatures) {
+            if (isJsonObject(entry) && typeof entry["key_id"] === "string") {
+                counted.push(entry["key_id"]);
+            }
+        }
+    }
+    return counted.sort();
 }
