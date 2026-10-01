@@ -292,6 +292,7 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
         if (
             major !== MAJOR_SIMPLE &&
             info >= 24 &&
+            info <= 27 &&
             argument < (SHORTEST_MINIMUM[info - 24] as bigint)
         ) {
             fail("NONCANONICAL");

@@ -290,3 +290,34 @@ describe("rule-4 re-encode backstop", () => {
         expect(decode).toThrow(/^NONCANONICAL$/u);
     });
 });
+
+describe("rule-5 per-header check order", () => {
+    it.each([
+        ["(f) array count beyond input before a later tag", "85c0", VECTOR_LIMITS, "MALFORMED"],
+        [
+            "(f) array count beyond input before a later undefined",
+            "83f7",
+            VECTOR_LIMITS,
+            "MALFORMED",
+        ],
+        [
+            "(f) string length beyond input before the map's key-order check",
+            "a2616201616142",
+            VECTOR_LIMITS,
+            "MALFORMED",
+        ],
+        ["(e) depth before (f) sizes", "8181818185", VECTOR_LIMITS, "LIMIT_EXCEEDED"],
+        [
+            "map keys count toward depth, before UTF-8 validity",
+            "a161ff00",
+            { maxBytes: 1024, maxDepth: 1, maxItems: 64 },
+            "LIMIT_EXCEEDED",
+        ],
+        ["indefinite byte string", "5f", VECTOR_LIMITS, "NONCANONICAL"],
+        ["indefinite text string", "7f", VECTOR_LIMITS, "NONCANONICAL"],
+        ["indefinite array", "9f", VECTOR_LIMITS, "NONCANONICAL"],
+        ["indefinite map", "bf", VECTOR_LIMITS, "NONCANONICAL"],
+    ])("%s: %s", (_name, hex, limits, code) => {
+        expect(wireErrorCode(() => decodeCanonical(fromHex(hex), limits))).toBe(code);
+    });
+});
