@@ -1044,3 +1044,32 @@ def test_up_validates_the_launch_and_mount_before_inspecting_or_writing_state(
     assert (code, out, err) == (2, "", expected_err)
     assert fake_runner.calls == []
     assert not state.exists()
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize(
+    ("host_env", "flags"),
+    [
+        ({"GOOGLE_APPLICATION_CREDENTIALS": "/secret/path/key.json"}, ()),
+        ({}, ("--env", "KEY=projects/p/locations/l/keyRings/r/cryptoKeys/k")),
+    ],
+)
+def test_up_refuses_to_run_next_to_production_configuration(
+    cli: Cli,
+    short_dir: Path,
+    fake_runner: FakeContainerRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    host_env: dict[str, str],
+    flags: tuple[str, ...],
+) -> None:
+    for name, value in host_env.items():
+        monkeypatch.setenv(name, value)
+    state = short_dir / "state"
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE,
+                         "--issuer-port", "0", *flags)  # fmt: skip
+
+    assert (code, out, err) == (2, "", "PRODUCTION_CREDENTIALS_PRESENT\n")
+    assert [call[1] for call in fake_runner.calls] == ["image"]
+    assert not (state / "sim-state.json").exists()
+    assert not (state / "launcher" / "teeserver.sock").exists()
