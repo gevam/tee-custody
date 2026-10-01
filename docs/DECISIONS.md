@@ -430,3 +430,23 @@ Participants: Tech Lead, QA Engineer
 **Revisit when:** —
 
 **Follow-ups:** Retro: Release Engineer stashed an unrelated uncommitted edit (T-09.md) despite an explicit "never stash" instruction; restored by the Orchestrator (04b5267). Retro: eslint.config.js committed before its test (T-02, accepted as tooling).
+
+## D-022 — Duplicate-encoding signer keys handled at profile generation, not in the client (INC-1, 2026-10-01)
+
+Type: refactor-vs-workaround
+Chair / decider: Orchestrator
+Participants: Security Reviewer, Tech Lead
+
+**Options considered**
+1. Reject non-canonical and duplicate signer keys where profiles are generated (T-17 dev generator now; INC-5 production `teecustody-profile` tool), leaving the client's §6.8 count over distinct profile key_ids (D-016) unchanged.
+2. Route to Architect to give Core key material and async crypto in `checkImage` so it can deduplicate by key.
+
+**Decision:** Option 1.
+
+**Reasoning:** Under D-016 the profile carries key_id fingerprints only; inflating the threshold requires a profile that lists one key under two encodings. Profiles are produced only by the generator/tooling and every signer-set change is human-approved (always_human). Guarding the single producer is a structural control; option 2 changes a frozen Wave-0 API mid-wave for a threat already gated by human approval.
+
+**Dissent:** none
+
+**Revisit when:** Profiles can be produced other than through the project tooling.
+
+**Follow-ups:** T-17 criterion 2a (`NONCANONICAL_SIGNER_SPKI`, `DUPLICATE_SIGNER_KEY`) — Tech Lead amendment. Architect: add the same rejection as an acceptance criterion of the INC-5 production profile tool in INCREMENTS.md at next touch (BACKLOG B-05 until then).
