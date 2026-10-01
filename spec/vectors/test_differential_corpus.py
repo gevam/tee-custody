@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from teecustody.wire import DecodeLimits, WireError, decode
+from teecustody.wire import DecodeLimits, WireError, decode, encode
 
 OUTCOMES = frozenset(
     {"accept", "TOO_LARGE", "MALFORMED", "NONCANONICAL", "UNSUPPORTED_TYPE", "LIMIT_EXCEEDED"}
@@ -58,10 +58,22 @@ def test_corpus_has_enough_cases_with_unique_ids(differential_corpus: dict[str, 
 def test_python_codec_reproduces_every_recorded_outcome(
     differential_corpus: dict[str, Any], corpus_limits: DecodeLimits
 ) -> None:
-    limits = corpus_limits
     mismatches = [
         (case["id"], case["outcome"], actual)
         for case in differential_corpus["cases"]
-        if (actual := _outcome(bytes.fromhex(case["hex"]), limits)) != case["outcome"]
+        if (actual := _outcome(bytes.fromhex(case["hex"]), corpus_limits)) != case["outcome"]
     ]
     assert mismatches == []
+
+
+def test_accepted_cases_re_encode_to_identical_bytes(
+    differential_corpus: dict[str, Any], corpus_limits: DecodeLimits
+) -> None:
+    """Checked here, not left to the codec's own re-encode check (rule 4)."""
+    accepted = [
+        bytes.fromhex(case["hex"])
+        for case in differential_corpus["cases"]
+        if case["outcome"] == "accept"
+    ]
+    assert accepted
+    assert [data.hex() for data in accepted if encode(decode(data, corpus_limits)) != data] == []
