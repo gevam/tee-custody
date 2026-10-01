@@ -74,6 +74,7 @@ async function fetchJsonObject(
 }
 
 // ADR 0009 rule 3: the discovery issuer matches the profile; jwks_uri is on the profile's JWKS origin.
+// Returns the canonical href that was checked, so the Fetcher never sees the raw string.
 function jwksUriOf(discovery: JsonObject, p: TrustProfile): string {
     const jwksUri = own(discovery, "jwks_uri");
     if (own(discovery, "issuer") !== p.issuer || typeof jwksUri !== "string") {
@@ -88,7 +89,7 @@ function jwksUriOf(discovery: JsonObject, p: TrustProfile): string {
     if (url.username !== "" || url.password !== "" || url.origin !== p.jwks_origin) {
         return reject("UNTRUSTED_SIGNER");
     }
-    return jwksUri;
+    return url.href;
 }
 
 // ADR 0009 rule 4 candidate filter: exact kid, RSA, signing use, RS256 or no alg, string n and e.

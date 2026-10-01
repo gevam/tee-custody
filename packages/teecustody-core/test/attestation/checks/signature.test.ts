@@ -686,3 +686,22 @@ describe("checkSignature: Object.prototype pollution is ignored", () => {
         ).resolves.toBeUndefined();
     });
 });
+
+describe("checkSignature: the JWKS is fetched at the parsed jwks_uri (review round 1, finding 3)", () => {
+    it("passes the canonical URL href to the Fetcher, never the raw jwks_uri string", async () => {
+        const raw = "HTTPS://WWW.GoogleAPIs.com:443/keys/../service_accounts/./jwk";
+        const canonical = `${JWKS_ORIGIN}/service_accounts/jwk`;
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const fetcher = counting(
+            mapFetcher(
+                new Map([
+                    [DISCOVERY_URL, discoveryWith({ jwks_uri: raw })],
+                    [raw, jwksWith()],
+                    [canonical, jwksWith(jwkEntry(issuerKey.jwk))],
+                ]),
+            ),
+        );
+        await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
+        expect(fetcher.calls).toEqual([DISCOVERY_URL, canonical]);
+    });
+});
