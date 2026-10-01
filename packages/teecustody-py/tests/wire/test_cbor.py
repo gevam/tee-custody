@@ -105,3 +105,11 @@ def test_encode_rejects_values_outside_the_data_model(value: object) -> None:
 
 def test_encode_true_as_the_simple_value_not_the_integer_one() -> None:
     assert encode(True) == bytes.fromhex("f5")
+
+
+def test_ten_thousand_nested_arrays_hit_the_depth_limit_without_recursion() -> None:
+    deep = bytes.fromhex("81" * 10_000 + "00")
+    limits = DecodeLimits(max_bytes=len(deep), max_depth=16, max_items=len(deep))
+    with pytest.raises(WireError) as caught:
+        decode(deep, limits)
+    assert caught.value.code is WireErrorCode.LIMIT_EXCEEDED
