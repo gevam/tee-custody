@@ -760,6 +760,18 @@ ALLOWED: dict[str, tuple[dict[str, str], LaunchConfig]] = {
     "cloudsdk-core-project": ({"CLOUDSDK_CORE_PROJECT": "dev-proj"}, LAUNCH),
     **{f"sim-topic-{place}": case for place, case in _placements(SIM_TOPIC).items()},
     **{f"projects-alone-{place}": case for place, case in _placements("projects/p").items()},
+    # T-19 criterion 2: namespaced lists, JSON without production names, and undecodable escapes.
+    **{
+        f"{label}-{place}": case
+        for label, value in {
+            "sim-list": f"{SIM_A},projects/teecustody-sim.invalid/subscriptions/c",
+            "sim-json": f'["{SIM_A}"]',
+            "json-scalars": '{"n":1,"b":true,"z":null}',
+            "bad-percent": "%zz",
+            "json-numbers": "[1,2]",
+        }.items()
+        for place, case in _placements(value).items()
+    },
 }
 
 
