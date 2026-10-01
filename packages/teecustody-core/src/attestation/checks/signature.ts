@@ -1,6 +1,6 @@
 // §6.1 token signature check; ADR 0009 rules 2–5.
 import { utf8DecodeStrict } from "../../encoding.js";
-import type { RsaPublicJwk } from "../../capabilities.js";
+import type { FetchResponse, RsaPublicJwk } from "../../capabilities.js";
 import { isJsonObject, type JsonObject, type JsonValue } from "../../json.js";
 import {
     AttestationError,
@@ -45,12 +45,17 @@ async function fetchJsonObject(
     url: string,
     maxBytes: number,
 ): Promise<JsonObject> {
+    let response: FetchResponse;
+    try {
+        response = await deps.fetcher.get(url);
+    } catch {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    if (response.status !== 200 || response.body.length > maxBytes) {
+        return reject("UNTRUSTED_SIGNER");
+    }
     let parsed: JsonValue;
     try {
-        const response = await deps.fetcher.get(url);
-        if (response.status !== 200 || response.body.length > maxBytes) {
-            return reject("UNTRUSTED_SIGNER");
-        }
         parsed = JSON.parse(utf8DecodeStrict(response.body)) as JsonValue;
     } catch {
         return reject("UNTRUSTED_SIGNER");
