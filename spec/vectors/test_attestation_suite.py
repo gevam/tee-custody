@@ -131,6 +131,25 @@ CATALOG: tuple[CatalogRow, ...] = (
     CatalogRow("env_altered", "launch_config", "CLAIM_MISMATCH", ("submods.container.env",), False),
     CatalogRow("debug_bad_signature", "signature", "UNTRUSTED_SIGNER", ("dbgstat",), False),
     CatalogRow("key_id_duplicated", "image", "UNTRUSTED_SIGNER", (IMAGE_SIGNATURES,), False),
+    CatalogRow("hwmodel_missing", "platform", "CLAIM_MISSING", ("hwmodel",), False),
+    CatalogRow("swname_missing", "platform", "CLAIM_MISSING", ("swname",), False),
+    CatalogRow("secboot_missing", "platform", "CLAIM_MISSING", ("secboot",), False),
+    CatalogRow(
+        "support_attributes_missing",
+        "support_attributes",
+        "CLAIM_MISSING",
+        ("submods.confidential_space.support_attributes",),
+        False,
+    ),
+    CatalogRow(
+        "digest_missing", "image", "CLAIM_MISSING", ("submods.container.image_digest",), False
+    ),
+    CatalogRow("signatures_missing", "image", "CLAIM_MISSING", (IMAGE_SIGNATURES,), False),
+    CatalogRow(
+        "args_missing", "launch_config", "CLAIM_MISSING", ("submods.container.args",), False
+    ),
+    CatalogRow("env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False),
+    CatalogRow("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
 )
 CATALOG_IDS = [row.id for row in CATALOG]
 
