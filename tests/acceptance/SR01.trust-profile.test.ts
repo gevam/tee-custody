@@ -64,10 +64,20 @@ describe("SR-1 (i) given a malformed signer entry", () => {
                 { key_id: KEY_A, algorithm: "RSASSA_PSS_SHA256" },
             ],
         ],
-        ["algorithm outside set", [{ key_id: KEY_A, algorithm: "HMAC_SHA256" }]],
         ["not an array", { key_id: KEY_A }],
     ])("rejects %s", (_n, signers) => {
         expect(rejected(withSigners(signers)).code).toBe("INVALID_PROFILE");
+    });
+});
+
+describe("SR-1 (i) given a signer algorithm outside the allowed set", () => {
+    it("rejects with UNSUPPORTED_ALGORITHM (API.md TrustProfileErrorCode)", () => {
+        const input = {
+            ...dev(),
+            signer_keys: [{ key_id: KEY_A, algorithm: "HMAC_SHA256" }],
+            signers_required: 1,
+        };
+        expect(rejected(input).code).toBe("UNSUPPORTED_ALGORITHM");
     });
 });
 
