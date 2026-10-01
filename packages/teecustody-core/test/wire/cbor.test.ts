@@ -121,3 +121,48 @@ describe("allocation guard (criterion 10, ADR 0010)", () => {
         );
     });
 });
+
+describe("integer boundaries (criterion 11, SR-3)", () => {
+    it("decodes 2^53 - 1 as a number and 2^53, 2^53 + 1 as exact bigints", () => {
+        expect(decodeCanonical(fromHex("1b001fffffffffffff"), VECTOR_LIMITS)).toBe(
+            9007199254740991,
+        );
+        expect(decodeCanonical(fromHex("1b0020000000000000"), VECTOR_LIMITS)).toBe(
+            9007199254740992n,
+        );
+        expect(decodeCanonical(fromHex("1b0020000000000001"), VECTOR_LIMITS)).toBe(
+            9007199254740993n,
+        );
+    });
+
+    it.each([9007199254740992n, 2n ** 53n - 1n])("encodes %s and round-trips it", (value) => {
+        const encoded = encodeCanonical(value);
+        expect(encodeCanonical(decodeCanonical(encoded, VECTOR_LIMITS))).toEqual(encoded);
+        expect(BigInt(decodeCanonical(encoded, VECTOR_LIMITS) as number | bigint)).toBe(value);
+    });
+});
+
+describe("prototype safety (criterion 13)", () => {
+    it("decodes a __proto__ key into a Map entry and leaves Object.prototype alone", () => {
+        const prototypeKeys = Object.getOwnPropertyNames(Object.prototype);
+        const decoded = decodeCanonical(fromHex("a1695f5f70726f746f5f5f00"), VECTOR_LIMITS);
+        expect(decoded).toBeInstanceOf(Map);
+        const entries = decoded as ReadonlyMap<string, CanonicalValue>;
+        expect([...entries.keys()]).toEqual(["__proto__"]);
+        expect(entries.get("__proto__")).toBe(0);
+        expect(Object.getOwnPropertyNames(Object.prototype)).toEqual(prototypeKeys);
+        expect(Object.getPrototypeOf(entries)).toBe(Map.prototype);
+        expect(toHex(encodeCanonical(decoded))).toBe("a1695f5f70726f746f5f5f00");
+    });
+});
+
+describe("64-bit arguments (criterion 14, D-020)", () => {
+    it.each([
+        ["5b0000000100000000", "MALFORMED"],
+        ["7b0000000100000000", "MALFORMED"],
+        ["9b0000000100000000", "LIMIT_EXCEEDED"],
+        ["bb0000000100000000", "LIMIT_EXCEEDED"],
+    ])("reads the full 64-bit argument of %s (%s, not its low 32 bits)", (hex, code) => {
+        expect(wireErrorCode(() => decodeCanonical(fromHex(hex), VECTOR_LIMITS))).toBe(code);
+    });
+});
