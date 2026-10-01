@@ -361,9 +361,7 @@ export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalVal
                 if (reader.remaining !== 0) {
                     fail("MALFORMED");
                 }
-                // Rule 4 backstop: the scan above already enforces every canonical-form rule, so a
-                // mismatch here is unreachable unless that scan regresses.
-                /* v8 ignore next 3 */
+                // Rule 4: re-encode and require byte equality; a backstop against scan regressions.
                 if (!sameBytes(encodeCanonical(value), data)) {
                     fail("NONCANONICAL");
                 }

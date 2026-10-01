@@ -1,5 +1,7 @@
 // T-09 unit criteria for the canonical CBOR codec (spec/wire/README.md rules 1-5, SR-3, SR-11).
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type * as EncodingModule from "../../src/encoding.js";
 
 import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue, type DecodeLimits } from "../../src/wire/types.js";
@@ -261,5 +263,30 @@ describe("shared depth ceiling of 64 (criterion 15, SR-3)", () => {
 
     it("refuses 100,000 nested arrays with LIMIT_EXCEEDED and no RangeError", () => {
         expect(wireErrorCode(() => encodeCanonical(nested(100_000)))).toBe("LIMIT_EXCEEDED");
+    });
+});
+
+describe("rule-4 re-encode backstop", () => {
+    afterEach(() => {
+        vi.doUnmock("../../src/encoding.js");
+        vi.resetModules();
+    });
+
+    it("rejects input whose materialised value does not re-encode to the input bytes", async () => {
+        vi.resetModules();
+        // A lossy text decoder (drops a leading U+FEFF) stands in for a scan regression.
+        vi.doMock("../../src/encoding.js", async () => {
+            const actual = await vi.importActual<typeof EncodingModule>("../../src/encoding.js");
+            return {
+                ...actual,
+                utf8DecodeStrict: (bytes: Uint8Array) =>
+                    actual.utf8DecodeStrict(bytes).replace(/^\uFEFF/u, ""),
+            };
+        });
+        const isolated = await import("../../src/wire/cbor.js");
+        const isolatedTypes = await import("../../src/wire/types.js");
+        const decode = (): unknown => isolated.decodeCanonical(fromHex("63efbbbf"), VECTOR_LIMITS);
+        expect(decode).toThrow(isolatedTypes.WireError);
+        expect(decode).toThrow(/^NONCANONICAL$/u);
     });
 });
