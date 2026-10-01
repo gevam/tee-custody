@@ -103,6 +103,29 @@ class Generator {
     }
 }
 
+const MAX_DEPTH = 64;
+
+// Rule-5 depth: top level 1; array elements and map values are their container's depth + 1.
+function depthOf(value: CanonicalValue): number {
+    if (value instanceof Map) {
+        const children = [...(value as ReadonlyMap<string, CanonicalValue>).values()];
+        return 1 + Math.max(0, ...children.map(depthOf));
+    }
+    if (Array.isArray(value)) {
+        return 1 + Math.max(0, ...(value as readonly CanonicalValue[]).map(depthOf));
+    }
+    return 1;
+}
+
+// Wraps a value in single-entry arrays and maps up to `layers` deep, reaching the shared ceiling.
+function deepen(value: CanonicalValue, layers: number, generator: Generator): CanonicalValue {
+    let current = value;
+    for (let layer = 0; layer < layers; layer++) {
+        current = generator.int(2) === 0 ? [current] : new Map([[generator.text(), current]]);
+    }
+    return current;
+}
+
 // Rebuilds a value with every map's insertion order reversed; encoding must not depend on it.
 function reorder(value: CanonicalValue): CanonicalValue {
     if (value instanceof Map) {
@@ -118,13 +141,20 @@ function reorder(value: CanonicalValue): CanonicalValue {
 describe("encode/decode properties (criterion 7)", () => {
     it(`round-trips ${String(CASES)} generated values and encodes deterministically`, () => {
         const generator = new Generator(prng(0x7e09));
+        let maxSeen = 0;
         for (let index = 0; index < CASES; index++) {
-            const value = generator.value(1);
+            const shallow = generator.value(1);
+            const room = MAX_DEPTH - depthOf(shallow);
+            const value =
+                index % 4 === 0 ? deepen(shallow, room - generator.int(3), generator) : shallow;
+            expect(depthOf(value)).toBeLessThanOrEqual(MAX_DEPTH);
+            maxSeen = Math.max(maxSeen, depthOf(value));
             const encoded = encodeCanonical(value);
             expect(decodeCanonical(encoded, ROOMY), `case ${String(index)}`).toEqual(value);
             expect(encodeCanonical(value), `case ${String(index)}`).toEqual(encoded);
             expect(encodeCanonical(reorder(value)), `case ${String(index)}`).toEqual(encoded);
         }
+        expect(maxSeen).toBe(MAX_DEPTH);
     });
 });
 
