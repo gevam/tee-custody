@@ -39,6 +39,14 @@ ALTERED: dict[str, tuple[str, ...]] = {
     "args_altered": ("submods.container.args",),
     "env_altered": ("submods.container.env",),
     "key_id_duplicated": ("submods.container.image_signatures",),
+    "hwmodel_missing": ("hwmodel",),
+    "swname_missing": ("swname",),
+    "secboot_missing": ("secboot",),
+    "support_attributes_missing": ("submods.confidential_space.support_attributes",),
+    "digest_missing": ("submods.container.image_digest",),
+    "signatures_missing": ("submods.container.image_signatures",),
+    "args_missing": ("submods.container.args",),
+    "env_missing": ("submods.container.env",),
 }
 NONCE = "11" * 32
 
@@ -183,3 +191,15 @@ def test_FR03_corpus_is_deterministic_for_the_same_seed(cli: Cli, tmp_path: Path
     a = (tmp_path / "a/wire/differential-corpus.json").read_bytes()
     b = (tmp_path / "b/wire/differential-corpus.json").read_bytes()
     assert a == b
+
+
+def test_FR03_kid_unknown_case_changes_only_the_header_kid(
+    cli: Cli, running_sim: RunningSim
+) -> None:
+    # Given the valid token and the kid_unknown case
+    valid_header, valid_claims = decode_jws(_token(cli, running_sim))
+    header, claims = decode_jws(_token(cli, running_sim, "--case", "kid_unknown"))
+    # Then only the header kid differs
+    assert header["kid"] == "teecustody-sim-unknown-kid"
+    assert header["kid"] != valid_header["kid"]
+    assert claims["iss"] == valid_claims["iss"]
