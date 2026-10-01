@@ -14,3 +14,9 @@ export abstract class Base {
 // A comment may mention the constructor of a class.
 export const make = (value: number): Thing => new Thing(value);
 export const label = "evaluation";
+
+export function isPlainObject(value: object): boolean {
+    const prototype: unknown = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+export const keys = (value: object): string[] => Object.keys(value);

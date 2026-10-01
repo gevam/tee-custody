@@ -5,6 +5,11 @@
 # Fixtures: .semgrep/tests/tc.<rule-id>.{pos,neg}.<ext>; `semgrep --test .semgrep/` runs them through
 # the .semgrep/tests/tc.yaml link to this file. Test mode ignores `paths:`, so path scoping is
 # exercised by the trunk scan (`semgrep --config .semgrep.yml --error`).
+#
+# Accepted residual (T-14 review round 1): names computed from strings cannot be caught statically,
+# e.g. getattr(sock, "bi" + "nd"), __import__ reached via ("__imp" + "ort__"), or a TS key built as
+# "constr" + "uctor". The rules block the direct, aliased and suppressed forms; code review stays the
+# primary control for computed names.
 
 rules:
   - id: tc-no-default-token-file
@@ -41,6 +46,7 @@ rules:
       include: ["/packages/**/*.py", "/packages/**/*.ts"]
     pattern-either:
       - pattern-regex: \bverify\s*=\s*False\b
+      - pattern-regex: \bcheck_hostname\s*=\s*False\b
       - pattern-regex: \b_create_unverified_context\b
       - pattern-regex: \bCERT_NONE\b
       - pattern-regex: \brejectUnauthorized["']?\s*[:=]\s*false\b
@@ -97,6 +103,15 @@ rules:
       - pattern: getattr(importlib, ...)
       - pattern: getattr(builtins, ...)
       - pattern: getattr(runpy, ...)
+      - pattern: __builtins__
+      - pattern: vars(builtins)
+      - pattern: builtins.__dict__
+      - pattern: pkgutil.resolve_name(...)
+      - pattern: importlib.util.find_spec(...)
+      - pattern: code.InteractiveInterpreter(...)
+      - pattern: code.InteractiveConsole(...)
+      - pattern: code.interact(...)
+      - pattern: zipimport.zipimporter(...)
       - pattern: exec(...)
       - pattern: eval(...)
 
@@ -182,6 +197,8 @@ rules:
       - pattern-regex: (?i)#\s*noqa\b(?!\s*:)
       - pattern-regex: (?i)#\s*noqa\s*:[^#\n]*\bTID
       - pattern-regex: (?i)#\s*(?:ruff|flake8)\s*:\s*(?:noqa|disable)\b
+      # bandit suppression: bandit Lows are gated by ruff `S`, so no finding is silenced in source.
+      - pattern-regex: (?i)#\s*nosec\b
 
   - id: tc-ts-no-global-object
     message: >-
@@ -226,6 +243,12 @@ rules:
       # `constructor` as an object key: destructuring (`const { constructor: K } = f`), parameters
       # and literals. Class `constructor(` declarations are followed by `(`, not `:`, `,`, `=` or `}`.
       - pattern-regex: "[{,]\\s*constructor\\s*(?=[:,=}])"
+      # Prototype walks toward the Function constructor without naming it.
+      - pattern: Object.getOwnPropertyDescriptor(...)
+      - pattern: Object.getOwnPropertyDescriptors(...)
+      - pattern: Object.getOwnPropertyNames(...)
+      - pattern-regex: \bObject\s*\.\s*getPrototypeOf\s*\(\s*(?:async\b|function\b|class\b|\(|Object\s*\.\s*getPrototypeOf\b)
+      - pattern-regex: \b__proto__\b
 
   - id: tc-ts-no-dynamic-import
     message: >-
@@ -267,11 +290,12 @@ rules:
     # platform.d.ts in .semgrep/tests must stay clean); declaring those names elsewhere grants nothing
     # platform.d.ts does not already grant.
     pattern-either:
-      - pattern-regex: (?m)^[ \t]*///[ \t]*<reference
-      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:global|module|namespace)\b
-      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:var|let|function|enum)\b
-      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+const\s+(?!\w+\s*:\s*unique\s+symbol\s*;)
-      - pattern-regex: (?m)(?:^|[;{}])[ \t]*(?:export\s+)?declare\s+(?:abstract\s+)?class\s+(?!(?:TextEncoder|TextDecoder|URL)\b)
+      # Comments may sit between any two tokens (`declare /* x */ const`).
+      - pattern-regex: '(?m)^[ \t]*///[ \t]*<reference'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:global|module|namespace)\b'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:var|let|function|enum)\b'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+const(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?!\w+(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*:(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*unique(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+symbol(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*;)'
+      - pattern-regex: '(?m)(?:^|[;{}])(?:[ \t]|/\*(?:[^*\n]|\*(?!/))*\*/)*(?:export(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?declare(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?:abstract(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+)?class(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)+(?!(?:TextEncoder|TextDecoder|URL)\b)'
 
   - id: tc-ts-no-timers
     message: >-

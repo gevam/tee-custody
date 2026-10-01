@@ -36,3 +36,16 @@ declare abstract class WebSocket {}
 export {}; declare const crypto: unknown;
 // ruleid: tc-ts-no-ambient-globals
 declare class URLSearchParams {}
+// ruleid: tc-ts-no-ambient-globals
+declare /* comment */ const sessionStorage: unknown;
+// ruleid: tc-ts-no-ambient-globals
+export /* a */ declare /* b */ var XMLHttpRequest: unknown;
+// ruleid: tc-ts-no-ambient-globals
+/* lead */ declare function requestAnimationFrame(): void;
+// ruleid: tc-ts-no-ambient-globals
+declare // trailing
+function cancelAnimationFrame(): void;
+// ruleid: tc-ts-no-ambient-globals
+declare const /* not a brand */ caches: unknown;
+// ruleid: tc-ts-no-ambient-globals
+declare /* x */ class /* y */ Worker {}

@@ -9,3 +9,5 @@ httpx.get("https://example.test", verify=False)
 context = ssl._create_unverified_context()
 # ruleid: tc-no-tls-override
 context.verify_mode = ssl.CERT_NONE
+# ruleid: tc-no-tls-override
+context.check_hostname = False

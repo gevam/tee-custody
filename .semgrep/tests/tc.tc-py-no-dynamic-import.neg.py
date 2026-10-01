@@ -11,3 +11,11 @@ def import_module(name):
 import_module("teecustody.wire")
 loaded = json.loads("{}")
 encoder = cbor
+
+
+class Settings:
+    debug = False
+
+
+fields = vars(Settings())
+codes = {"ok": 0}

@@ -36,3 +36,28 @@ getattr(il, "import_module")("socketserver")
 exec("import socketserver")
 # ruleid: tc-py-no-dynamic-import
 eval("1")
+
+import code
+import pkgutil
+import zipimport
+
+# ruleid: tc-py-no-dynamic-import
+vars(builtins)["__import__"]("cbor2")
+# ruleid: tc-py-no-dynamic-import
+__builtins__["__import__"]("cbor2")
+# ruleid: tc-py-no-dynamic-import
+__builtins__.__import__("cbor2")
+# ruleid: tc-py-no-dynamic-import
+builtins.__dict__["__import__"]("cbor2")
+# ruleid: tc-py-no-dynamic-import
+pkgutil.resolve_name("http.server:HTTPServer")
+# ruleid: tc-py-no-dynamic-import
+importlib.util.find_spec("socketserver").loader
+# ruleid: tc-py-no-dynamic-import
+code.InteractiveInterpreter().runsource("import socketserver")
+# ruleid: tc-py-no-dynamic-import
+code.InteractiveConsole().push("import socketserver")
+# ruleid: tc-py-no-dynamic-import
+code.interact()
+# ruleid: tc-py-no-dynamic-import
+zipimport.zipimporter("/srv/x.zip")

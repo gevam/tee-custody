@@ -17,3 +17,7 @@ OTHER = 1  #noqa
 THIRD = 2  # NOQA E501
 # ruleid: tc-py-no-lint-suppression
 FOURTH = 3  # noqa: E501, tid252
+# ruleid: tc-py-no-lint-suppression
+FIFTH = 4  # nosec
+# ruleid: tc-py-no-lint-suppression
+SIXTH = 5  # nosec B105
