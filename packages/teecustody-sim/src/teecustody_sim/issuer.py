@@ -17,7 +17,7 @@ _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
 _JWKS_PATH: Final = "/jwks"
 _POLL_INTERVAL_S: Final = 0.05
 # Per-connection socket timeout (SR-4): a stalled client cannot hold a handler thread.
-_IO_TIMEOUT_S = 10.0
+_REQUEST_DEADLINE_S = 10.0
 _CLAIMS_SUPPORTED: Final = (
     "aud",
     "dbgstat",
@@ -100,7 +100,7 @@ class _SimRequestHandler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
-        self.connection.settimeout(_IO_TIMEOUT_S)
+        self.connection.settimeout(_REQUEST_DEADLINE_S)
         limits = cast(_LimitedServer, self.server).limits
         self.rfile = _HeadBudgetReader(self.rfile, limits.max_request_bytes)
 

@@ -371,7 +371,7 @@ def test_mint_failure_is_500_without_detail_and_releases_its_slot(
 def test_stalled_client_is_disconnected(
     short_dir: Path, mint: RecordingMint, monkeypatch: pytest.MonkeyPatch, partial: bytes
 ) -> None:
-    monkeypatch.setattr(issuer_module, "_IO_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(issuer_module, "_REQUEST_DEADLINE_S", 0.2)
     socket_path = short_dir / "teeserver.sock"
     server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
     server.start()
