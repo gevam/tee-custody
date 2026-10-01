@@ -31,11 +31,23 @@ def _check_signers_required(signers_required: int) -> None:
 
 
 def _ensure_private_dir(path: Path) -> None:
+    """Create `path` as an owner-only directory, or accept it only if it already is one."""
     try:
         path.mkdir(mode=_PRIVATE_DIR_MODE)
     except FileExistsError:
+        status = os.lstat(path)
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or status.st_uid != os.getuid()
+            or stat.S_IMODE(status.st_mode) & _NOT_OWNER_BITS
+        ):
+            raise ValueError("INSECURE_KEY_FILE") from None
         return
-    path.chmod(_PRIVATE_DIR_MODE)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, _PRIVATE_DIR_MODE)
+    finally:
+        os.close(fd)
 
 
 def _read_owner_only_file(path: Path) -> bytes:

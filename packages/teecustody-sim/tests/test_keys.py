@@ -289,3 +289,76 @@ def test_load_or_create_rejects_a_key_file_owned_by_another_user(
 
     with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
         SimKeys.load_or_create(tmp_path, 2)
+
+
+def _keys_dir_mode_0755(state_dir: Path) -> None:
+    (state_dir / "keys").chmod(0o755)
+
+
+def _keys_dir_mode_0770(state_dir: Path) -> None:
+    (state_dir / "keys").chmod(0o770)
+
+
+def _state_dir_mode_0755(state_dir: Path) -> None:
+    state_dir.chmod(0o755)
+
+
+def _keys_dir_is_a_symlink(state_dir: Path) -> None:
+    (state_dir / "keys").rename(state_dir / "real-keys")
+    (state_dir / "keys").symlink_to(state_dir / "real-keys")
+
+
+def _keys_dir_is_a_file(state_dir: Path) -> None:
+    for path in (state_dir / "keys").iterdir():
+        path.unlink()
+    (state_dir / "keys").rmdir()
+    (state_dir / "keys").write_bytes(b"")
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        _keys_dir_mode_0755,
+        _keys_dir_mode_0770,
+        _state_dir_mode_0755,
+        _keys_dir_is_a_symlink,
+        _keys_dir_is_a_file,
+    ],
+    ids=["keys-0755", "keys-0770", "state-0755", "keys-symlink", "keys-file"],
+)
+def test_load_or_create_rejects_an_existing_directory_that_is_not_owner_only(
+    tmp_path: Path, key_files: dict[str, bytes], tamper: Callable[[Path], None]
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    _seed_state(state_dir, key_files)
+    tamper(state_dir)
+    modes_before = {p: os.lstat(p).st_mode for p in (state_dir, state_dir / "keys")}
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(state_dir, 2)
+    assert {p: os.lstat(p).st_mode for p in modes_before} == modes_before
+
+
+def test_load_or_create_rejects_a_state_dir_that_is_a_symlink(
+    tmp_path: Path, key_files: dict[str, bytes]
+) -> None:
+    real = tmp_path / "real-state"
+    real.mkdir(mode=0o700)
+    _seed_state(real, key_files)
+    (tmp_path / "state").symlink_to(real)
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path / "state", 2)
+
+
+def test_load_or_create_rejects_directories_owned_by_another_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "state").mkdir(mode=0o700)
+    real_getuid = os.getuid
+    monkeypatch.setattr(os, "getuid", lambda: real_getuid() + 1)
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path / "state", 2)
+    assert not (tmp_path / "state" / "keys").exists()
