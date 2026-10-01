@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody.wire import DecodeLimits, decode, encode
@@ -57,6 +57,7 @@ GOOGLE_JWKS_URI = (
     "https://www.googleapis.com/service_accounts/v1/metadata/jwk/"
     "signer@confidentialspace-sign.iam.gserviceaccount.com"
 )
+PRIVATE_JWK_MEMBERS = ("d", "p", "q", "dp", "dq", "qi")
 _ABSENT = object()
 
 
@@ -127,10 +128,14 @@ def _signature_verifies(suite: dict[str, Any], token: str) -> bool:
     return True
 
 
-def _load(path: Path) -> dict[str, Any]:
-    suite = decode(path.read_bytes(), SUITE_LIMITS)
+def _load_bytes(data: bytes) -> dict[str, Any]:
+    suite = decode(data, SUITE_LIMITS)
     assert isinstance(suite, dict)
     return suite
+
+
+def _load(path: Path) -> dict[str, Any]:
+    return _load_bytes(path.read_bytes())
 
 
 @pytest.fixture(scope="module")
@@ -144,8 +149,9 @@ def suite(suite_path: Path) -> dict[str, Any]:
 
 
 class GeneratedSuite:
-    def __init__(self, suite: dict[str, Any], keys: list[SimKeys]) -> None:
-        self.suite = suite
+    def __init__(self, data: bytes, keys: list[SimKeys]) -> None:
+        self.data = data
+        self.suite = _load_bytes(data)
         self.keys = keys
 
 
@@ -163,7 +169,7 @@ def observed(tmp_path_factory: pytest.TempPathFactory) -> GeneratedSuite:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(SimKeys, "generate", spy)
         path = generate_suite(tmp_path_factory.mktemp("observed"), now=NOW)
-    return GeneratedSuite(_load(path), created)
+    return GeneratedSuite(path.read_bytes(), created)
 
 
 def test_suite_is_written_under_attestation_in_the_output_directory(suite_path: Path) -> None:
@@ -404,3 +410,98 @@ def test_valid_token_does_not_verify_under_the_production_fixture_jwks(
             padding.PKCS1v15(),
             hashes.SHA256(),
         )
+
+
+def _metadata(suite: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in case.items() if k != "token"} for case in suite["cases"]]
+
+
+def _shape(value: object) -> object:
+    """The structure of a decoded value: map keys and value types, recursively."""
+    if isinstance(value, dict):
+        return {key: _shape(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_shape(item) for item in value]
+    return type(value).__name__
+
+
+def test_two_runs_differ_in_keys_but_share_structure_and_case_metadata(
+    tmp_path: Path, suite_path: Path, suite: dict[str, Any]
+) -> None:
+    other_path = generate_suite(tmp_path, now=NOW)
+    other = _load(other_path)
+
+    assert other_path.read_bytes() != suite_path.read_bytes()
+    assert other["identity_public_key"] != suite["identity_public_key"]
+    assert other["profile_json"] != suite["profile_json"]
+    assert other["production_profile_json"] != suite["production_profile_json"]
+    assert other["http"][DEV_JWKS_URL] != suite["http"][DEV_JWKS_URL]
+    assert other["http"][GOOGLE_JWKS_URI] != suite["http"][GOOGLE_JWKS_URI]
+    assert all(
+        mine["token"] != theirs["token"]
+        for mine, theirs in zip(suite["cases"], other["cases"], strict=True)
+    )
+    assert _shape(other) == _shape(suite)
+    assert _metadata(other) == _metadata(suite)
+    assert set(other["http"]) == set(suite["http"])
+    fixed = ("suite", "suite_version", "proto", "generated_at", "verify_at_ms")
+    assert [other[name] for name in fixed] == [suite[name] for name in fixed]
+
+
+def _json_documents(suite: dict[str, Any]) -> list[object]:
+    """Every JSON document in the suite: profiles, HTTP bodies, JWS headers and payloads."""
+    documents: list[object] = [
+        json.loads(suite["profile_json"]),
+        json.loads(suite["production_profile_json"]),
+        *(json.loads(body) for body in suite["http"].values()),
+    ]
+    for case in suite["cases"]:
+        documents.extend((_jws_part(case["token"], 0), _jws_part(case["token"], 1)))
+    return documents
+
+
+def _member_names(value: object) -> set[str]:
+    if isinstance(value, dict):
+        names = set(value)
+        for item in value.values():
+            names |= _member_names(item)
+        return names
+    if isinstance(value, list):
+        return set().union(*(_member_names(item) for item in value))
+    return set()
+
+
+def test_suite_contains_no_private_key_text_or_private_jwk_member(
+    observed: GeneratedSuite,
+) -> None:
+    assert b"PRIVATE KEY" not in observed.data
+    for member in PRIVATE_JWK_MEMBERS:
+        assert f'"{member}"'.encode() not in observed.data
+    for document in _json_documents(observed.suite):
+        assert _member_names(document).isdisjoint(PRIVATE_JWK_MEMBERS)
+
+
+def test_suite_contains_no_private_key_material_of_the_keys_it_used(
+    observed: GeneratedSuite,
+) -> None:
+    private_keys = [
+        key
+        for keys in observed.keys
+        for key in (
+            keys._issuer_key,
+            keys.unknown_signer._private_key,
+            *(signer._private_key for signer in keys.signers),
+        )
+    ]
+    assert len(private_keys) == 8
+    for key in private_keys:
+        d = key.private_numbers().d
+        d_bytes = d.to_bytes((d.bit_length() + 7) // 8, "big")
+        pkcs8 = key.private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        assert d_bytes not in observed.data
+        assert base64.urlsafe_b64encode(d_bytes).rstrip(b"=") not in observed.data
+        assert pkcs8 not in observed.data
