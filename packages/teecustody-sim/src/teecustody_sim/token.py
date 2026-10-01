@@ -1,6 +1,7 @@
 """Simulator token minting and alterations."""
 
 import base64
+import hashlib
 import json
 from collections.abc import Callable, Sequence
 from typing import Literal
@@ -9,7 +10,14 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from teecustody_sim.alterations import Alteration, JsonValue
+from teecustody_sim.alterations import (
+    Alteration,
+    AlterClaim,
+    ClaimPath,
+    DropClaim,
+    JsonValue,
+    NamedCase,
+)
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
     DBGSTAT_DISABLED,
@@ -25,6 +33,14 @@ _MAX_NONCES = 6
 _MIN_NONCE_BYTES = 10
 _MAX_NONCE_BYTES = 74
 _PSS_SALT_32 = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
+_IMAGE_SIGNATURES: ClaimPath = ("submods", "container", "image_signatures")
+_WRONG_NONCE = hashlib.sha256(b"teecustody-sim wrong nonce").hexdigest()
+_UNKNOWN_DIGEST = "sha256:" + hashlib.sha256(b"teecustody-sim unknown image").hexdigest()
+_MISMATCHED_SIGNATURE_ALGORITHM = "RSASSA_PKCS1V15_SHA256"
+_CORRUPTED_SIGNATURE_CASES = frozenset({"token_signature_corrupted", "debug_bad_signature"})
+
+type _Sign = Callable[[bytes], bytes]
+type _SignatureEntry = dict[str, JsonValue]
 
 
 def _b64url(data: bytes) -> str:
@@ -77,9 +93,9 @@ def _signature_verifies(signer: SignerKeyMaterial, signature: bytes, payload: by
 
 def _verified_image_signatures(
     signers: Sequence[SignerKeyMaterial], payload: bytes
-) -> list[JsonValue]:
+) -> list[_SignatureEntry]:
     """Sign with every signer; list only signatures that verify (Google emulation, D-016/T-22)."""
-    entries: list[JsonValue] = []
+    entries: list[_SignatureEntry] = []
     for signer in signers:
         signature = signer.sign(payload)
         if _signature_verifies(signer, signature, payload):
@@ -87,12 +103,57 @@ def _verified_image_signatures(
     return entries
 
 
-def _image_signature_entry(signer: SignerKeyMaterial, signature: bytes) -> JsonValue:
+def _image_signature_entry(signer: SignerKeyMaterial, signature: bytes) -> _SignatureEntry:
     return {
         "key_id": signer.key_id,
         "signature": base64.b64encode(signature).decode("ascii"),
         "signature_algorithm": signer.algorithm,
     }
+
+
+def _parent(claims: dict[str, JsonValue], path: ClaimPath) -> dict[str, JsonValue]:
+    if not path:
+        raise ValueError("PATH_NOT_FOUND")
+    node: JsonValue = claims
+    for segment in path[:-1]:
+        if not isinstance(node, dict) or segment not in node:
+            raise ValueError("PATH_NOT_FOUND")
+        node = node[segment]
+    if not isinstance(node, dict):
+        raise ValueError("PATH_NOT_FOUND")
+    return node
+
+
+def _apply_edit(claims: dict[str, JsonValue], edit: AlterClaim | DropClaim) -> None:
+    parent = _parent(claims, edit.path)
+    name = edit.path[-1]
+    if isinstance(edit, AlterClaim):
+        parent[name] = edit.value
+    elif name in parent:
+        del parent[name]
+    else:
+        raise ValueError("PATH_NOT_FOUND")
+
+
+def _first_entry(signatures: list[_SignatureEntry]) -> _SignatureEntry:
+    if not signatures:
+        raise ValueError("PATH_NOT_FOUND")
+    return signatures[0]
+
+
+def _corrupted(sign: _Sign) -> _Sign:
+    """Flip bit 0 (least significant) of the first signature byte (API.md §G #3)."""
+
+    def sign_and_corrupt(signing_input: bytes) -> bytes:
+        signature = bytearray(sign(signing_input))
+        signature[0] ^= 0x01
+        return bytes(signature)
+
+    return sign_and_corrupt
+
+
+def _empty_signature(signing_input: bytes) -> bytes:
+    return b""
 
 
 def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str:
@@ -120,10 +181,12 @@ class TokenMinter:
         self._ttl_s = ttl_s
         self._token_max_age_s = token_max_age_s
 
-    def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
+    def _claims_and_signatures(
+        self, audience: str, nonces: Sequence[str], now: int
+    ) -> tuple[dict[str, JsonValue], list[_SignatureEntry]]:
         _check_nonces(nonces)
         launch = self._launch
-        payload = image_signature_payload(launch.image_reference, launch.image_digest)
+        signatures = _verified_image_signatures(self._keys.signers, self._image_payload())
         claims: dict[str, JsonValue] = {
             "iss": self._issuer,
             "aud": audience,
@@ -139,7 +202,7 @@ class TokenMinter:
                 "container": {
                     "image_reference": launch.image_reference,
                     "image_digest": launch.image_digest,
-                    "image_signatures": _verified_image_signatures(self._keys.signers, payload),
+                    "image_signatures": [*signatures],
                     "args": list(launch.args),
                     "env": dict(launch.env),
                 },
@@ -149,7 +212,84 @@ class TokenMinter:
             claims["eat_nonce"] = nonces[0]
         elif nonces:
             claims["eat_nonce"] = list(nonces)
-        return claims
+        return claims, signatures
+
+    def _image_payload(self) -> bytes:
+        return image_signature_payload(self._launch.image_reference, self._launch.image_digest)
+
+    def _case_edits(
+        self, case_id: str, now: int, signatures: list[_SignatureEntry]
+    ) -> tuple[AlterClaim | DropClaim, ...]:
+        """The claim edits of API.md §G for `case_id`, applied to the valid token's claims."""
+        max_age = self._token_max_age_s
+        launch = self._launch
+        match case_id:
+            case "alg_none" | "token_signature_corrupted":
+                return ()
+            case "issuer_wrong":
+                return (AlterClaim(("iss",), "https://issuer.invalid"),)
+            case "issuer_missing":
+                return (DropClaim(("iss",)),)
+            case "audience_wrong":
+                return (AlterClaim(("aud",), "https://audience.invalid"),)
+            case "audience_missing":
+                return (DropClaim(("aud",)),)
+            case "expired":
+                return (AlterClaim(("iat",), now - 120), AlterClaim(("exp",), now - 60))
+            case "exp_missing":
+                return (DropClaim(("exp",)),)
+            case "iat_stale":
+                return (AlterClaim(("iat",), now - max_age - 60),)
+            case "iat_future":
+                return (AlterClaim(("iat",), now + max_age + 60),)
+            case "nbf_future":
+                return (AlterClaim(("nbf",), now + 600),)
+            case "nonce_wrong":
+                return (AlterClaim(("eat_nonce",), _WRONG_NONCE),)
+            case "nonce_missing":
+                return (DropClaim(("eat_nonce",)),)
+            case "hwmodel_unlisted":
+                return (AlterClaim(("hwmodel",), "GCP_AMD_SEV"),)
+            case "swname_wrong":
+                return (AlterClaim(("swname",), "GCE"),)
+            case "secboot_false":
+                return (AlterClaim(("secboot",), False),)
+            case "dbgstat_enabled" | "debug_bad_signature":
+                return (AlterClaim(("dbgstat",), "enabled"),)
+            case "dbgstat_missing":
+                return (DropClaim(("dbgstat",)),)
+            case "stable_missing":
+                path = ("submods", "confidential_space", "support_attributes")
+                return (AlterClaim(path, ["LATEST", "USABLE"]),)
+            case "digest_unknown":
+                return (AlterClaim(("submods", "container", "image_digest"), _UNKNOWN_DIGEST),)
+            case "signatures_insufficient":
+                kept = signatures[: len(self._keys.signers) - 1]
+                return (AlterClaim(_IMAGE_SIGNATURES, [*kept]),)
+            case "signer_unknown":
+                unknown = self._keys.unknown_signer
+                entry = _image_signature_entry(unknown, unknown.sign(self._image_payload()))
+                return (AlterClaim(_IMAGE_SIGNATURES, [*signatures[:-1], entry]),)
+            case "signature_algorithm_mismatch":
+                first = {
+                    **_first_entry(signatures),
+                    "signature_algorithm": _MISMATCHED_SIGNATURE_ALGORITHM,
+                }
+                return (AlterClaim(_IMAGE_SIGNATURES, [first, *signatures[1:]]),)
+            case "args_altered":
+                args: list[JsonValue] = [*launch.args, "--debug"]
+                return (AlterClaim(("submods", "container", "args"), args),)
+            case "env_altered":
+                env: dict[str, JsonValue] = {**dict(launch.env), "TEECUSTODY_SIM_ALTERED": "1"}
+                return (AlterClaim(("submods", "container", "env"), env),)
+            case "key_id_duplicated":
+                duplicate = dict(_first_entry(signatures))
+                return (AlterClaim(_IMAGE_SIGNATURES, [*signatures[:-1], duplicate]),)
+            case _:
+                raise ValueError("UNKNOWN_CASE")
+
+    def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
+        return self._claims_and_signatures(audience, nonces, now)[0]
 
     def mint(
         self,
@@ -158,9 +298,15 @@ class TokenMinter:
         now: int,
         alteration: Alteration | None = None,
     ) -> str:
+        claims, signatures = self._claims_and_signatures(audience, nonces, now)
         header: JsonValue = {"alg": JWS_ALG, "kid": self._keys.issuer_kid, "typ": "JWT"}
-        return frame_jws(
-            _json_bytes(header),
-            _json_bytes(self.claims(audience, nonces, now)),
-            self._keys.sign_jws,
-        )
+        sign: _Sign = self._keys.sign_jws
+        if isinstance(alteration, NamedCase):
+            for edit in self._case_edits(alteration.case_id, now, signatures):
+                _apply_edit(claims, edit)
+            if alteration.case_id == "alg_none":
+                header = {"alg": "none", "typ": "JWT"}
+                sign = _empty_signature
+            elif alteration.case_id in _CORRUPTED_SIGNATURE_CASES:
+                sign = _corrupted(sign)
+        return frame_jws(_json_bytes(header), _json_bytes(claims), sign)
