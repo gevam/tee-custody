@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import { checkImage } from "../../../src/attestation/checks/image.js";
 import {
+    AttestationError,
     brandTrustProfile,
+    type AttestationErrorCode,
     type ParsedToken,
     type SignerKey,
     type TrustProfile,
@@ -60,10 +62,29 @@ function tokenWithSignatures(signatures: JsonValue): ParsedToken {
     return tokenWith({ image_digest: DIGEST, image_signatures: signatures });
 }
 
+function imageError(run: () => unknown): AttestationError {
+    try {
+        run();
+    } catch (err) {
+        expect(err).toBeInstanceOf(AttestationError);
+        return err as AttestationError;
+    }
+    throw new Error("expected checkImage to throw");
+}
+
+function expectRejected(t: ParsedToken, code: AttestationErrorCode, p = profile()): void {
+    const err = imageError(() => checkImage(t, p));
+    expect([err.check, err.code]).toEqual(["image", code]);
+}
+
 describe("checkImage counts distinct profile key_ids named in the token (D-016)", () => {
     it("(a) returns both matching key_ids sorted ascending", () => {
         const t = tokenWithSignatures([sig(KEY_B), sig(KEY_A)]);
 
         expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+    });
+
+    it("(b) rejects a single matching entry with UNTRUSTED_SIGNER", () => {
+        expectRejected(tokenWithSignatures([sig(KEY_A)]), "UNTRUSTED_SIGNER");
     });
 });

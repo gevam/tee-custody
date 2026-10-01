@@ -1,6 +1,6 @@
 // §6.8 image check per D-016 (ARCHITECTURE "Image check").
 import { getPath, isJsonObject, type JsonValue } from "../../json.js";
-import type { ParsedToken, TrustProfile } from "../types.js";
+import { AttestationError, type ParsedToken, type TrustProfile } from "../types.js";
 
 const CONTAINER = ["submods", "container"] as const;
 
@@ -19,6 +19,9 @@ export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
                 counted.push(entry["key_id"]);
             }
         }
+    }
+    if (counted.length < p.signers_required) {
+        throw new AttestationError("UNTRUSTED_SIGNER", "image");
     }
     return counted.sort();
 }
