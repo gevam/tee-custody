@@ -220,10 +220,7 @@ describe("checkSignature: header matrix, fetcher never called (criterion 3)", ()
         ["non-string", 7],
         ["257-character", "k".repeat(257)],
     ])("rejects a %s kid as UNTRUSTED_SIGNER", async (_label, kid) => {
-        await expectRejectedBeforeFetch(
-            await tokenWith({ alg: "RS256", kid }),
-            "UNTRUSTED_SIGNER",
-        );
+        await expectRejectedBeforeFetch(await tokenWith({ alg: "RS256", kid }), "UNTRUSTED_SIGNER");
     });
 
     it("rejects an empty signature as UNTRUSTED_SIGNER", async () => {
@@ -297,5 +294,150 @@ describe("checkSignature: algorithm confusion and embedded keys (criterion 4)", 
             await tokenWith(header, attacker.privateKey),
             "UNSUPPORTED_ALGORITHM",
         );
+    });
+});
+
+function padded(value: unknown, size: number): Bytes {
+    const text = JSON.stringify(value);
+    return utf8Encode(text + " ".repeat(size - text.length));
+}
+
+function discoveryWith(fields: object): Bytes {
+    return json({ issuer: ISSUER, jwks_uri: JWKS_URI, ...fields });
+}
+
+function jwksWith(...entries: unknown[]): Bytes {
+    return json({ keys: entries });
+}
+
+const redirect = (url: string): ReadonlyMap<string, number> => new Map([[url, 302]]);
+const serverError = (url: string): ReadonlyMap<string, number> => new Map([[url, 500]]);
+const NOT_UTF8 = new Uint8Array([0x7b, 0xff, 0x7d]);
+
+type MatrixRow = readonly [string, () => Documents];
+
+const DISCOVERY_ROWS: readonly MatrixRow[] = [
+    ["discovery issuer differs", () => ({ discovery: discoveryWith({ issuer: `${ISSUER}/x` }) })],
+    ["discovery issuer absent", () => ({ discovery: json({ jwks_uri: JWKS_URI }) })],
+    ["jwks_uri absent", () => ({ discovery: json({ issuer: ISSUER }) })],
+    ["jwks_uri not a string", () => ({ discovery: discoveryWith({ jwks_uri: 42 }) })],
+    ["jwks_uri not a URL", () => ({ jwksUri: "www.googleapis.com/keys" })],
+    ["jwks_uri http origin", () => ({ jwksUri: "http://www.googleapis.com/keys" })],
+    ["jwks_uri other port", () => ({ jwksUri: "https://www.googleapis.com:8443/keys" })],
+    ["jwks_uri with userinfo", () => ({ jwksUri: "https://u:p@www.googleapis.com/keys" })],
+    ["jwks_uri with username only", () => ({ jwksUri: "https://u@www.googleapis.com/keys" })],
+    ["jwks_uri with password only", () => ({ jwksUri: "https://:p@www.googleapis.com/keys" })],
+    ["jwks_uri suffix host", () => ({ jwksUri: "https://www.googleapis.com.evil.test/keys" })],
+    ["discovery status 302", () => ({ statuses: redirect(DISCOVERY_URL) })],
+    ["discovery status 500", () => ({ statuses: serverError(DISCOVERY_URL) })],
+    [
+        "discovery oversize",
+        () => ({
+            discovery: padded({ issuer: ISSUER, jwks_uri: JWKS_URI }, LIMITS.maxDiscoveryBytes + 1),
+        }),
+    ],
+    ["discovery not UTF-8", () => ({ discovery: NOT_UTF8 })],
+    ["discovery not JSON", () => ({ discovery: utf8Encode("<html>") })],
+    ["discovery a JSON array", () => ({ discovery: json([ISSUER, JWKS_URI]) })],
+    ["discovery JSON null", () => ({ discovery: json(null) })],
+];
+
+const JWKS_ROWS: readonly MatrixRow[] = [
+    ["JWKS status 302", () => ({ statuses: redirect(JWKS_URI) })],
+    ["JWKS status 500", () => ({ statuses: serverError(JWKS_URI) })],
+    [
+        "JWKS oversize",
+        () => ({ jwks: padded({ keys: [jwkEntry(issuerKey.jwk)] }, LIMITS.maxJwksBytes + 1) }),
+    ],
+    ["JWKS not UTF-8", () => ({ jwks: NOT_UTF8 })],
+    ["JWKS not JSON", () => ({ jwks: utf8Encode("{keys:") })],
+    ["JWKS a JSON array", () => ({ jwks: json([jwkEntry(issuerKey.jwk)]) })],
+    ["JWKS keys absent", () => ({ jwks: json({}) })],
+    ["JWKS keys an object", () => ({ jwks: json({ keys: { [KID]: jwkEntry(issuerKey.jwk) } }) })],
+    ["candidate kty EC", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { kty: "EC" })) })],
+    ["candidate use enc", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { use: "enc" })) })],
+    ["candidate alg RS384", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { alg: "RS384" })) })],
+    ["candidate n absent", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { n: undefined })) })],
+    ["candidate e absent", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { e: undefined })) })],
+    ["candidate n not a string", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { n: 7 })) })],
+    ["candidate e not a string", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { e: 7 })) })],
+    ["duplicate kid", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk), jwkEntry(issuerKey.jwk)) })],
+    ["no matching kid", () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { kid: `${KID}0` })) })],
+    [
+        "kid differs in case",
+        () => ({ jwks: jwksWith(jwkEntry(issuerKey.jwk, { kid: KID.toUpperCase() })) }),
+    ],
+    ["empty keys", () => ({ jwks: jwksWith() })],
+    [
+        "keys entries not objects",
+        () => ({ jwks: jwksWith(null, 7, KID, [jwkEntry(issuerKey.jwk)]) }),
+    ],
+];
+
+describe("checkSignature: discovery and JWKS matrix, SR-1/SR-3/SR-4 (criterion 5)", () => {
+    it.each(DISCOVERY_ROWS)("rejects %s as UNTRUSTED_SIGNER", async (_label, overrides) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        await expectRejected(
+            token,
+            "UNTRUSTED_SIGNER",
+            mapFetcher(documents(overrides()), overrides().statuses),
+        );
+    });
+
+    it.each(JWKS_ROWS)("rejects %s as UNTRUSTED_SIGNER", async (_label, overrides) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        await expectRejected(
+            token,
+            "UNTRUSTED_SIGNER",
+            mapFetcher(documents(overrides()), overrides().statuses),
+        );
+    });
+
+    it("rejects a discovery fetch failure as UNTRUSTED_SIGNER", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        await expectRejected(token, "UNTRUSTED_SIGNER", mapFetcher(new Map()));
+    });
+
+    it("rejects a JWKS fetch failure as UNTRUSTED_SIGNER", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const fetcher = mapFetcher(new Map([[DISCOVERY_URL, discoveryWith({})]]));
+        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+    });
+
+    it("rejects a key under 2048 bits as UNTRUSTED_SIGNER", async () => {
+        const weak = await generateRsaKey(1024);
+        const token = await tokenWith({ alg: "RS256", kid: KID }, weak.privateKey);
+        await expectRejected(
+            token,
+            "UNTRUSTED_SIGNER",
+            mapFetcher(documents({ jwks: jwksWith(jwkEntry(weak.jwk)) })),
+        );
+    });
+
+    it("rejects the right kid bound to a different key as UNTRUSTED_SIGNER", async () => {
+        const other = await generateRsaKey();
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        await expectRejected(
+            token,
+            "UNTRUSTED_SIGNER",
+            mapFetcher(documents({ jwks: jwksWith(jwkEntry(other.jwk)) })),
+        );
+    });
+
+    it("accepts a key without use and alg members", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const bare = { kid: KID, kty: "RSA", n: issuerKey.jwk.n, e: issuerKey.jwk.e };
+        await expect(
+            checkSignature(token, PROFILE, depsFor({ jwks: jwksWith(bare) })),
+        ).resolves.toBeUndefined();
+    });
+
+    it("accepts a jwks_uri on the profile's origin with a different path", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const fetcher = counting(
+            mapFetcher(documents({ jwksUri: `${JWKS_ORIGIN}/other/path?x=1` })),
+        );
+        await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
+        expect(fetcher.calls).toEqual([DISCOVERY_URL, `${JWKS_ORIGIN}/other/path?x=1`]);
     });
 });

@@ -1,6 +1,7 @@
 // §6.1 token signature check; ADR 0009 rules 2–5.
 import { utf8DecodeStrict } from "../../encoding.js";
-import type { JsonObject } from "../../json.js";
+import type { RsaPublicJwk } from "../../capabilities.js";
+import { isJsonObject, type JsonObject, type JsonValue } from "../../json.js";
 import {
     AttestationError,
     type AttestationErrorCode,
@@ -37,9 +38,81 @@ function checkHeader(t: ParsedToken): string {
     return kid;
 }
 
-async function fetchJson(deps: VerifierDeps, url: string): Promise<JsonObject> {
-    const response = await deps.fetcher.get(url);
-    return JSON.parse(utf8DecodeStrict(response.body)) as JsonObject;
+// Fetches one document through the injected Fetcher; any transport, status, size, UTF-8 or JSON-shape
+// failure is UNTRUSTED_SIGNER (ADR 0009 rule 3). Errors carry no response content (SR-11).
+async function fetchJsonObject(
+    deps: VerifierDeps,
+    url: string,
+    maxBytes: number,
+): Promise<JsonObject> {
+    let parsed: JsonValue;
+    try {
+        const response = await deps.fetcher.get(url);
+        if (response.status !== 200 || response.body.length > maxBytes) {
+            return reject("UNTRUSTED_SIGNER");
+        }
+        parsed = JSON.parse(utf8DecodeStrict(response.body)) as JsonValue;
+    } catch {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    if (!isJsonObject(parsed)) {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    return parsed;
+}
+
+// ADR 0009 rule 3: the discovery issuer matches the profile; jwks_uri is on the profile's JWKS origin.
+function jwksUriOf(discovery: JsonObject, p: TrustProfile): string {
+    const { issuer, jwks_uri: jwksUri } = discovery;
+    if (issuer !== p.issuer || typeof jwksUri !== "string") {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    let url: URL;
+    try {
+        url = new URL(jwksUri);
+    } catch {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    if (url.username !== "" || url.password !== "" || url.origin !== p.jwks_origin) {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    return jwksUri;
+}
+
+// ADR 0009 rule 4 candidate filter: exact kid, RSA, signing use, RS256 or no alg, string n and e.
+function candidateKey(entry: JsonValue, kid: string): RsaPublicJwk | undefined {
+    if (!isJsonObject(entry)) {
+        return undefined;
+    }
+    const { kid: entryKid, kty, use, alg, n, e } = entry;
+    if (
+        entryKid !== kid ||
+        kty !== "RSA" ||
+        (use !== undefined && use !== "sig") ||
+        (alg !== undefined && alg !== "RS256") ||
+        typeof n !== "string" ||
+        typeof e !== "string"
+    ) {
+        return undefined;
+    }
+    return { kty: "RSA", n, e };
+}
+
+// ADR 0009 rule 4: exactly one candidate key; zero or duplicates reject.
+function selectKey(jwks: JsonObject, kid: string): RsaPublicJwk {
+    const keys = jwks["keys"];
+    if (!Array.isArray(keys)) {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    const candidates = (keys as readonly JsonValue[]).flatMap((entry) => {
+        const key = candidateKey(entry, kid);
+        return key === undefined ? [] : [key];
+    });
+    const [key, ...others] = candidates;
+    if (key === undefined || others.length > 0) {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    return key;
 }
 
 export async function checkSignature(
@@ -48,14 +121,22 @@ export async function checkSignature(
     deps: VerifierDeps,
 ): Promise<void> {
     const kid = checkHeader(t);
-    const discovery = await fetchJson(deps, p.discovery_url);
-    const jwks = await fetchJson(deps, discovery["jwks_uri"] as string);
-    const keys = jwks["keys"] as readonly JsonObject[];
-    const key = keys.find((k) => k["kid"] === kid) as JsonObject;
-    await deps.crypto.verifySignature(
-        "RSASSA_PKCS1V15_SHA256",
-        { format: "jwk", jwk: { kty: "RSA", n: key["n"] as string, e: key["e"] as string } },
-        t.signingInput,
-        t.signature,
-    );
+    const discovery = await fetchJsonObject(deps, p.discovery_url, deps.limits.maxDiscoveryBytes);
+    const jwksUri = jwksUriOf(discovery, p);
+    const jwks = await fetchJsonObject(deps, jwksUri, deps.limits.maxJwksBytes);
+    const jwk = selectKey(jwks, kid);
+    let valid: boolean;
+    try {
+        valid = await deps.crypto.verifySignature(
+            "RSASSA_PKCS1V15_SHA256",
+            { format: "jwk", jwk },
+            t.signingInput,
+            t.signature,
+        );
+    } catch {
+        return reject("UNTRUSTED_SIGNER");
+    }
+    if (!valid) {
+        reject("UNTRUSTED_SIGNER");
+    }
 }
