@@ -7,6 +7,7 @@ outcome. The TypeScript codec is held to the same outcomes by its own suite.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from teecustody.wire import DecodeLimits, WireError, decode
@@ -26,12 +27,19 @@ def _outcome(data: bytes, limits: DecodeLimits) -> str:
     return "accept"
 
 
-def test_corpus_has_the_documented_shape(differential_corpus: dict[str, Any]) -> None:
+def test_corpus_has_the_documented_shape(
+    differential_corpus: dict[str, Any], require_int: Callable[[object], int]
+) -> None:
     assert set(differential_corpus) == {"format", "version", "seed", "limits", "cases"}
     assert differential_corpus["format"] == "teecustody-cbor-differential-corpus"
-    assert differential_corpus["version"] == 1
-    assert type(differential_corpus["seed"]) is int
-    assert differential_corpus["limits"] == {"max_bytes": 1024, "max_depth": 8, "max_items": 256}
+    assert require_int(differential_corpus["version"]) == 1
+    require_int(differential_corpus["seed"])
+    limits = differential_corpus["limits"]
+    assert {name: require_int(value) for name, value in limits.items()} == {
+        "max_bytes": 1024,
+        "max_depth": 8,
+        "max_items": 256,
+    }
     assert type(differential_corpus["cases"]) is list
     for case in differential_corpus["cases"]:
         assert set(case) == {"id", "hex", "outcome"}, case
@@ -48,9 +56,9 @@ def test_corpus_has_enough_cases_with_unique_ids(differential_corpus: dict[str, 
 
 
 def test_python_codec_reproduces_every_recorded_outcome(
-    differential_corpus: dict[str, Any],
+    differential_corpus: dict[str, Any], corpus_limits: DecodeLimits
 ) -> None:
-    limits = DecodeLimits(**differential_corpus["limits"])
+    limits = corpus_limits
     mismatches = [
         (case["id"], case["outcome"], actual)
         for case in differential_corpus["cases"]

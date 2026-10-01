@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
 from teecustody.wire import DecodeLimits, WireError, WireErrorCode, decode, encode
@@ -28,11 +31,18 @@ WIRE_ERROR_CODES = frozenset(
 )
 
 
-def test_vector_file_has_the_documented_header(canonical_vectors: dict[str, object]) -> None:
+def test_vector_file_has_the_documented_header(
+    canonical_vectors: dict[str, Any], require_int: Callable[[object], int]
+) -> None:
     assert set(canonical_vectors) == {"format", "version", "limits", "valid", "invalid"}
     assert canonical_vectors["format"] == "teecustody-canonical-cbor-vectors"
-    assert canonical_vectors["version"] == 1
-    assert canonical_vectors["limits"] == {"max_bytes": 1024, "max_depth": 4, "max_items": 64}
+    assert require_int(canonical_vectors["version"]) == 1
+    limits = canonical_vectors["limits"]
+    assert {name: require_int(value) for name, value in limits.items()} == {
+        "max_bytes": 1024,
+        "max_depth": 4,
+        "max_items": 64,
+    }
 
 
 def test_case_ids_are_unique(canonical_vectors: dict[str, list[dict[str, str]]]) -> None:
@@ -46,3 +56,15 @@ def test_every_invalid_case_names_one_of_the_five_error_codes(
     assert {case["error"] for case in canonical_vectors["invalid"]} <= WIRE_ERROR_CODES
     assert all(set(case) == {"id", "hex", "error"} for case in canonical_vectors["invalid"])
     assert all(set(case) == {"id", "hex"} for case in canonical_vectors["valid"])
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, 1024.0], ids=repr)
+def test_require_int_rejects_bool_and_float(
+    require_int: Callable[[object], int], value: object
+) -> None:
+    with pytest.raises(pytest.fail.Exception):
+        require_int(value)
+
+
+def test_require_int_returns_a_real_int(require_int: Callable[[object], int]) -> None:
+    assert require_int(1) == 1

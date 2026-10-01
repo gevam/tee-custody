@@ -10,6 +10,7 @@ import base64
 import copy
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
 import pytest
@@ -189,10 +190,6 @@ def _differs_exactly_at(case: dict[str, Any], valid: dict[str, Any], paths: list
     return _same_json(case, valid)
 
 
-def _is_uint(value: object) -> bool:
-    return type(value) is int and value >= 0
-
-
 # Criterion 3: the suite is canonical CBOR with exactly the CDDL shape.
 
 
@@ -200,16 +197,20 @@ def test_suite_re_encodes_to_identical_bytes(suite_bytes: bytes, suite: dict[str
     assert encode(suite) == suite_bytes
 
 
-def test_suite_has_exactly_the_cddl_keys_and_fixed_values(suite: dict[str, Any]) -> None:
+def test_suite_has_exactly_the_cddl_keys_and_fixed_values(
+    suite: dict[str, Any], require_int: Callable[[object], int]
+) -> None:
     assert set(suite) == SUITE_KEYS
     assert suite["suite"] == "teecustody-attestation-vectors"
-    assert suite["suite_version"] == 1
+    assert require_int(suite["suite_version"]) == 1
     assert suite["proto"] == "tee-chan-v1"
 
 
-def test_suite_fields_have_the_cddl_types(suite: dict[str, Any]) -> None:
-    assert _is_uint(suite["generated_at"])
-    assert _is_uint(suite["verify_at_ms"])
+def test_suite_fields_have_the_cddl_types(
+    suite: dict[str, Any], require_int: Callable[[object], int]
+) -> None:
+    assert require_int(suite["generated_at"]) >= 0
+    assert require_int(suite["verify_at_ms"]) >= 0
     assert type(suite["identity_public_key"]) is bytes
     assert len(suite["identity_public_key"]) == 32
     assert type(suite["profile_json"]) is str
@@ -221,8 +222,10 @@ def test_suite_fields_have_the_cddl_types(suite: dict[str, Any]) -> None:
     assert suite["cases"]
 
 
-def test_verify_at_ms_is_generated_at_in_milliseconds(suite: dict[str, Any]) -> None:
-    assert suite["verify_at_ms"] == suite["generated_at"] * 1000
+def test_verify_at_ms_is_generated_at_in_milliseconds(
+    suite: dict[str, Any], require_int: Callable[[object], int]
+) -> None:
+    assert require_int(suite["verify_at_ms"]) == require_int(suite["generated_at"]) * 1000
 
 
 def test_every_case_follows_the_vector_case_rule(suite: dict[str, Any]) -> None:
