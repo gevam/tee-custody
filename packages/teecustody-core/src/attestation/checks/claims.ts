@@ -1,9 +1,20 @@
 // §6.3–§6.7 claim checks. Each throws AttestationError with its own check id. Stubs → T-12.
-import type { ExpectedAttestation, ParsedToken, TrustProfile } from "../types.js";
+import {
+    AttestationError,
+    type ExpectedAttestation,
+    type ParsedToken,
+    type TrustProfile,
+} from "../types.js";
 
 // §6.3
 export function checkAudience(t: ParsedToken, p: TrustProfile): void {
-    throw new Error("NOT_IMPLEMENTED: T-12");
+    const aud = t.claims["aud"];
+    if (aud === undefined) {
+        throw new AttestationError("CLAIM_MISSING", "audience");
+    }
+    if (aud !== p.expected_audience) {
+        throw new AttestationError("CLAIM_MISMATCH", "audience");
+    }
 }
 
 // §6.4
