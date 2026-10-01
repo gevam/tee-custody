@@ -181,3 +181,41 @@ describe("checkImage requires image_signatures to be an array (h)", () => {
         expectRejected(tokenWithSignatures([]), "UNTRUSTED_SIGNER");
     });
 });
+
+describe("checkImage requires an allow-listed image_digest before signatures", () => {
+    const signatures = [sig(KEY_A), sig(KEY_B)];
+
+    it("rejects an absent image_digest with CLAIM_MISSING", () => {
+        expectRejected(tokenWith({ image_signatures: signatures }), "CLAIM_MISSING");
+    });
+
+    it("rejects a token without submods.container with CLAIM_MISSING", () => {
+        const t: ParsedToken = { ...tokenWith({}), claims: { submods: {} } };
+        expectRejected(t, "CLAIM_MISSING");
+        expectRejected({ ...t, claims: {} }, "CLAIM_MISSING");
+    });
+
+    it.each<[string, JsonValue]>([
+        ["not on the allow-list", `sha256:${"ee".repeat(32)}`],
+        ["the allow-listed digest in uppercase", DIGEST.toUpperCase()],
+        ["the allow-listed hex without its prefix", DIGEST.slice("sha256:".length)],
+        ["a number", 1],
+        ["null", null],
+        ["an array holding the allow-listed digest", [DIGEST]],
+    ])("rejects an image_digest that is %s with CLAIM_MISMATCH", (_name, digest) => {
+        expectRejected(
+            tokenWith({ image_digest: digest, image_signatures: signatures }),
+            "CLAIM_MISMATCH",
+        );
+    });
+
+    it("checks the digest before image_signatures", () => {
+        const unlisted = `sha256:${"ee".repeat(32)}`;
+        expectRejected(tokenWith({ image_digest: unlisted }), "CLAIM_MISMATCH");
+        expectRejected(tokenWith({ image_signatures: "x" }), "CLAIM_MISSING");
+        expectRejected(
+            tokenWith({ image_digest: unlisted, image_signatures: [] }),
+            "CLAIM_MISMATCH",
+        );
+    });
+});

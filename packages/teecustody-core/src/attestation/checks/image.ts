@@ -34,6 +34,13 @@ function countedKeyId(
 // Synchronous and offline. Returns the distinct counted key_ids sorted ascending.
 // Signature bytes are never decoded or verified (D-016).
 export function checkImage(t: ParsedToken, p: TrustProfile): readonly string[] {
+    const digest = getPath(t.claims, [...CONTAINER, "image_digest"]);
+    if (digest === undefined) {
+        throw new AttestationError("CLAIM_MISSING", "image");
+    }
+    if (typeof digest !== "string" || !p.allowed_digests.includes(digest)) {
+        throw new AttestationError("CLAIM_MISMATCH", "image");
+    }
     const signatures = getPath(t.claims, [...CONTAINER, "image_signatures"]);
     if (signatures === undefined) {
         throw new AttestationError("CLAIM_MISSING", "image");
