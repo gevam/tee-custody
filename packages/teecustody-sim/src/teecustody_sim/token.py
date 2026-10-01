@@ -272,7 +272,7 @@ class TokenMinter:
         max_age = self._token_max_age_s
         launch = self._launch
         match case_id:
-            case "alg_none" | "token_signature_corrupted":
+            case "alg_none" | "token_signature_corrupted" | "kid_unknown":
                 return ()
             case "issuer_wrong":
                 return (AlterClaim(("iss",), "https://issuer.invalid"),)
@@ -336,6 +336,22 @@ class TokenMinter:
                     # Replacing the only entry with itself would mint a copy of `valid`.
                     raise ValueError("INVALID_ALTERATION")
                 return (AlterClaim(_IMAGE_SIGNATURES, [*signatures[:-1], duplicate]),)
+            case "hwmodel_missing":
+                return (DropClaim(("hwmodel",)),)
+            case "swname_missing":
+                return (DropClaim(("swname",)),)
+            case "secboot_missing":
+                return (DropClaim(("secboot",)),)
+            case "support_attributes_missing":
+                return (DropClaim(("submods", "confidential_space", "support_attributes")),)
+            case "digest_missing":
+                return (DropClaim(("submods", "container", "image_digest")),)
+            case "signatures_missing":
+                return (DropClaim(_IMAGE_SIGNATURES),)
+            case "args_missing":
+                return (DropClaim(("submods", "container", "args")),)
+            case "env_missing":
+                return (DropClaim(("submods", "container", "env")),)
             case _:
                 raise ValueError("UNKNOWN_CASE")
 

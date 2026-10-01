@@ -78,7 +78,7 @@ def _signed_by(keys: SimKeys, signature_b64: str) -> str:
 def normalized(keys: SimKeys, claims: Claims) -> Claims:
     """Claims with each (randomized PSS) image signature replaced by the key that made it."""
     result = copy.deepcopy(claims)
-    for entry in result["submods"]["container"]["image_signatures"]:
+    for entry in result["submods"]["container"].get("image_signatures", []):
         entry["signature"] = _signed_by(keys, entry["signature"])
     return result
 
@@ -138,9 +138,12 @@ def _set(path: tuple[str, ...], value: Any) -> Callable[[Claims, SimKeys], None]
     return apply
 
 
-def _drop(name: str) -> Callable[[Claims, SimKeys], None]:
+def _drop(*path: str) -> Callable[[Claims, SimKeys], None]:
     def apply(claims: Claims, keys: SimKeys) -> None:
-        del claims[name]
+        node = claims
+        for name in path[:-1]:
+            node = node[name]
+        del node[path[-1]]
 
     return apply
 
@@ -218,6 +221,15 @@ CLAIM_EDITS: dict[str, Callable[[Claims, SimKeys], None]] = {
     ),
     "debug_bad_signature": _set(("dbgstat",), "enabled"),
     "key_id_duplicated": _set(SIGS, _first_duplicated_last),
+    "hwmodel_missing": _drop("hwmodel"),
+    "swname_missing": _drop("swname"),
+    "secboot_missing": _drop("secboot"),
+    "support_attributes_missing": _drop("submods", "confidential_space", "support_attributes"),
+    "digest_missing": _drop("submods", "container", "image_digest"),
+    "signatures_missing": _drop(*SIGS),
+    "args_missing": _drop("submods", "container", "args"),
+    "env_missing": _drop("submods", "container", "env"),
+    "kid_unknown": _unchanged,
 }
 CORRUPTED_SIGNATURE = {"token_signature_corrupted", "debug_bad_signature"}
 CASE_IDS = [case.case_id for case in NEGATIVE_CASES]
