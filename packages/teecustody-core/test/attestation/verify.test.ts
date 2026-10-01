@@ -420,3 +420,59 @@ describe("verifyAttestation: signature and issuer run before claim checks (crite
         },
     );
 });
+
+function debug(c: Claims): void {
+    c.dbgstat = "enabled";
+}
+
+describe("verifyAttestation: SR-12 debug-mode reporting (criteria 5–7)", () => {
+    it("rejects platform/CLAIM_MISMATCH and reports once with code and at only (criterion 5)", async () => {
+        const sink = new MemorySink();
+        const err = await verifyWith(await mint(debug), { sink });
+        expect([err.check, err.code]).toEqual(["platform", "CLAIM_MISMATCH"]);
+        expect(sink.events).toHaveLength(1);
+        const [event] = sink.events;
+        expect(Object.keys(event as object).sort()).toEqual(["at", "code"]);
+        expect(event).toEqual({ code: "ATTESTATION_DEBUG_MODE", at: NOW_MS });
+    });
+
+    it("never reports a debug-mode token with an invalid signature (criterion 6)", async () => {
+        const sink = new MemorySink();
+        const err = await verifyWith(corruptSignature(await mint(debug)), { sink });
+        expect(err.check).toBe("signature");
+        expect(sink.events).toEqual([]);
+    });
+
+    it("never reports a debug-mode token with a wrong iss (criterion 6)", async () => {
+        const sink = new MemorySink();
+        const err = await verifyWith(
+            await mint((c) => {
+                debug(c);
+                c.iss = "https://evil.example";
+            }),
+            { sink },
+        );
+        expect(err.check).toBe("issuer");
+        expect(sink.events).toEqual([]);
+    });
+
+    it("reports once even when an earlier claim check rejects (criterion 7)", async () => {
+        const sink = new MemorySink();
+        const err = await verifyWith(
+            await mint((c) => {
+                debug(c);
+                c.aud = "https://other.test/tee";
+            }),
+            { sink },
+        );
+        expect([err.check, err.code]).toEqual(["audience", "CLAIM_MISMATCH"]);
+        expect(sink.events).toEqual([{ code: "ATTESTATION_DEBUG_MODE", at: NOW_MS }]);
+    });
+
+    it("does not report when dbgstat is absent", async () => {
+        const sink = new MemorySink();
+        const err = await verifyWith(await mint((c) => delete c.dbgstat), { sink });
+        expect([err.check, err.code]).toEqual(["platform", "CLAIM_MISSING"]);
+        expect(sink.events).toEqual([]);
+    });
+});

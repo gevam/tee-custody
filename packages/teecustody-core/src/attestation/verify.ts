@@ -7,6 +7,7 @@ import {
     checkPlatform,
     checkSupportAttributes,
     checkTime,
+    isDebugMode,
 } from "./checks/claims.js";
 import { checkImage } from "./checks/image.js";
 import { checkIssuer } from "./checks/issuer.js";
@@ -31,6 +32,9 @@ export async function verifyAttestation(
     const t = parseToken(token, deps.limits.maxTokenBytes);
     await checkSignature(t, profile, deps);
     checkIssuer(t, profile);
+    if (isDebugMode(t)) {
+        void events.report({ code: "ATTESTATION_DEBUG_MODE", at: deps.now() });
+    }
     checkAudience(t, profile);
     checkTime(t, profile, deps.now());
     checkNonce(t, expected);
