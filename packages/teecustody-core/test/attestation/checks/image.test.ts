@@ -16,6 +16,8 @@ const DIGEST = `sha256:${"ab".repeat(32)}`;
 const KEY_A = "0a".repeat(32);
 const KEY_B = "0b".repeat(32);
 const KEY_C = "0c".repeat(32);
+const UNKNOWN = "ff".repeat(32);
+const UNKNOWN_LOW = "00".repeat(32);
 const SIGNERS: readonly SignerKey[] = [
     { key_id: KEY_A, algorithm: "RSASSA_PSS_SHA256" },
     { key_id: KEY_B, algorithm: "ECDSA_P256_SHA256" },
@@ -92,5 +94,14 @@ describe("checkImage counts distinct profile key_ids named in the token (D-016)"
         expectRejected(tokenWithSignatures([sig(KEY_A), sig(KEY_A)]), "UNTRUSTED_SIGNER");
         const t = tokenWithSignatures([sig(KEY_B), sig(KEY_A), sig(KEY_B)]);
         expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+    });
+
+    it("(d) ignores unknown key_ids and returns only the matching ones", () => {
+        const t = tokenWithSignatures([sig(UNKNOWN), sig(KEY_B), sig(UNKNOWN_LOW), sig(KEY_A)]);
+        expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+    });
+
+    it("(d) rejects one matching plus one unknown key_id with UNTRUSTED_SIGNER", () => {
+        expectRejected(tokenWithSignatures([sig(KEY_A), sig(UNKNOWN)]), "UNTRUSTED_SIGNER");
     });
 });
