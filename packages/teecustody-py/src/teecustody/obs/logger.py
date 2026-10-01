@@ -66,6 +66,11 @@ class JsonLogFormatter(logging.Formatter):
         return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
+class _SilentStreamHandler(logging.StreamHandler[TextIO]):
+    def handleError(self, record: logging.LogRecord) -> None:
+        """Emit nothing: stock handling would print the raw message and arguments."""
+
+
 _handler: logging.Handler | None = None
 
 logging.getLogger("teecustody").addHandler(logging.NullHandler())
@@ -77,7 +82,7 @@ def configure_logging(stream: TextIO, level: int = logging.INFO) -> None:
     base = logging.getLogger("teecustody")
     if _handler is not None:
         base.removeHandler(_handler)
-    _handler = logging.StreamHandler(stream)
+    _handler = _SilentStreamHandler(stream)
     _handler.setFormatter(JsonLogFormatter())
     base.addHandler(_handler)
     base.setLevel(level)

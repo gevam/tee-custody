@@ -102,7 +102,9 @@ def test_reconfigure_keeps_single_handler(buf: io.StringIO) -> None:
     configure_logging(second)
     get_logger("attest").info("ONCE")
     streams = [
-        h for h in logging.getLogger("teecustody").handlers if type(h) is logging.StreamHandler
+        h
+        for h in logging.getLogger("teecustody").handlers
+        if isinstance(h, logging.StreamHandler) and isinstance(h.formatter, JsonLogFormatter)
     ]
     assert len(streams) == 1
     assert isinstance(streams[0].formatter, JsonLogFormatter)
@@ -207,3 +209,19 @@ def test_str_and_int_subclasses_are_dropped(buf: io.StringIO) -> None:
 def test_outcome_with_trailing_newline_is_invalid(buf: io.StringIO) -> None:
     get_logger("attest").info("OK\n")
     assert _only_line(buf)["outcome"] == "INVALID_OUTCOME_CODE"
+
+
+class _FailingStream(io.StringIO):
+    def write(self, s: str) -> int:
+        raise OSError("WRITEFAIL_SECRET")
+
+
+def test_stream_write_failure_leaks_nothing_to_stderr(
+    buf: io.StringIO, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_logging(_FailingStream())
+    logging.getLogger("teecustody.x").error("token=%s", "WRITEFAIL_SECRET_ARG")
+    get_logger("attest").error("SOME_OUTCOME", request_id="r1")
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
