@@ -163,9 +163,10 @@ def _seed_state(state_dir: Path, key_files: dict[str, bytes]) -> None:
 
 @pytest.mark.parametrize(
     ("name", "mode"),
-    [(name, 0o644) for name in KEY_FILES] + [("issuer.pem", m) for m in (0o640, 0o604, 0o660)],
+    [(name, 0o644) for name in KEY_FILES]
+    + [("issuer.pem", m) for m in (0o640, 0o604, 0o660, 0o620, 0o602, 0o610, 0o601)],
 )
-def test_load_or_create_rejects_a_key_file_readable_beyond_its_owner(
+def test_load_or_create_rejects_a_key_file_accessible_beyond_its_owner(
     tmp_path: Path, key_files: dict[str, bytes], name: str, mode: int
 ) -> None:
     _seed_state(tmp_path, key_files)
