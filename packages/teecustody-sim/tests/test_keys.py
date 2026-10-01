@@ -14,7 +14,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
-from teecustody_sim import DEV_SIGNER_ALGORITHM, SimKeys
+from teecustody_sim import DEV_SIGNER_ALGORITHM, SignerKeyMaterial, SimKeys
 
 PRIVATE_JWK_MEMBERS = ("d", "p", "q", "dp", "dq", "qi")
 HEX64 = frozenset("0123456789abcdef")
@@ -375,3 +375,15 @@ def test_load_or_create_rejects_directories_owned_by_another_user(
     with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
         SimKeys.load_or_create(tmp_path / "state", 2)
     assert not (tmp_path / "state" / "keys").exists()
+
+
+@pytest.mark.parametrize(
+    ("cls", "public"),
+    [
+        (SimKeys, {"generate", "load_or_create", "issuer_jwks", "sign_jws"}),
+        (SignerKeyMaterial, {"sign"}),
+    ],
+)
+def test_key_classes_expose_only_the_api_surface(cls: type, public: set[str]) -> None:
+    assert {name for name in vars(cls) if not name.startswith("_")} == public
+    assert "__init__" not in vars(cls)

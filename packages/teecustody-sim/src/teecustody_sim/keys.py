@@ -115,14 +115,18 @@ class SignerKeyMaterial:
     key_id: str
     algorithm: str
     spki_der: bytes
+    _private_key: rsa.RSAPrivateKey
 
-    def __init__(self, private_key: rsa.RSAPrivateKey) -> None:
-        self._private_key = private_key
-        self.algorithm = DEV_SIGNER_ALGORITHM
-        self.spki_der = private_key.public_key().public_bytes(
+    @classmethod
+    def _from_private_key(cls, private_key: rsa.RSAPrivateKey) -> "SignerKeyMaterial":
+        signer = cls()
+        signer._private_key = private_key
+        signer.algorithm = DEV_SIGNER_ALGORITHM
+        signer.spki_der = private_key.public_key().public_bytes(
             serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        self.key_id = hashlib.sha256(self.spki_der).hexdigest()
+        signer.key_id = hashlib.sha256(signer.spki_der).hexdigest()
+        return signer
 
     def __repr__(self) -> str:
         return f"SignerKeyMaterial(key_id={self.key_id})"
@@ -135,25 +139,31 @@ class SimKeys:
     issuer_kid: str
     signers: tuple[SignerKeyMaterial, ...]
     unknown_signer: SignerKeyMaterial
+    _issuer_key: rsa.RSAPrivateKey
+    _issuer_n: str
+    _issuer_e: str
 
-    def __init__(
-        self,
+    @classmethod
+    def _from_private_keys(
+        cls,
         issuer_key: rsa.RSAPrivateKey,
         signer_keys: tuple[rsa.RSAPrivateKey, ...],
         unknown_signer_key: rsa.RSAPrivateKey,
-    ) -> None:
-        self._issuer_key = issuer_key
-        self.signers = tuple(SignerKeyMaterial(key) for key in signer_keys)
-        self.unknown_signer = SignerKeyMaterial(unknown_signer_key)
+    ) -> "SimKeys":
+        keys = cls()
+        keys._issuer_key = issuer_key
+        keys.signers = tuple(SignerKeyMaterial._from_private_key(key) for key in signer_keys)
+        keys.unknown_signer = SignerKeyMaterial._from_private_key(unknown_signer_key)
         numbers = issuer_key.public_key().public_numbers()
-        self._issuer_n = _b64url_uint(numbers.n)
-        self._issuer_e = _b64url_uint(numbers.e)
+        keys._issuer_n = _b64url_uint(numbers.n)
+        keys._issuer_e = _b64url_uint(numbers.e)
         thumbprint_input = json.dumps(
-            {"e": self._issuer_e, "kty": "RSA", "n": self._issuer_n},
+            {"e": keys._issuer_e, "kty": "RSA", "n": keys._issuer_n},
             sort_keys=True,
             separators=(",", ":"),
         ).encode("ascii")
-        self.issuer_kid = _b64url(hashlib.sha256(thumbprint_input).digest())
+        keys.issuer_kid = _b64url(hashlib.sha256(thumbprint_input).digest())
+        return keys
 
     def __repr__(self) -> str:
         return "SimKeys(<redacted>)"
@@ -161,7 +171,7 @@ class SimKeys:
     @classmethod
     def generate(cls, signers_required: int) -> "SimKeys":
         _check_signers_required(signers_required)
-        return cls(
+        return cls._from_private_keys(
             _new_rsa_key(),
             tuple(_new_rsa_key() for _ in range(signers_required)),
             _new_rsa_key(),
@@ -173,7 +183,7 @@ class SimKeys:
         keys_dir = state_dir / "keys"
         _ensure_private_dir(state_dir)
         _ensure_private_dir(keys_dir)
-        return cls(
+        return cls._from_private_keys(
             _load_or_create_key(keys_dir / "issuer.pem"),
             tuple(
                 _load_or_create_key(keys_dir / f"signer-{index}.pem")
