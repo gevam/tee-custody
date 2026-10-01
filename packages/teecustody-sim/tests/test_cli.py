@@ -4,9 +4,12 @@ import base64
 import json
 import logging
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -448,3 +451,159 @@ def test_up_refuses_a_launcher_dir_that_is_a_symlink(
     assert (code, out, err) == (2, "", "INVALID_PATH\n")
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o700
     assert [call[1] for call in fake_runner.calls] == ["image"]
+
+
+class RecordingSignals:
+    """Stands in for `signal.signal`: real handlers cannot be set outside the main thread."""
+
+    def __init__(self) -> None:
+        self.installed: list[tuple[int, Any]] = []
+        self.handlers: dict[int, Callable[[int, object], None]] = {}
+
+    def __call__(self, signum: int, handler: Any) -> Any:
+        self.installed.append((signum, handler))
+        if callable(handler):
+            self.handlers[signum] = handler
+        return signal.SIG_DFL
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 10.0
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def _serve_until_signal(
+    argv: list[str],
+    signals: RecordingSignals,
+    signum: int,
+    while_serving: Callable[[], None] = lambda: None,
+) -> int | None:
+    """Run `main(argv)` in a thread, call `while_serving`, then deliver `signum` to `serve`."""
+    signals.handlers.clear()
+    result: list[int] = []
+    thread = threading.Thread(target=lambda: result.append(main(argv)))
+    thread.start()
+    try:
+        _wait_until(lambda: not thread.is_alive() or signum in signals.handlers)
+        while_serving()
+    finally:
+        if signum in signals.handlers:
+            signals.handlers[signum](signum, None)
+        thread.join(timeout=10.0)
+    assert not thread.is_alive()
+    return result[0] if result else None
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_serve_runs_until_a_signal_then_stops_and_removes_the_socket(
+    capsys: pytest.CaptureFixture[str],
+    short_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    signum: int,
+) -> None:
+    signals = RecordingSignals()
+    monkeypatch.setattr(signal, "signal", signals)
+    socket_path = short_dir / "teeserver.sock"
+    argv = [
+        "serve", "--state-dir", str(short_dir / "state"), "--socket", str(socket_path),
+        "--audience", AUDIENCE, "--image-reference", LAUNCH.image_reference,
+        "--image-digest", LAUNCH.image_digest, "--arg", "/app/workload", "--env", "MODE=test",
+        "--issuer-port", "0",
+    ]  # fmt: skip
+    claims: dict[str, Any] = {}
+
+    def request_a_token() -> None:
+        launcher = ConfidentialSpaceLauncher(
+            str(socket_path), timeout_s=5.0, max_response_bytes=65536
+        )
+        token = launcher.get_attestation_token(AUDIENCE, "OIDC", bytes(32))
+        claims.update(_payload(token.value))
+
+    assert _serve_until_signal(argv, signals, signum, request_a_token) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    [line] = captured.out.splitlines()
+    issuer, discovery, socket_field = line.split(" ")
+    origin = issuer.removeprefix("issuer=")
+    assert origin.startswith("http://127.0.0.1:")
+    assert discovery == f"discovery={origin}/.well-known/openid-configuration"
+    assert socket_field == f"socket={socket_path}"
+    assert claims["aud"] == AUDIENCE
+    assert claims["submods"]["container"]["args"] == ["/app/workload"]
+    assert claims["submods"]["container"]["env"] == {"MODE": "test"}
+    assert (short_dir / "attestation_verifier_claims_token").exists()
+    assert not socket_path.exists()
+    restored = [entry for entry in signals.installed if entry[1] is signal.SIG_DFL]
+    assert sorted(signum for signum, _ in restored) == sorted([signal.SIGINT, signal.SIGTERM])
+
+
+def _serve_argv(short_dir: Path, *extra: str) -> list[str]:
+    return [
+        "serve", "--state-dir", str(short_dir / "state"), "--socket", str(short_dir / "s.sock"),
+        "--audience", AUDIENCE, "--image-reference", LAUNCH.image_reference,
+        "--image-digest", LAUNCH.image_digest, "--issuer-port", "0", *extra,
+    ]  # fmt: skip
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_serve_with_allow_non_loopback_warns_on_stderr_at_every_start(
+    capsys: pytest.CaptureFixture[str], short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signals = RecordingSignals()
+    monkeypatch.setattr(signal, "signal", signals)
+    argv = _serve_argv(short_dir, "--issuer-host", "127.0.0.1", "--allow-non-loopback")
+    warnings = []
+    for _ in range(2):
+        assert _serve_until_signal(argv, signals, signal.SIGTERM) == 0
+        warnings.append(json.loads(capsys.readouterr().err))
+
+    assert [(w["level"], w["outcome"]) for w in warnings] == [
+        ("WARNING", "SIM_NON_LOOPBACK_BIND"),
+        ("WARNING", "SIM_NON_LOOPBACK_BIND"),
+    ]
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.1", "::"])  # noqa: S104 - refused, never bound
+def test_serve_refuses_a_non_loopback_host_without_the_flag(
+    cli: Cli, short_dir: Path, host: str
+) -> None:
+    code, out, err = cli(*_serve_argv(short_dir, "--issuer-host", host))
+
+    assert (code, out, err) == (2, "", "NON_LOOPBACK_NOT_ALLOWED\n")
+    assert not (short_dir / "s.sock").exists()
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_serve_refuses_to_start_next_to_production_credentials(
+    cli: Cli, short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secret/path/key.json")
+
+    code, out, err = cli(*_serve_argv(short_dir))
+
+    assert (code, out, err) == (2, "", "PRODUCTION_CREDENTIALS_PRESENT\n")
+    assert not (short_dir / "s.sock").exists()
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--env", "NOEQUALS"),
+        ("--issuer-host", "\udcff"),
+        ("--image-digest", "\udcff"),
+        ("--allow-non-loopback=yes",),
+        ("--issuer-port", "65536x"),
+    ],
+)
+def test_serve_rejects_invalid_arguments_with_a_single_code_line(
+    cli: Cli, short_dir: Path, flags: tuple[str, ...]
+) -> None:
+    code, out, err = cli(*_serve_argv(short_dir, *flags))
+
+    assert (code, out, err) == (2, "", "INVALID_ARGUMENT\n")
+    assert not (short_dir / "state").exists()

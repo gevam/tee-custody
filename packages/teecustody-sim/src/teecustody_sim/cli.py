@@ -5,8 +5,10 @@ import json
 import logging
 import os
 import re
+import signal
 import stat
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -20,6 +22,7 @@ from teecustody_sim.config import (
     SimulatorConfig,
 )
 from teecustody_sim.constants import (
+    DEFAULT_ISSUER_HOST,
     DEFAULT_ISSUER_PORT,
     DEFAULT_SIGNERS_REQUIRED,
     DEFAULT_STATE_DIR,
@@ -43,6 +46,7 @@ _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
 _LAUNCHER_DIR_NAME: Final = "launcher"
 _DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
+_STOP_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM)
 
 
 class _UsageError(Exception):
@@ -162,6 +166,43 @@ def _announce(simulator: Simulator, config: SimulatorConfig) -> None:
     sys.stdout.flush()
 
 
+def _wait_for_stop_signal() -> None:
+    """Block until SIGINT or SIGTERM, then put the previous handlers back."""
+    stop = threading.Event()
+
+    def handle(signum: int, frame: object) -> None:
+        stop.set()
+
+    previous = {signum: signal.signal(signum, handle) for signum in _STOP_SIGNALS}
+    try:
+        stop.wait()
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _serve(options: argparse.Namespace) -> int:
+    configure_logging(sys.stderr, logging.WARNING)
+    socket_path: Path = options.socket
+    config = SimulatorConfig(
+        state_dir=options.state_dir,
+        socket_path=socket_path,
+        token_file_path=socket_path.parent / DEFAULT_TOKEN_FILE_NAME,
+        launch=LaunchConfig(
+            options.image_reference, options.image_digest, tuple(options.arg), tuple(options.env)
+        ),
+        audience=options.audience,
+        issuer_host=options.issuer_host,
+        issuer_port=options.issuer_port,
+        signers_required=options.signers_required,
+        allow_non_loopback=options.allow_non_loopback,
+    )
+    with Simulator(config) as simulator:
+        _announce(simulator, config)
+        _wait_for_stop_signal()
+    return 0
+
+
 def _up(options: argparse.Namespace) -> int:
     configure_logging(sys.stderr, logging.WARNING)
     runtime = ContainerRuntime(options.runtime)
@@ -201,6 +242,19 @@ def _command(commands: _Commands, name: str, handler: _Handler) -> argparse.Argu
     return command
 
 
+def _simulator_command(
+    commands: _Commands, name: str, handler: _Handler
+) -> argparse.ArgumentParser:
+    """Options `serve` and `up` share: the audience, the launch config and the simulator limits."""
+    command = _command(commands, name, handler)
+    command.add_argument("--audience", type=_text, required=True)
+    command.add_argument("--arg", type=_text, action="append", default=[])
+    command.add_argument("--env", type=_env, action="append", default=[])
+    command.add_argument("--issuer-port", type=_decimal, default=DEFAULT_ISSUER_PORT)
+    command.add_argument("--signers-required", type=_decimal, default=DEFAULT_SIGNERS_REQUIRED)
+    return command
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="teecustody-sim", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -211,14 +265,15 @@ def _parser() -> argparse.ArgumentParser:
     alteration.add_argument("--alter", type=_text)
     alteration.add_argument("--drop", type=_text)
     alteration.add_argument("--case", type=_text)
-    up = _command(commands, "up", _up)
+    serve = _simulator_command(commands, "serve", _serve)
+    serve.add_argument("--socket", type=Path, required=True)
+    serve.add_argument("--image-reference", type=_text, required=True)
+    serve.add_argument("--image-digest", type=_text, required=True)
+    serve.add_argument("--issuer-host", type=_text, default=DEFAULT_ISSUER_HOST)
+    serve.add_argument("--allow-non-loopback", action="store_true")
+    up = _simulator_command(commands, "up", _up)
     up.add_argument("--image", type=_text, required=True)
-    up.add_argument("--audience", type=_text, required=True)
     up.add_argument("--runtime", choices=("docker", "podman"), default="docker")
-    up.add_argument("--arg", type=_text, action="append", default=[])
-    up.add_argument("--env", type=_env, action="append", default=[])
-    up.add_argument("--issuer-port", type=_decimal, default=DEFAULT_ISSUER_PORT)
-    up.add_argument("--signers-required", type=_decimal, default=DEFAULT_SIGNERS_REQUIRED)
     _command(commands, "profile", _profile).add_argument("--out", type=Path, required=True)
     _command(commands, "vectors", _vectors).add_argument("--out", type=Path, required=True)
     return parser
