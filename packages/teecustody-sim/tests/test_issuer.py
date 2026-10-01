@@ -3,6 +3,7 @@
 import http.client
 import json
 import socket
+import struct
 import threading
 import time
 from collections.abc import Iterator
@@ -317,3 +318,42 @@ def test_connection_flood_is_capped_and_the_server_recovers(
             sock.close()
         server.stop()
     assert status == 200
+
+
+class RecordingLogger:
+    def __init__(self, records: list[tuple[str, str, str, dict[str, str | int]]], name: str):
+        self._records = records
+        self._name = name
+
+    def info(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "info", outcome, fields))
+
+    def warning(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "warning", outcome, fields))
+
+    def error(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "error", outcome, fields))
+
+
+def test_client_reset_mid_request_logs_a_fixed_code_and_nothing_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    records: list[tuple[str, str, str, dict[str, str | int]]] = []
+    monkeypatch.setattr(issuer_module, "get_logger", lambda name: RecordingLogger(records, name))
+    server = IssuerServer("127.0.0.1", 0, issuer=SIM_ISSUER, jwks=JWKS, limits=SimLimits())
+    server.start()
+    try:
+        parts = urlsplit(server.origin)
+        sock = socket.create_connection((parts.hostname or "", parts.port or 0), timeout=5.0)
+        sock.sendall(b"GET /jwks HTTP/1.1\r\nX-Secret-Header: hunter2")
+        time.sleep(0.2)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()  # RST while the server is reading the head
+        time.sleep(0.2)
+    finally:
+        server.stop()
+
+    captured = capfd.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+    assert records == [("sim", "warning", "SIM_REQUEST_FAILED", {})]

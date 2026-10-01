@@ -450,3 +450,43 @@ def test_connection_flood_is_capped_and_the_launcher_recovers(
             sock.close()
         server.stop()
     assert (status, body) == (200, TOKEN.encode())
+
+
+def test_client_gone_before_the_reply_logs_a_fixed_code_and_nothing_on_stderr(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    records: list[tuple[str, str, str, dict[str, str | int]]] = []
+
+    class Recorder:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def info(self, outcome: str, **fields: str | int) -> None:
+            records.append((self._name, "info", outcome, fields))
+
+        def warning(self, outcome: str, **fields: str | int) -> None:
+            records.append((self._name, "warning", outcome, fields))
+
+        def error(self, outcome: str, **fields: str | int) -> None:
+            records.append((self._name, "error", outcome, fields))
+
+    monkeypatch.setattr(issuer_module, "get_logger", Recorder)
+    socket_path = short_dir / "teeserver.sock"
+    mint = BlockingMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+    server.start()
+    try:
+        sock = _unix_connect(socket_path)
+        body = token_request()
+        sock.sendall(_post_head(len(body)) + body)
+        assert mint.entered.acquire(timeout=5.0)
+        sock.close()  # gone before the token is written: the reply hits EPIPE
+        mint.release.set()
+    finally:
+        mint.release.set()
+        server.stop()
+
+    captured = capfd.readouterr()
+    assert captured.err == ""
+    assert TOKEN not in captured.out + captured.err
+    assert records == [("sim", "warning", "SIM_REQUEST_FAILED", {})]

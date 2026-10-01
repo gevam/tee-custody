@@ -11,6 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import ClassVar, Final, cast
 
+from teecustody.obs import get_logger
 from teecustody_sim.alterations import JsonValue
 from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimLimits
 
@@ -21,6 +22,7 @@ _POLL_INTERVAL_S: Final = 0.05
 # cannot hold a handler thread, however it paces its bytes.
 _REQUEST_DEADLINE_S = 10.0
 _MIN_SOCKET_TIMEOUT_S: Final = 0.001
+_LOGGER_NAME: Final = "sim"
 _CLAIMS_SUPPORTED: Final = (
     "aud",
     "dbgstat",
@@ -97,11 +99,15 @@ class _BoundedServer(socketserver.BaseServer):
     ) -> None:
         try:
             handler(request, client_address, self)
-        except Exception:  # noqa: BLE001 - see handle_error
+        except Exception:  # noqa: BLE001 - reported as a fixed code by handle_error
             self.handle_error(request, client_address)
         finally:
             self.shutdown_request(request)
             slot.release()
+
+    def handle_error(self, request: _Request, client_address: _Address) -> None:
+        """A fixed outcome code only: the stock handler prints a traceback, bypassing obs."""
+        get_logger(_LOGGER_NAME).warning("SIM_REQUEST_FAILED")
 
     def server_close(self) -> None:
         super().server_close()
