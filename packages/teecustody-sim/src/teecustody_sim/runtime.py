@@ -58,6 +58,15 @@ def _check_launch(args: Sequence[str], env: Sequence[tuple[str, str]]) -> None:
         raise ValueError(_INVALID_LAUNCH_CONFIG)
 
 
+def _check_run_arguments(
+    image: str, launcher_dir: Path, args: Sequence[str], env: Sequence[tuple[str, str]]
+) -> None:
+    """Everything `run_workload` checks; the CLI also calls it before any state is written."""
+    _check_image_reference(image)
+    _check_launcher_dir(launcher_dir)
+    _check_launch(args, env)
+
+
 def _run_attached(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """The workload's own output stays on this terminal."""
     return subprocess.run(argv, capture_output=False, text=True, check=False)  # noqa: S603  # nosec B603
@@ -99,9 +108,7 @@ class ContainerRuntime:
         args: Sequence[str],
         env: Sequence[tuple[str, str]],
     ) -> int:
-        _check_image_reference(image)
-        _check_launcher_dir(launcher_dir)
-        _check_launch(args, env)
+        _check_run_arguments(image, launcher_dir, args, env)
         env_options = [option for name, value in env for option in ("-e", f"{name}={value}")]
         argv = [
             self._executable,

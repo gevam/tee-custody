@@ -1016,3 +1016,31 @@ def test_serve_installs_its_stop_handlers_before_starting_and_announcing(
 
     assert _serve_until_signal(_serve_argv(short_dir), signals, signal.SIGTERM) == 0
     assert events == ["handler:SIGINT", "handler:SIGTERM", "start", "announce"]
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize(
+    ("state_name", "flags", "expected_err"),
+    [
+        ("state", ("--env", "1A=x"), "INVALID_LAUNCH_CONFIG\n"),
+        ("state", ("--env", "A B=x"), "INVALID_LAUNCH_CONFIG\n"),
+        ("state", ("--arg", "nul\0"), "INVALID_LAUNCH_CONFIG\n"),
+        ("st:ate", (), "INVALID_PATH\n"),
+    ],
+)
+def test_up_validates_the_launch_and_mount_before_inspecting_or_writing_state(
+    cli: Cli,
+    short_dir: Path,
+    fake_runner: FakeContainerRunner,
+    state_name: str,
+    flags: tuple[str, ...],
+    expected_err: str,
+) -> None:
+    state = short_dir / state_name
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE,
+                         "--issuer-port", "0", *flags)  # fmt: skip
+
+    assert (code, out, err) == (2, "", expected_err)
+    assert fake_runner.calls == []
+    assert not state.exists()

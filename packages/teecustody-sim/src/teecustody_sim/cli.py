@@ -34,7 +34,7 @@ from teecustody_sim.constants import (
 )
 from teecustody_sim.keys import SimKeys
 from teecustody_sim.profile import build_trust_profile
-from teecustody_sim.runtime import ContainerRuntime
+from teecustody_sim.runtime import ContainerRuntime, _check_run_arguments
 from teecustody_sim.simulator import Simulator
 from teecustody_sim.token import TokenMinter, parse_alteration
 from teecustody_sim.vectors import generate_corpus, generate_suite
@@ -290,9 +290,14 @@ def _serve(options: argparse.Namespace) -> int:
 
 def _up(options: argparse.Namespace) -> int:
     configure_logging(sys.stderr, logging.WARNING)
+    state_dir: Path = options.state_dir.resolve()
+    # Validate the whole `run` before inspecting, creating directories or starting the simulator.
+    _check_run_arguments(
+        options.image, state_dir / _LAUNCHER_DIR_NAME, args=options.arg, env=options.env
+    )
     runtime = ContainerRuntime(options.runtime)
     digest = runtime.image_digest(options.image)
-    launcher_dir = _launcher_dir(options.state_dir.resolve())
+    launcher_dir = _launcher_dir(state_dir)
     config = SimulatorConfig(
         state_dir=launcher_dir.parent,
         socket_path=launcher_dir / LAUNCHER_SOCKET_NAME,
