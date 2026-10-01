@@ -5,7 +5,6 @@
 # Fixtures: .semgrep/tests/tc.<rule-id>.{pos,neg}.<ext>; `semgrep --test .semgrep/` runs them through
 # the .semgrep/tests/tc.yaml link to this file. Test mode ignores `paths:`, so path scoping is
 # exercised by the trunk scan (`semgrep --config .semgrep.yml --error`).
-# A rule id listed more than once is one policy split by path; each entry has its own `paths:`.
 
 rules:
   - id: tc-no-default-token-file
@@ -29,6 +28,10 @@ rules:
       - pattern: $X.listen(...)
       - pattern: asyncio.start_server(...)
       - pattern: asyncio.start_unix_server(...)
+      - pattern: socket.create_server(...)
+      - pattern: $LOOP.create_server(...)
+      - pattern: $LOOP.create_unix_server(...)
+      - pattern: multiprocessing.connection.Listener(...)
 
   - id: tc-no-tls-override
     message: TLS certificate verification is never disabled (SR-5).
@@ -97,7 +100,9 @@ rules:
       - pattern: exec(...)
       - pattern: eval(...)
 
-  # tc-py-banned-import, entry 1 of 3: teecustody source except the CBOR entry point.
+  # tc-py-banned-import (rule 8) is split by path into three ids: semgrep-core prefilters files per
+  # rule id, so two entries sharing an id silently drop findings.
+  # Entry 1: teecustody source except the CBOR entry point.
   - id: tc-py-banned-import
     message: >-
       Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
@@ -125,8 +130,8 @@ rules:
       - pattern: import multiprocessing.managers
       - pattern: from multiprocessing.managers import $X
 
-  # tc-py-banned-import, entry 2 of 3: wire/cbor.py may import cbor2 and nothing else listed.
-  - id: tc-py-banned-import
+  # Entry 2: wire/cbor.py may import cbor2 and nothing else on the list.
+  - id: tc-py-banned-import-wire
     message: >-
       Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
       (NFR-2); teecustody never imports the simulator (NFR-6).
@@ -150,9 +155,9 @@ rules:
       - pattern: import multiprocessing.managers
       - pattern: from multiprocessing.managers import $X
 
-  # tc-py-banned-import, entry 3 of 3: the simulator may serve loopback listeners (spec §15) but
-  # decodes CBOR only through teecustody.wire.
-  - id: tc-py-banned-import
+  # Entry 3: the simulator may serve loopback listeners (spec §15) but decodes CBOR only through
+  # teecustody.wire.
+  - id: tc-py-banned-import-sim
     message: >-
       Banned module: cbor2 only via teecustody.wire (SR-3); no listener modules in the workload
       (NFR-2); teecustody never imports the simulator (NFR-6).
