@@ -11,6 +11,7 @@ import logging
 import re
 from collections.abc import Callable
 from enum import StrEnum
+from typing import TextIO
 
 import pytest
 
@@ -19,6 +20,7 @@ from teecustody.attest import (
     AttestationLifecycle,
     AttestationToken,
     ConfidentialSpaceLauncher,
+    Launcher,
     LauncherError,
     LauncherErrorCode,
     RefreshOutcome,
@@ -30,12 +32,21 @@ from teecustody.channel import IdentityKey
 from teecustody.obs import (
     ALLOWED_FIELDS,
     OUTCOME_PATTERN,
+    AllowListedLogger,
     FieldValue,
     JsonLogFormatter,
     configure_logging,
     get_logger,
 )
-from teecustody.wire import PROTO, DecodeLimits, WireError, WireErrorCode, decode, encode
+from teecustody.wire import (
+    PROTO,
+    CanonicalValue,
+    DecodeLimits,
+    WireError,
+    WireErrorCode,
+    decode,
+    encode,
+)
 
 PUBLIC_NAMES: dict[str, tuple[str, ...]] = {
     "teecustody.attest": (
@@ -229,68 +240,135 @@ def test_frozen_dataclass_fields_equal_api(cls: type, fields: list[str]) -> None
     assert all(f.default is dataclasses.MISSING for f in dataclasses.fields(cls))
 
 
-P = inspect.Parameter
-POS = P.POSITIONAL_OR_KEYWORD
-KW = P.KEYWORD_ONLY
-EMPTY = P.empty
+# API.md §B transcribed verbatim. Each spec is compared by `inspect.Signature` equality, which
+# covers parameter names, order, kinds, defaults, annotations and the return annotation.
+def _spec_identity_nonce(identity_public_key: bytes) -> bytes: ...
+def _spec_launcher_nonce(identity_nonce: bytes) -> str: ...
+def _spec_parse_token_metadata(
+    token: str, *, audience: str, expected_nonce: str, max_token_bytes: int
+) -> AttestationToken: ...
+def _spec_encode(value: CanonicalValue) -> bytes: ...
+def _spec_decode(data: bytes, limits: DecodeLimits) -> CanonicalValue: ...
+def _spec_get_logger(name: str) -> AllowListedLogger: ...
+def _spec_configure_logging(stream: TextIO, level: int = logging.INFO) -> None: ...
+
+
+class _LauncherErrorSpec:
+    def __init__(self, code: LauncherErrorCode) -> None: ...
+
+
+class _WireErrorSpec:
+    def __init__(self, code: WireErrorCode) -> None: ...
+
+
+class _LauncherSpec:
+    def get_attestation_token(
+        self, audience: str, token_type: str, identity_nonce: bytes
+    ) -> AttestationToken: ...
+
+
+class _ConfidentialSpaceLauncherSpec:
+    def __init__(
+        self,
+        socket_path: str = DEFAULT_LAUNCHER_SOCKET,
+        *,
+        timeout_s: float,
+        max_response_bytes: int,
+    ) -> None: ...
+    def get_attestation_token(
+        self, audience: str, token_type: str, identity_nonce: bytes
+    ) -> AttestationToken: ...
+
+
+class _AttestationLifecycleSpec:
+    def __init__(
+        self,
+        launcher: Launcher,
+        *,
+        audience: str,
+        token_type: str,
+        identity_public_key: bytes,
+        refresh_margin_s: int,
+        clock: Callable[[], float],
+        logger: AllowListedLogger,
+    ) -> None: ...
+    @property
+    def identity_nonce(self) -> bytes: ...
+    def start(self) -> AttestationToken: ...
+    def current(self) -> AttestationToken: ...
+    def refresh_if_due(self) -> RefreshOutcome: ...
+
+
+class _IdentityKeySpec:
+    @classmethod
+    def generate(cls) -> IdentityKey: ...
+    def public_bytes(self) -> bytes: ...
+
+
+class _AllowListedLoggerSpec:
+    def info(self, outcome: str, **fields: FieldValue) -> None: ...
+    def warning(self, outcome: str, **fields: FieldValue) -> None: ...
+    def error(self, outcome: str, **fields: FieldValue) -> None: ...
+
+
+def _signature(obj: object) -> inspect.Signature:
+    target = obj.fget if isinstance(obj, property) else obj
+    assert callable(target)
+    return inspect.signature(target, eval_str=True)
+
+
+FROZEN_SIGNATURES: dict[str, tuple[object, object]] = {
+    "LauncherError.__init__": (LauncherError.__init__, _LauncherErrorSpec.__init__),
+    "Launcher.get_attestation_token": (
+        Launcher.get_attestation_token,
+        _LauncherSpec.get_attestation_token,
+    ),
+    "identity_nonce": (identity_nonce, _spec_identity_nonce),
+    "launcher_nonce": (launcher_nonce, _spec_launcher_nonce),
+    "parse_token_metadata": (parse_token_metadata, _spec_parse_token_metadata),
+    "ConfidentialSpaceLauncher.__init__": (
+        ConfidentialSpaceLauncher.__init__,
+        _ConfidentialSpaceLauncherSpec.__init__,
+    ),
+    "ConfidentialSpaceLauncher.get_attestation_token": (
+        ConfidentialSpaceLauncher.get_attestation_token,
+        _ConfidentialSpaceLauncherSpec.get_attestation_token,
+    ),
+    "AttestationLifecycle.__init__": (
+        AttestationLifecycle.__init__,
+        _AttestationLifecycleSpec.__init__,
+    ),
+    "AttestationLifecycle.identity_nonce": (
+        vars(AttestationLifecycle)["identity_nonce"],
+        vars(_AttestationLifecycleSpec)["identity_nonce"],
+    ),
+    "AttestationLifecycle.start": (AttestationLifecycle.start, _AttestationLifecycleSpec.start),
+    "AttestationLifecycle.current": (
+        AttestationLifecycle.current,
+        _AttestationLifecycleSpec.current,
+    ),
+    "AttestationLifecycle.refresh_if_due": (
+        AttestationLifecycle.refresh_if_due,
+        _AttestationLifecycleSpec.refresh_if_due,
+    ),
+    "IdentityKey.generate": (IdentityKey.generate, _IdentityKeySpec.generate),
+    "IdentityKey.public_bytes": (IdentityKey.public_bytes, _IdentityKeySpec.public_bytes),
+    "WireError.__init__": (WireError.__init__, _WireErrorSpec.__init__),
+    "encode": (encode, _spec_encode),
+    "decode": (decode, _spec_decode),
+    "AllowListedLogger.info": (AllowListedLogger.info, _AllowListedLoggerSpec.info),
+    "AllowListedLogger.warning": (AllowListedLogger.warning, _AllowListedLoggerSpec.warning),
+    "AllowListedLogger.error": (AllowListedLogger.error, _AllowListedLoggerSpec.error),
+    "get_logger": (get_logger, _spec_get_logger),
+    "configure_logging": (configure_logging, _spec_configure_logging),
+}
 
 
 @pytest.mark.parametrize(
-    ("func", "params"),
-    [
-        (identity_nonce, [("identity_public_key", POS, EMPTY)]),
-        (launcher_nonce, [("identity_nonce", POS, EMPTY)]),
-        (
-            parse_token_metadata,
-            [
-                ("token", POS, EMPTY),
-                ("audience", KW, EMPTY),
-                ("expected_nonce", KW, EMPTY),
-                ("max_token_bytes", KW, EMPTY),
-            ],
-        ),
-        (
-            ConfidentialSpaceLauncher.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("socket_path", POS, DEFAULT_LAUNCHER_SOCKET),
-                ("timeout_s", KW, EMPTY),
-                ("max_response_bytes", KW, EMPTY),
-            ],
-        ),
-        (
-            ConfidentialSpaceLauncher.get_attestation_token,
-            [
-                ("self", POS, EMPTY),
-                ("audience", POS, EMPTY),
-                ("token_type", POS, EMPTY),
-                ("identity_nonce", POS, EMPTY),
-            ],
-        ),
-        (
-            AttestationLifecycle.__init__,
-            [
-                ("self", POS, EMPTY),
-                ("launcher", POS, EMPTY),
-                ("audience", KW, EMPTY),
-                ("token_type", KW, EMPTY),
-                ("identity_public_key", KW, EMPTY),
-                ("refresh_margin_s", KW, EMPTY),
-                ("clock", KW, EMPTY),
-                ("logger", KW, EMPTY),
-            ],
-        ),
-        (encode, [("value", POS, EMPTY)]),
-        (decode, [("data", POS, EMPTY), ("limits", POS, EMPTY)]),
-        (get_logger, [("name", POS, EMPTY)]),
-        (configure_logging, [("stream", POS, EMPTY), ("level", POS, logging.INFO)]),
-    ],
+    ("actual", "spec"), FROZEN_SIGNATURES.values(), ids=FROZEN_SIGNATURES.keys()
 )
-def test_signature_equals_api(
-    func: Callable[..., object], params: list[tuple[str, object, object]]
-) -> None:
-    actual = [(p.name, p.kind, p.default) for p in inspect.signature(func).parameters.values()]
-    assert actual == params
+def test_full_signature_equals_api_transcription(actual: object, spec: object) -> None:
+    assert _signature(actual) == _signature(spec)
 
 
 @pytest.mark.parametrize("code", list(LauncherErrorCode))
