@@ -350,6 +350,16 @@ describe("checkSupportAttributes (§6.7)", () => {
             "CLAIM_MISMATCH",
         );
     });
+
+    it("rejects a sparse array whose hole hides behind STABLE with CLAIM_MISMATCH", () => {
+        const sparse: JsonValue[] = ["STABLE"];
+        sparse.length = 2;
+        expectRejected(
+            supportAttributes(withAttributes(sparse)),
+            "support_attributes",
+            "CLAIM_MISMATCH",
+        );
+    });
 });
 
 function inheriting(proto: JsonObject, own: JsonObject = {}): JsonObject {

@@ -107,12 +107,15 @@ export function checkSupportAttributes(t: ParsedToken): void {
     if (attributes === undefined) {
         throw new AttestationError("CLAIM_MISSING", "support_attributes");
     }
-    if (
-        !isJsonArray(attributes) ||
-        !attributes.includes(REQUIRED_SUPPORT_ATTRIBUTE) ||
-        !attributes.every((a) => typeof a === "string" && ALLOWED_SUPPORT_ATTRIBUTES.has(a))
-    ) {
+    if (!isJsonArray(attributes) || !attributes.includes(REQUIRED_SUPPORT_ATTRIBUTE)) {
         throw new AttestationError("CLAIM_MISMATCH", "support_attributes");
+    }
+    // Index loop, not every(): every() skips holes in a sparse array.
+    for (let i = 0; i < attributes.length; i++) {
+        const attribute = attributes[i];
+        if (typeof attribute !== "string" || !ALLOWED_SUPPORT_ATTRIBUTES.has(attribute)) {
+            throw new AttestationError("CLAIM_MISMATCH", "support_attributes");
+        }
     }
 }
 
