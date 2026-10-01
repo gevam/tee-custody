@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "teecustody-sim"
+version = "0.1.0"
+description = "Development-only Confidential Space simulator for teecustody. Never a production dependency."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["teecustody==0.1.0", "cryptography==50.0.2"]
+
+[project.scripts]
+teecustody-sim = "teecustody_sim.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/teecustody_sim"]
+
+[tool.uv.sources]
+teecustody = { workspace = true }

@@ -1,0 +1,12 @@
+# teecustody lint policy; everything else comes from the workspace root.
+extend = "../../pyproject.toml"
+
+[lint.flake8-tidy-imports.banned-api]
+"cbor2".msg = "use teecustody.wire: the single CBOR encode/decode entry point (SR-3)"
+"http.server".msg = "the workload has no inbound listener (NFR-2)"
+"socketserver".msg = "the workload has no inbound listener (NFR-2)"
+"teecustody_sim".msg = "teecustody never depends on the simulator (NFR-6)"
+
+[lint.extend-per-file-ignores]
+"src/teecustody/wire/cbor.py" = ["TID251"]
+"tests/**" = ["TID251"]

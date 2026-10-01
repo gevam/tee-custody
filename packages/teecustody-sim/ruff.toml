@@ -1,0 +1,5 @@
+# teecustody-sim lint policy; everything else comes from the workspace root.
+extend = "../../pyproject.toml"
+
+[lint.flake8-tidy-imports.banned-api]
+"cbor2".msg = "use teecustody.wire: the single CBOR encode/decode entry point (SR-3)"
