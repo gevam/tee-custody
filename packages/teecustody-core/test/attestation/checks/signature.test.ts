@@ -320,7 +320,13 @@ function jwksWith(...entries: unknown[]): Bytes {
 
 const redirect = (url: string): ReadonlyMap<string, number> => new Map([[url, 302]]);
 const serverError = (url: string): ReadonlyMap<string, number> => new Map([[url, 500]]);
-const NOT_UTF8 = new Uint8Array([0x7b, 0xff, 0x7d]);
+// A valid JSON document carrying a lone 0xff inside a string value: a lenient (replacement-character)
+// decode yields valid JSON, so only strict UTF-8 decoding rejects it.
+function withInvalidUtf8(value: object): Bytes {
+    const text = JSON.stringify({ ...value, x: "" });
+    const prefix = utf8Encode(text.slice(0, -2));
+    return new Uint8Array([...prefix, 0xff, ...utf8Encode('"}')]);
+}
 
 type MatrixRow = readonly [string, () => Documents];
 
@@ -344,7 +350,10 @@ const DISCOVERY_ROWS: readonly MatrixRow[] = [
             discovery: padded({ issuer: ISSUER, jwks_uri: JWKS_URI }, LIMITS.maxDiscoveryBytes + 1),
         }),
     ],
-    ["discovery not UTF-8", () => ({ discovery: NOT_UTF8 })],
+    [
+        "discovery not UTF-8",
+        () => ({ discovery: withInvalidUtf8({ issuer: ISSUER, jwks_uri: JWKS_URI }) }),
+    ],
     ["discovery not JSON", () => ({ discovery: utf8Encode("<html>") })],
     ["discovery a JSON array", () => ({ discovery: json([ISSUER, JWKS_URI]) })],
     ["discovery JSON null", () => ({ discovery: json(null) })],
@@ -357,7 +366,7 @@ const JWKS_ROWS: readonly MatrixRow[] = [
         "JWKS oversize",
         () => ({ jwks: padded({ keys: [jwkEntry(issuerKey.jwk)] }, LIMITS.maxJwksBytes + 1) }),
     ],
-    ["JWKS not UTF-8", () => ({ jwks: NOT_UTF8 })],
+    ["JWKS not UTF-8", () => ({ jwks: withInvalidUtf8({ keys: [jwkEntry(issuerKey.jwk)] }) })],
     ["JWKS not JSON", () => ({ jwks: utf8Encode("{keys:") })],
     ["JWKS a JSON array", () => ({ jwks: json([jwkEntry(issuerKey.jwk)]) })],
     ["JWKS keys absent", () => ({ jwks: json({}) })],
@@ -455,6 +464,26 @@ function flipBit(bytes: Bytes, index: number): Bytes {
     copy[index] = (copy[index] ?? 0) ^ 0x01;
     return copy;
 }
+
+// Review round 1 (finding 2): a same-kid entry failing one filter is not a candidate, so the valid key
+// beside it is the single candidate. Removing that one filter makes the decoy a duplicate and rejects.
+const DECOYS: readonly (readonly [string, () => object])[] = [
+    ["n absent", () => withoutMember("n")],
+    ["n not a string", () => jwkEntry(issuerKey.jwk, { n: 7 })],
+    ["e absent", () => withoutMember("e")],
+    ["e not a string", () => jwkEntry(issuerKey.jwk, { e: 7 })],
+    ["kty EC", () => jwkEntry(issuerKey.jwk, { kty: "EC" })],
+    ["use enc", () => jwkEntry(issuerKey.jwk, { use: "enc" })],
+    ["alg RS384", () => jwkEntry(issuerKey.jwk, { alg: "RS384" })],
+];
+
+describe("checkSignature: same-kid decoys beside the valid key (criterion 5)", () => {
+    it.each(DECOYS)("resolves with a same-kid decoy whose %s", async (_label, decoy) => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const jwks = jwksWith(decoy(), jwkEntry(issuerKey.jwk));
+        await expect(checkSignature(token, PROFILE, depsFor({ jwks }))).resolves.toBeUndefined();
+    });
+});
 
 describe("checkSignature: tampering (criterion 6)", () => {
     it.each([
