@@ -37,11 +37,12 @@ export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void 
     if (iat === undefined) {
         throw new AttestationError("CLAIM_MISSING", "time");
     }
+    // Negated, and the window must be finite, so a NaN or unbounded max age fails closed.
     const maxAgeMs = p.token_max_age_s * 1000;
-    if (nowMs - iat * 1000 > maxAgeMs) {
+    if (!Number.isFinite(maxAgeMs) || !(nowMs - iat * 1000 <= maxAgeMs)) {
         throw new AttestationError("EXPIRED", "time");
     }
-    if (iat * 1000 - nowMs > maxAgeMs) {
+    if (!(iat * 1000 - nowMs <= maxAgeMs)) {
         throw new AttestationError("NOT_YET_VALID", "time");
     }
     const nbf = numericDate(t, "nbf");

@@ -156,6 +156,20 @@ describe("checkTime (§6.4)", () => {
         );
     });
 
+    it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+        "fails closed when token_max_age_s is %s",
+        (maxAge) => {
+            const profile = brandTrustProfile({ ...PROFILE, token_max_age_s: maxAge });
+            expectRejected(
+                () => {
+                    checkTime(token(FRESH), profile, NOW_MS);
+                },
+                "time",
+                "EXPIRED",
+            );
+        },
+    );
+
     it("checks iat before nbf", () => {
         expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 1 }), "time", "CLAIM_MISMATCH");
     });
