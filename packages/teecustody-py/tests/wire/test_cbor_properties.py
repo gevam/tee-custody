@@ -7,7 +7,8 @@ from hypothesis import strategies as st
 
 from teecustody.wire import CanonicalValue, DecodeLimits, WireError, decode, encode
 
-GENEROUS_LIMITS = DecodeLimits(max_bytes=1 << 24, max_depth=64, max_items=1 << 20)
+DEPTH_CEILING = 64
+GENEROUS_LIMITS = DecodeLimits(max_bytes=1 << 24, max_depth=DEPTH_CEILING, max_items=1 << 20)
 VECTOR_LIMITS = DecodeLimits(max_bytes=1024, max_depth=4, max_items=64)
 EXAMPLES = 500
 
@@ -18,6 +19,22 @@ scalars: st.SearchStrategy[CanonicalValue] = st.one_of(
     st.binary(max_size=64),
     st.text(max_size=32),
 )
+
+
+def _depth(value: CanonicalValue) -> int:
+    """Rule-5 depth of `value` (top level 1), computed iteratively."""
+    deepest = 0
+    pending: list[tuple[CanonicalValue, int]] = [(value, 1)]
+    while pending:
+        item, depth = pending.pop()
+        deepest = max(deepest, depth)
+        if isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, dict):
+            pending.extend((child, depth + 1) for child in item.values())
+    return deepest
+
+
 canonical_values: st.SearchStrategy[CanonicalValue] = st.recursive(
     scalars,
     lambda children: st.one_of(
@@ -25,7 +42,7 @@ canonical_values: st.SearchStrategy[CanonicalValue] = st.recursive(
         st.dictionaries(st.text(max_size=12), children, max_size=6),
     ),
     max_leaves=40,
-)
+).filter(lambda value: _depth(value) <= DEPTH_CEILING)
 
 
 @settings(max_examples=EXAMPLES)
