@@ -10,6 +10,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Final
 
+from teecustody.obs import get_logger
 from teecustody_sim.alterations import JsonValue
 from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimulatorConfig
 from teecustody_sim.constants import (
@@ -31,6 +32,7 @@ _MAX_PORT: Final = 65535
 _CREDENTIAL_VARIABLE: Final = "GOOGLE_APPLICATION_CREDENTIALS"
 _CREDENTIAL_PREFIX: Final = "CLOUDSDK_AUTH_"
 _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
+_LOGGER_NAME: Final = "sim"
 _STATE_FILE_NAME: Final = "sim-state.json"
 _STATE_VERSION: Final = 1
 _STATE_FILE_MODE: Final = 0o600
@@ -134,6 +136,9 @@ class Simulator:
     def start(self) -> None:
         config = self._config
         _validate(config, os.environ if self._environ is None else self._environ)
+        if config.allow_non_loopback:
+            # spec §15.5: binding beyond loopback is explicit and warned about on every start.
+            get_logger(_LOGGER_NAME).warning("SIM_NON_LOOPBACK_BIND")
         try:
             self._serve(config)
         except BaseException:

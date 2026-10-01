@@ -429,3 +429,50 @@ def test_token_file_symlink_is_never_followed(short_dir: Path) -> None:
 
     assert target.read_text() == "untouched"
     assert not config.socket_path.exists()
+
+
+class RecordingLogger:
+    def __init__(self, records: list[tuple[str, str, str, dict[str, str | int]]], name: str):
+        self._records = records
+        self._name = name
+
+    def info(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "info", outcome, fields))
+
+    def warning(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "warning", outcome, fields))
+
+    def error(self, outcome: str, **fields: str | int) -> None:
+        self._records.append((self._name, "error", outcome, fields))
+
+
+@pytest.fixture
+def log_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, str, str, dict[str, str | int]]]:
+    records: list[tuple[str, str, str, dict[str, str | int]]] = []
+    monkeypatch.setattr(simulator_module, "get_logger", lambda name: RecordingLogger(records, name))
+    return records
+
+
+@pytest.mark.usefixtures("fakes")
+def test_non_loopback_bind_warns_on_every_start(
+    short_dir: Path, log_records: list[tuple[str, str, str, dict[str, str | int]]]
+) -> None:
+    config = make_config(short_dir, issuer_host="0.0.0.0", allow_non_loopback=True)  # noqa: S104
+    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    for _ in range(2):
+        simulator.start()
+        assert urlsplit(simulator.issuer_origin).hostname == "0.0.0.0"  # noqa: S104
+        simulator.stop()
+
+    assert log_records == [("sim", "warning", "SIM_NON_LOOPBACK_BIND", {})] * 2
+
+
+@pytest.mark.usefixtures("fakes")
+def test_loopback_start_logs_nothing(
+    short_dir: Path, log_records: list[tuple[str, str, str, dict[str, str | int]]]
+) -> None:
+    with Simulator(make_config(short_dir), environ={}, clock=fixed_clock):
+        pass
+    assert log_records == []
