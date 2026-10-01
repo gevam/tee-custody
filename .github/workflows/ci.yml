@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Every `uv run` (including framework.yaml's commands) fails if uv.lock is out of date.
+  UV_LOCKED: "1"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
 jobs:
   test:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -107,7 +113,8 @@ jobs:
         run: uv run pytest --cov=teecustody --cov=teecustody_sim --cov-report=term-missing packages/teecustody-py packages/teecustody-sim && pnpm -r coverage
 
   security:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # Also nightly, so newly published advisories and leaked-secret rules reach unchanged code.
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -123,18 +130,23 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      - name: gitleaks (full history)
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          # The workflow's own read-only token (permissions above), used to read PR commits.
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: gitleaks (MIT binary, version and SHA-256 pinned; full history)
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .
       - name: pip-audit (locked Python dependencies, hash-checked)
         run: |
           uv export --locked --no-emit-workspace --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit==2.10.1 --strict --require-hashes --disable-pip -r "$RUNNER_TEMP/requirements.txt"
       - name: pnpm audit
         run: pnpm audit --audit-level high
-      - name: bandit (Low findings are reported, Medium and above fail)
+      - name: bandit (Medium and above fail)
+        # Lows are already gated repo-wide by ruff's `S` rules (flake8-bandit) in lint_command, and
+        # `# nosec` is banned by tc-py-no-lint-suppression, so nothing is silenced in source.
         run: uvx bandit==1.9.4 --severity-level medium -r packages/teecustody-py/src packages/teecustody-sim/src
       - name: semgrep static policy
         run: uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
@@ -154,7 +166,7 @@ jobs:
           version: "0.11.17"
           python-version: "3.12"
       - name: dependency policy (forbidden, crypto allow-list and pins, simulator separation, licence, age)
-        run: uv run python tools/dependency_policy.py
+        run: uv run --locked python tools/dependency_policy.py
 
   fuzz:
     # SR-3 / ADR 0010: 100,000-case CBOR decoder fuzz, nightly and on demand only.
