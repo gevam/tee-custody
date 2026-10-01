@@ -332,6 +332,9 @@ class TokenMinter:
                 return (AlterClaim(("submods", "container", "env"), env),)
             case "key_id_duplicated":
                 duplicate = dict(_first_entry(signatures))
+                if len(signatures) < 2:
+                    # Replacing the only entry with itself would mint a copy of `valid`.
+                    raise ValueError("INVALID_ALTERATION")
                 return (AlterClaim(_IMAGE_SIGNATURES, [*signatures[:-1], duplicate]),)
             case _:
                 raise ValueError("UNKNOWN_CASE")

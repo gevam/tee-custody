@@ -481,3 +481,21 @@ def test_signature_cases_keep_the_valid_payload_bytes(minter: TokenMinter, case_
 def test_parse_alteration_rejects_values_not_encodable_as_utf8(text: str) -> None:
     with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
         parse_alteration("alter", text)
+
+
+def test_key_id_duplicated_needs_two_listed_signatures() -> None:
+    minter = TokenMinter(SimKeys.generate(1), LAUNCH, ttl_s=TTL_S, token_max_age_s=MAX_AGE_S)
+
+    with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
+        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase("key_id_duplicated"))
+
+
+def test_key_id_duplicated_counts_listed_not_configured_signatures(
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for signer in keys.signers[1:]:
+        monkeypatch.setattr(signer, "sign", lambda payload: b"\x00" * 256)
+    minter = TokenMinter(keys, LAUNCH, ttl_s=TTL_S, token_max_age_s=MAX_AGE_S)
+
+    with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
+        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase("key_id_duplicated"))
