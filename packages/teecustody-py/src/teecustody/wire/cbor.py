@@ -27,6 +27,8 @@ _PERMITTED_SIMPLE = frozenset({0xF4, 0xF5, 0xF6})  # false, true, null
 _INT_MIN = -(2**64)
 _INT_MAX = 2**64 - 1
 _MAX_NESTING = 400  # cbor2 materialises at most 400 nested containers; its encoder recurses in C
+# Shared Python/TypeScript nesting ceiling: cbor2 recurses in C, so nothing deeper reaches it.
+_MAX_DEPTH = 64
 
 
 @dataclass
@@ -160,7 +162,10 @@ def encode(value: CanonicalValue) -> bytes:
 
 
 def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
-    if min(limits.max_bytes, limits.max_depth, limits.max_items) < 1:
+    if (
+        min(limits.max_bytes, limits.max_depth, limits.max_items) < 1
+        or limits.max_depth > _MAX_DEPTH
+    ):
         raise ValueError("INVALID_LIMITS")
     if len(data) > limits.max_bytes:
         raise WireError(WireErrorCode.TOO_LARGE)

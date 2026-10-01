@@ -128,6 +128,24 @@ def test_limits_below_one_are_invalid_before_any_parsing(limits: DecodeLimits) -
     assert type(caught.value) is ValueError
 
 
+DEPTH_CEILING = 64  # shared Python/TypeScript nesting ceiling (T-04 amendment 2026-10-01b)
+
+
+def test_max_depth_above_the_ceiling_is_invalid_before_cbor2_is_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def must_not_be_called(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("cbor2.loads called with limits above the depth ceiling")
+
+    monkeypatch.setattr("teecustody.wire.cbor.cbor2.loads", must_not_be_called)
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        decode(b"\x00", DecodeLimits(1024, DEPTH_CEILING + 1, 1024))
+
+
+def test_max_depth_at_the_ceiling_is_accepted() -> None:
+    assert decode(b"\x00", DecodeLimits(1024, DEPTH_CEILING, 1024)) == 0
+
+
 ALLOCATION_BOUND_BYTES = 64 * 1024
 
 
@@ -190,16 +208,6 @@ def test_bignum_tag_is_unsupported(vector_limits: DecodeLimits) -> None:
     assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
 
 
-def test_nesting_cbor2_cannot_materialise_is_malformed_not_a_foreign_exception() -> None:
-    deep = bytes.fromhex("81" * 500 + "00")
-    limits = DecodeLimits(max_bytes=len(deep), max_depth=1000, max_items=1000)
-    with pytest.raises(WireError) as caught:
-        decode(deep, limits)
-    assert caught.value.code is WireErrorCode.MALFORMED
-    assert caught.value.__cause__ is None
-    assert caught.value.__suppress_context__
-
-
 def test_any_foreign_exception_after_the_length_check_becomes_malformed(
     monkeypatch: pytest.MonkeyPatch, vector_limits: DecodeLimits
 ) -> None:
@@ -231,13 +239,6 @@ def _nested_lists(levels: int) -> list[Any]:
     for _ in range(levels - 1):
         value = [value]
     return value
-
-
-def test_nesting_at_the_materialisation_bound_round_trips() -> None:
-    value = _nested_lists(MAX_NESTING)
-    encoded = encode(value)
-    limits = DecodeLimits(max_bytes=len(encoded), max_depth=MAX_NESTING + 1, max_items=1000)
-    assert decode(encoded, limits) == value
 
 
 @pytest.mark.parametrize("levels", [MAX_NESTING + 1, 100_000], ids=["bound_plus_1", "100k"])
