@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import logging
 import shutil
 import socket
 import stat
@@ -476,3 +477,78 @@ def test_loopback_start_logs_nothing(
     with Simulator(make_config(short_dir), environ={}, clock=fixed_clock):
         pass
     assert log_records == []
+
+
+PRIVATE_JWK_MEMBERS = ("d", "p", "q", "dp", "dq", "qi")
+
+
+def _raw(origin_or_socket: str | Path, data: bytes) -> bytes:
+    if isinstance(origin_or_socket, Path):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        address: str | tuple[str, int] = str(origin_or_socket)
+    else:
+        parts = urlsplit(origin_or_socket)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        address = (parts.hostname or "", parts.port or 0)
+    with sock:
+        sock.settimeout(5.0)
+        sock.connect(address)
+        sock.sendall(data)
+        chunks = []
+        while chunk := sock.recv(65536):
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@pytest.mark.usefixtures("fakes")
+def test_no_pem_private_jwk_member_or_token_reaches_logs_or_non_token_responses(
+    short_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+    log_records: list[tuple[str, str, str, dict[str, str | int]]],
+) -> None:
+    private_jwk = {**PUBLIC_JWK, **{member: "cHJpdmF0ZQ" for member in PRIVATE_JWK_MEMBERS}}
+    monkeypatch.setattr(FakeKeys, "issuer_jwks", lambda self: {"keys": [private_jwk]})
+    caplog.set_level(logging.DEBUG)
+    responses: list[bytes] = []
+    tokens: list[bytes] = []
+
+    rejected = make_config(short_dir, signers_required=0)
+    with pytest.raises(SimConfigError):
+        Simulator(rejected, environ={"GOOGLE_APPLICATION_CREDENTIALS": FAKE_PEM}).start()
+    with pytest.raises(SimConfigError) as refused:
+        Simulator(make_config(short_dir), environ={"CLOUDSDK_AUTH_X": FAKE_PEM}).start()
+    responses.append(str(refused.value).encode())
+
+    for host, allow in [("127.0.0.1", False), ("0.0.0.0", True)]:  # noqa: S104
+        config = make_config(short_dir, issuer_host=host, allow_non_loopback=allow)
+        with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+            origin = simulator.issuer_origin.replace("0.0.0.0", "127.0.0.1")  # noqa: S104
+            for path in ["/.well-known/openid-configuration", "/jwks", "/missing"]:
+                responses.append(_raw(origin, f"GET {path} HTTP/1.1\r\n\r\n".encode()))
+            responses.append(_raw(origin, b"DELETE /jwks HTTP/1.1\r\n\r\n"))
+            responses.append(_raw(origin, b"GET /" + b"a" * 5000 + b" HTTP/1.1\r\n\r\n"))
+            for body in [b"{}", b"not json", b'{"audience": "' + FAKE_PEM.encode() + b'"}']:
+                head = f"POST /v1/token HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n"
+                responses.append(_raw(config.socket_path, head.encode() + body))
+            responses.append(_raw(config.socket_path, b"GET /v1/token HTTP/1.1\r\n\r\n"))
+            responses.append(_raw(config.socket_path, b"POST /v1/token HTTP/1.1\r\n\r\n"))
+            status, token = post_token(config.socket_path, AUDIENCE, [NONCE])
+            assert status == 200
+            tokens.append(token)
+            tokens.append(config.token_file_path.read_bytes())
+
+    captured = capfd.readouterr()
+    logs = "\n".join([caplog.text, captured.out, captured.err, repr(log_records)])
+    assert [record[2] for record in log_records] == ["SIM_NON_LOOPBACK_BIND"]
+    jwks_bodies = [r.partition(b"\r\n\r\n")[2] for r in responses if b'"keys"' in r]
+    assert len(jwks_bodies) == 2
+    for body in jwks_bodies:
+        for key in json.loads(body)["keys"]:
+            assert not set(PRIVATE_JWK_MEMBERS) & set(key)
+    for text in [logs.encode(), *responses]:
+        assert b"BEGIN PRIVATE KEY" not in text
+        assert b"cHJpdmF0ZQ" not in text
+        for token in tokens:
+            assert token not in text
