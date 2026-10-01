@@ -10,6 +10,13 @@ Accepted (Security Architect sign-off 2026-09-30). §6.8 follows D-016.
 `generate_corpus` (ADR 0010 differential corpus); the minter lists only image signatures that verify (T-22
 simulator emulation of Google); `vectors` also writes the corpus; §F adds the corpus file.
 
+**Amendment 2026-10-01 (Tech Lead, T-04 code review finding 1, High):** both codecs share a nesting-depth
+ceiling of **64**. `decode`/`decodeCanonical` reject limits with `max_depth`/`maxDepth` > 64 as
+`INVALID_LIMITS` (same error and timing as limits < 1, before parsing); `encode`/`encodeCanonical` raise
+`WireError(LIMIT_EXCEEDED)` for a value nested deeper than 64 (rule-5 depth counting), before any
+serialisation. The ceiling is a module-private constant in each `cbor` module, not an export; `types` files,
+`index.ts` and the `spec/wire` rules are unchanged. Every limit in use is ≤ 16.
+
 **Stub convention.** A "stub" is created in Wave 0 with its final signature and a body that raises
 `NotImplementedError("T-nn")` (Python) or throws `new Error("NOT_IMPLEMENTED: T-nn")` (TypeScript), where
 T-nn is the implementing task. The implementing task owns the stub file from its wave on and may change
@@ -115,7 +122,7 @@ type CanonicalValue = (None | bool | int | str | bytes
 @dataclass(frozen=True)
 class DecodeLimits:
     max_bytes: int    # input length limit, checked before parsing
-    max_depth: int    # top-level item has depth 1
+    max_depth: int    # top-level item has depth 1; 1..64 (shared ceiling, 2026-10-01) else INVALID_LIMITS at decode
     max_items: int    # total data items; each map key and each map value counts 1
 class WireErrorCode(StrEnum):
     TOO_LARGE = "TOO_LARGE"; MALFORMED = "MALFORMED"; NONCANONICAL = "NONCANONICAL"
@@ -125,8 +132,8 @@ class WireError(Exception):              # str(err) == err.code.value
     code: WireErrorCode
 
 # wire/cbor.py  (stub → T-04)
-def encode(value: CanonicalValue) -> bytes: ...
-def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue: ...
+def encode(value: CanonicalValue) -> bytes: ...   # depth > 64 → WireError(LIMIT_EXCEEDED) before cbor2.dumps
+def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue: ...  # fields < 1 or max_depth > 64 → ValueError("INVALID_LIMITS")
 
 # obs/types.py  (final)
 ALLOWED_FIELDS: Final = frozenset({"client_id", "request_id", "session_id", "prekey_id", "epoch"})
@@ -377,8 +384,9 @@ export interface DecodeLimits { readonly maxBytes: number; readonly maxDepth: nu
 export type WireErrorCode = "TOO_LARGE" | "MALFORMED" | "NONCANONICAL" | "UNSUPPORTED_TYPE" | "LIMIT_EXCEEDED";
 export class WireError extends Error { constructor(readonly code: WireErrorCode) }  // message === code
 // wire/cbor.ts (stub → T-09)
-export function encodeCanonical(value: CanonicalValue): Bytes;
+export function encodeCanonical(value: CanonicalValue): Bytes;   // depth > 64 → WireError("LIMIT_EXCEEDED")
 export function decodeCanonical(data: Bytes, limits: DecodeLimits): CanonicalValue; // ints: number if safe, else bigint
+// decodeCanonical: limits not positive safe integers, or maxDepth > 64 → RangeError("INVALID_LIMITS") (2026-10-01)
 
 // attestation/types.ts (final)
 declare const parsedProfile: unique symbol;
