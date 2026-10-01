@@ -199,10 +199,14 @@ rules:
               - pattern: self
               - pattern: global
               - pattern: window
-          # Class fields with these names are declarations, not references to the global.
-          - pattern-not-inside: self = $V
-          - pattern-not-inside: global = $V
-          - pattern-not-inside: window = $V
+          # A class field named self/global/window is a declaration; only the name is excluded,
+          # never the initialiser (`self = window` still flags `window`).
+          - pattern-not:
+              patterns:
+                - pattern-inside: |
+                    class $C { ... }
+                - pattern: $F = $V
+                - focus-metavariable: $F
 
   - id: tc-ts-no-function-constructor
     message: >-

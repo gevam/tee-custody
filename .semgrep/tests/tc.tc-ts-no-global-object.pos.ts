@@ -21,3 +21,13 @@ export async function leak(): Promise<unknown[]> {
     const typed: G | undefined = undefined;
     return [response, store, keys, reflect, w, s, g, typed];
 }
+
+// Field names are declarations, but their initialisers are references.
+export class FieldB {
+    // ruleid: tc-ts-no-global-object
+    self = window;
+}
+export class FieldC {
+    // ruleid: tc-ts-no-global-object
+    window = self.crypto;
+}
