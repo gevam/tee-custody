@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import secrets
 from typing import Any
 
 import pytest
@@ -303,3 +304,30 @@ def test_frame_jws_reproduces_rfc7515_appendix_a2_byte_for_byte() -> None:
 
     assert compact == RFC7515_A2_COMPACT
     assert signing_inputs == [RFC7515_A2_COMPACT.rpartition(".")[0].encode("ascii")]
+
+
+def _broken_sign(payload: bytes) -> bytes:
+    return secrets.token_bytes(256)
+
+
+def _listed_key_ids(minter: TokenMinter) -> list[str]:
+    _, payload, _ = decode(minter.mint(AUDIENCE, [NONCE], NOW))
+    entries = json.loads(payload)["submods"]["container"]["image_signatures"]
+    return [entry["key_id"] for entry in entries]
+
+
+def test_minter_omits_an_image_signature_that_does_not_verify(
+    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(keys.signers[1], "sign", _broken_sign)
+
+    assert _listed_key_ids(minter) == [keys.signers[0].key_id]
+
+
+def test_minter_lists_no_image_signatures_when_every_signer_is_broken(
+    keys: SimKeys, minter: TokenMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for signer in keys.signers:
+        monkeypatch.setattr(signer, "sign", _broken_sign)
+
+    assert _listed_key_ids(minter) == []

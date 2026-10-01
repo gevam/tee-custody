@@ -5,6 +5,10 @@ import json
 from collections.abc import Callable, Sequence
 from typing import Literal
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
 from teecustody_sim.alterations import Alteration, JsonValue
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
@@ -16,6 +20,8 @@ from teecustody_sim.constants import (
     SWNAME,
 )
 from teecustody_sim.keys import SignerKeyMaterial, SimKeys
+
+_PSS_SALT_32 = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
 
 
 def _b64url(data: bytes) -> str:
@@ -46,6 +52,37 @@ def image_signature_payload(image_reference: str, image_digest: str) -> bytes:
     )
 
 
+def _signature_verifies(signer: SignerKeyMaterial, signature: bytes, payload: bytes) -> bool:
+    public_key = serialization.load_der_public_key(signer.spki_der)
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        return False
+    try:
+        public_key.verify(signature, payload, _PSS_SALT_32, hashes.SHA256())
+    except InvalidSignature:
+        return False
+    return True
+
+
+def _verified_image_signatures(
+    signers: Sequence[SignerKeyMaterial], payload: bytes
+) -> list[JsonValue]:
+    """Sign with every signer; list only signatures that verify (Google emulation, D-016/T-22)."""
+    entries: list[JsonValue] = []
+    for signer in signers:
+        signature = signer.sign(payload)
+        if _signature_verifies(signer, signature, payload):
+            entries.append(_image_signature_entry(signer, signature))
+    return entries
+
+
+def _image_signature_entry(signer: SignerKeyMaterial, signature: bytes) -> JsonValue:
+    return {
+        "key_id": signer.key_id,
+        "signature": base64.b64encode(signature).decode("ascii"),
+        "signature_algorithm": signer.algorithm,
+    }
+
+
 def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str:
     signing_input = f"{_b64url(header)}.{_b64url(payload)}"
     return f"{signing_input}.{_b64url(sign(signing_input.encode('ascii')))}"
@@ -71,13 +108,6 @@ class TokenMinter:
         self._ttl_s = ttl_s
         self._token_max_age_s = token_max_age_s
 
-    def _image_signature(self, signer: SignerKeyMaterial, payload: bytes) -> JsonValue:
-        return {
-            "key_id": signer.key_id,
-            "signature": base64.b64encode(signer.sign(payload)).decode("ascii"),
-            "signature_algorithm": signer.algorithm,
-        }
-
     def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
         launch = self._launch
         payload = image_signature_payload(launch.image_reference, launch.image_digest)
@@ -97,9 +127,7 @@ class TokenMinter:
                 "container": {
                     "image_reference": launch.image_reference,
                     "image_digest": launch.image_digest,
-                    "image_signatures": [
-                        self._image_signature(signer, payload) for signer in self._keys.signers
-                    ],
+                    "image_signatures": _verified_image_signatures(self._keys.signers, payload),
                     "args": list(launch.args),
                     "env": dict(launch.env),
                 },
