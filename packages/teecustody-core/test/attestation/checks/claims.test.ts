@@ -357,3 +357,32 @@ describe("own properties only", () => {
         expectRejected(supportAttributes(claims), "support_attributes", "CLAIM_MISSING");
     });
 });
+
+describe("error messages (SR-11)", () => {
+    const MARKER = "tok3n-c0ntent-marker";
+    const cases: readonly [AttestationCheckId, () => void][] = [
+        ["audience", audience({ aud: MARKER })],
+        ["audience", audience({ aud: [MARKER] })],
+        ["time", time({ ...FRESH, exp: MARKER })],
+        ["time", time({ ...FRESH, iat: MARKER })],
+        ["time", time({ ...FRESH, nbf: MARKER })],
+        ["nonce", nonce({ eat_nonce: MARKER })],
+        ["nonce", nonce({ eat_nonce: [MARKER, EXPECTED_NONCE] })],
+        ["nonce", nonce({ eat_nonce: MARKER }, new TextEncoder().encode(MARKER))],
+        ["platform", platform({ ...PLATFORM, hwmodel: MARKER })],
+        ["platform", platform({ ...PLATFORM, swname: MARKER })],
+        ["platform", platform({ ...PLATFORM, secboot: MARKER })],
+        ["platform", platform({ ...PLATFORM, dbgstat: MARKER })],
+        ["support_attributes", supportAttributes(withAttributes(["STABLE", MARKER]))],
+        ["support_attributes", supportAttributes(withAttributes(MARKER))],
+    ];
+
+    it.each(cases)("%s rejection message is exactly `<check>: <code>`", (check, run) => {
+        const error = failure(run);
+        expect(error.check).toBe(check);
+        expect(error.message).toBe(`${check}: ${error.code}`);
+        expect(Object.keys(error).sort()).toEqual(["check", "code"]);
+        expect(JSON.stringify(error)).not.toContain(MARKER);
+        expect(String(error.stack)).not.toContain(MARKER);
+    });
+});
