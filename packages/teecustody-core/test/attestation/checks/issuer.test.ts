@@ -59,7 +59,9 @@ function thrown(run: () => void): AttestationError {
 
 describe("checkIssuer (criterion 7)", () => {
     it("passes when iss equals the profile issuer", () => {
-        expect(checkIssuer(tokenWithClaims({ iss: ISSUER, aud: "x" }), PROFILE)).toBeUndefined();
+        expect(() => {
+            checkIssuer(tokenWithClaims({ iss: ISSUER, aud: "x" }), PROFILE);
+        }).not.toThrow();
     });
 
     it("rejects an absent iss as CLAIM_MISSING", () => {
@@ -73,6 +75,9 @@ describe("checkIssuer (criterion 7)", () => {
     it.each([
         ["a different issuer", `${ISSUER}.evil.test`],
         ["a non-string iss", [ISSUER]],
+        ["a null iss", null],
+        ["a trailing-slash issuer", `${ISSUER}/`],
+        ["an issuer differing in case", ISSUER.toUpperCase()],
     ])("rejects %s as CLAIM_MISMATCH", (_label, iss) => {
         const error = thrown(() => {
             checkIssuer(tokenWithClaims({ iss }), PROFILE);

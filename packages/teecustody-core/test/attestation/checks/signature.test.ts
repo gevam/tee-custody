@@ -493,3 +493,69 @@ describe("checkSignature: error content, SR-11 (criterion 8)", () => {
         );
     });
 });
+
+describe("checkSignature: edge cases", () => {
+    it("accepts discovery and JWKS documents of exactly the size limits", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const overrides = {
+            discovery: padded({ issuer: ISSUER, jwks_uri: JWKS_URI }, LIMITS.maxDiscoveryBytes),
+            jwks: padded({ keys: [jwkEntry(issuerKey.jwk)] }, LIMITS.maxJwksBytes),
+        };
+        await expect(checkSignature(token, PROFILE, depsFor(overrides))).resolves.toBeUndefined();
+    });
+
+    it("accepts a kid of exactly 256 characters", async () => {
+        const kid = "k".repeat(256);
+        const token = await tokenWith({ alg: "RS256", kid });
+        const jwks = jwksWith(jwkEntry(issuerKey.jwk, { kid }));
+        await expect(checkSignature(token, PROFILE, depsFor({ jwks }))).resolves.toBeUndefined();
+    });
+
+    it("rejects a __proto__ header member as UNSUPPORTED_ALGORITHM", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const header = JSON.parse(`{"alg":"RS256","kid":"${KID}","__proto__":{}}`) as JsonObject;
+        await expectRejectedBeforeFetch({ ...token, header }, "UNSUPPORTED_ALGORITHM");
+    });
+
+    it("rejects a fetcher that throws synchronously as UNTRUSTED_SIGNER", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const throwing: Fetcher = {
+            get(): Promise<FetchResponse> {
+                throw new Error("socket closed");
+            },
+        };
+        await expectRejected(token, "UNTRUSTED_SIGNER", throwing);
+    });
+
+    it("fetches each document once per call: no cache and no refetch on an unknown kid", async () => {
+        const unknown = await tokenWith({ alg: "RS256", kid: `${KID}-rotated` });
+        const fetcher = counting(mapFetcher(documents()));
+        await expectRejected(unknown, "UNTRUSTED_SIGNER", fetcher);
+        expect(fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI]);
+        const known = await tokenWith({ alg: "RS256", kid: KID });
+        await checkSignature(known, PROFILE, deps(fetcher));
+        expect(fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI, DISCOVERY_URL, JWKS_URI]);
+    });
+
+    it("passes the literal algorithm and only kty/n/e of the selected key to Crypto", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        const seen: unknown[] = [];
+        const inner = testCrypto();
+        const spy: VerifierDeps["crypto"] = {
+            sha256: (data) => inner.sha256(data),
+            verifySignature: (algorithm, key, data, signature) => {
+                seen.push([algorithm, key, data, signature]);
+                return inner.verifySignature(algorithm, key, data, signature);
+            },
+        };
+        await checkSignature(token, PROFILE, { ...depsFor(), crypto: spy });
+        expect(seen).toEqual([
+            [
+                "RSASSA_PKCS1V15_SHA256",
+                { format: "jwk", jwk: { kty: "RSA", n: issuerKey.jwk.n, e: issuerKey.jwk.e } },
+                token.signingInput,
+                token.signature,
+            ],
+        ]);
+    });
+});
