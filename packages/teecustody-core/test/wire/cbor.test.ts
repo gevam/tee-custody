@@ -78,6 +78,14 @@ describe("decodeCanonical bounds", () => {
         input.fill(0xff);
         expect(decoded).toEqual(new Uint8Array([1, 2, 3, 4]));
     });
+
+    it("copies decoded byte strings out of a Node Buffer input too (criterion 6)", () => {
+        const input = Buffer.from("4401020304", "hex");
+        const decoded = decodeCanonical(input, VECTOR_LIMITS);
+        input.fill(0xff);
+        expect(decoded).toEqual(new Uint8Array([1, 2, 3, 4]));
+        expect(Object.getPrototypeOf(decoded)).toBe(Uint8Array.prototype);
+    });
 });
 
 describe("decodeCanonical limits validation", () => {

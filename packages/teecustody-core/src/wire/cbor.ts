@@ -236,7 +236,8 @@ class Reader {
     take(length: number): Bytes {
         const start = this.position;
         this.position += length;
-        return this.data.slice(start, this.position);
+        // A fresh plain Uint8Array: Buffer#slice would return a view of the caller's input.
+        return new Uint8Array(this.data.subarray(start, this.position));
     }
 }
 
