@@ -81,6 +81,7 @@ CORE_RUNTIME_ALLOWED = frozenset({"@hpke/core"})
 LICENCES = frozenset(
     {
         "MIT",
+        "MIT-0",
         "BSD-2-Clause",
         "BSD-3-Clause",
         "Apache-2.0",
@@ -102,6 +103,27 @@ CLASSIFIER_LICENCES = {
     "License :: OSI Approved :: The Unlicense (Unlicense)": "Unlicense",
 }
 STALE_MONTHS = 18
+
+
+@dataclass(frozen=True)
+class LicenceOverride:
+    """A reviewed licence for one exact version whose registry metadata states none."""
+
+    spdx: str
+    evidence: str  # upstream LICENSE at the commit of the released tag
+
+
+# Keyed by exact `name==version`. Applied only when the registry metadata states no licence at all;
+# never when it states one (allowed or not), and never to another version.
+LICENCE_OVERRIDES: dict[str, LicenceOverride] = {
+    # PyPI metadata for 1.1.0 has no license, license_expression or classifier. Tag 1.1.0 is
+    # commit 70d9435779df27a522b146f2c5dee06ccacae373; its LICENSE is MIT (reviewed 2026-10-01).
+    "mypy-extensions==1.1.0": LicenceOverride(
+        "MIT",
+        "https://github.com/python/mypy_extensions/blob/"
+        "70d9435779df27a522b146f2c5dee06ccacae373/LICENSE",
+    ),
+}
 
 RULE_ORDER = (
     "lock-unparseable",
@@ -591,6 +613,16 @@ def licence_allowed(expression: str) -> bool:
         return False
 
 
+NO_LICENCE_STATED = "NOASSERTION"
+
+
+def _states_a_licence(info: dict[str, Any]) -> bool:
+    """True when PyPI metadata carries any licence statement, allowed or not."""
+    text = f"{info.get('license_expression') or ''}{info.get('license') or ''}".strip()
+    classifiers = [c for c in info.get("classifiers", []) if c.startswith("License ::")]
+    return bool(text or classifiers)
+
+
 def _pypi_licence(info: dict[str, Any]) -> str:
     expression = info.get("license_expression") or info.get("license") or ""
     if expression and licence_allowed(expression):
@@ -657,7 +689,10 @@ def _licence_of(ecosystem: str, name: str, version: str, fetch_json: FetchJson) 
     if document is None:
         return ""
     if ecosystem == PYPI:
-        return _pypi_licence(document.get("info", {}))
+        info = document.get("info", {})
+        if not _states_a_licence(info):
+            return NO_LICENCE_STATED
+        return _pypi_licence(info)
     if version:
         return str(document.get("license") or "")
     return _npm_facts(document)[0]
@@ -671,6 +706,16 @@ def _released(ecosystem: str, name: str, fetch_json: FetchJson) -> dt.date | Non
         return (_pypi_facts(document) if ecosystem == PYPI else _npm_facts(document))[1]
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def _override(name: str, version: str) -> str:
+    override = LICENCE_OVERRIDES.get(f"{name}=={version}")
+    if override is not None:
+        return override.spdx
+    for key in LICENCE_OVERRIDES:
+        if key.partition("==")[0] == name:
+            sys.stderr.write(f"licence override {key} does not match locked {name}=={version}\n")
+    return ""
 
 
 def _licence_targets(repo: Repo) -> dict[Node, str]:
@@ -693,7 +738,10 @@ def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterabl
     """Licence for every package (D-019: dev tooling included); age for shipped packages only."""
     cutoff = _months_before(today, STALE_MONTHS)
     for (ecosystem, name), version in sorted(_licence_targets(repo).items()):
-        if not licence_allowed(_licence_of(ecosystem, name, version, fetch_json)):
+        licence = _licence_of(ecosystem, name, version, fetch_json)
+        if licence == NO_LICENCE_STATED:
+            licence = _override(name, version)
+        if not licence_allowed(licence):
             yield "licence", name
     for ecosystem, name in sorted(repo.runtime):
         released = _released(ecosystem, name, fetch_json)

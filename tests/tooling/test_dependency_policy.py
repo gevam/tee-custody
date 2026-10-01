@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -301,6 +302,7 @@ def test_registry_failure_fails_closed(
     ("expression", "allowed"),
     [
         ("MIT", True),
+        ("MIT-0", True),
         ("Apache-2.0 OR BSD-3-Clause", True),
         ("GPL-3.0-only OR MIT", True),
         ("MIT AND GPL-3.0-only", False),
@@ -511,3 +513,62 @@ def test_transitive_dev_npm_dependency_is_licence_checked_at_its_locked_version(
     )
     _write(clean_tree, "pnpm-lock.yaml", lock)
     assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION licence relicensed"]
+
+
+def _with_unlicensed_dev_package(clean_tree: Path) -> None:
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "nometa", "1.0.0", "pytest")
+    _write(clean_tree, "uv.lock", lock)
+
+
+def test_override_supplies_a_licence_missing_from_registry_metadata(
+    tool: ModuleType,
+    clean_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_unlicensed_dev_package(clean_tree)
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION licence nometa"]
+    override = tool.LicenceOverride("MIT", "https://example.test/nometa/blob/abc123/LICENSE")
+    monkeypatch.setattr(tool, "LICENCE_OVERRIDES", {"nometa==1.0.0": override})
+    assert _violations(tool, clean_tree, capsys, offline=False) == []
+
+
+def test_override_for_another_version_does_not_apply(
+    tool: ModuleType,
+    clean_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_unlicensed_dev_package(clean_tree)
+    override = tool.LicenceOverride("MIT", "https://example.test/nometa/blob/abc123/LICENSE")
+    monkeypatch.setattr(tool, "LICENCE_OVERRIDES", {"nometa==0.9.0": override})
+    argv = ["--root", str(clean_tree), "--today", TODAY]
+    assert tool.main(argv, fetch_json=recorded_fetch) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "VIOLATION licence nometa\n"
+    assert "nometa==0.9.0 does not match locked nometa==1.0.0" in captured.err
+
+
+def test_override_cannot_relax_a_stated_non_osi_licence(
+    tool: ModuleType,
+    clean_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "gpl-old", "0.1.0", "pytest")
+    _write(clean_tree, "uv.lock", lock)
+    override = tool.LicenceOverride("MIT", "https://example.test/gpl-old/blob/abc123/LICENSE")
+    monkeypatch.setattr(tool, "LICENCE_OVERRIDES", {"gpl-old==0.1.0": override})
+    assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION licence gpl-old"]
+
+
+def test_every_override_names_an_allowed_licence_and_pinned_evidence(tool: ModuleType) -> None:
+    assert tool.LICENCE_OVERRIDES
+    for key, override in tool.LICENCE_OVERRIDES.items():
+        name, _, version = key.partition("==")
+        assert name, key
+        assert version, key
+        assert tool.licence_allowed(override.spdx), key
+        assert re.fullmatch(
+            r"https://github\.com/[^/]+/[^/]+/blob/[0-9a-f]{40}/LICENSE", override.evidence
+        )
