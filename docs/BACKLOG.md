@@ -13,3 +13,5 @@ Non-blocking items for the human to prioritise. Not requirements until promoted.
 | B-07 | T-12 SR | `token.ts` parses claims with `JSON.parse` (duplicate claim names: last wins). Google-signed, so low risk; consider a duplicate-key-rejecting JSON parse for token header/payload | Low | INC-2 or next touch of token.ts |
 | B-08 | T-06 SR | Refresh retry backoff: after a failed refresh, every `refresh_if_due` call hits the launcher again; the run-loop task must enforce a minimum retry interval (SR-4) | Required | INC-2 run-loop / Workload task |
 | B-09 | T-08 CR | `launcher.py` imports private `_SimRequestHandler` from `issuer.py`; extract a shared simulator HTTP module | Low | next simulator task |
+| B-10 | T-06 SR r2 | `launcher.py:46`: no test fails if the per-read timeout is a fixed 5 s instead of `timeout_s`; assert stalled-read time ≤ timeout_s | Low | next touch of attest/launcher.py |
+| B-11 | T-07 CR r2 | `keys.py:65` accepts mode 0700 (owner exec) though API.md says any exec bit beyond 0600 is INSECURE; `S_ISDIR` (`keys.py:41`) and new-dir `fchmod` (`keys.py:49`) untested | Low | next simulator task |
