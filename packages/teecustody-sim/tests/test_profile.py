@@ -345,6 +345,8 @@ def test_distinct_rsa_and_p256_keys_are_distinct_holders() -> None:
 def _unsupported_signer(case: str) -> SignerKeyMaterial:
     if case == "ed25519":
         return _signer(ed25519.Ed25519PrivateKey.generate().public_key(), "ECDSA_P256_SHA256")
+    if case == "ed25519-declared-rsassa-pss":
+        return _signer(ed25519.Ed25519PrivateKey.generate().public_key(), "RSASSA_PSS_SHA256")
     if case == "rsa-1024":
         return _signer(_rsa_private_key(1024).public_key(), "RSASSA_PSS_SHA256")
     if case == "rsa-2048-e3":
@@ -361,6 +363,7 @@ def _unsupported_signer(case: str) -> SignerKeyMaterial:
 
 UNSUPPORTED_CASES = [
     "ed25519",
+    "ed25519-declared-rsassa-pss",
     "rsa-1024",
     "rsa-2048-e3",
     "p384-declared-ecdsa-p256",
