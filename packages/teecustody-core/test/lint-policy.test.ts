@@ -29,6 +29,17 @@ describe("ESLint policy for packages/teecustody-core/src", () => {
         ["const name = String(1);\nvoid import(name);", "no-restricted-syntax"],
         ['import "node:fs";', "no-restricted-imports"],
         ['import "fs";', "no-restricted-imports"],
+        ['export * from "cbor-x";', "no-restricted-imports"],
+        ['setTimeout("run()", 1);', "no-implied-eval"],
+        ["void (globalThis as unknown as { fetch: () => void }).fetch;", "no-restricted-globals"],
+        ['void Reflect.get(globalThis, "localStorage");', "no-restricted-globals"],
+        ['const F = Function;\nvoid new F("");', "no-restricted-globals"],
+        ["void self;", "no-restricted-globals"],
+        ["void global;", "no-restricted-globals"],
+        ['void import("node:fs");', "no-restricted-syntax"],
+        ['void import("fs");', "no-restricted-syntax"],
+        ['void import("fs/promises");', "no-restricted-syntax"],
+        ['void import("cbor-x");', "no-restricted-syntax"],
     ])("rejects %s", async (code, rule) => {
         expect(await ruleIds(code, CORE_SRC_FILE)).toContain(rule);
     });
@@ -48,6 +59,17 @@ describe("ESLint policy outside Core source", () => {
             "no-restricted-imports",
         );
         expect(await ruleIds('eval("1");', "tests/x.test.ts")).toContain("no-eval");
+        expect(await ruleIds('setTimeout("run()", 1);', "tests/x.test.ts")).toContain(
+            "no-implied-eval",
+        );
+        expect(await ruleIds('void import("cbor-x");', "tests/x.test.ts")).toContain(
+            "no-restricted-syntax",
+        );
+    });
+
+    it("allows globalThis, Function and literal Node dynamic imports in tests", async () => {
+        const code = 'void globalThis.crypto;\nvoid Function;\nvoid import("node:fs");';
+        expect(await ruleIds(code, CORE_TEST_FILE)).toEqual([]);
     });
 });
 
