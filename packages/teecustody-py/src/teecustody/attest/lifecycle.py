@@ -8,7 +8,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from teecustody.attest.nonce import identity_nonce
-from teecustody.attest.ports import AttestationToken, Launcher, LauncherError
+from teecustody.attest.ports import AttestationToken, Launcher, LauncherError, LauncherErrorCode
 from teecustody.obs import AllowListedLogger
 
 
@@ -75,6 +75,10 @@ class AttestationLifecycle:
         return RefreshOutcome.REFRESHED
 
     def _request(self) -> AttestationToken:
-        return self._launcher.get_attestation_token(
+        """Request a token with the identity nonce; one that is already expired is rejected."""
+        token = self._launcher.get_attestation_token(
             self._audience, self._token_type, self._identity_nonce
         )
+        if token.expires_at <= self._clock():
+            raise LauncherError(LauncherErrorCode.TOKEN_REJECTED)
+        return token

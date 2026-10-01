@@ -305,3 +305,37 @@ def test_refresh_failing_after_the_token_expired_mid_request_is_raised() -> None
         rig.lifecycle.refresh_if_due()
 
     assert rig.logger.records[-1] == ("error", "ATTESTATION_TOKEN_EXPIRED", {})
+
+
+# Review R1 item 4: a token that is already expired is never accepted ------------------------
+
+
+def test_start_rejects_a_token_that_is_already_expired() -> None:
+    rig = make_rig(FIRST)
+    rig.clock.now = FIRST.expires_at
+
+    with pytest.raises(LauncherError) as caught:
+        rig.lifecycle.start()
+
+    assert caught.value.code is LauncherErrorCode.TOKEN_REJECTED
+    assert rig.logger.records == [("error", "ATTESTATION_TOKEN_FAILED", {})]
+    with pytest.raises(RuntimeError, match="NOT_STARTED"):
+        rig.lifecycle.current()
+
+
+def test_start_accepts_a_token_one_second_before_expiry() -> None:
+    rig = make_rig(FIRST)
+    rig.clock.now = FIRST.expires_at - 1
+
+    assert rig.lifecycle.start() == FIRST
+
+
+def test_refresh_returning_an_expired_token_keeps_the_current_one() -> None:
+    stale = AttestationToken("stale.token.value", issued_at=0, expires_at=FIRST.expires_at - MARGIN)
+    rig = started(stale)
+    rig.clock.now = FIRST.expires_at - MARGIN
+
+    assert rig.lifecycle.refresh_if_due() is RefreshOutcome.FAILED_KEPT_CURRENT
+
+    assert rig.lifecycle.current() == FIRST
+    assert rig.logger.records[-1] == ("warning", "ATTESTATION_REFRESH_FAILED", {})
