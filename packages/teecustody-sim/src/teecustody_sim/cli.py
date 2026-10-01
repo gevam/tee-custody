@@ -58,6 +58,7 @@ _LAUNCHER_DIR_NAME: Final = "launcher"
 _DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
 _ERROR_CODE: Final = re.compile(r"[A-Z][A-Z0-9_]*", re.ASCII)
 _INTERNAL: Final = "INTERNAL"
+_SIGNAL_STATUS_BASE: Final = 128
 _STOP_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM)
 
 
@@ -300,9 +301,11 @@ def _up(options: argparse.Namespace) -> int:
     )
     with Simulator(config) as simulator:
         _announce(simulator, config)
-        return runtime.run_workload(
+        status = runtime.run_workload(
             options.image, launcher_dir=launcher_dir, args=options.arg, env=options.env
         )
+    # A runtime killed by signal N reports -N; the shell reports that as 128 + N.
+    return status if status >= 0 else _SIGNAL_STATUS_BASE - status
 
 
 def _check_vectors_out(out: Path) -> None:

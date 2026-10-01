@@ -343,7 +343,7 @@ class FakeContainerRunner:
         self.calls: list[list[str]] = []
         self.seen_inside: dict[str, Any] = {}
         self.inspect_stdout = inspect_stdout
-        self._exit_code = exit_code
+        self.exit_code = exit_code
 
     def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
@@ -359,7 +359,7 @@ class FakeContainerRunner:
             mount_source / "attestation_verifier_claims_token"
         ).exists()
         self.seen_inside["mode"] = stat.S_IMODE(mount_source.stat().st_mode)
-        return subprocess.CompletedProcess(list(argv), self._exit_code, None, None)
+        return subprocess.CompletedProcess(list(argv), self.exit_code, None, None)
 
 
 @pytest.fixture
@@ -929,3 +929,21 @@ def test_a_state_path_that_is_not_a_regular_file_is_refused(
     code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
 
     assert (code, out, err) == (2, "", "INVALID_PATH\n")
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize(("container_status", "exit_code"), [(0, 0), (1, 1), (-9, 137), (-15, 143)])
+def test_up_exits_with_the_shell_status_of_the_container(
+    cli: Cli,
+    short_dir: Path,
+    fake_runner: FakeContainerRunner,
+    container_status: int,
+    exit_code: int,
+) -> None:
+    # A runtime killed by a signal reports -N; the shell convention for that status is 128 + N.
+    fake_runner.exit_code = container_status
+
+    code, _, err = cli("up", "--state-dir", str(short_dir / "state"), "--image", IMAGE,
+                       "--audience", AUDIENCE, "--issuer-port", "0")  # fmt: skip
+
+    assert (code, err) == (exit_code, "")
