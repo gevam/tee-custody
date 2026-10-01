@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseToken } from "../../src/attestation/token.js";
+import { AttestationError } from "../../src/attestation/types.js";
 import { generateRsaKey, signJws } from "../support/jws.js";
 import {
     RFC7515_A2_COMPACT,
@@ -42,5 +43,77 @@ describe("parseToken accepts a well-formed compact JWS", () => {
             "http://example.com/is_root": true,
         });
         expect(parsed.signature).toHaveLength(256);
+    });
+});
+
+function b64url(text: string): string {
+    return Buffer.from(text, "utf8").toString("base64url");
+}
+
+const HEADER = b64url('{"alg":"RS256","kid":"k1"}');
+const CLAIMS = b64url('{"iss":"https://issuer.unit.test"}');
+const SIGNATURE = Buffer.from([1, 2, 3]).toString("base64url");
+const GOOD = `${HEADER}.${CLAIMS}.${SIGNATURE}`;
+const INVALID_UTF8 = Buffer.from([0x7b, 0x22, 0xc3, 0x28, 0x22, 0x3a, 0x31, 0x7d]).toString("base64url");
+
+function malformed(token: string, maxTokenBytes = MAX): Error {
+    try {
+        parseToken(token, maxTokenBytes);
+    } catch (error) {
+        if (error instanceof AttestationError) {
+            return error;
+        }
+        throw error;
+    }
+    throw new Error("expected parseToken to throw");
+}
+
+describe("parseToken rejects malformed tokens with MALFORMED/token and no token text (SR-3, SR-11)", () => {
+    const cases: readonly (readonly [string, string, number?])[] = [
+        ["one byte over maxTokenBytes", GOOD, ascii.encode(GOOD).length - 1],
+        ["two segments", `${HEADER}.${CLAIMS}`],
+        ["four segments", `${GOOD}.${SIGNATURE}`],
+        ["empty header segment", `.${CLAIMS}.${SIGNATURE}`],
+        ["empty payload segment", `${HEADER}..${SIGNATURE}`],
+        ["= padding", `${HEADER}.${CLAIMS}.${b64url("ab")}==`],
+        ["standard-alphabet character", `${HEADER}+.${CLAIMS}.${SIGNATURE}`],
+        ["non-JSON header", `${b64url("not json")}.${CLAIMS}.${SIGNATURE}`],
+        ["JSON array payload", `${HEADER}.${b64url("[1,2]")}.${SIGNATURE}`],
+        ["JSON null header", `${b64url("null")}.${CLAIMS}.${SIGNATURE}`],
+        ["JSON string payload", `${HEADER}.${b64url('"x"')}.${SIGNATURE}`],
+        ["invalid UTF-8 header", `${INVALID_UTF8}.${CLAIMS}.${SIGNATURE}`],
+        ["non-zero unused base64url bits", `${HEADER}.${CLAIMS}.AB`],
+        ["segment length ≡ 1 mod 4", `${HEADER}.${CLAIMS}.ABCDE`],
+        ["non-ASCII character", `${HEADER}.${CLAIMS}.é`],
+    ];
+
+    it.each(cases)("%s", (_name, token, maxTokenBytes) => {
+        const error = malformed(token, maxTokenBytes);
+        expect([error.code, error.check]).toEqual(["MALFORMED", "token"]);
+        expect(error.message).toBe("token: MALFORMED");
+        expect(error.cause).toBeUndefined();
+    });
+
+    it("accepts a token exactly maxTokenBytes long", () => {
+        expect(parseToken(GOOD, ascii.encode(GOOD).length).signature).toEqual(
+            new Uint8Array([1, 2, 3]),
+        );
+    });
+
+    it("accepts an empty signature segment so checkSignature classifies alg none", () => {
+        expect(parseToken(`${HEADER}.${CLAIMS}.`, MAX).signature).toEqual(new Uint8Array(0));
+    });
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+        "rejects maxTokenBytes %s",
+        (maxTokenBytes) => {
+            const error = malformed(GOOD, maxTokenBytes);
+            expect([error.code, error.check]).toEqual(["MALFORMED", "token"]);
+        },
+    );
+
+    it("rejects a non-string token from an untyped caller", () => {
+        const error = malformed(42 as unknown as string);
+        expect([error.code, error.check]).toEqual(["MALFORMED", "token"]);
     });
 });
