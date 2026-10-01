@@ -754,3 +754,31 @@ describe("verifyAttestation: errors carry no token content (criterion 10; SR-11)
         expectNoContent(await verifyWith(token, { profile: { ...PROFILE } }), token);
     });
 });
+
+describe("verifyAttestation: limits are validated at entry, before any fetch", () => {
+    const BAD = [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, 2 ** 53];
+    const LIMIT_CHECKS: readonly {
+        readonly limit: keyof VerifierDeps["limits"];
+        readonly check: AttestationCheckId;
+    }[] = [
+        { limit: "maxTokenBytes", check: "token" },
+        { limit: "maxDiscoveryBytes", check: "signature" },
+        { limit: "maxJwksBytes", check: "signature" },
+    ];
+    const rows = LIMIT_CHECKS.flatMap(({ limit, check }) =>
+        BAD.map((value) => ({ limit, check, value })),
+    );
+
+    it.each(rows)(
+        "$limit = $value → $check/MALFORMED, no fetch",
+        async ({ limit, check, value }) => {
+            const h = harness();
+            const err = await verifyWith(await mint(), {
+                deps: { ...h.deps, limits: { ...LIMITS, [limit]: value } },
+            });
+            expect([err.check, err.code]).toEqual([check, "MALFORMED"]);
+            expect(h.fetcher.calls).toEqual([]);
+            expect(h.verifyCalls).toEqual([]);
+        },
+    );
+});

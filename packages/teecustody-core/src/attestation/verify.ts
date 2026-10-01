@@ -51,6 +51,14 @@ async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Pr
     }
 }
 
+// Every VerifierLimits value is a positive safe integer; a NaN, infinite or non-positive cap would disable a
+// size bound downstream, so it fails the step that uses it.
+function requireLimit(value: number, check: AttestationCheckId): void {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new AttestationError("MALFORMED", check);
+    }
+}
+
 export async function verifyAttestation(
     token: string,
     profile: TrustProfile,
@@ -62,6 +70,14 @@ export async function verifyAttestation(
     if (!isBrandedTrustProfile(profile)) {
         throw new AttestationError("MALFORMED", "profile");
     }
+    // Limits are validated at entry, before any fetch.
+    await step("token", () => {
+        requireLimit(deps.limits.maxTokenBytes, "token");
+    });
+    await step("signature", () => {
+        requireLimit(deps.limits.maxDiscoveryBytes, "signature");
+        requireLimit(deps.limits.maxJwksBytes, "signature");
+    });
     const t = await step("token", () => parseToken(token, deps.limits.maxTokenBytes));
     await step("signature", () => checkSignature(t, profile, deps));
     await step("issuer", () => {
