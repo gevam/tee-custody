@@ -682,3 +682,102 @@ def test_every_named_case_token_carries_no_key_material(
 
     assert code == 0
     assert JWS.fullmatch(out.strip()) is not None
+
+
+@pytest.fixture
+def recorded_generators(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, Any]]:
+    calls: list[tuple[str, Any, Any]] = []
+    monkeypatch.setattr(cli_module, "generate_suite", RecordingGenerator("suite", calls))
+    monkeypatch.setattr(cli_module, "generate_corpus", RecordingGenerator("corpus", calls))
+    return calls
+
+
+def _symlink_out(root: Path) -> Path:
+    target = root / "elsewhere"
+    target.mkdir()
+    out = root / "out"
+    out.symlink_to(target)
+    return out
+
+
+def _symlink_subdir(root: Path) -> Path:
+    out = root / "out"
+    out.mkdir()
+    (root / "elsewhere").mkdir()
+    (out / "wire").symlink_to(root / "elsewhere")
+    return out
+
+
+def _symlink_file(root: Path) -> Path:
+    out = root / "out"
+    (out / "attestation").mkdir(parents=True)
+    (out / "attestation" / "suite.cbor").symlink_to(root / "victim")
+    return out
+
+
+def _dangling_corpus_link(root: Path) -> Path:
+    out = root / "out"
+    (out / "wire").mkdir(parents=True)
+    (out / "wire" / "differential-corpus.json").symlink_to(root / "missing")
+    return out
+
+
+def _out_is_a_file(root: Path) -> Path:
+    out = root / "out"
+    out.write_text("not a directory")
+    return out
+
+
+def _subdir_is_a_file(root: Path) -> Path:
+    out = root / "out"
+    out.mkdir()
+    (out / "attestation").write_text("not a directory")
+    return out
+
+
+def _output_is_a_directory(root: Path) -> Path:
+    out = root / "out"
+    (out / "wire" / "differential-corpus.json").mkdir(parents=True)
+    return out
+
+
+@pytest.mark.parametrize(
+    "make_out",
+    [
+        _symlink_out,
+        _symlink_subdir,
+        _symlink_file,
+        _dangling_corpus_link,
+        _out_is_a_file,
+        _subdir_is_a_file,
+        _output_is_a_directory,
+    ],
+)
+def test_vectors_refuses_to_write_through_symlinks_or_onto_non_directories(
+    cli: Cli,
+    tmp_path: Path,
+    recorded_generators: list[tuple[str, Any, Any]],
+    make_out: Callable[[Path], Path],
+) -> None:
+    out = make_out(tmp_path)
+
+    code, stdout, err = cli("vectors", "--out", str(out))
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+    assert recorded_generators == []
+    assert not (tmp_path / "victim").exists()
+    assert not any((tmp_path / "elsewhere").glob("*"))
+
+
+def test_vectors_writes_into_an_existing_real_output_tree(
+    cli: Cli, tmp_path: Path, recorded_generators: list[tuple[str, Any, Any]]
+) -> None:
+    out = tmp_path / "out"
+    (out / "attestation").mkdir(parents=True)
+    (out / "attestation" / "suite.cbor").write_bytes(b"old")
+    (out / "wire").mkdir()
+
+    code, _, err = cli("vectors", "--out", str(out))
+
+    assert (code, err) == (0, "")
+    assert [name for name, _, _ in recorded_generators] == ["suite", "corpus"]

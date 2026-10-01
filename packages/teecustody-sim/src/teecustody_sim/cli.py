@@ -42,6 +42,8 @@ _USAGE_ERROR: Final = "INVALID_ARGUMENT"
 _PROFILE_FILE_MODE: Final = 0o644
 _CORPUS_SEED: Final = 1
 _CORPUS_COUNT: Final = 512
+_SUITE_PATH: Final = Path("attestation", "suite.cbor")  # API.md §C `vectors`
+_CORPUS_PATH: Final = Path("wire", "differential-corpus.json")
 _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
 _LAUNCHER_DIR_NAME: Final = "launcher"
@@ -226,7 +228,24 @@ def _up(options: argparse.Namespace) -> int:
         )
 
 
+def _check_vectors_out(out: Path) -> None:
+    """The output tree is real directories and regular files: nothing is written via a symlink."""
+    directories = (out, out / _SUITE_PATH.parent, out / _CORPUS_PATH.parent)
+    files = (out / _SUITE_PATH, out / _CORPUS_PATH)
+    for path, kind in [
+        *((d, stat.S_ISDIR) for d in directories),
+        *((f, stat.S_ISREG) for f in files),
+    ]:
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            continue
+        if not kind(mode):
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
+
+
 def _vectors(options: argparse.Namespace) -> int:
+    _check_vectors_out(options.out)
     suite = generate_suite(options.out)
     corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
     sys.stdout.write(f"{suite}\n{corpus}\n")
