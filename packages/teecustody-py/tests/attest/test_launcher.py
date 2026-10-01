@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import shutil
+import socket
 import socketserver
 import tempfile
 import threading
@@ -18,6 +20,8 @@ import pytest
 from teecustody.attest import (
     AttestationToken,
     ConfidentialSpaceLauncher,
+    LauncherError,
+    LauncherErrorCode,
     identity_nonce,
     launcher_nonce,
 )
@@ -33,14 +37,23 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def make_token(*, iat: int = 1_900_000_000, exp: int = 1_900_003_600) -> str:
-    claims = {"aud": AUD, "iat": iat, "exp": exp, "eat_nonce": HEX_NONCE}
+def make_token(*, aud: str = AUD, nonce: str = HEX_NONCE) -> str:
+    claims = {"aud": aud, "iat": 1_900_000_000, "exp": 1_900_003_600, "eat_nonce": nonce}
     return f"{_b64(b'{}')}.{_b64(json.dumps(claims).encode())}.c2ln"
 
 
-def http_response(status: int, body: bytes) -> bytes:
-    head = f"HTTP/1.1 {status} X\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+def http_response(status: int, body: bytes, *, content_length: int | None = None) -> bytes:
+    length = len(body) if content_length is None else content_length
+    head = f"HTTP/1.1 {status} X\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
     return head.encode("ascii") + body
+
+
+@dataclass(frozen=True)
+class Reply:
+    """What the fake launcher writes after reading a request; `hang` keeps the socket open."""
+
+    data: bytes
+    hang: bool = False
 
 
 @dataclass
@@ -55,7 +68,7 @@ class FakeLauncher:
     """A scripted launcher on a Unix socket; each connection gets the next reply."""
 
     socket_path: Path
-    replies: list[bytes] = field(default_factory=list)
+    replies: list[Reply] = field(default_factory=list)
     received: list[Received] = field(default_factory=list)
     connections: int = 0
     release: threading.Event = field(default_factory=threading.Event)
@@ -67,12 +80,11 @@ class _Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         fake = self.server.fake
         fake.connections += 1
-        reply = fake.replies.pop(0) if fake.replies else http_response(200, make_token().encode())
-        if reply == b"HANG":
-            fake.release.wait(10)
-            return
-        if reply == b"CLOSE":
-            return
+        reply = (
+            fake.replies.pop(0)
+            if fake.replies
+            else Reply(http_response(200, make_token().encode()))
+        )
         request_line = self.rfile.readline().decode("ascii").rstrip("\r\n")
         headers: dict[str, str] = {}
         while (line := self.rfile.readline().decode("ascii").rstrip("\r\n")) != "":
@@ -80,7 +92,11 @@ class _Handler(socketserver.StreamRequestHandler):
             headers[name.strip().lower()] = value.strip()
         body = self.rfile.read(int(headers.get("content-length", "0")))
         fake.received.append(Received(request_line, headers, body))
-        self.wfile.write(reply)
+        with contextlib.suppress(OSError):
+            self.wfile.write(reply.data)
+            self.wfile.flush()
+        if reply.hang:
+            fake.release.wait(10)
 
 
 class _Server(socketserver.ThreadingUnixStreamServer):
@@ -139,3 +155,148 @@ def test_token_request_matches_the_launcher_endpoint(fake_launcher: FakeLauncher
         "token_type": "OIDC",
     }
     assert launcher_nonce(NONCE) == HEX_NONCE
+
+
+# Criterion 4 -------------------------------------------------------------------------------
+
+
+def _assert_code(
+    launcher: ConfidentialSpaceLauncher,
+    code: LauncherErrorCode,
+    *,
+    audience: str = AUD,
+    token_type: str = "OIDC",  # noqa: S107 - a token type, not a secret
+    nonce: bytes = NONCE,
+) -> None:
+    with pytest.raises(LauncherError) as caught:
+        launcher.get_attestation_token(audience, token_type, nonce)
+    assert caught.value.code is code
+    assert str(caught.value) == code.value
+    assert caught.value.args == (code.value,)
+
+
+@pytest.mark.parametrize(
+    ("audience", "token_type", "nonce"),
+    [
+        (AUD, "PKI", NONCE),
+        (AUD, "oidc", NONCE),
+        (AUD, "", NONCE),
+        (AUD, "OIDC", NONCE[:31]),
+        (AUD, "OIDC", NONCE + b"\x00"),
+        (AUD, "OIDC", b""),
+        ("", "OIDC", NONCE),
+        ("a" * 2049, "OIDC", NONCE),
+    ],
+)
+def test_invalid_request_is_refused_before_any_connection(
+    fake_launcher: FakeLauncher, audience: str, token_type: str, nonce: bytes
+) -> None:
+    _assert_code(
+        client(fake_launcher.socket_path),
+        LauncherErrorCode.INVALID_CONFIGURATION,
+        audience=audience,
+        token_type=token_type,
+        nonce=nonce,
+    )
+    assert fake_launcher.connections == 0
+
+
+def test_audience_of_the_maximum_length_is_requested(fake_launcher: FakeLauncher) -> None:
+    audience = "a" * 2048
+    fake_launcher.replies.append(Reply(http_response(200, make_token(aud=audience).encode())))
+
+    token = client(fake_launcher.socket_path).get_attestation_token(audience, "OIDC", NONCE)
+
+    assert token.value == make_token(aud=audience)
+    assert json.loads(fake_launcher.received[0].body)["audience"] == audience
+
+
+def test_missing_socket_is_unavailable(short_dir: Path) -> None:
+    _assert_code(client(short_dir / "absent.sock"), LauncherErrorCode.UNAVAILABLE)
+
+
+def test_socket_nobody_listens_on_is_unavailable(short_dir: Path) -> None:
+    path = short_dir / "stale.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale:
+        stale.bind(str(path))
+    _assert_code(client(path), LauncherErrorCode.UNAVAILABLE)
+
+
+def test_other_socket_errors_are_unavailable(short_dir: Path) -> None:
+    too_long_for_af_unix = short_dir / ("x" * 200)
+    _assert_code(client(too_long_for_af_unix), LauncherErrorCode.UNAVAILABLE)
+
+
+def test_launcher_that_does_not_answer_in_time_is_unavailable(fake_launcher: FakeLauncher) -> None:
+    fake_launcher.replies.append(Reply(b"", hang=True))
+    _assert_code(client(fake_launcher.socket_path, timeout_s=0.2), LauncherErrorCode.UNAVAILABLE)
+
+
+def test_launcher_that_closes_without_answering_is_unavailable(
+    fake_launcher: FakeLauncher,
+) -> None:
+    fake_launcher.replies.append(Reply(b""))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.UNAVAILABLE)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 599])
+def test_launcher_server_error_is_unavailable(fake_launcher: FakeLauncher, status: int) -> None:
+    fake_launcher.replies.append(Reply(http_response(status, make_token().encode())))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.UNAVAILABLE)
+
+
+@pytest.mark.parametrize("status", [201, 204, 301, 400, 401, 403, 404, 429, 499])
+def test_launcher_client_error_or_other_status_is_rejected(
+    fake_launcher: FakeLauncher, status: int
+) -> None:
+    fake_launcher.replies.append(Reply(http_response(status, make_token().encode())))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.TOKEN_REJECTED)
+
+
+def test_body_of_exactly_the_maximum_size_is_accepted(fake_launcher: FakeLauncher) -> None:
+    body = make_token().encode()
+    fake_launcher.replies.append(Reply(http_response(200, body)))
+
+    token = client(fake_launcher.socket_path, max_bytes=len(body)).get_attestation_token(
+        AUD, "OIDC", NONCE
+    )
+
+    assert token.value == body.decode()
+
+
+def test_body_over_the_maximum_size_is_rejected(fake_launcher: FakeLauncher) -> None:
+    body = make_token().encode()
+    fake_launcher.replies.append(Reply(http_response(200, body)))
+    _assert_code(
+        client(fake_launcher.socket_path, max_bytes=len(body) - 1), LauncherErrorCode.TOKEN_REJECTED
+    )
+
+
+def test_read_stops_after_one_byte_over_the_maximum(fake_launcher: FakeLauncher) -> None:
+    # The launcher announces a huge body, sends max + 1 bytes and then stalls. A client that
+    # tried to read the announced length would time out (UNAVAILABLE) instead of rejecting.
+    sent = b"x" * (MAX + 1)
+    fake_launcher.replies.append(
+        Reply(http_response(200, sent, content_length=100 * MAX), hang=True)
+    )
+    _assert_code(client(fake_launcher.socket_path, timeout_s=5.0), LauncherErrorCode.TOKEN_REJECTED)
+
+
+def test_body_that_is_not_utf8_is_rejected(fake_launcher: FakeLauncher) -> None:
+    fake_launcher.replies.append(Reply(http_response(200, b"\xff" + make_token().encode())))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.TOKEN_REJECTED)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        make_token(aud="https://other.teecustody.test/aud"),
+        make_token(nonce="cd" * 32),
+        "not a token",
+    ],
+)
+def test_token_for_another_audience_or_nonce_is_rejected(
+    fake_launcher: FakeLauncher, token: str
+) -> None:
+    fake_launcher.replies.append(Reply(http_response(200, token.encode())))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.TOKEN_REJECTED)
