@@ -38,12 +38,29 @@ def _ensure_private_dir(path: Path) -> None:
     path.chmod(_PRIVATE_DIR_MODE)
 
 
-def _load_key(path: Path) -> rsa.RSAPrivateKey:
-    if stat.S_IMODE(path.stat().st_mode) & _NOT_OWNER_BITS:
-        raise ValueError("INSECURE_KEY_FILE")
+def _read_owner_only_file(path: Path) -> bytes:
+    """Read a regular file owned by this user with no group/other bits, through one fd."""
     try:
-        key = serialization.load_pem_private_key(path.read_bytes(), password=None)
-    except ValueError:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ValueError("INVALID_KEY_FILE") from None
+    try:
+        status = os.fstat(fd)
+        if not stat.S_ISREG(status.st_mode):
+            raise ValueError("INVALID_KEY_FILE")
+        if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) & _NOT_OWNER_BITS:
+            raise ValueError("INSECURE_KEY_FILE")
+        with os.fdopen(fd, "rb", closefd=False) as file:
+            return file.read()
+    finally:
+        os.close(fd)
+
+
+def _load_key(path: Path) -> rsa.RSAPrivateKey:
+    pem = _read_owner_only_file(path)
+    try:
+        key = serialization.load_pem_private_key(pem, password=None)
+    except (ValueError, TypeError):
         raise ValueError("INVALID_KEY_FILE") from None
     if (
         not isinstance(key, rsa.RSAPrivateKey)

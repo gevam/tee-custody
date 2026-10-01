@@ -217,3 +217,75 @@ def test_load_or_create_rejects_a_key_file_that_is_not_rsa_2048_e65537(
 
     with pytest.raises(ValueError, match=r"^INVALID_KEY_FILE$"):
         SimKeys.load_or_create(tmp_path, 2)
+
+
+def _encrypted_pem() -> bytes:
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(b"test-only-passphrase"),
+    )
+
+
+def _replace_with_symlink_to_valid_key(path: Path) -> None:
+    target = path.with_name("elsewhere.pem")
+    path.rename(target)
+    path.symlink_to(target)
+
+
+def _replace_with_dangling_symlink(path: Path) -> None:
+    path.unlink()
+    path.symlink_to(path.with_name("missing.pem"))
+
+
+def _replace_with_directory(path: Path) -> None:
+    path.unlink()
+    path.mkdir(mode=0o700)
+
+
+def _replace_with_fifo(path: Path) -> None:
+    path.unlink()
+    os.mkfifo(path, 0o600)
+
+
+def _replace_with_encrypted_pem(path: Path) -> None:
+    path.write_bytes(_encrypted_pem())
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [
+        _replace_with_symlink_to_valid_key,
+        _replace_with_dangling_symlink,
+        _replace_with_directory,
+        _replace_with_fifo,
+        _replace_with_encrypted_pem,
+    ],
+    ids=["symlink", "dangling-symlink", "directory", "fifo", "encrypted-pem"],
+)
+def test_load_or_create_rejects_a_key_path_that_is_not_a_plain_unencrypted_key_file(
+    tmp_path: Path, key_files: dict[str, bytes], replace: Callable[[Path], None]
+) -> None:
+    _seed_state(tmp_path, key_files)
+    replace(tmp_path / "keys" / "signer-1.pem")
+
+    with pytest.raises(ValueError, match=r"^INVALID_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path, 2)
+
+
+def test_load_or_create_rejects_a_key_file_owned_by_another_user(
+    tmp_path: Path, key_files: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_state(tmp_path, key_files)
+    real_fstat = os.fstat
+
+    def fstat_owned_by_someone_else(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        fields = list(st[:10])
+        fields[stat.ST_UID] = st.st_uid + 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "fstat", fstat_owned_by_someone_else)
+
+    with pytest.raises(ValueError, match=r"^INSECURE_KEY_FILE$"):
+        SimKeys.load_or_create(tmp_path, 2)
