@@ -5,12 +5,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
 from teecustody_sim import (
@@ -314,4 +314,58 @@ def test_distinct_rsa_and_p256_keys_are_distinct_holders() -> None:
 
     assert profile["signer_keys"] == [
         {"key_id": signer.key_id, "algorithm": signer.algorithm} for signer in signers
+    ]
+
+
+def _unsupported_signer(case: str) -> SignerKeyMaterial:
+    if case == "ed25519":
+        return _signer(ed25519.Ed25519PrivateKey.generate().public_key(), "ECDSA_P256_SHA256")
+    if case == "rsa-1024":
+        return _signer(_rsa_private_key(1024).public_key(), "RSASSA_PSS_SHA256")
+    if case == "rsa-2048-e3":
+        return _signer(_same_modulus(_rsa_private_key(), 3), "RSASSA_PKCS1V15_SHA256")
+    if case == "p384-declared-ecdsa-p256":
+        return _signer(ec.generate_private_key(ec.SECP384R1()).public_key(), "ECDSA_P256_SHA256")
+    if case == "p256-declared-rsassa-pss":
+        return _signer(ec.generate_private_key(ec.SECP256R1()).public_key(), "RSASSA_PSS_SHA256")
+    if case == "rsa-declared-ecdsa-p256":
+        return _signer(_rsa_private_key().public_key(), "ECDSA_P256_SHA256")
+    assert case == "algorithm-rs256"
+    return _signer(_rsa_private_key().public_key(), "RS256")
+
+
+UNSUPPORTED_CASES = [
+    "ed25519",
+    "rsa-1024",
+    "rsa-2048-e3",
+    "p384-declared-ecdsa-p256",
+    "p256-declared-rsassa-pss",
+    "rsa-declared-ecdsa-p256",
+    "algorithm-rs256",
+]
+
+
+@pytest.mark.parametrize("case", UNSUPPORTED_CASES)
+def test_signer_key_that_does_not_fit_its_declared_algorithm_is_rejected(case: str) -> None:
+    with pytest.raises(ValueError, match=r"^UNSUPPORTED_SIGNER_KEY$"):
+        _profile([_unsupported_signer(case)], 1)
+
+
+@pytest.mark.parametrize(
+    ("make_key", "algorithm"),
+    [
+        (lambda: ec.generate_private_key(ec.SECP256R1()).public_key(), "ECDSA_P256_SHA256"),
+        (lambda: _rsa_private_key().public_key(), "RSASSA_PSS_SHA256"),
+        (lambda: _rsa_private_key().public_key(), "RSASSA_PKCS1V15_SHA256"),
+        (lambda: _rsa_private_key(3072).public_key(), "RSASSA_PSS_SHA256"),
+    ],
+    ids=["p256-ecdsa", "rsa2048-pss", "rsa2048-pkcs1v15", "rsa3072-pss"],
+)
+def test_signer_key_that_fits_its_declared_algorithm_is_accepted(
+    make_key: Callable[[], PublicKeyTypes], algorithm: str
+) -> None:
+    signer = _signer(make_key(), algorithm)
+
+    assert _profile([signer], 1)["signer_keys"] == [
+        {"key_id": signer.key_id, "algorithm": algorithm}
     ]
