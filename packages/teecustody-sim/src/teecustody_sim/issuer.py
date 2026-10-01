@@ -5,10 +5,11 @@ import json
 import socket
 import socketserver
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Buffer, Callable, Mapping
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import ClassVar, Final, Protocol, cast
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar, Final, cast
 
 from teecustody_sim.alterations import JsonValue
 from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimLimits
@@ -16,8 +17,10 @@ from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimLimits
 _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
 _JWKS_PATH: Final = "/jwks"
 _POLL_INTERVAL_S: Final = 0.05
-# Per-connection socket timeout (SR-4): a stalled client cannot hold a handler thread.
+# One total deadline per connection for reading the request (SR-4): a slow or stalled client
+# cannot hold a handler thread, however it paces its bytes.
 _REQUEST_DEADLINE_S = 10.0
+_MIN_SOCKET_TIMEOUT_S: Final = 0.001
 _CLAIMS_SUPPORTED: Final = (
     "aud",
     "dbgstat",
@@ -33,6 +36,9 @@ _CLAIMS_SUPPORTED: Final = (
 )
 _PUBLIC_JWK_MEMBERS: Final = ("kty", "alg", "use", "kid", "n", "e")
 
+type _Request = socket.socket | tuple[bytes, socket.socket]
+type _Address = tuple[str, int] | str
+
 
 def _public_jwks(jwks: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     """Copy only public RSA members (SR-7): a private JWK member is never served."""
@@ -47,9 +53,63 @@ def _public_jwks(jwks: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {"keys": public}
 
 
-class _IssuerHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
+class _BoundedServer(socketserver.BaseServer):
+    """Bounded thread-per-connection serving (SR-4), shared by the issuer and the launcher.
+
+    Each accepted connection takes a slot (`max_concurrent_requests`) or, when none is free, an
+    overflow slot (as many again) whose handler answers 503. Beyond both, the connection is closed
+    at accept time. Handler threads are therefore at most 2 x `max_concurrent_requests`, and each
+    is bounded by `_REQUEST_DEADLINE_S` plus the handler's own work.
+    """
+
     limits: SimLimits
+    _threads: tuple[threading.Thread, ...] = ()  # also read by server_close after a failed bind
+
+    def bound(self, limits: SimLimits, handler: type[socketserver.BaseRequestHandler]) -> None:
+        self.limits = limits
+        self._slots = threading.BoundedSemaphore(limits.max_concurrent_requests)
+        self._overflow = threading.BoundedSemaphore(limits.max_concurrent_requests)
+        self._handler = handler
+        self._overflow_handler = type(
+            "Overflow" + handler.__name__, (handler,), {"over_capacity": True}
+        )
+
+    def process_request(self, request: _Request, client_address: _Address) -> None:
+        if self._slots.acquire(blocking=False):
+            slot, handler = self._slots, self._handler
+        elif self._overflow.acquire(blocking=False):
+            slot, handler = self._overflow, self._overflow_handler
+        else:
+            self.shutdown_request(request)
+            return
+        thread = threading.Thread(
+            target=self._serve_one, args=(request, client_address, slot, handler), daemon=True
+        )
+        self._threads = (*(alive for alive in self._threads if alive.is_alive()), thread)
+        thread.start()
+
+    def _serve_one(
+        self,
+        request: _Request,
+        client_address: _Address,
+        slot: threading.BoundedSemaphore,
+        handler: type[socketserver.BaseRequestHandler],
+    ) -> None:
+        try:
+            handler(request, client_address, self)
+        except Exception:  # noqa: BLE001 - see handle_error
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            slot.release()
+
+    def server_close(self) -> None:
+        super().server_close()
+        for thread in self._threads:
+            thread.join()
+
+
+class _IssuerHTTPServer(_BoundedServer, HTTPServer):
     routes: dict[str, bytes]
 
     def server_bind(self) -> None:
@@ -59,6 +119,23 @@ class _IssuerHTTPServer(ThreadingHTTPServer):
 
 class _IssuerHTTPServer6(_IssuerHTTPServer):
     address_family = socket.AF_INET6
+
+
+class _DeadlineSocketReader(io.RawIOBase):
+    """Raw reader whose every `recv` waits at most until one fixed deadline."""
+
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        super().__init__()
+        self._sock = sock
+        self._deadline = deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Buffer, /) -> int:
+        remaining = self._deadline - time.monotonic()
+        self._sock.settimeout(max(remaining, _MIN_SOCKET_TIMEOUT_S))
+        return self._sock.recv_into(buffer)
 
 
 class _HeadTooLarge(Exception):
@@ -89,20 +166,19 @@ class _HeadBudgetReader(io.BufferedIOBase):
         return self._inner.read(size)
 
 
-class _LimitedServer(Protocol):
-    limits: SimLimits
-
-
 class _SimRequestHandler(BaseHTTPRequestHandler):
     """Shared request handling: bounded head, fixed responses, 405 for any method without `do_`."""
 
     allowed_methods: ClassVar[str]
+    over_capacity: ClassVar[bool] = False
 
     def setup(self) -> None:
         super().setup()
-        self.connection.settimeout(_REQUEST_DEADLINE_S)
-        limits = cast(_LimitedServer, self.server).limits
-        self.rfile = _HeadBudgetReader(self.rfile, limits.max_request_bytes)
+        self.rfile.close()
+        deadline = time.monotonic() + _REQUEST_DEADLINE_S
+        reader = io.BufferedReader(_DeadlineSocketReader(self.connection, deadline))
+        limits = cast(_BoundedServer, self.server).limits
+        self.rfile = _HeadBudgetReader(reader, limits.max_request_bytes)
 
     def handle_one_request(self) -> None:
         self.close_connection = True
@@ -138,6 +214,9 @@ class _IssuerHandler(_SimRequestHandler):
     allowed_methods = "GET"
 
     def do_GET(self) -> None:
+        if self.over_capacity:
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
+            return
         body = cast(_IssuerHTTPServer, self.server).routes.get(self.path)
         if body is None:
             self.reply(HTTPStatus.NOT_FOUND, b"NOT_FOUND")
@@ -167,7 +246,7 @@ class IssuerServer:
         ipv6 = ":" in self._host
         server_class = _IssuerHTTPServer6 if ipv6 else _IssuerHTTPServer
         server = server_class((self._host, self._port), _IssuerHandler)
-        server.limits = self._limits
+        server.bound(self._limits, _IssuerHandler)
         host = f"[{self._host}]" if ipv6 else self._host
         origin = f"http://{host}:{server.server_address[1]}"
         discovery: dict[str, JsonValue] = {

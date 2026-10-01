@@ -8,6 +8,7 @@ import socket
 import stat
 import tempfile
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -384,3 +385,68 @@ def test_stalled_client_is_disconnected(
     finally:
         server.stop()
     assert mint.calls == []
+
+
+def _unix_connect(socket_path: Path) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(str(socket_path))  # blocking: waits for backlog space instead of EAGAIN
+    sock.settimeout(5.0)
+    return sock
+
+
+def test_slow_drip_body_is_cut_off_by_one_request_deadline(
+    short_dir: Path, mint: RecordingMint, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(issuer_module, "_REQUEST_DEADLINE_S", 0.5)
+    socket_path = short_dir / "teeserver.sock"
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+    server.start()
+    try:
+        with _unix_connect(socket_path) as sock:
+            start = time.monotonic()
+            sock.settimeout(0.1)
+            sock.sendall(_post_head(4000) + b'{"audience": "')
+            answered = False
+            while not answered and time.monotonic() - start < 4.0:
+                try:
+                    sock.recv(65536)
+                    answered = True
+                except TimeoutError:
+                    try:
+                        sock.sendall(b"a")
+                    except BrokenPipeError:
+                        answered = True
+            elapsed = time.monotonic() - start
+    finally:
+        server.stop()
+    assert elapsed < 1.5
+    assert mint.calls == []
+
+
+def test_connection_flood_is_capped_and_the_launcher_recovers(
+    short_dir: Path, mint: RecordingMint, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(issuer_module, "_REQUEST_DEADLINE_S", 0.5)
+    socket_path = short_dir / "teeserver.sock"
+    limit = 2
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=limit))
+    server.start()
+    baseline = threading.active_count()
+    flood = [_unix_connect(socket_path) for _ in range(40)]
+    try:
+        time.sleep(0.3)
+        assert threading.active_count() <= baseline + 2 * limit
+        start = time.monotonic()
+        for sock in flood:
+            try:
+                while sock.recv(65536):
+                    pass
+            except ConnectionResetError:
+                pass
+        assert time.monotonic() - start < 2.0
+        status, _, body = request(socket_path, token_request())
+    finally:
+        for sock in flood:
+            sock.close()
+        server.stop()
+    assert (status, body) == (200, TOKEN.encode())

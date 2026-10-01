@@ -3,6 +3,8 @@
 import http.client
 import json
 import socket
+import threading
+import time
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
@@ -16,6 +18,7 @@ from teecustody_sim import (
     SimConfigErrorCode,
     SimLimits,
 )
+from teecustody_sim import issuer as issuer_module
 
 PUBLIC_JWK: dict[str, JsonValue] = {
     "kty": "RSA",
@@ -239,3 +242,78 @@ def test_requests_write_nothing_to_stdout_or_stderr(
     captured = capfd.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def drip_until_answered(
+    sock: socket.socket, first: bytes, *, interval: float, give_up: float
+) -> float:
+    """Send `first`, then one byte per `interval` until the server answers or closes."""
+    start = time.monotonic()
+    sock.settimeout(interval)
+    sock.sendall(first)
+    while time.monotonic() - start < give_up:
+        try:
+            if sock.recv(65536) is not None:
+                break
+        except TimeoutError:
+            pass
+        except ConnectionResetError:
+            break
+        try:
+            sock.sendall(b"a")
+        except (BrokenPipeError, ConnectionResetError):
+            break
+    return time.monotonic() - start
+
+
+def test_slow_drip_client_is_cut_off_by_one_request_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(issuer_module, "_REQUEST_DEADLINE_S", 0.5)
+    server = IssuerServer("127.0.0.1", 0, issuer=SIM_ISSUER, jwks=JWKS, limits=SimLimits())
+    server.start()
+    try:
+        parts = urlsplit(server.origin)
+        with socket.create_connection((parts.hostname or "", parts.port or 0)) as sock:
+            elapsed = drip_until_answered(
+                sock, b"GET /jwks HTTP/1.1\r\nX-Slow: ", interval=0.1, give_up=4.0
+            )
+    finally:
+        server.stop()
+    assert elapsed < 1.5
+
+
+def wait_closed_by_server(sock: socket.socket, timeout: float) -> None:
+    sock.settimeout(timeout)
+    try:
+        while sock.recv(65536):
+            pass
+    except ConnectionResetError:
+        pass
+
+
+def test_connection_flood_is_capped_and_the_server_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(issuer_module, "_REQUEST_DEADLINE_S", 0.5)
+    limit = 2
+    limits = SimLimits(max_concurrent_requests=limit)
+    server = IssuerServer("127.0.0.1", 0, issuer=SIM_ISSUER, jwks=JWKS, limits=limits)
+    server.start()
+    baseline = threading.active_count()
+    parts = urlsplit(server.origin)
+    address = (parts.hostname or "", parts.port or 0)
+    flood = [socket.create_connection(address, timeout=5.0) for _ in range(40)]
+    try:
+        time.sleep(0.3)
+        assert threading.active_count() <= baseline + 2 * limit
+        start = time.monotonic()
+        for sock in flood:
+            wait_closed_by_server(sock, timeout=5.0)
+        assert time.monotonic() - start < 2.0
+        status, _, _ = _request(server.origin, "GET", "/jwks")
+    finally:
+        for sock in flood:
+            sock.close()
+        server.stop()
+    assert status == 200

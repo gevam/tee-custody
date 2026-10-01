@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from teecustody_sim.config import SimLimits
-from teecustody_sim.issuer import _SimRequestHandler
+from teecustody_sim.issuer import _BoundedServer, _SimRequestHandler
 
 _POLL_INTERVAL_S: Final = 0.05
 _TOKEN_PATH: Final = "/v1/token"  # noqa: S105 - a URL path
@@ -83,11 +83,8 @@ def _parse_token_request(body: bytes) -> tuple[str, list[str]]:
     return audience, nonces
 
 
-class _LauncherUnixServer(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
-    limits: SimLimits
+class _LauncherUnixServer(_BoundedServer, socketserver.UnixStreamServer):
     mint: _Mint
-    slots: threading.BoundedSemaphore
 
 
 class _LauncherHandler(_SimRequestHandler):
@@ -99,22 +96,19 @@ class _LauncherHandler(_SimRequestHandler):
         server = cast(_LauncherUnixServer, self.server)
         try:
             body = self._read_body(server.limits.max_request_bytes)
+            if self.over_capacity:
+                raise _Rejected(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
             if self.path != _TOKEN_PATH:
                 raise _Rejected(HTTPStatus.NOT_FOUND, b"NOT_FOUND")
             audience, nonces = _parse_token_request(body)
         except _Rejected as rejected:
             self.reply(rejected.status, rejected.body)
             return
-        if not server.slots.acquire(blocking=False):
-            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
-            return
         try:
             token = server.mint(audience, nonces)
         except Exception:  # noqa: BLE001 - a minting failure's detail is never echoed or logged
             self.reply(HTTPStatus.INTERNAL_SERVER_ERROR, b"INTERNAL_ERROR")
             return
-        finally:
-            server.slots.release()
         self.reply(HTTPStatus.OK, token.encode())
 
     def _read_body(self, max_bytes: int) -> bytes:
@@ -149,9 +143,8 @@ class LauncherServer:
         server = _LauncherUnixServer(str(self._socket_path), _LauncherHandler)
         # The real launcher's socket is connectable by the workload's (non-root) user.
         self._socket_path.chmod(0o666)
-        server.limits = self._limits
+        server.bound(self._limits, _LauncherHandler)
         server.mint = self._mint
-        server.slots = threading.BoundedSemaphore(self._limits.max_concurrent_requests)
         self._server = server
         threading.Thread(
             target=server.serve_forever, kwargs={"poll_interval": _POLL_INTERVAL_S}, daemon=True
