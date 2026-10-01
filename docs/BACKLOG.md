@@ -16,3 +16,5 @@ Non-blocking items for the human to prioritise. Not requirements until promoted.
 | B-10 | T-06 SR r2 | `launcher.py:46`: no test fails if the per-read timeout is a fixed 5 s instead of `timeout_s`; assert stalled-read time ≤ timeout_s | Low | next touch of attest/launcher.py |
 | B-11 | T-07 CR r2 | `keys.py:65` accepts mode 0700 (owner exec) though API.md says any exec bit beyond 0600 is INSECURE; `S_ISDIR` (`keys.py:41`) and new-dir `fchmod` (`keys.py:49`) untested | Low | next simulator task |
 | B-12 | T-09 CR r2 | Reverting the TS safe-int mapping makes vitest hang (>150 s) instead of fail; add a per-test timeout to the wire property/fuzz tests | Low | next touch of core wire tests (T-15 or INC-2) |
+| B-13 | T-15 SR | `VerifiedAttestation` is branded only at compile time; INC-2 consumers must check it at runtime | Required | INC-2 bundle/session tasks |
+| B-14 | T-17 CR | Differential corpus outcome classes are thin (NONCANONICAL 6/512; LIMIT_EXCEEDED absent for 6 of 60 seeds); consider guaranteed minimum per class | Low | INC-2 corpus refresh |
