@@ -202,6 +202,16 @@ describe("checkNonce (§6.5)", () => {
         expectRejected(nonce({ eat_nonce: expected }, identityNonce), "nonce", "MALFORMED");
     });
 
+    it.each<[string, string]>([
+        ["a trailing extra byte", `${EXPECTED_NONCE}00`],
+        ["a leading extra byte", `00${EXPECTED_NONCE}`],
+        ["a truncated nonce", EXPECTED_NONCE.slice(0, -2)],
+        ["an empty string", ""],
+    ])("requires an exact match: rejects %s, bare or in a one-element array", (_label, value) => {
+        expectRejected(nonce({ eat_nonce: value }), "nonce", "CLAIM_MISMATCH");
+        expectRejected(nonce({ eat_nonce: [value] }), "nonce", "CLAIM_MISMATCH");
+    });
+
     it("checks the identityNonce length before the claim", () => {
         expectRejected(nonce({}, new Uint8Array(31)), "nonce", "MALFORMED");
     });
