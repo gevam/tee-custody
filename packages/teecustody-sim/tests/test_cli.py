@@ -552,6 +552,7 @@ def test_serve_runs_until_a_signal_then_stops_and_removes_the_socket(
     claims: dict[str, Any] = {}
 
     def request_a_token() -> None:
+        _wait_until(socket_path.exists)  # handlers are installed before the simulator starts
         launcher = ConfidentialSpaceLauncher(
             str(socket_path), timeout_s=5.0, max_response_bytes=65536
         )
@@ -989,3 +990,29 @@ def test_a_valid_state_padded_past_64_kib_is_state_not_initialised(
     code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
 
     assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_serve_installs_its_stop_handlers_before_starting_and_announcing(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A SIGTERM sent as soon as the readiness line is read must stop `serve`, not kill it.
+    events: list[str] = []
+    signals = RecordingSignals()
+
+    def recording_signal(signum: int, handler: Any) -> Any:
+        if callable(handler):
+            events.append(f"handler:{signal.Signals(signum).name}")
+        return signals(signum, handler)
+
+    real_start, real_announce = Simulator.start, cli_module._announce
+    monkeypatch.setattr(signal, "signal", recording_signal)
+    monkeypatch.setattr(
+        Simulator, "start", lambda sim: (events.append("start"), real_start(sim))[1]
+    )
+    monkeypatch.setattr(
+        cli_module, "_announce", lambda *args: (events.append("announce"), real_announce(*args))[1]
+    )
+
+    assert _serve_until_signal(_serve_argv(short_dir), signals, signal.SIGTERM) == 0
+    assert events == ["handler:SIGINT", "handler:SIGTERM", "start", "announce"]

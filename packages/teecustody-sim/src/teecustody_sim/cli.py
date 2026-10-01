@@ -10,7 +10,8 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NoReturn
@@ -248,8 +249,9 @@ def _announce(simulator: Simulator, config: SimulatorConfig) -> None:
     sys.stdout.flush()
 
 
-def _wait_for_stop_signal() -> None:
-    """Block until SIGINT or SIGTERM, then put the previous handlers back."""
+@contextmanager
+def _stop_signals() -> Iterator[threading.Event]:
+    """An event SIGINT or SIGTERM sets; the previous handlers come back on exit."""
     stop = threading.Event()
 
     def handle(signum: int, frame: object) -> None:
@@ -257,7 +259,7 @@ def _wait_for_stop_signal() -> None:
 
     previous = {signum: signal.signal(signum, handle) for signum in _STOP_SIGNALS}
     try:
-        stop.wait()
+        yield stop
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -279,9 +281,10 @@ def _serve(options: argparse.Namespace) -> int:
         signers_required=options.signers_required,
         allow_non_loopback=options.allow_non_loopback,
     )
-    with Simulator(config) as simulator:
+    # Handlers first: a signal sent as soon as the readiness line is read must stop, not kill.
+    with _stop_signals() as stop, Simulator(config) as simulator:
         _announce(simulator, config)
-        _wait_for_stop_signal()
+        stop.wait()
     return 0
 
 
