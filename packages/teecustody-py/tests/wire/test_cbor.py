@@ -69,6 +69,9 @@ def test_invalid_vector_fails_closed_with_exactly_its_code_and_no_input_in_the_t
     assert caught.value.code is WireErrorCode(case["error"])
     assert str(caught.value) == case["error"]
     assert caught.value.args == (case["error"],)
+    # SR-11: no chained exception (e.g. UnicodeDecodeError.object) carries the input along.
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_input_over_max_bytes_is_too_large_before_cbor2_is_called(
@@ -219,7 +222,8 @@ def test_any_foreign_exception_after_the_length_check_becomes_malformed(
         decode(bytes.fromhex("6161"), vector_limits)
     assert caught.value.code is WireErrorCode.MALFORMED
     assert "SENTINEL" not in str(caught.value)
-    assert caught.value.__suppress_context__
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_materialised_value_that_does_not_re_encode_to_the_input_is_noncanonical(

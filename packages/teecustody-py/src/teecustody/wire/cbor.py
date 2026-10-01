@@ -39,6 +39,15 @@ class _Container:
     keys_out_of_order: bool = False
 
 
+def _is_utf8(chunk: bytes) -> bool:
+    """Strict UTF-8 check. The caller raises outside the handler: no exception context (SR-11)."""
+    try:
+        chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def _scan(data: bytes, limits: DecodeLimits) -> None:
     """Iterative structural pre-scan enforcing rules 2, 3 and 5 in byte order, before cbor2."""
     end = len(data)
@@ -97,11 +106,8 @@ def _scan(data: bytes, limits: DecodeLimits) -> None:
         if major in (_MAJOR_BYTES, _MAJOR_TEXT):
             if argument > end - pos:
                 raise WireError(WireErrorCode.MALFORMED)
-            if major == _MAJOR_TEXT:
-                try:
-                    data[pos : pos + argument].decode("utf-8")
-                except UnicodeDecodeError:
-                    raise WireError(WireErrorCode.MALFORMED) from None
+            if major == _MAJOR_TEXT and not _is_utf8(data[pos : pos + argument]):
+                raise WireError(WireErrorCode.MALFORMED)
             pos += argument
         if is_key and parent is not None:
             key = data[start:pos]
@@ -161,6 +167,26 @@ def encode(value: CanonicalValue) -> bytes:
     return cbor2.dumps(value, canonical=True)
 
 
+def _materialise(data: bytes, limits: DecodeLimits) -> CanonicalValue:
+    """Pre-scan, then cbor2, then re-encode and require byte equality (rule 4)."""
+    _scan(data, limits)
+    result: CanonicalValue = cbor2.loads(data)
+    if encode(result) != data:
+        raise WireError(WireErrorCode.NONCANONICAL)
+    return result
+
+
+def _materialise_or_none(data: bytes, limits: DecodeLimits) -> tuple[CanonicalValue] | None:
+    """`None` if anything but `WireError` escapes. The caller raises `MALFORMED` outside this
+    handler, so the foreign exception (which may quote the input) is not chained (SR-3, SR-11)."""
+    try:
+        return (_materialise(data, limits),)
+    except WireError:
+        raise
+    except Exception:  # noqa: BLE001 - fail closed on anything cbor2 raises
+        return None
+
+
 def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
     if (
         min(limits.max_bytes, limits.max_depth, limits.max_items) < 1
@@ -169,14 +195,7 @@ def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
         raise ValueError("INVALID_LIMITS")
     if len(data) > limits.max_bytes:
         raise WireError(WireErrorCode.TOO_LARGE)
-    try:
-        _scan(data, limits)
-        result: CanonicalValue = cbor2.loads(data)
-        canonical = encode(result) == data
-    except WireError:
-        raise
-    except Exception:  # noqa: BLE001 - fail closed (SR-3); the cause may quote input (SR-11)
-        raise WireError(WireErrorCode.MALFORMED) from None
-    if not canonical:
-        raise WireError(WireErrorCode.NONCANONICAL)
-    return result
+    materialised = _materialise_or_none(data, limits)
+    if materialised is None:
+        raise WireError(WireErrorCode.MALFORMED)
+    return materialised[0]
