@@ -331,3 +331,48 @@ def test_minter_lists_no_image_signatures_when_every_signer_is_broken(
         monkeypatch.setattr(signer, "sign", _broken_sign)
 
     assert _listed_key_ids(minter) == []
+
+
+def _eat_nonce(minter: TokenMinter, nonces: list[str]) -> object:
+    _, payload, _ = decode(minter.mint(AUDIENCE, nonces, NOW))
+    return json.loads(payload).get("eat_nonce", "<absent>")
+
+
+def test_one_nonce_is_echoed_as_a_string(minter: TokenMinter) -> None:
+    assert _eat_nonce(minter, [NONCE]) == NONCE
+
+
+def test_several_nonces_are_echoed_as_an_array_in_order(minter: TokenMinter) -> None:
+    nonces = ["a" * 10, "b" * 74, "c" * 32, "d" * 40, "e" * 50, "f" * 60]
+    assert _eat_nonce(minter, nonces[:2]) == nonces[:2]
+    assert _eat_nonce(minter, nonces) == nonces
+
+
+def test_no_nonce_omits_eat_nonce(minter: TokenMinter) -> None:
+    assert _eat_nonce(minter, []) == "<absent>"
+    assert "eat_nonce" not in minter.claims(AUDIENCE, [], NOW)
+
+
+@pytest.mark.parametrize(
+    "nonces",
+    [
+        ["n" * 9],
+        ["n" * 75],
+        [NONCE, "n" * 9],
+        ["é" * 38],
+        [NONCE] * 7,
+    ],
+    ids=["9-bytes", "75-bytes", "second-short", "76-utf8-bytes", "7-nonces"],
+)
+def test_nonces_outside_launcher_limits_are_rejected(
+    minter: TokenMinter, nonces: list[str]
+) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_NONCE$"):
+        minter.mint(AUDIENCE, nonces, NOW)
+    with pytest.raises(ValueError, match=r"^INVALID_NONCE$"):
+        minter.claims(AUDIENCE, nonces, NOW)
+
+
+def test_nonce_length_counts_utf8_bytes(minter: TokenMinter) -> None:
+    assert _eat_nonce(minter, ["é" * 5]) == "é" * 5
+    assert _eat_nonce(minter, ["é" * 37]) == "é" * 37

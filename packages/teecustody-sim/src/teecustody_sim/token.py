@@ -21,6 +21,9 @@ from teecustody_sim.constants import (
 )
 from teecustody_sim.keys import SignerKeyMaterial, SimKeys
 
+_MAX_NONCES = 6
+_MIN_NONCE_BYTES = 10
+_MAX_NONCE_BYTES = 74
 _PSS_SALT_32 = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
 
 
@@ -50,6 +53,15 @@ def image_signature_payload(image_reference: str, image_digest: str) -> bytes:
             "optional": None,
         }
     )
+
+
+def _check_nonces(nonces: Sequence[str]) -> None:
+    """FACTS F-03: at most 6 nonces, each 10 to 74 bytes inclusive."""
+    if len(nonces) > _MAX_NONCES:
+        raise ValueError("INVALID_NONCE")
+    for nonce in nonces:
+        if not _MIN_NONCE_BYTES <= len(nonce.encode("utf-8")) <= _MAX_NONCE_BYTES:
+            raise ValueError("INVALID_NONCE")
 
 
 def _signature_verifies(signer: SignerKeyMaterial, signature: bytes, payload: bytes) -> bool:
@@ -109,6 +121,7 @@ class TokenMinter:
         self._token_max_age_s = token_max_age_s
 
     def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
+        _check_nonces(nonces)
         launch = self._launch
         payload = image_signature_payload(launch.image_reference, launch.image_digest)
         claims: dict[str, JsonValue] = {
@@ -117,7 +130,6 @@ class TokenMinter:
             "iat": now,
             "nbf": now,
             "exp": now + self._ttl_s,
-            "eat_nonce": nonces[0],
             "hwmodel": SIM_HWMODEL,
             "swname": SWNAME,
             "secboot": True,
@@ -133,6 +145,10 @@ class TokenMinter:
                 },
             },
         }
+        if len(nonces) == 1:
+            claims["eat_nonce"] = nonces[0]
+        elif nonces:
+            claims["eat_nonce"] = list(nonces)
         return claims
 
     def mint(
