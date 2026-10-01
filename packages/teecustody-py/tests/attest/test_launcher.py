@@ -373,3 +373,28 @@ def test_launcher_round_trip_writes_no_token_or_nonce(
     captured = " ".join([caplog.text, out, err, repr(token), *map(str, errors), *map(repr, errors)])
     for needle in (token.value, make_token(nonce="cd" * 32), HEX_NONCE, "cd" * 32, IK_PUB.hex()):
         assert needle not in captured
+
+
+# Edge cases the criteria did not name ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"not http at all\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70_000 + b"\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\n" + b"X-H: 1\r\n" * 101 + b"\r\n",
+        http_response(200, b"abc", content_length=50),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\nabc",
+    ],
+    ids=[
+        "bad-status-line",
+        "header-line-too-long",
+        "too-many-headers",
+        "truncated-body",
+        "truncated-chunk",
+    ],
+)
+def test_malformed_http_reply_is_unavailable(fake_launcher: FakeLauncher, data: bytes) -> None:
+    fake_launcher.replies.append(Reply(data))
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.UNAVAILABLE)

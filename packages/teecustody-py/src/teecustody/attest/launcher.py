@@ -79,15 +79,22 @@ class ConfidentialSpaceLauncher:
         )
 
     def _post(self, body: str) -> tuple[int, bytes]:
-        """Send the token request; read at most `max_response_bytes + 1` bytes of the reply."""
+        """Send the token request; read at most `max_response_bytes + 1` bytes of the reply.
+
+        Transport and HTTP framing failures, including a body cut short of its announced
+        length, are UNAVAILABLE.
+        """
         connection = _UnixHTTPConnection(self._socket_path, self._timeout_s)
         try:
             connection.request(
                 "POST", _TOKEN_PATH, body=body, headers={"Content-Type": "application/json"}
             )
-            response = connection.getresponse()
-            return response.status, response.read(self._max_response_bytes + 1)
-        except OSError:
+            with connection.getresponse() as response:
+                raw = response.read(self._max_response_bytes + 1)
+                if len(raw) <= self._max_response_bytes and response.length:
+                    raise http.client.IncompleteRead(raw, response.length)
+                return response.status, raw
+        except (OSError, http.client.HTTPException):
             raise LauncherError(LauncherErrorCode.UNAVAILABLE) from None
         finally:
             connection.close()

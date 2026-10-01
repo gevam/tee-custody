@@ -43,9 +43,14 @@ class ScriptedLauncher:
 
 @dataclass
 class Clock:
+    """Returns `now`; queued `readings` are returned (and become `now`) first, one per call."""
+
     now: float = 1_000.0
+    readings: list[float] = field(default_factory=list)
 
     def __call__(self) -> float:
+        if self.readings:
+            self.now = self.readings.pop(0)
         return self.now
 
 
@@ -278,3 +283,25 @@ def test_logs_never_carry_the_token_or_the_nonce(caplog: pytest.LogCaptureFixtur
         ]
     )
     assert _secrets_in(captured) == []
+
+
+# Edge cases the criteria did not name ------------------------------------------------------
+
+
+def test_refresh_before_start_is_an_error() -> None:
+    rig = make_rig(FIRST)
+
+    with pytest.raises(RuntimeError, match="NOT_STARTED"):
+        rig.lifecycle.refresh_if_due()
+
+    assert rig.launcher.calls == []
+
+
+def test_refresh_failing_after_the_token_expired_mid_request_is_raised() -> None:
+    rig = started(UNAVAILABLE)
+    rig.clock.readings = [FIRST.expires_at - 1, FIRST.expires_at]  # the request outlives the token
+
+    with pytest.raises(LauncherError):
+        rig.lifecycle.refresh_if_due()
+
+    assert rig.logger.records[-1] == ("error", "ATTESTATION_TOKEN_EXPIRED", {})
