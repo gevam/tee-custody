@@ -98,11 +98,13 @@ function encodeInteger(writer: ByteWriter, integer: bigint): void {
 }
 
 type EncodeTask =
-    { readonly raw: Bytes } | { readonly value: unknown } | { readonly leave: object };
+    | { readonly raw: Bytes }
+    | { readonly value: unknown; readonly depth: number }
+    | { readonly leave: object };
 
 export function encodeCanonical(value: CanonicalValue): Bytes {
     const writer = new ByteWriter();
-    const tasks: EncodeTask[] = [{ value }];
+    const tasks: EncodeTask[] = [{ value, depth: 1 }];
     // Containers on the path from the root to the current value; re-entering one is a cycle.
     const open = new Set<object>();
     const enter = (container: object): void => {
@@ -121,7 +123,13 @@ export function encodeCanonical(value: CanonicalValue): Bytes {
             open.delete(task.leave);
             continue;
         }
+        // Rule-5 depth (top level 1, elements and map values container + 1), capped at the shared
+        // ceiling; the partial buffer is discarded, so nothing is returned on failure.
+        if (task.depth > MAX_DEPTH) {
+            fail("LIMIT_EXCEEDED");
+        }
         const current = task.value;
+        const childDepth = task.depth + 1;
         if (current === null) {
             writer.writeByte(0xf6);
         } else if (typeof current === "boolean") {
@@ -152,14 +160,14 @@ export function encodeCanonical(value: CanonicalValue): Bytes {
             writer.writeHead(MAJOR_MAP, entries.length);
             enter(current);
             for (const entry of entries.reverse()) {
-                tasks.push({ value: entry.value }, { raw: entry.key });
+                tasks.push({ value: entry.value, depth: childDepth }, { raw: entry.key });
             }
         } else if (Array.isArray(current)) {
             const items = current as readonly unknown[];
             writer.writeHead(MAJOR_ARRAY, items.length);
             enter(current);
             for (let index = items.length - 1; index >= 0; index--) {
-                tasks.push({ value: items[index] });
+                tasks.push({ value: items[index], depth: childDepth });
             }
         } else {
             fail("UNSUPPORTED_TYPE");

@@ -219,3 +219,39 @@ describe("decodeCanonical violation order (rule 5)", () => {
         expect(wireErrorCode(() => decodeCanonical(fromHex(hex), VECTOR_LIMITS))).toBe(code);
     });
 });
+
+function nested(arrays: number): CanonicalValue {
+    let value: CanonicalValue = 0;
+    for (let count = 0; count < arrays; count++) {
+        value = [value];
+    }
+    return value;
+}
+
+describe("shared depth ceiling of 64 (criterion 15, SR-3)", () => {
+    const CEILING: DecodeLimits = { maxBytes: 1024, maxDepth: 64, maxItems: 1024 };
+
+    it("encodes a depth-64 value and round-trips it with maxDepth 64", () => {
+        const hex = "81".repeat(63) + "00";
+        expect(toHex(encodeCanonical(nested(63)))).toBe(hex);
+        expect(toHex(encodeCanonical(decodeCanonical(fromHex(hex), CEILING)))).toBe(hex);
+    });
+
+    it("refuses to encode a depth-65 value", () => {
+        expect(wireErrorCode(() => encodeCanonical(nested(64)))).toBe("LIMIT_EXCEEDED");
+    });
+
+    it("refuses to encode a depth-65 map value", () => {
+        const value = new Map<string, CanonicalValue>([["a", nested(63)]]);
+        expect(wireErrorCode(() => encodeCanonical(value))).toBe("LIMIT_EXCEEDED");
+    });
+
+    it("rejects a depth-65 input decoded with maxDepth 64", () => {
+        const input = fromHex("81".repeat(64) + "00");
+        expect(wireErrorCode(() => decodeCanonical(input, CEILING))).toBe("LIMIT_EXCEEDED");
+    });
+
+    it("refuses 100,000 nested arrays with LIMIT_EXCEEDED and no RangeError", () => {
+        expect(wireErrorCode(() => encodeCanonical(nested(100_000)))).toBe("LIMIT_EXCEEDED");
+    });
+});
