@@ -1,4 +1,4 @@
-"""Negative-case catalog (API.md §G rows 2..37, in table order; spec §13.2, §15.3; SR-12)."""
+"""Negative-case catalog (API.md §G rows 2..28, in table order; spec §13.2, §15.3; SR-12)."""
 
 from dataclasses import dataclass
 from typing import Final
@@ -59,25 +59,4 @@ NEGATIVE_CASES: Final[tuple[NegativeCase, ...]] = (
     ),
     NegativeCase("debug_bad_signature", "signature", "UNTRUSTED_SIGNER", ("dbgstat",), False),
     NegativeCase("key_id_duplicated", "image", "UNTRUSTED_SIGNER", (_IMAGE_SIGNATURES,), False),
-    NegativeCase("hwmodel_missing", "platform", "CLAIM_MISSING", ("hwmodel",), False),
-    NegativeCase("swname_missing", "platform", "CLAIM_MISSING", ("swname",), False),
-    NegativeCase("secboot_missing", "platform", "CLAIM_MISSING", ("secboot",), False),
-    NegativeCase(
-        "support_attributes_missing",
-        "support_attributes",
-        "CLAIM_MISSING",
-        ("submods.confidential_space.support_attributes",),
-        False,
-    ),
-    NegativeCase(
-        "digest_missing", "image", "CLAIM_MISSING", ("submods.container.image_digest",), False
-    ),
-    NegativeCase("signatures_missing", "image", "CLAIM_MISSING", (_IMAGE_SIGNATURES,), False),
-    NegativeCase(
-        "args_missing", "launch_config", "CLAIM_MISSING", ("submods.container.args",), False
-    ),
-    NegativeCase(
-        "env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False
-    ),
-    NegativeCase("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
 )

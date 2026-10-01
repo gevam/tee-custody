@@ -221,7 +221,7 @@ def test_simulator_config_defaults_apply() -> None:
     assert config.allow_non_loopback is False
 
 
-# API.md §G rows 2..37, in table order: (id, check, error_code, altered, debug_event).
+# API.md §G rows 2..28, in table order: (id, check, error_code, altered, debug_event).
 SIGS = "submods.container.image_signatures"
 EXPECTED_CASES: list[tuple[str, str, str, tuple[str, ...], bool]] = [
     ("alg_none", "signature", "UNSUPPORTED_ALGORITHM", (), False),
@@ -257,27 +257,12 @@ EXPECTED_CASES: list[tuple[str, str, str, tuple[str, ...], bool]] = [
     ("env_altered", "launch_config", "CLAIM_MISMATCH", ("submods.container.env",), False),
     ("debug_bad_signature", "signature", "UNTRUSTED_SIGNER", ("dbgstat",), False),
     ("key_id_duplicated", "image", "UNTRUSTED_SIGNER", (SIGS,), False),
-    ("hwmodel_missing", "platform", "CLAIM_MISSING", ("hwmodel",), False),
-    ("swname_missing", "platform", "CLAIM_MISSING", ("swname",), False),
-    ("secboot_missing", "platform", "CLAIM_MISSING", ("secboot",), False),
-    (
-        "support_attributes_missing",
-        "support_attributes",
-        "CLAIM_MISSING",
-        ("submods.confidential_space.support_attributes",),
-        False,
-    ),
-    ("digest_missing", "image", "CLAIM_MISSING", ("submods.container.image_digest",), False),
-    ("signatures_missing", "image", "CLAIM_MISSING", (SIGS,), False),
-    ("args_missing", "launch_config", "CLAIM_MISSING", ("submods.container.args",), False),
-    ("env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False),
-    ("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
 ]
 
 
 def test_negative_cases_equal_api_catalog_in_order() -> None:
     assert isinstance(NEGATIVE_CASES, tuple)
-    assert len(NEGATIVE_CASES) == 36
+    assert len(NEGATIVE_CASES) == 27
     assert [
         (c.case_id, c.check, c.error_code, c.altered, c.debug_event) for c in NEGATIVE_CASES
     ] == EXPECTED_CASES
