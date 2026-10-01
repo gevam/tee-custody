@@ -271,3 +271,44 @@ describe("checkImage errors carry no token content (SR-11)", () => {
         }
     });
 });
+
+describe("checkImage edge cases", () => {
+    it("honours signers_required at its boundaries", () => {
+        expect(checkImage(tokenWithSignatures([sig(KEY_C)]), profile(1))).toEqual([KEY_C]);
+        expectRejected(tokenWithSignatures([]), "UNTRUSTED_SIGNER", profile(1));
+        const all = tokenWithSignatures([sig(KEY_C), sig(KEY_A), sig(KEY_B)]);
+        expect(checkImage(all, profile(3))).toEqual([KEY_A, KEY_B, KEY_C]);
+        const two = tokenWithSignatures([sig(KEY_C), sig(KEY_A)]);
+        expectRejected(two, "UNTRUSTED_SIGNER", profile(3));
+    });
+
+    it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+        "does not match an Object.prototype name %j as a key_id",
+        (keyId) => {
+            const entry = JSON.parse(
+                `{"key_id":${JSON.stringify(keyId)},"signature":"c2ln","signature_algorithm":"RSASSA_PSS_SHA256"}`,
+            ) as JsonObject;
+            expectRejected(tokenWithSignatures([entry, sig(KEY_B)]), "UNTRUSTED_SIGNER");
+        },
+    );
+
+    it("reads only own properties of an entry", () => {
+        const inherited = Object.create(sig(KEY_A)) as JsonObject;
+        expectRejected(tokenWithSignatures([inherited, sig(KEY_B)]), "UNTRUSTED_SIGNER");
+    });
+
+    it("does not read image_reference", () => {
+        const t = tokenWith({
+            image_reference: { not: "a string" },
+            image_digest: DIGEST,
+            image_signatures: [sig(KEY_A), sig(KEY_B)],
+        });
+        expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+    });
+
+    it("does not mutate the token's image_signatures", () => {
+        const signatures = [sig(KEY_B), sig(KEY_A)];
+        checkImage(tokenWithSignatures(signatures), profile());
+        expect(signatures.map((s) => s["key_id"])).toEqual([KEY_B, KEY_A]);
+    });
+});
