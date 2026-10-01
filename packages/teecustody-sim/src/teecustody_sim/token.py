@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import re
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -18,6 +19,7 @@ from teecustody_sim.alterations import (
     JsonValue,
     NamedCase,
 )
+from teecustody_sim.cases import NEGATIVE_CASES
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
     DBGSTAT_DISABLED,
@@ -37,6 +39,8 @@ _IMAGE_SIGNATURES: ClaimPath = ("submods", "container", "image_signatures")
 _WRONG_NONCE = hashlib.sha256(b"teecustody-sim wrong nonce").hexdigest()
 _UNKNOWN_DIGEST = "sha256:" + hashlib.sha256(b"teecustody-sim unknown image").hexdigest()
 _MISMATCHED_SIGNATURE_ALGORITHM = "RSASSA_PKCS1V15_SHA256"
+_CLAIM_PATH = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*")
+_CASE_IDS = frozenset(case.case_id for case in NEGATIVE_CASES)
 _CORRUPTED_SIGNATURE_CASES = frozenset({"token_signature_corrupted", "debug_bad_signature"})
 
 type _Sign = Callable[[bytes], bytes]
@@ -161,8 +165,40 @@ def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> 
     return f"{signing_input}.{_b64url(sign(signing_input.encode('ascii')))}"
 
 
+def _parse_claim_path(text: str) -> ClaimPath:
+    if _CLAIM_PATH.fullmatch(text) is None:
+        raise ValueError("INVALID_ALTERATION")
+    return tuple(text.split("."))
+
+
+def _reject_non_integer_number(text: str) -> JsonValue:
+    raise ValueError(text)
+
+
+def _parse_claim_value(text: str) -> JsonValue:
+    """JSON if `text` parses to a JSON value without non-integer numbers, else the literal text."""
+    try:
+        value: JsonValue = json.loads(
+            text,
+            parse_float=_reject_non_integer_number,
+            parse_constant=_reject_non_integer_number,
+        )
+    except ValueError:
+        return text
+    return value
+
+
 def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration:
-    raise NotImplementedError("T-07")
+    if kind == "alter":
+        path, separator, value = text.partition("=")
+        if not separator:
+            raise ValueError("INVALID_ALTERATION")
+        return AlterClaim(_parse_claim_path(path), _parse_claim_value(value))
+    if kind == "drop":
+        return DropClaim(_parse_claim_path(text))
+    if kind == "case" and text in _CASE_IDS:
+        return NamedCase(text)
+    raise ValueError("INVALID_ALTERATION")
 
 
 class TokenMinter:

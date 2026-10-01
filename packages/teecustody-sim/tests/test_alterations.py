@@ -23,6 +23,7 @@ from teecustody_sim import (
     SimKeys,
     TokenMinter,
     image_signature_payload,
+    parse_alteration,
 )
 
 AUDIENCE = "https://audience.teecustody.test/tee"
@@ -368,3 +369,76 @@ def test_alteration_on_a_missing_path_is_rejected(
 def test_drop_of_an_absent_nonce_is_rejected(minter: TokenMinter) -> None:
     with pytest.raises(ValueError, match=r"^PATH_NOT_FOUND$"):
         minter.mint(AUDIENCE, [], NOW, DropClaim(("eat_nonce",)))
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "expected"),
+    [
+        ("alter", "secboot=false", AlterClaim(("secboot",), False)),
+        ("alter", "dbgstat=enabled", AlterClaim(("dbgstat",), "enabled")),
+        ("alter", "exp=123", AlterClaim(("exp",), 123)),
+        ("alter", "eat_nonce=null", AlterClaim(("eat_nonce",), None)),
+        ("alter", 'aud="quoted"', AlterClaim(("aud",), "quoted")),
+        ("alter", "aud=", AlterClaim(("aud",), "")),
+        ("alter", "iss=https://a.test/?x=1", AlterClaim(("iss",), "https://a.test/?x=1")),
+        (
+            "alter",
+            'submods.container.args=["/app","--x"]',
+            AlterClaim(("submods", "container", "args"), ["/app", "--x"]),
+        ),
+        (
+            "alter",
+            'submods.container.env={"K":"V"}',
+            AlterClaim(("submods", "container", "env"), {"K": "V"}),
+        ),
+        ("alter", "_a.b_2=x", AlterClaim(("_a", "b_2"), "x")),
+        ("drop", "submods.container.args", DropClaim(("submods", "container", "args"))),
+        ("drop", "iss", DropClaim(("iss",))),
+        ("case", "dbgstat_enabled", NamedCase("dbgstat_enabled")),
+        ("case", "key_id_duplicated", NamedCase("key_id_duplicated")),
+    ],
+)
+def test_parse_alteration_accepts_cli_text(kind: Any, text: str, expected: object) -> None:
+    assert parse_alteration(kind, text) == expected
+
+
+@pytest.mark.parametrize("case_id", CASE_IDS)
+def test_parse_alteration_accepts_every_catalog_case(case_id: str) -> None:
+    assert parse_alteration("case", case_id) == NamedCase(case_id)
+
+
+@pytest.mark.parametrize(
+    "value", ["1.5", "1e3", "NaN", "Infinity", "-Infinity", "[1.5]", '{"a":2.0}']
+)
+def test_parse_alteration_keeps_non_integer_numbers_as_literal_text(value: str) -> None:
+    assert parse_alteration("alter", f"iat={value}") == AlterClaim(("iat",), value)
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("alter", "a..b=1"),
+        ("alter", "A=1"),
+        ("alter", "noequals"),
+        ("alter", "=1"),
+        ("alter", ".a=1"),
+        ("alter", "a.=1"),
+        ("alter", "1a=1"),
+        ("alter", "a-b=1"),
+        ("alter", "a\n=1"),
+        ("alter", "é=1"),
+        ("drop", ""),
+        ("drop", "a.b."),
+        ("drop", "a\n"),
+        ("drop", "a=b"),
+        ("drop", "a b"),
+        ("case", "nope"),
+        ("case", "valid"),
+        ("case", "DBGSTAT_ENABLED"),
+        ("case", ""),
+        ("bogus", "iss"),
+    ],
+)
+def test_parse_alteration_rejects_invalid_text(kind: Any, text: str) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_ALTERATION$"):
+        parse_alteration(kind, text)
