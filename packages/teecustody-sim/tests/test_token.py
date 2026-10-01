@@ -21,6 +21,7 @@ from teecustody_sim import (
     LaunchConfig,
     SimKeys,
     TokenMinter,
+    frame_jws,
     image_signature_payload,
 )
 
@@ -206,3 +207,99 @@ def test_image_signature_payload_is_the_simple_signing_shape(
             + '"},"type":"cosign container image signature"},"optional":null}'
         ).encode()
     )
+
+
+# RFC 7515 Appendix A.2 (RS256), transcribed from the RFC text. The private key is the RFC's
+# published example key, not a secret; it exists only as the ADR 0009 known-answer oracle.
+RFC7515_A2_JWK = {
+    "n": (
+        "ofgWCuLjybRlzo0tZWJjNiuSfb4p4fAkd_wWJcyQoTbji9k0l8W26mPddxHmfHQp"
+        "-Vaw-4qPCJrcS2mJPMEzP1Pt0Bm4d4QlL-yRT-SFd2lZS-pCgNMsD1W_YpRPEwOW"
+        "vG6b32690r2jZ47soMZo9wGzjb_7OMg0LOL-bSf63kpaSHSXndS5z5rexMdbBYUs"
+        "LA9e-KXBdQOS-UTo7WTBEMa2R2CapHg665xsmtdVMTBQY4uDZlxvb3qCo5ZwKh9k"
+        "G4LT6_I5IhlJH7aGhyxXFvUK-DWNmoudF8NAco9_h9iaGNj8q2ethFkMLs91kzk2"
+        "PAcDTW9gb54h4FRWyuXpoQ"
+    ),
+    "e": "AQAB",
+    "d": (
+        "Eq5xpGnNCivDflJsRQBXHx1hdR1k6Ulwe2JZD50LpXyWPEAeP88vLNO97IjlA7_G"
+        "Q5sLKMgvfTeXZx9SE-7YwVol2NXOoAJe46sui395IW_GO-pWJ1O0BkTGoVEn2bKV"
+        "RUCgu-GjBVaYLU6f3l9kJfFNS3E0QbVdxzubSu3Mkqzjkn439X0M_V51gfpRLI9J"
+        "YanrC4D4qAdGcopV_0ZHHzQlBjudU2QvXt4ehNYTCBr6XCLQUShb1juUO1ZdiYoF"
+        "aFQT5Tw8bGUl_x_jTj3ccPDVZFD9pIuhLhBOneufuBiB4cS98l2SR_RQyGWSeWjn"
+        "czT0QU91p1DhOVRuOopznQ"
+    ),
+    "p": (
+        "4BzEEOtIpmVdVEZNCqS7baC4crd0pqnRH_5IB3jw3bcxGn6QLvnEtfdUdiYrqBds"
+        "s1l58BQ3KhooKeQTa9AB0Hw_Py5PJdTJNPY8cQn7ouZ2KKDcmnPGBY5t7yLc1QlQ"
+        "5xHdwW1VhvKn-nXqhJTBgIPgtldC-KDV5z-y2XDwGUc"
+    ),
+    "q": (
+        "uQPEfgmVtjL0Uyyx88GZFF1fOunH3-7cepKmtH4pxhtCoHqpWmT8YAmZxaewHgHA"
+        "jLYsp1ZSe7zFYHj7C6ul7TjeLQeZD_YwD66t62wDmpe_HlB-TnBA-njbglfIsRLt"
+        "XlnDzQkv5dTltRJ11BKBBypeeF6689rjcJIDEz9RWdc"
+    ),
+    "dp": (
+        "BwKfV3Akq5_MFZDFZCnW-wzl-CCo83WoZvnLQwCTeDv8uzluRSnm71I3QCLdhrqE"
+        "2e9YkxvuxdBfpT_PI7Yz-FOKnu1R6HsJeDCjn12Sk3vmAktV2zb34MCdy7cpdTh_"
+        "YVr7tss2u6vneTwrA86rZtu5Mbr1C1XsmvkxHQAdYo0"
+    ),
+    "dq": (
+        "h_96-mK1R_7glhsum81dZxjTnYynPbZpHziZjeeHcXYsXaaMwkOlODsWa7I9xXDo"
+        "RwbKgB719rrmI2oKr6N3Do9U0ajaHF-NKJnwgjMd2w9cjz3_-kyNlxAr2v4IKhGN"
+        "pmM5iIgOS1VZnOZ68m6_pbLBSp3nssTdlqvd0tIiTHU"
+    ),
+    "qi": (
+        "IYd7DHOhrWvxkwPQsRM2tOgrjbcrfvtQJipd-DlcxyVuuM9sQLdgjVk2oy26F0Em"
+        "pScGLq2MowX7fhd_QJQ3ydy5cY7YIBi87w93IKLEdfnbJtoOPLUW0ITrJReOgo1c"
+        "q9SbsxYawBgfp_gh6A5603k2-ZQwVK0JKSHuLFkuQ3U"
+    ),
+}
+RFC7515_A2_HEADER_OCTETS = bytes([123, 34, 97, 108, 103, 34, 58, 34, 82, 83, 50, 53, 54, 34, 125])
+RFC7515_A2_PAYLOAD_OCTETS = (
+    b'{"iss":"joe",\r\n "exp":1300819380,\r\n "http://example.com/is_root":true}'
+)
+RFC7515_A2_COMPACT = (
+    "eyJhbGciOiJSUzI1NiJ9"
+    "."
+    "eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFt"
+    "cGxlLmNvbS9pc19yb290Ijp0cnVlfQ"
+    "."
+    "cC4hiUPoj9Eetdgtv3hF80EGrhuB__dzERat0XF9g2VtQgr9PJbu3XOiZj5RZmh7"
+    "AAuHIm4Bh-0Qc_lF5YKt_O8W2Fp5jujGbds9uJdbF9CUAr7t1dnZcAcQjbKBYNX4"
+    "BAynRFdiuB--f_nZLgrnbyTyWzO75vRK5h6xBArLIARNPvkSjtQBMHlb1L07Qe7K"
+    "0GarZRmB_eSN9383LcOLn6_dO--xi12jzDwusC-eOkHWEsqtFZESc6BfI7noOPqv"
+    "hJ1phCnvWh6IeYI2w9QOYEUipUTI8np6LbgGY9Fs98rqVt5AXLIhWkWywlVmtVrB"
+    "p0igcN_IoypGlUPQGe77Rw"
+)
+
+
+def rfc7515_a2_private_key() -> rsa.RSAPrivateKey:
+    def number(name: str) -> int:
+        return int.from_bytes(b64url_decode(RFC7515_A2_JWK[name]), "big")
+
+    public = rsa.RSAPublicNumbers(number("e"), number("n"))
+    private = rsa.RSAPrivateNumbers(
+        p=number("p"),
+        q=number("q"),
+        d=number("d"),
+        dmp1=number("dp"),
+        dmq1=number("dq"),
+        iqmp=number("qi"),
+        public_numbers=public,
+    )
+    return private.private_key()
+
+
+def test_frame_jws_reproduces_rfc7515_appendix_a2_byte_for_byte() -> None:
+    key = rfc7515_a2_private_key()
+    signing_inputs: list[bytes] = []
+
+    def sign(signing_input: bytes) -> bytes:
+        signing_inputs.append(signing_input)
+        return key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+
+    compact = frame_jws(RFC7515_A2_HEADER_OCTETS, RFC7515_A2_PAYLOAD_OCTETS, sign)
+
+    assert compact == RFC7515_A2_COMPACT
+    assert signing_inputs == [RFC7515_A2_COMPACT.rpartition(".")[0].encode("ascii")]
