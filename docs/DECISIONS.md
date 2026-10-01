@@ -529,3 +529,23 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer
 **Revisit when:** T-18 generated vector files (separate human approval).
 
 **Follow-ups:** Merge T-20. Retro: a shared-scratchpad script clash briefly mutated an inactive worktree (T-15) during T-17 work — restored clean; engineers must use task-specific scratch subdirectories.
+
+## D-027 — Re-apply T-20 after a mistaken revert (INC-1, 2026-10-01)
+
+Type: gate-routing
+Chair / decider: Human (authorised the Orchestrator to run the command)
+Participants: Orchestrator, Release Engineer
+
+**Options considered**
+1. Orchestrator runs `git revert --no-edit 3f34b8b` (new commit, no history rewrite) after verifying every required merge command passed at the T-20 merge 59e98f6.
+2. Human runs it. 3. Leave T-20 reverted.
+
+**Decision:** Option 1 — applied as aeb6232; Python 1105 passed, ruff/format/mypy/TS lint/typecheck clean.
+
+**Reasoning:** The Release Engineer reverted T-20 citing failures that were expected-red tests (spec/vectors, contracts, acceptance awaiting T-16/T-17/T-18). The agent's own re-revert was blocked by the permission system; the human chose to authorise the Orchestrator.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Release Engineer prompts now list the exact REQUIRED commands and the EXPECTED-RED paths, and forbid reverting. Retro: FAST-tier Release Engineer misjudged expected-red tests; consider STRONG-tier Release Engineer or a scripted merge gate.
