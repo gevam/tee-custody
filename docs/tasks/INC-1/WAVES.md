@@ -63,17 +63,18 @@ T-17 (R-13).
 | 2 | T-16 | Simulator CLI + container runtime | STRONG | T-07, T-08 | |
 | 2 | T-17 | Dev trust profile + vector-suite generator | STRONG | T-04, T-07, V-01 | |
 | 2 | T-19 | Simulator §15.5 refusal hardening + deterministic slot release (T-08 review follow-up) | STRONG | T-08 | |
-| 3 | T-18 | Generate and commit `spec/vectors/attestation/suite.cbor` and `spec/vectors/wire/differential-corpus.json` | FAST | T-15, T-16, T-17 | **YES** — `spec/vectors` |
+| 2 | T-20 | §G rows 29–37: catalog, minter, transcriptions (D-025; `cases.py` frozen-file exception) | STRONG | T-07 | **YES** — `spec/vectors/test_attestation_suite.py` |
+| 3 | T-18 | Generate and commit `spec/vectors/attestation/suite.cbor` and `spec/vectors/wire/differential-corpus.json` | FAST | T-15, T-16, T-17, T-20 | **YES** — `spec/vectors` |
 
-Counts: 20 items (19 tasks + V-01), 4 waves; largest wave is Wave 1 with 11 tasks; Wave 2 has 4.
+Counts: 21 items (20 tasks + V-01), 4 waves; largest wave is Wave 1 with 11 tasks; Wave 2 has 5.
 `parallelism.max_engineers` = 4, so Wave 1 runs in batches. Suggested order, critical path first:
 B1 T-04, T-07, T-09, T-10 · B2 T-08, T-11, T-12, T-13 · B3 T-05, T-06, T-14.
 Early starts are safe on these edges only: T-17 once T-04 and T-07 merge; T-16 once T-07 and T-08 merge;
-T-15 once T-09..T-13 merge.
+T-15 once T-09..T-13 merge; T-20 once T-07 merges (done).
 
 Dependency edges (consumer ← producer): T-04←T-01,T-03 · T-05←T-01 · T-06←T-01,V-01 · T-07←T-01,V-01 ·
 T-08←T-01,V-01 · T-09←T-02,T-03 · T-10..T-13←T-02,V-01 · T-14←T-01,T-02 · T-15←T-09..T-13 · T-16←T-07,T-08 ·
-T-17←T-04,T-07,V-01 · T-19←T-08 · T-18←T-15,T-16,T-17. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
+T-17←T-04,T-07,V-01 · T-19←T-08 · T-20←T-07 · T-18←T-15,T-16,T-17,T-20. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
 through monkeypatched tests; their contracts say so.
 
 ## Ownership rules
@@ -185,16 +186,12 @@ generators compute `key_id` from SPKI and never copy it (T-17 criterion 2). Plea
   (amendment 2026-10-01b): canonical SPKI; duplicate holder by RSA `n` / EC point; key type matches the F-11
   algorithm (RSA ≥ 2048 with e = 65537, or P-256); and 1 ≤ `signers_required` ≤ signers. Each needs its own
   test. Architect to carry this into the INC-5 increment entry.
-- **R-13 §G rows 29–37 have no owner yet (blocks T-18).** Adding them touches files T-17 does not own:
-  - `packages/teecustody-sim/src/teecustody_sim/cases.py`, a "final" Wave-0 file. Changing it needs an
-    Orchestrator exception to the Wave-0 freeze; it is data transcribed from §G.
-  - `token.py` (T-07, merged): drop edits, and a header-`kid` edit for `kid_unknown`.
-  - `packages/teecustody-sim/tests/test_token.py` and `tests/test_api_surface.py` (pins `len == 27`).
-  - `tests/integration/contracts/attestation-vectors.contract.test.ts` (`CASE_COUNT = 28` → 37).
-  - Any QA acceptance test that pins the case count.
-  Recommendation: one Wave-2 follow-up task (T-20, STRONG) owning exactly those files. None is owned by T-16,
-  T-17 or T-19, so they stay disjoint. Add the edge T-18 ← T-20. Not drafted here because it is outside the
-  files this amendment may touch.
+- **R-13 §G rows 29–37 (resolved by D-025 → T-20).** T-20 (Wave 2) owns `cases.py` under a one-time
+  frozen-file exception (rows only), `token.py`, `test_alterations.py`, `test_api_surface.py`, the TS contract
+  `CASE_COUNT`, and `spec/vectors/test_attestation_suite.py`, which is human-gated. These files are disjoint from
+  T-15, T-16, T-17 and T-19. T-18 now depends on T-20. **Open, QA:** `tests/acceptance/test_FR03_cli.py` and
+  `tests/acceptance/FR03.simulator-end-to-end.test.ts` transcribe the 27 rows. QA must add rows 29–37 before
+  T-18's suite lands, or those tests go red on the new cases (Orchestrator routes this).
 - Closed since 2026-09-29: CI-1..CI-10 (ratified), JOSE approach (ADR 0009), `cbor-x` (ADR 0010), §6.8
   reconstructibility (D-016), `framework.yaml` commands (D-015), R-9 framework gap (tracked in STATUS).
 
