@@ -390,3 +390,23 @@ Participants: Orchestrator, Security Reviewer
 **Revisit when:** A dev tool is found to influence shipped artifacts (e.g. codegen), which would put it under the rule.
 
 **Follow-ups:** Security Architect aligns SR-9 wording in REQUIREMENTS.md at next touch. T-01 security Lows: import-ban bypasses (dynamic import, noqa, other listener APIs) → Tech Lead folds a semgrep rule into a Wave-1 tooling task; unlocked build backend (hatchling) → INC-5 reproducible-build scope.
+
+## D-020 — Human approves T-03 spec/wire and spec/vectors content (INC-1, 2026-10-01)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
+
+**Options considered**
+1. Approve T-03 (canonical CBOR rules incl. rule-5 classifications, `proto` = "tee-chan-v1", attestation-vectors CDDL, 114 codec vectors, harnesses) for merge.
+2. Request changes.
+
+**Decision:** Option 1.
+
+**Reasoning:** Human decision (framework.yaml always_human: spec/wire, spec/vectors). Both reviewers APPROVE in round 2; independent codecs from both reviewers and the engineer pass every vector. T-18's generated suite/corpus files require separate human approval.
+
+**Dissent:** none
+
+**Revisit when:** Any later change to spec/wire or spec/vectors.
+
+**Follow-ups:** Release Engineer merges T-03, V-01, QA acceptance tests. Tech Lead adds `5b0000000100000000` → MALFORMED as a T-09 unit criterion (32-bit length truncation; security re-review Low) — not a spec/vectors change.
