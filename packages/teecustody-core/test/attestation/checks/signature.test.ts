@@ -164,3 +164,82 @@ describe("checkSignature: RFC 7515 A.2 known-answer token (criterion 2)", () => 
         expect(fetcher.calls).toEqual([]);
     });
 });
+
+const FORBIDDEN_MEMBERS = [
+    "crit",
+    "b64",
+    "zip",
+    "enc",
+    "cty",
+    "jku",
+    "jwk",
+    "x5u",
+    "x5c",
+    "x5t",
+    "x5t#S256",
+] as const;
+
+describe("checkSignature: header matrix, fetcher never called (criterion 3)", () => {
+    it.each([["none"], ["rs256"], ["HS256"], ["RS384"], ["RS512"], ["PS256"], ["ES256"], [42]])(
+        "rejects alg %j as UNSUPPORTED_ALGORITHM",
+        async (alg) => {
+            await expectRejectedBeforeFetch(
+                await tokenWith({ alg, kid: KID }),
+                "UNSUPPORTED_ALGORITHM",
+            );
+        },
+    );
+
+    it("rejects an absent alg as UNSUPPORTED_ALGORITHM", async () => {
+        await expectRejectedBeforeFetch(await tokenWith({ kid: KID }), "UNSUPPORTED_ALGORITHM");
+    });
+
+    it.each(FORBIDDEN_MEMBERS.map((member) => [member]))(
+        "rejects header member %s as UNSUPPORTED_ALGORITHM",
+        async (member) => {
+            await expectRejectedBeforeFetch(
+                await tokenWith({ alg: "RS256", kid: KID, [member]: "x" }),
+                "UNSUPPORTED_ALGORITHM",
+            );
+        },
+    );
+
+    it.each([["at+jwt"], [42]])("rejects typ %j as MALFORMED", async (typ) => {
+        await expectRejectedBeforeFetch(
+            await tokenWith({ alg: "RS256", kid: KID, typ }),
+            "MALFORMED",
+        );
+    });
+
+    it("rejects an absent kid as UNTRUSTED_SIGNER", async () => {
+        await expectRejectedBeforeFetch(await tokenWith({ alg: "RS256" }), "UNTRUSTED_SIGNER");
+    });
+
+    it.each([
+        ["empty", ""],
+        ["non-string", 7],
+        ["257-character", "k".repeat(257)],
+    ])("rejects a %s kid as UNTRUSTED_SIGNER", async (_label, kid) => {
+        await expectRejectedBeforeFetch(
+            await tokenWith({ alg: "RS256", kid }),
+            "UNTRUSTED_SIGNER",
+        );
+    });
+
+    it("rejects an empty signature as UNTRUSTED_SIGNER", async () => {
+        const token = await tokenWith({ alg: "RS256", kid: KID });
+        await expectRejectedBeforeFetch(
+            { ...token, signature: new Uint8Array(0) },
+            "UNTRUSTED_SIGNER",
+        );
+    });
+
+    it.each([
+        [{ alg: "HS256", jku: "x" }, "UNSUPPORTED_ALGORITHM"],
+        [{ alg: "RS256", jwk: {}, typ: "at+jwt" }, "UNSUPPORTED_ALGORITHM"],
+        [{ alg: "RS256", typ: "at+jwt" }, "MALFORMED"],
+    ] as const)("applies the rules in order: %j → %s", async (header, code) => {
+        const token = await tokenWith(header);
+        await expectRejectedBeforeFetch({ ...token, signature: new Uint8Array(0) }, code);
+    });
+});
