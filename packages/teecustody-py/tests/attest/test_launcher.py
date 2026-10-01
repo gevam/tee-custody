@@ -6,17 +6,20 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import shutil
 import socket
 import socketserver
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+import teecustody.attest.launcher as launcher_module
 from teecustody.attest import (
     AttestationLifecycle,
     AttestationToken,
@@ -52,10 +55,16 @@ def http_response(status: int, body: bytes, *, content_length: int | None = None
 
 @dataclass(frozen=True)
 class Reply:
-    """What the fake launcher writes after reading a request; `hang` keeps the socket open."""
+    """What the fake launcher writes after reading a request.
+
+    `hang` keeps the socket open afterwards; `drip_s` writes one byte per interval; `repeat`
+    writes `data` again and again until the client goes away or the test ends.
+    """
 
     data: bytes
     hang: bool = False
+    drip_s: float = 0.0
+    repeat: bool = False
 
 
 @dataclass
@@ -95,10 +104,23 @@ class _Handler(socketserver.StreamRequestHandler):
         body = self.rfile.read(int(headers.get("content-length", "0")))
         fake.received.append(Received(request_line, headers, body))
         with contextlib.suppress(OSError):
-            self.wfile.write(reply.data)
-            self.wfile.flush()
+            self._write(fake, reply)
         if reply.hang:
             fake.release.wait(10)
+
+    def _write(self, fake: FakeLauncher, reply: Reply) -> None:
+        if reply.drip_s:
+            chunks = [reply.data[i : i + 1] for i in range(len(reply.data))]
+        else:
+            chunks = [reply.data]
+        while True:
+            for chunk in chunks:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                if reply.drip_s and fake.release.wait(reply.drip_s):
+                    return
+            if not reply.repeat or fake.release.is_set():
+                return
 
 
 class _Server(socketserver.ThreadingUnixStreamServer):
@@ -382,14 +404,12 @@ def test_launcher_round_trip_writes_no_token_or_nonce(
     "data",
     [
         b"not http at all\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70_000 + b"\r\n\r\n",
         b"HTTP/1.1 200 OK\r\n" + b"X-H: 1\r\n" * 101 + b"\r\n",
         http_response(200, b"abc", content_length=50),
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\nabc",
     ],
     ids=[
         "bad-status-line",
-        "header-line-too-long",
         "too-many-headers",
         "truncated-body",
         "truncated-chunk",
@@ -398,3 +418,101 @@ def test_launcher_round_trip_writes_no_token_or_nonce(
 def test_malformed_http_reply_is_unavailable(fake_launcher: FakeLauncher, data: bytes) -> None:
     fake_launcher.replies.append(Reply(data))
     _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.UNAVAILABLE)
+
+
+# Review R1 item 3: one deadline and one byte budget for the whole exchange ---------------------
+
+CONTINUE = b"HTTP/1.1 100 Continue\r\n\r\n"
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "max_bytes"),
+    [
+        (0.0, MAX),
+        (-1.0, MAX),
+        (math.nan, MAX),
+        (math.inf, MAX),
+        (None, MAX),
+        ("1", MAX),
+        (1.0, 0),
+        (1.0, -1),
+        (1.0, True),
+        (1.0, 4096.0),
+        (1.0, None),
+    ],
+)
+def test_invalid_timeout_or_size_limit_is_refused(timeout_s: object, max_bytes: object) -> None:
+    with pytest.raises(LauncherError) as caught:
+        ConfidentialSpaceLauncher(
+            "/nonexistent.sock",
+            timeout_s=timeout_s,  # type: ignore[arg-type]
+            max_response_bytes=max_bytes,  # type: ignore[arg-type]
+        )
+    assert caught.value.code is LauncherErrorCode.INVALID_CONFIGURATION
+
+
+def _timed_code(launcher: ConfidentialSpaceLauncher) -> tuple[LauncherErrorCode, float]:
+    started_at = time.monotonic()
+    with pytest.raises(LauncherError) as caught:
+        launcher.get_attestation_token(AUD, "OIDC", NONCE)
+    return caught.value.code, time.monotonic() - started_at
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        Reply(http_response(200, make_token().encode()), drip_s=0.1),
+        Reply(CONTINUE, drip_s=0.02, repeat=True),
+    ],
+    ids=["slow-drip", "slow-100-continue-flood"],
+)
+def test_whole_exchange_is_bounded_by_one_deadline(
+    fake_launcher: FakeLauncher, reply: Reply
+) -> None:
+    fake_launcher.replies.append(reply)
+
+    code, elapsed = _timed_code(client(fake_launcher.socket_path, timeout_s=0.5))
+
+    assert code is LauncherErrorCode.UNAVAILABLE
+    assert elapsed < 1.5
+
+
+def test_endless_100_continue_flood_exhausts_the_byte_budget(fake_launcher: FakeLauncher) -> None:
+    fake_launcher.replies.append(Reply(CONTINUE * 64, repeat=True))
+
+    code, elapsed = _timed_code(client(fake_launcher.socket_path, timeout_s=5.0))
+
+    assert code is LauncherErrorCode.TOKEN_REJECTED
+    assert elapsed < 1.5
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"X-Long: " + b"a" * 70_000 + b"\r\n",
+        b"".join(b"X-H%d: " % i + b"a" * 1000 + b"\r\n" for i in range(90)),
+    ],
+    ids=["one-long-header-line", "many-large-headers"],
+)
+def test_oversized_header_section_is_rejected(fake_launcher: FakeLauncher, head: bytes) -> None:
+    body = make_token().encode()
+    data = b"HTTP/1.1 200 OK\r\n" + head + b"Content-Length: %d\r\n\r\n" % len(body) + body
+    fake_launcher.replies.append(Reply(data))
+
+    _assert_code(client(fake_launcher.socket_path), LauncherErrorCode.TOKEN_REJECTED)
+
+
+def test_deadline_already_spent_before_connecting_is_unavailable(
+    fake_launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readings = iter([100.0, 200.0, 300.0])
+
+    class _Clock:
+        @staticmethod
+        def monotonic() -> float:
+            return next(readings)
+
+    monkeypatch.setattr(launcher_module, "time", _Clock)
+
+    _assert_code(client(fake_launcher.socket_path, timeout_s=1.0), LauncherErrorCode.UNAVAILABLE)
+    assert fake_launcher.connections == 0
