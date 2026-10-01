@@ -26,7 +26,6 @@ _SIMPLE_MIN_TWO_BYTE = 32
 _PERMITTED_SIMPLE = frozenset({0xF4, 0xF5, 0xF6})  # false, true, null
 _INT_MIN = -(2**64)
 _INT_MAX = 2**64 - 1
-_MAX_NESTING = 400  # cbor2 materialises at most 400 nested containers; its encoder recurses in C
 # Shared Python/TypeScript nesting ceiling: cbor2 recurses in C, so nothing deeper reaches it.
 _MAX_DEPTH = 64
 
@@ -130,30 +129,31 @@ def _scan(data: bytes, limits: DecodeLimits) -> None:
 def _validate(value: object) -> None:
     """Iterative check that `value` is in the rule-2 data model (exact types; bool before int).
 
-    Container nesting is capped at what cbor2 can materialise, so a cyclic value terminates and
-    cbor2's recursive C encoder is never handed a nesting deep enough to exhaust the C stack.
+    Depth is rule-5 depth (top level 1; list elements and dict values one deeper than their
+    container) and is capped at `_MAX_DEPTH`, so a cyclic value terminates and cbor2, which
+    recurses, never receives a value nested deeper than the ceiling.
     """
     pending: list[tuple[object, int]] = [(value, 1)]
     while pending:
-        item, level = pending.pop()
+        item, depth = pending.pop()
         kind = type(item)
+        children: list[object] = []
         if item is None or kind in (bool, str, bytes):
-            continue
-        if isinstance(item, int) and kind is int:
+            pass
+        elif isinstance(item, int) and kind is int:
             if not _INT_MIN <= item <= _INT_MAX:
                 raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
-            continue
-        if level > _MAX_NESTING and kind in (list, dict):
-            raise WireError(WireErrorCode.LIMIT_EXCEEDED)
-        if isinstance(item, list) and kind is list:
-            pending.extend((child, level + 1) for child in item)
+        elif isinstance(item, list) and kind is list:
+            children = item
         elif isinstance(item, dict) and kind is dict:
-            for key, child in item.items():
-                if type(key) is not str:
-                    raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
-                pending.append((child, level + 1))
+            if any(type(key) is not str for key in item):
+                raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
+            children = list(item.values())
         else:
             raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
+        if depth > _MAX_DEPTH:
+            raise WireError(WireErrorCode.LIMIT_EXCEEDED)
+        pending.extend((child, depth + 1) for child in children)
 
 
 def encode(value: CanonicalValue) -> bytes:

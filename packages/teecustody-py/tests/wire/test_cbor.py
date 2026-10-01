@@ -231,20 +231,52 @@ def test_materialised_value_that_does_not_re_encode_to_the_input_is_noncanonical
     assert caught.value.code is WireErrorCode.NONCANONICAL
 
 
-MAX_NESTING = 400  # containers cbor2 can materialise; deeper values could never decode
-
-
-def _nested_lists(levels: int) -> list[Any]:
-    value: list[Any] = [0]
-    for _ in range(levels - 1):
+def _value_of_depth(depth: int) -> list[Any] | int:
+    """`0` inside `depth - 1` nested lists: rule-5 depth `depth`, built without recursion."""
+    value: list[Any] | int = 0
+    for _ in range(depth - 1):
         value = [value]
     return value
 
 
-@pytest.mark.parametrize("levels", [MAX_NESTING + 1, 100_000], ids=["bound_plus_1", "100k"])
-def test_encode_refuses_nesting_beyond_the_materialisation_bound(levels: int) -> None:
+@pytest.fixture
+def forbid_cbor2_dumps(monkeypatch: pytest.MonkeyPatch) -> None:
+    def must_not_be_called(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("cbor2.dumps called with a value deeper than the ceiling")
+
+    monkeypatch.setattr("teecustody.wire.cbor.cbor2.dumps", must_not_be_called)
+
+
+def test_depth_at_the_ceiling_round_trips_on_a_128_kib_thread_stack() -> None:
+    value = _value_of_depth(DEPTH_CEILING)
+    expected = bytes.fromhex("81" * (DEPTH_CEILING - 1) + "00")
+    results: list[object] = []
+
+    def run() -> None:
+        encoded = encode(value)
+        results.extend([encoded, decode(encoded, DecodeLimits(1024, DEPTH_CEILING, 1024))])
+
+    previous = threading.stack_size(128 * 1024)
+    try:
+        worker = threading.Thread(target=run)
+        worker.start()
+    finally:
+        threading.stack_size(previous)
+    worker.join(timeout=30)
+    assert results == [expected, value]
+
+
+@pytest.mark.usefixtures("forbid_cbor2_dumps")
+@pytest.mark.parametrize("depth", [DEPTH_CEILING + 1, 100_000], ids=["ceiling_plus_1", "100k"])
+def test_encode_refuses_depth_beyond_the_ceiling_before_cbor2(depth: int) -> None:
     with pytest.raises(WireError) as caught:
-        encode(_nested_lists(levels))
+        encode(_value_of_depth(depth))
+    assert caught.value.code is WireErrorCode.LIMIT_EXCEEDED
+
+
+def test_decode_refuses_depth_beyond_the_ceiling() -> None:
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex("81" * DEPTH_CEILING + "00"), DecodeLimits(1024, DEPTH_CEILING, 1024))
     assert caught.value.code is WireErrorCode.LIMIT_EXCEEDED
 
 
