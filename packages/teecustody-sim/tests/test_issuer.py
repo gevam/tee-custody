@@ -388,3 +388,21 @@ def test_stdlib_error_pages_are_content_free(
     assert b"Content-Type: text/plain" in headers
     assert content == body
     assert b"script" not in response
+
+
+def test_request_beyond_the_held_slots_gets_503() -> None:
+    limit = 2
+    limits = SimLimits(max_concurrent_requests=limit)
+    server = IssuerServer("127.0.0.1", 0, issuer=SIM_ISSUER, jwks=JWKS, limits=limits)
+    server.start()
+    parts = urlsplit(server.origin)
+    address = (parts.hostname or "", parts.port or 0)
+    holders = [socket.create_connection(address, timeout=5.0) for _ in range(limit)]
+    try:
+        time.sleep(0.2)
+        status, content_type, body = _request(server.origin, "GET", "/jwks")
+    finally:
+        for sock in holders:
+            sock.close()
+        server.stop()
+    assert (status, content_type, body) == (503, "text/plain", b"SERVICE_UNAVAILABLE")
