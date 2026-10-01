@@ -475,3 +475,26 @@ describe("parseTrustProfile rejects each rule violation with its code and field 
         expect(parseTrustProfile(json).profile_kind).toBe(json.profile_kind);
     });
 });
+
+// Criterion 5 (NFR-5 / I13): no profile field can switch a check off; unknown keys are rejected at every level.
+describe("parseTrustProfile rejects unknown keys", () => {
+    it.each([
+        ["skip_verification", { skip_verification: true }, "skip_verification"],
+        ["skip_verification false", { skip_verification: false }, "skip_verification"],
+        ["allow_debug", { allow_debug: true }, "allow_debug"],
+        ["pinned_root (PKI not implemented)", { pinned_root: "AAAA" }, "pinned_root"],
+    ] as const)("%s at the root", (_name, extra, field) => {
+        const error = profileError({ ...developmentJson(), ...extra });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
+    });
+
+    it("an unknown key in a production profile", () => {
+        const error = profileError({ ...productionJson(), skip_verification: true });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "skip_verification"]);
+    });
+
+    it("an unknown key in a signer entry", () => {
+        const error = profileError(apply(developmentJson, signer(2, { optional: true })));
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "signer_keys[2].optional"]);
+    });
+});

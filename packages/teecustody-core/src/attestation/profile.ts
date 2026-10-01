@@ -55,6 +55,12 @@ function readObject<K extends string>(
     if (prototype !== Object.prototype && prototype !== null) {
         throw fail(field);
     }
+    const allowed: readonly string[] = keys;
+    for (const key of Object.keys(value)) {
+        if (!allowed.includes(key)) {
+            throw fail(member(field, key));
+        }
+    }
     for (const key of keys) {
         if (!Object.hasOwn(value, key)) {
             throw fail(member(field, key));
