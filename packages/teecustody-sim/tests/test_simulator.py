@@ -678,6 +678,16 @@ BYPASSES = {
     "json-escaped-key": r'{"projects\/prod-proj\/topics\/b": 1}',
     "json-percent-member": '["projects%2Fprod-proj%2Ftopics%2Fb"]',
     "json-escaped-percent-member": r'["projects\u00252Fprod-proj\u00252Ftopics\u00252Fb"]',
+    # The same two branches, escaped once more so one-pass escape decoding cannot reach the name.
+    "json-in-escaped-key": r'{"{\"projects\\/prod-proj\\/topics\\/b\":1}": 1}',
+    "double-escaped-percent-member": r'["projects\\u00252Fprod-proj\\u00252Ftopics\\u00252Fb"]',
+    # Review round 1 item 3: JSON escapes inside a value that is not JSON as a whole.
+    "escapes-after-bom": "\ufeff" + r'["projects\/prod-proj\/topics\/b"]',
+    "escapes-before-text": r'["projects\/prod-proj\/topics\/b"] x',
+    "escapes-after-flag": r'--topics=["projects\/prod-proj\/topics\/b"]',
+    "unicode-escapes-in-text": r"--topics=projects\u002fprod-proj\u002ftopics\u002fb",
+    # Item 4: JSON refused by a parser limit (int digits) refuses, whatever it would decode to.
+    "json-int-digit-limit": r'["[\"projects\\/prod-proj\\/topics\\/b\"]", ' + "1" * 5000 + "]",
 }
 BYPASS_CASES = {
     f"{label}-{place}": (extra, launch, value)
@@ -774,6 +784,7 @@ ALLOWED: dict[str, tuple[dict[str, str], LaunchConfig]] = {
             "json-scalars": '{"n":1,"b":true,"z":null}',
             "bad-percent": "%zz",
             "json-numbers": "[1,2]",
+            "not-an-escape": r"C:\dir",
         }.items()
         for place, case in _placements(value).items()
     },

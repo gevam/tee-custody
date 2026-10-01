@@ -47,6 +47,17 @@ _KMS_KEY_NAME: Final = re.compile(
 _PUBSUB_NAME: Final = re.compile(
     r"(?=projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s])", re.ASCII
 )
+_JSON_ESCAPE: Final = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))', re.ASCII)
+_JSON_SHORT_ESCAPES: Final = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
 # §15.2 item 5 namespace: not a valid GCP project id, and `.invalid` is RFC 6761-reserved.
 _SIM_QUEUE_PROJECT: Final = "teecustody-sim.invalid"
 _ADC_FILE_NAME: Final = "application_default_credentials.json"
@@ -92,26 +103,37 @@ def _json_strings(document: object) -> Iterator[str]:
             pending.extend(item.values())
 
 
+def _json_unescape(text: str) -> str:
+    """JSON string escapes decoded in one left-to-right pass, wherever they appear in `text`."""
+    return _JSON_ESCAPE.sub(
+        lambda escape: chr(int(escape[1], 16)) if escape[1] else _JSON_SHORT_ESCAPES[escape[2]],
+        text,
+    )
+
+
 def _names_production_resource(value: str) -> bool:
-    """R2/R3 over the candidate set of `value` (T-19): the value itself, its percent-decoding
-    (once, never of its own output) and every string reachable through JSON parsing, which gets
-    the same treatment. JSON nested beyond the parser's recursion limit refuses."""
-    pending = [(value, True)]
+    """R2/R3 over the candidate set of `value` (T-19): the value itself, its percent-decoding and
+    its JSON-escape decoding (each at most once in a chain, never of its own output), and every
+    string reachable through JSON parsing, which gets the same treatment. JSON that the parser
+    refuses for a limit (nesting depth, integer digits) refuses."""
+    pending = [(value, True, True)]
     while pending:
-        candidate, may_unquote = pending.pop()
+        candidate, may_unquote, may_unescape = pending.pop()
         if _KMS_KEY_NAME.search(candidate) or any(
             match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(candidate)
         ):
             return True
         if may_unquote and "%" in candidate:
-            pending.append((unquote(candidate), False))
+            pending.append((unquote(candidate), False, may_unescape))
+        if may_unescape and "\\" in candidate:
+            pending.append((_json_unescape(candidate), may_unquote, False))
         try:
             document = json.loads(candidate)
-        except RecursionError:
-            return True
-        except ValueError:
+        except json.JSONDecodeError:
             continue
-        pending.extend((text, True) for text in _json_strings(document))
+        except (ValueError, RecursionError):
+            return True
+        pending.extend((text, True, True) for text in _json_strings(document))
     return False
 
 
@@ -119,12 +141,12 @@ def _production_configuration_present(environ: Mapping[str, str], launch: Launch
     """§15.5: production credentials, KMS key names or queue names in the simulator's own
     environment or in the workload launch configuration. Never reports what matched.
 
-    Values are searched as written, percent-decoded and JSON-decoded, and every `projects/`
-    occurrence is checked, so a delimited, JSON or URL-encoded list cannot hide a production name
-    behind a namespaced one. Documented limits, not detected: a name split across variables or
-    arguments (e.g. `PROJECT=prod` with `TOPIC=t`); base64 or any encoding other than
-    percent-encoding and JSON escapes; double percent-encoding; names the workload builds at
-    runtime."""
+    Values are searched as written, percent-decoded, JSON-escape-decoded wherever escapes appear,
+    and JSON-decoded, and every `projects/` occurrence is checked, so a delimited, JSON or
+    URL-encoded list cannot hide a production name behind a namespaced one. Documented limits,
+    not detected: a name split across variables or arguments (e.g. `PROJECT=prod` with
+    `TOPIC=t`); base64 or any encoding other than percent-encoding and JSON escapes; double
+    percent-encoding; names the workload builds at runtime."""
     names = [*environ, *(name for name, _ in launch.env)]
     if any(name in _CREDENTIAL_NAMES or name.startswith(_CREDENTIAL_PREFIX) for name in names):
         return True
