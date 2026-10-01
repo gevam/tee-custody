@@ -253,3 +253,21 @@ describe("checkImage is synchronous and offline (SR-1, D-016)", () => {
         expect(source).not.toMatch(/\bawait\b|\basync\b/);
     });
 });
+
+describe("checkImage errors carry no token content (SR-11)", () => {
+    const leaky = `sha256:${"9e".repeat(32)}`;
+    it.each<[string, ParsedToken, AttestationErrorCode]>([
+        ["digest absent", tokenWith({ image_signatures: [sig(KEY_A)] }), "CLAIM_MISSING"],
+        ["digest unlisted", tokenWith({ image_digest: leaky }), "CLAIM_MISMATCH"],
+        ["signatures absent", tokenWith({ image_digest: DIGEST }), "CLAIM_MISSING"],
+        ["signatures not an array", tokenWithSignatures({ key_id: UNKNOWN }), "CLAIM_MISMATCH"],
+        ["too few signers", tokenWithSignatures([sig(KEY_A), sig(UNKNOWN)]), "UNTRUSTED_SIGNER"],
+    ])("%s: message is exactly 'image: <code>'", (_name, t, code) => {
+        const err = imageError(() => checkImage(t, profile()));
+        expect(err.message).toBe(`image: ${code}`);
+        for (const secret of [leaky, DIGEST, KEY_A, UNKNOWN, "c2lnbmF0dXJl"]) {
+            expect(err.message).not.toContain(secret);
+            expect(String(err.stack)).not.toContain(secret);
+        }
+    });
+});
