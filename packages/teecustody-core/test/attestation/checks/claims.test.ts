@@ -317,3 +317,43 @@ describe("checkSupportAttributes (§6.7)", () => {
         );
     });
 });
+
+function inheriting(proto: JsonObject, own: JsonObject = {}): JsonObject {
+    return Object.assign(Object.create(proto) as JsonObject, own);
+}
+
+describe("own properties only", () => {
+    it("checkAudience treats an inherited aud as CLAIM_MISSING", () => {
+        expectRejected(audience(inheriting({ aud: AUDIENCE })), "audience", "CLAIM_MISSING");
+    });
+
+    it.each(["exp", "iat"])("checkTime treats an inherited %s as CLAIM_MISSING", (name) => {
+        const own = without(FRESH, name);
+        expectRejected(time(inheriting(FRESH, own)), "time", "CLAIM_MISSING");
+    });
+
+    it("checkTime ignores an inherited nbf", () => {
+        expect(time(inheriting({ nbf: NOW_S + 60 }, FRESH))).not.toThrow();
+    });
+
+    it("checkNonce treats an inherited eat_nonce as CLAIM_MISSING", () => {
+        expectRejected(nonce(inheriting({ eat_nonce: EXPECTED_NONCE })), "nonce", "CLAIM_MISSING");
+    });
+
+    it.each(["hwmodel", "swname", "secboot", "dbgstat"])(
+        "checkPlatform treats an inherited %s as CLAIM_MISSING",
+        (name) => {
+            const own = without(PLATFORM, name);
+            expectRejected(platform(inheriting(PLATFORM, own)), "platform", "CLAIM_MISSING");
+        },
+    );
+
+    it("isDebugMode ignores an inherited dbgstat", () => {
+        expect(isDebugMode(token(inheriting({ dbgstat: "enabled" })))).toBe(false);
+    });
+
+    it("checkSupportAttributes treats an inherited submods as CLAIM_MISSING", () => {
+        const claims = inheriting(withAttributes(["STABLE"]));
+        expectRejected(supportAttributes(claims), "support_attributes", "CLAIM_MISSING");
+    });
+});

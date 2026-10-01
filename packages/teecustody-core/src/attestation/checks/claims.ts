@@ -51,7 +51,7 @@ export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void 
 
 // NumericDate in whole seconds; undefined when absent, CLAIM_MISMATCH when not a non-negative safe integer.
 function numericDate(t: ParsedToken, name: string): number | undefined {
-    const value = t.claims[name];
+    const value = getPath(t.claims, [name]);
     if (value === undefined) {
         return undefined;
     }
@@ -95,7 +95,7 @@ export function checkPlatform(t: ParsedToken, p: TrustProfile): void {
 
 // §6.6 / SR-12
 export function isDebugMode(t: ParsedToken): boolean {
-    const dbgstat = t.claims["dbgstat"];
+    const dbgstat = getPath(t.claims, ["dbgstat"]);
     return dbgstat !== undefined && dbgstat !== DBGSTAT_PRODUCTION;
 }
 
@@ -119,7 +119,7 @@ function isJsonArray(v: JsonValue): v is readonly JsonValue[] {
 }
 
 function requiredClaim(t: ParsedToken, name: string, check: AttestationCheckId): JsonValue {
-    const value = t.claims[name];
+    const value = getPath(t.claims, [name]);
     if (value === undefined) {
         throw new AttestationError("CLAIM_MISSING", check);
     }
