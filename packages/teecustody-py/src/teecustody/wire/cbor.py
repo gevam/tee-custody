@@ -24,6 +24,8 @@ _INFO_31_IS_MALFORMED = frozenset({_MAJOR_UNSIGNED, _MAJOR_NEGATIVE, _MAJOR_TAG,
 _SHORTEST_MIN = {24: 24, 25: 0x100, 26: 0x1_0000, 27: 0x1_0000_0000}
 _SIMPLE_MIN_TWO_BYTE = 32
 _PERMITTED_SIMPLE = frozenset({0xF4, 0xF5, 0xF6})  # false, true, null
+_INT_MIN = -(2**64)
+_INT_MAX = 2**64 - 1
 
 
 @dataclass
@@ -122,7 +124,30 @@ def _scan(data: bytes, limits: DecodeLimits) -> None:
         raise WireError(WireErrorCode.MALFORMED)
 
 
+def _validate(value: object) -> None:
+    """Iterative check that `value` is in the rule-2 data model (exact types; bool before int)."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        kind = type(item)
+        if item is None or kind in (bool, str, bytes):
+            continue
+        if isinstance(item, int) and kind is int:
+            if not _INT_MIN <= item <= _INT_MAX:
+                raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
+        elif isinstance(item, list) and kind is list:
+            pending.extend(item)
+        elif isinstance(item, dict) and kind is dict:
+            for key, child in item.items():
+                if type(key) is not str:
+                    raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
+                pending.append(child)
+        else:
+            raise WireError(WireErrorCode.UNSUPPORTED_TYPE)
+
+
 def encode(value: CanonicalValue) -> bytes:
+    _validate(value)
     return cbor2.dumps(value, canonical=True)
 
 

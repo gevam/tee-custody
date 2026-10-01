@@ -67,3 +67,41 @@ def test_invalid_vector_fails_closed_with_exactly_its_code_and_no_input_in_the_t
     assert caught.value.code is WireErrorCode(case["error"])
     assert str(caught.value) == case["error"]
     assert caught.value.args == (case["error"],)
+
+
+def test_input_over_max_bytes_is_too_large_before_cbor2_is_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def must_not_be_called(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("cbor2.loads called for oversized input")
+
+    monkeypatch.setattr("teecustody.wire.cbor.cbor2.loads", must_not_be_called)
+    limits = DecodeLimits(max_bytes=8, max_depth=4, max_items=64)
+    oversized = bytes.fromhex("48") + bytes(8)  # a valid 8-byte bstr: 9 bytes, one over the limit
+    with pytest.raises(WireError) as caught:
+        decode(oversized, limits)
+    assert caught.value.code is WireErrorCode.TOO_LARGE
+    assert str(caught.value) == "TOO_LARGE"
+
+
+@pytest.mark.parametrize(
+    "value", [{"b": 1, "aa": 2}, {"aa": 2, "b": 1}], ids=["contract", "reversed_insertion"]
+)
+def test_encode_orders_text_keys_by_encoded_bytes(value: dict[str, int]) -> None:
+    assert encode(value) == bytes.fromhex("a261620162616102")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1.5, 2**64, -(2**64) - 1, {1: 2}, (1,), bytearray(b"x"), {"a": {1.0}}],
+    ids=["float", "uint_2p64", "nint_below_min", "int_key", "tuple", "bytearray", "nested_set"],
+)
+def test_encode_rejects_values_outside_the_data_model(value: object) -> None:
+    with pytest.raises(WireError) as caught:
+        encode(value)  # type: ignore[arg-type]
+    assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
+    assert str(caught.value) == "UNSUPPORTED_TYPE"
+
+
+def test_encode_true_as_the_simple_value_not_the_integer_one() -> None:
+    assert encode(True) == bytes.fromhex("f5")
