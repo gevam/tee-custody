@@ -156,6 +156,14 @@ def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
         raise ValueError("INVALID_LIMITS")
     if len(data) > limits.max_bytes:
         raise WireError(WireErrorCode.TOO_LARGE)
-    _scan(data, limits)
-    result: CanonicalValue = cbor2.loads(data)
+    try:
+        _scan(data, limits)
+        result: CanonicalValue = cbor2.loads(data)
+        canonical = encode(result) == data
+    except WireError:
+        raise
+    except Exception:  # noqa: BLE001 - fail closed (SR-3); the cause may quote input (SR-11)
+        raise WireError(WireErrorCode.MALFORMED) from None
+    if not canonical:
+        raise WireError(WireErrorCode.NONCANONICAL)
     return result

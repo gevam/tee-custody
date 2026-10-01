@@ -187,3 +187,36 @@ def test_bignum_tag_is_unsupported(vector_limits: DecodeLimits) -> None:
     with pytest.raises(WireError) as caught:
         decode(bytes.fromhex("c249010000000000000000"), vector_limits)
     assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
+
+
+def test_nesting_cbor2_cannot_materialise_is_malformed_not_a_foreign_exception() -> None:
+    deep = bytes.fromhex("81" * 500 + "00")
+    limits = DecodeLimits(max_bytes=len(deep), max_depth=1000, max_items=1000)
+    with pytest.raises(WireError) as caught:
+        decode(deep, limits)
+    assert caught.value.code is WireErrorCode.MALFORMED
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+
+
+def test_any_foreign_exception_after_the_length_check_becomes_malformed(
+    monkeypatch: pytest.MonkeyPatch, vector_limits: DecodeLimits
+) -> None:
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("SENTINEL-INPUT-6161")
+
+    monkeypatch.setattr("teecustody.wire.cbor.cbor2.loads", explode)
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex("6161"), vector_limits)
+    assert caught.value.code is WireErrorCode.MALFORMED
+    assert "SENTINEL" not in str(caught.value)
+    assert caught.value.__suppress_context__
+
+
+def test_materialised_value_that_does_not_re_encode_to_the_input_is_noncanonical(
+    monkeypatch: pytest.MonkeyPatch, vector_limits: DecodeLimits
+) -> None:
+    monkeypatch.setattr("teecustody.wire.cbor.cbor2.loads", lambda _data: "b")
+    with pytest.raises(WireError) as caught:
+        decode(bytes.fromhex("6161"), vector_limits)
+    assert caught.value.code is WireErrorCode.NONCANONICAL
