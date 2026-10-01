@@ -1,14 +1,21 @@
 """T-08 criteria 4-7: the `Simulator` facade (spec §15.2, §15.5; API.md §C `sim-state.json`)."""
 
 import dataclasses
+import json
 import shutil
+import socket
+import stat
 import tempfile
+import urllib.request
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
 from teecustody_sim import (
+    DEFAULT_TOKEN_AUDIENCE,
+    DEFAULT_TOKEN_MAX_AGE_S,
     MAX_SIGNERS,
     SIM_ISSUER,
     Alteration,
@@ -243,3 +250,182 @@ def test_process_environment_is_the_default(
         Simulator(config).start()
     assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
     assert_nothing_created(config)
+
+
+NOW = 1_900_000_000
+NONCE = "cd" * 32
+
+
+def fixed_clock() -> float:
+    return NOW + 0.75
+
+
+def http_get_json(url: str) -> JsonValue:
+    with urllib.request.urlopen(url, timeout=5.0) as response:  # noqa: S310 - loopback test URL
+        assert response.status == 200
+        value: JsonValue = json.loads(response.read())
+    return value
+
+
+def post_token(socket_path: Path, audience: str, nonces: list[str]) -> tuple[int, bytes]:
+    body = json.dumps({"audience": audience, "token_type": "OIDC", "nonces": nonces}).encode()
+    head = (
+        "POST /v1/token HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    )
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5.0)
+        sock.connect(str(socket_path))
+        sock.sendall(head.encode() + body)
+        chunks = []
+        while chunk := sock.recv(65536):
+            chunks.append(chunk)
+    status_line, _, rest = b"".join(chunks).partition(b"\r\n")
+    return int(status_line.split()[1]), rest.partition(b"\r\n\r\n")[2]
+
+
+@pytest.mark.usefixtures("fakes")
+def test_start_serves_discovery_jwks_and_the_launcher_socket(short_dir: Path) -> None:
+    config = make_config(short_dir, signers_required=3, token_ttl_s=1200)
+    with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+        origin = simulator.issuer_origin
+        assert urlsplit(origin).hostname == "127.0.0.1"
+        assert simulator.discovery_url == origin + "/.well-known/openid-configuration"
+        discovery = http_get_json(simulator.discovery_url)
+        jwks = http_get_json(origin + "/jwks")
+        status, token = post_token(config.socket_path, AUDIENCE, [NONCE])
+        keys = simulator.keys
+
+    assert isinstance(discovery, dict)
+    assert discovery["issuer"] == SIM_ISSUER
+    assert discovery["jwks_uri"] == origin + "/jwks"
+    assert jwks == {"keys": [PUBLIC_JWK]}
+    assert (status, token) == (200, b"eyJmYWtl.2.c2ln")
+    assert isinstance(keys, FakeKeys)
+    assert FakeKeys.loaded == [(config.state_dir, 3)]
+    assert FakeMinter.created == [(keys, LAUNCH, SIM_ISSUER, 1200, DEFAULT_TOKEN_MAX_AGE_S)]
+    assert FakeMinter.minted[1] == (AUDIENCE, [NONCE], NOW)
+
+
+@pytest.mark.usefixtures("fakes")
+def test_start_writes_the_default_token_file(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    with Simulator(config, environ={}, clock=fixed_clock):
+        pass
+
+    assert FakeMinter.minted[0] == (DEFAULT_TOKEN_AUDIENCE, [], NOW)
+    assert config.token_file_path.read_text() == "eyJmYWtl.1.c2ln"
+    assert stat.S_IMODE(config.token_file_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.usefixtures("fakes")
+def test_start_writes_sim_state_matching_the_api_contract(short_dir: Path) -> None:
+    config = make_config(short_dir, signers_required=4, token_ttl_s=900)
+    with Simulator(config, environ={}, clock=fixed_clock) as simulator:
+        origin = simulator.issuer_origin
+
+    state_file = config.state_dir / "sim-state.json"
+    assert json.loads(state_file.read_text()) == {
+        "state_version": 1,
+        "audience": AUDIENCE,
+        "issuer": SIM_ISSUER,
+        "discovery_url": origin + "/.well-known/openid-configuration",
+        "jwks_origin": origin,
+        "signers_required": 4,
+        "token_ttl_s": 900,
+        "launch": {
+            "image_reference": LAUNCH.image_reference,
+            "image_digest": LAUNCH.image_digest,
+            "args": list(LAUNCH.args),
+            "env": dict(LAUNCH.env),
+        },
+    }
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+
+
+@pytest.mark.usefixtures("fakes")
+def test_stop_removes_the_socket_closes_the_issuer_and_is_idempotent(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    simulator = Simulator(config, environ={}, clock=fixed_clock)
+    simulator.stop()
+    simulator.start()
+    assert stat.S_ISSOCK(config.socket_path.stat().st_mode)
+    port = urlsplit(simulator.issuer_origin).port
+    simulator.stop()
+    simulator.stop()
+
+    assert not config.socket_path.exists()
+    with pytest.raises(ConnectionRefusedError):
+        socket.create_connection(("127.0.0.1", port or 0), timeout=5.0)
+
+
+@pytest.mark.parametrize("name", ["issuer_origin", "discovery_url", "keys"])
+def test_properties_before_start_are_state_not_initialised(short_dir: Path, name: str) -> None:
+    simulator = Simulator(make_config(short_dir), environ={})
+    with pytest.raises(SimConfigError) as caught:
+        getattr(simulator, name)
+    assert caught.value.code is SimConfigErrorCode.STATE_NOT_INITIALISED
+
+
+ACCEPTED: dict[str, dict[str, object]] = {
+    "signers-one": {"signers_required": 1},
+    "signers-max": {"signers_required": MAX_SIGNERS},
+    "host-loopback-other": {"issuer_host": "127.0.0.2"},
+    "host-loopback-v6": {"issuer_host": "::1"},
+    "host-localhost": {"issuer_host": "localhost"},
+    "no-args-no-env": {"launch": _launch(args=(), env=())},
+}
+
+
+@pytest.mark.parametrize("overrides", ACCEPTED.values(), ids=ACCEPTED.keys())
+@pytest.mark.usefixtures("fakes")
+def test_boundary_values_are_accepted(short_dir: Path, overrides: dict[str, object]) -> None:
+    config = make_config(short_dir, **overrides)
+    with Simulator(config, environ={"CLOUDSDK_CONFIG": "/x"}, clock=fixed_clock) as simulator:
+        assert http_get_json(simulator.discovery_url) is not None
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+@pytest.mark.usefixtures("fakes")
+def test_socket_path_of_exactly_100_bytes_is_accepted(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    prefix = len(bytes(config.socket_path.parent)) + 1
+    config = dataclasses.replace(
+        config, socket_path=config.socket_path.parent / ("s" * (100 - prefix))
+    )
+    assert len(bytes(config.socket_path)) == 100
+    with Simulator(config, environ={}, clock=fixed_clock):
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+@pytest.mark.usefixtures("fakes")
+def test_a_failed_start_stops_whatever_it_started(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    config.socket_path.write_text("not a socket")
+    simulator = Simulator(config, environ={}, clock=fixed_clock)
+
+    with pytest.raises(OSError, match="Address already in use"):
+        simulator.start()
+
+    with pytest.raises(ConnectionRefusedError):
+        socket.create_connection(
+            ("127.0.0.1", urlsplit(simulator.issuer_origin).port or 0), timeout=5.0
+        )
+    assert config.socket_path.read_text() == "not a socket"
+    assert not config.token_file_path.exists()
+    assert not (config.state_dir / "sim-state.json").exists()
+
+
+@pytest.mark.usefixtures("fakes")
+def test_token_file_symlink_is_never_followed(short_dir: Path) -> None:
+    config = make_config(short_dir)
+    target = short_dir / "elsewhere"
+    target.write_text("untouched")
+    config.token_file_path.symlink_to(target)
+    simulator = Simulator(config, environ={}, clock=fixed_clock)
+
+    with pytest.raises(OSError, match="Too many levels of symbolic links"):
+        simulator.start()
+
+    assert target.read_text() == "untouched"
+    assert not config.socket_path.exists()
