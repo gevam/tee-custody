@@ -205,3 +205,17 @@ describe("encodeCanonical edge cases", () => {
         expect(toHex(encodeCanonical([shared, shared]))).toBe("82810181" + "01");
     });
 });
+
+describe("decodeCanonical violation order (rule 5)", () => {
+    it.each([
+        ["unsorted map, then a later undefined outside it", "82a2616201616101f7", "NONCANONICAL"],
+        ["unsorted keys, then undefined before the map ends", "a26162016161f7", "UNSUPPORTED_TYPE"],
+        ["duplicate key, then trailing bytes", "a261610161610100", "NONCANONICAL"],
+        ["indefinite byte string as a map key", "a15f40ff01", "NONCANONICAL"],
+        ["tag as a map key", "a1c0616100", "UNSUPPORTED_TYPE"],
+        ["non-text key past the depth limit", "818181a14000", "UNSUPPORTED_TYPE"],
+        ["truncated inside a map", "a16161", "MALFORMED"],
+    ])("%s → %s", (_name, hex, code) => {
+        expect(wireErrorCode(() => decodeCanonical(fromHex(hex), VECTOR_LIMITS))).toBe(code);
+    });
+});
