@@ -166,3 +166,42 @@ describe("64-bit arguments (criterion 14, D-020)", () => {
         expect(wireErrorCode(() => decodeCanonical(fromHex(hex), VECTOR_LIMITS))).toBe(code);
     });
 });
+
+describe("encodeCanonical edge cases", () => {
+    it("encodes -2^64 and refuses -2^64 - 1", () => {
+        expect(toHex(encodeCanonical(-(2n ** 64n)))).toBe("3bffffffffffffffff");
+        expect(wireErrorCode(() => encodeCanonical(-(2n ** 64n) - 1n))).toBe("UNSUPPORTED_TYPE");
+    });
+
+    it("refuses undefined array elements and holes instead of writing null", () => {
+        expect(wireErrorCode(() => encodeCanonical(outsideModel([undefined])))).toBe(
+            "UNSUPPORTED_TYPE",
+        );
+        expect(wireErrorCode(() => encodeCanonical(outsideModel(new Array(2))))).toBe(
+            "UNSUPPORTED_TYPE",
+        );
+    });
+
+    it("refuses strings with lone surrogates instead of encoding them lossily", () => {
+        expect(wireErrorCode(() => encodeCanonical("a\ud800"))).toBe("UNSUPPORTED_TYPE");
+        expect(wireErrorCode(() => encodeCanonical(new Map([["\udc00", 1]])))).toBe(
+            "UNSUPPORTED_TYPE",
+        );
+        expect(toHex(encodeCanonical("\ud83d\ude00"))).toBe("64f09f9880");
+    });
+
+    it("refuses cyclic containers and accepts shared acyclic ones", () => {
+        const cyclicArray: unknown[] = [];
+        cyclicArray.push(cyclicArray);
+        expect(wireErrorCode(() => encodeCanonical(outsideModel(cyclicArray)))).toBe(
+            "UNSUPPORTED_TYPE",
+        );
+        const cyclicMap = new Map<string, unknown>();
+        cyclicMap.set("self", [cyclicMap]);
+        expect(wireErrorCode(() => encodeCanonical(outsideModel(cyclicMap)))).toBe(
+            "UNSUPPORTED_TYPE",
+        );
+        const shared: CanonicalValue = [1];
+        expect(toHex(encodeCanonical([shared, shared]))).toBe("82810181" + "01");
+    });
+});

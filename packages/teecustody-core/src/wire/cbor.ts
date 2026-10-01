@@ -69,7 +69,13 @@ function compareBytes(a: Bytes, b: Bytes): number {
     return a.length - b.length;
 }
 
+// A lone surrogate has no UTF-8 form; TextEncoder would silently substitute U+FFFD.
+const LONE_SURROGATE = /\p{Cs}/u;
+
 function encodeText(writer: ByteWriter, text: string): void {
+    if (LONE_SURROGATE.test(text)) {
+        fail("UNSUPPORTED_TYPE");
+    }
     const bytes = utf8Encode(text);
     writer.writeHead(MAJOR_TEXT, bytes.length);
     writer.writeBytes(bytes);
@@ -88,14 +94,28 @@ function encodeInteger(writer: ByteWriter, integer: bigint): void {
     }
 }
 
-type EncodeTask = { readonly raw: Bytes } | { readonly value: unknown };
+type EncodeTask =
+    { readonly raw: Bytes } | { readonly value: unknown } | { readonly leave: object };
 
 export function encodeCanonical(value: CanonicalValue): Bytes {
     const writer = new ByteWriter();
     const tasks: EncodeTask[] = [{ value }];
+    // Containers on the path from the root to the current value; re-entering one is a cycle.
+    const open = new Set<object>();
+    const enter = (container: object): void => {
+        if (open.has(container)) {
+            fail("UNSUPPORTED_TYPE");
+        }
+        open.add(container);
+        tasks.push({ leave: container });
+    };
     for (let task = tasks.pop(); task !== undefined; task = tasks.pop()) {
         if ("raw" in task) {
             writer.writeBytes(task.raw);
+            continue;
+        }
+        if ("leave" in task) {
+            open.delete(task.leave);
             continue;
         }
         const current = task.value;
@@ -127,14 +147,16 @@ export function encodeCanonical(value: CanonicalValue): Bytes {
             }
             entries.sort((a, b) => compareBytes(a.key, b.key));
             writer.writeHead(MAJOR_MAP, entries.length);
+            enter(current);
             for (const entry of entries.reverse()) {
                 tasks.push({ value: entry.value }, { raw: entry.key });
             }
         } else if (Array.isArray(current)) {
             const items = current as readonly unknown[];
             writer.writeHead(MAJOR_ARRAY, items.length);
+            enter(current);
             for (let index = items.length - 1; index >= 0; index--) {
-                tasks.push({ value: items[index] ?? null });
+                tasks.push({ value: items[index] });
             }
         } else {
             fail("UNSUPPORTED_TYPE");
