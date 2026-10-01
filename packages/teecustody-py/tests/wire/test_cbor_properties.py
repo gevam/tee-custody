@@ -1,4 +1,4 @@
-"""T-04 property tests: `teecustody.wire` round-trips every canonical value and fails closed (SR-3)."""
+"""T-04 properties: `teecustody.wire` round-trips every canonical value and fails closed (SR-3)."""
 
 from __future__ import annotations
 

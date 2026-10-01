@@ -152,6 +152,8 @@ def encode(value: CanonicalValue) -> bytes:
 
 
 def decode(data: bytes, limits: DecodeLimits) -> CanonicalValue:
+    if min(limits.max_bytes, limits.max_depth, limits.max_items) < 1:
+        raise ValueError("INVALID_LIMITS")
     if len(data) > limits.max_bytes:
         raise WireError(WireErrorCode.TOO_LARGE)
     _scan(data, limits)

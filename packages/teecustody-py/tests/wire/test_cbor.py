@@ -121,6 +121,6 @@ def test_ten_thousand_nested_arrays_hit_the_depth_limit_without_recursion() -> N
     ids=["max_bytes_0", "max_depth_0", "max_items_0", "max_items_negative"],
 )
 def test_limits_below_one_are_invalid_before_any_parsing(limits: DecodeLimits) -> None:
-    with pytest.raises(ValueError, match="^INVALID_LIMITS$") as caught:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$") as caught:
         decode(b"\x00", limits)
     assert type(caught.value) is ValueError
