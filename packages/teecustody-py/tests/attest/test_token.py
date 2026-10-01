@@ -2,6 +2,7 @@
 
 import base64
 import json
+import string
 
 import pytest
 
@@ -107,6 +108,19 @@ def test_token_without_exactly_three_segments_is_rejected(token: str) -> None:
     _assert_rejected(token)
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        _json_token(_claims()) + ".extra",
+        _json_token(_claims()) + ".e.f",
+        _json_token(_claims()).rsplit(".", 1)[0],
+    ],
+    ids=["four-segments", "five-segments", "two-segments"],
+)
+def test_otherwise_valid_token_with_another_segment_count_is_rejected(token: str) -> None:
+    _assert_rejected(token)
+
+
 def _valid_payload_segment() -> str:
     return _b64(json.dumps(_claims()).encode("utf-8"))
 
@@ -127,6 +141,31 @@ def test_standard_base64_alphabet_is_rejected(urlsafe: str, standard: str) -> No
     _assert_rejected(_token(segment.replace(urlsafe, standard)))
 
 
+_ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits + "-_"
+
+
+def _segment_with_remainder(remainder: int) -> str:
+    """A valid payload segment whose length is `remainder` mod 4."""
+    for pad in range(4):
+        segment = _b64(json.dumps(_claims(sub="x" * pad)).encode("utf-8"))
+        if len(segment) % 4 == remainder:
+            return segment
+    raise AssertionError(remainder)
+
+
+@pytest.mark.parametrize("remainder", [2, 3])
+def test_payload_with_non_zero_trailing_bits_is_rejected(remainder: int) -> None:
+    segment = _segment_with_remainder(remainder)
+    parse(_token(segment), audience=AUD, expected_nonce=NONCE, max_token_bytes=MAX)
+    bumped = segment[:-1] + _ALPHABET[_ALPHABET.index(segment[-1]) + 1]
+    padded = bumped + "=" * (-len(bumped) % 4)
+    assert base64.urlsafe_b64decode(padded) == base64.urlsafe_b64decode(
+        segment + "=" * (4 - remainder)
+    )
+
+    _assert_rejected(_token(bumped))
+
+
 @pytest.mark.parametrize(
     "segment",
     [
@@ -137,7 +176,6 @@ def test_standard_base64_alphabet_is_rejected(urlsafe: str, standard: str) -> No
         _valid_payload_segment() + "é",
         "eyJ",  # length 3 is fine, but this does not decode to a JSON object
         "e",  # length = 1 mod 4 is never valid base64
-        "QR",  # non-zero trailing bits: not the canonical encoding of any byte string
         "",
     ],
 )
