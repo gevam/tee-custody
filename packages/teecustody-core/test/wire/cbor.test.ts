@@ -100,3 +100,24 @@ describe("decodeCanonical limits validation", () => {
         );
     });
 });
+
+describe("allocation guard (criterion 10, ADR 0010)", () => {
+    it.each([
+        ["9b0000000100000000", "LIMIT_EXCEEDED"],
+        ["bb8000000000000000", "LIMIT_EXCEEDED"],
+        ["5bffffffffffffffff", "MALFORMED"],
+    ])("rejects %s with %s without allocating for the declared size", (hex, code) => {
+        const input = fromHex(hex);
+        const before = process.memoryUsage().arrayBuffers;
+        const outcome = wireErrorCode(() => decodeCanonical(input, VECTOR_LIMITS));
+        const growth = process.memoryUsage().arrayBuffers - before;
+        expect(outcome).toBe(code);
+        expect(growth).toBeLessThan(64 * 1024);
+    });
+
+    it("rejects a byte string declaring more bytes than remain (590100)", () => {
+        expect(wireErrorCode(() => decodeCanonical(fromHex("590100"), VECTOR_LIMITS))).toBe(
+            "MALFORMED",
+        );
+    });
+});
