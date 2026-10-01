@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import tracemalloc
 from functools import cache
 from pathlib import Path
@@ -220,3 +221,60 @@ def test_materialised_value_that_does_not_re_encode_to_the_input_is_noncanonical
     with pytest.raises(WireError) as caught:
         decode(bytes.fromhex("6161"), vector_limits)
     assert caught.value.code is WireErrorCode.NONCANONICAL
+
+
+MAX_NESTING = 400  # containers cbor2 can materialise; deeper values could never decode
+
+
+def _nested_lists(levels: int) -> list[Any]:
+    value: list[Any] = [0]
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+
+
+def test_nesting_at_the_materialisation_bound_round_trips() -> None:
+    value = _nested_lists(MAX_NESTING)
+    encoded = encode(value)
+    limits = DecodeLimits(max_bytes=len(encoded), max_depth=MAX_NESTING + 1, max_items=1000)
+    assert decode(encoded, limits) == value
+
+
+@pytest.mark.parametrize("levels", [MAX_NESTING + 1, 100_000], ids=["bound_plus_1", "100k"])
+def test_encode_refuses_nesting_beyond_the_materialisation_bound(levels: int) -> None:
+    with pytest.raises(WireError) as caught:
+        encode(_nested_lists(levels))
+    assert caught.value.code is WireErrorCode.LIMIT_EXCEEDED
+
+
+def _self_referential_list() -> list[Any]:
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+    return cyclic
+
+
+def _self_referential_dict() -> dict[str, Any]:
+    cyclic: dict[str, Any] = {}
+    cyclic["a"] = cyclic
+    return cyclic
+
+
+@pytest.mark.parametrize(
+    "make", [_self_referential_list, _self_referential_dict], ids=["list", "dict"]
+)
+def test_encode_of_a_cyclic_value_terminates_with_limit_exceeded(make: Any) -> None:
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            encode(make())
+        except BaseException as error:  # noqa: BLE001 - recorded and asserted below
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "encode did not terminate"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], WireError)
+    assert outcome[0].code is WireErrorCode.LIMIT_EXCEEDED
