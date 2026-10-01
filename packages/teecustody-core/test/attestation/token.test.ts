@@ -54,9 +54,11 @@ const HEADER = b64url('{"alg":"RS256","kid":"k1"}');
 const CLAIMS = b64url('{"iss":"https://issuer.unit.test"}');
 const SIGNATURE = Buffer.from([1, 2, 3]).toString("base64url");
 const GOOD = `${HEADER}.${CLAIMS}.${SIGNATURE}`;
-const INVALID_UTF8 = Buffer.from([0x7b, 0x22, 0xc3, 0x28, 0x22, 0x3a, 0x31, 0x7d]).toString("base64url");
+const INVALID_UTF8 = Buffer.from([0x7b, 0x22, 0xc3, 0x28, 0x22, 0x3a, 0x31, 0x7d]).toString(
+    "base64url",
+);
 
-function malformed(token: string, maxTokenBytes = MAX): Error {
+function malformed(token: string, maxTokenBytes = MAX): AttestationError {
     try {
         parseToken(token, maxTokenBytes);
     } catch (error) {
@@ -69,7 +71,7 @@ function malformed(token: string, maxTokenBytes = MAX): Error {
 }
 
 describe("parseToken rejects malformed tokens with MALFORMED/token and no token text (SR-3, SR-11)", () => {
-    const cases: readonly (readonly [string, string, number?])[] = [
+    const cases: readonly (readonly [string, string, number] | readonly [string, string])[] = [
         ["one byte over maxTokenBytes", GOOD, ascii.encode(GOOD).length - 1],
         ["two segments", `${HEADER}.${CLAIMS}`],
         ["four segments", `${GOOD}.${SIGNATURE}`],
@@ -87,7 +89,7 @@ describe("parseToken rejects malformed tokens with MALFORMED/token and no token 
         ["non-ASCII character", `${HEADER}.${CLAIMS}.é`],
     ];
 
-    it.each(cases)("%s", (_name, token, maxTokenBytes) => {
+    it.each(cases)("%s", (_name, token, maxTokenBytes = MAX) => {
         const error = malformed(token, maxTokenBytes);
         expect([error.code, error.check]).toEqual(["MALFORMED", "token"]);
         expect(error.message).toBe("token: MALFORMED");
