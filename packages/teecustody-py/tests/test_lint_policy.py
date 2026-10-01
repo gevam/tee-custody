@@ -89,9 +89,12 @@ def test_simulator_source_may_serve_loopback_listeners(statement: str, use: str)
     assert result.returncode == 0, result.stdout
 
 
+# Scoped to the Python packages and the workspace root config: other tasks' files are linted by
+# framework.yaml's repo-wide lint_command, not by this package's unit suite.
+PYTHON_PATHS = ["pyproject.toml", "packages/teecustody-py", "packages/teecustody-sim"]
 PYTHON_LINT_COMMANDS = {
-    "ruff-check": ["ruff", "check", "."],
-    "ruff-format": ["ruff", "format", "--check", "."],
+    "ruff-check": ["ruff", "check", *PYTHON_PATHS],
+    "ruff-format": ["ruff", "format", "--check", *PYTHON_PATHS],
     "mypy-strict": [
         "mypy",
         "--strict",
