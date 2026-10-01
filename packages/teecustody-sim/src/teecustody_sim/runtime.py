@@ -1,11 +1,11 @@
 """Container runtime wrapper (docker or podman).
 
-Every subprocess call takes an argv list and never a shell; that is the reason for each `nosec`
+Every subprocess call takes an argv list and never a shell; that is the reason for each `noqa: S603`
 marker below (argv list, no shell).
 """
 
 import re
-import subprocess  # nosec B404
+import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final, Literal
@@ -69,12 +69,12 @@ def _check_run_arguments(
 
 def _run_attached(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """The workload's own output stays on this terminal."""
-    return subprocess.run(argv, capture_output=False, text=True, check=False)  # noqa: S603  # nosec B603
+    return subprocess.run(argv, capture_output=False, text=True, check=False)  # noqa: S603
 
 
 def _run_captured(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """`image inspect` output is parsed, and the runtime's own error text never reaches stderr."""
-    return subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603  # nosec B603
+    return subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
 
 
 class ContainerRuntime:
