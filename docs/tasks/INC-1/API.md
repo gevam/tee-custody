@@ -514,6 +514,16 @@ URL rejects with `CapabilityError("HTTP_ERROR")`.
 "now" = minting time; "max_age" = `token_max_age_s` (3600); every case is re-signed with the issuer key
 unless it says otherwise. `altered` lists dotted claim paths that differ from the `valid` payload.
 
+**Amendment 2026-10-01b (T-17 security review):** rows 29–37 are appended. Rows 1–28 and their order are
+unchanged. Each new row changes one claim, or only the header `kid`. Under the T-15 order (signature, issuer,
+audience, time, nonce, platform, support_attributes, image, launch_config) the listed check is the only one
+that fails: `hwmodel`/`swname`/`secboot` are read only by `checkPlatform`; support attributes only by
+`checkSupportAttributes`; digest and signatures only by `checkImage`; `args`/`env` only by `checkLaunchConfig`.
+`isDebugMode` reads only `dbgstat`, so no new row raises a debug event. `kid_unknown` fails the JWKS candidate
+step (T-11 rule 3: no entry with that `kid`). `NEGATIVE_CASES` is now rows 2..37 (36 entries); read
+"rows 2..28" in §C as "rows 2..37". No `spec/wire` change: every new row uses an existing `check-id` and
+`error-code` and the CDDL does not enumerate case ids. `spec/vectors` content changes at T-18 (human-gated).
+
 | # | id | Produced from the valid token by | check | error_code | altered | debug_event |
 |---|---|---|---|---|---|---|
 | 1 | `valid` | defaults (spec §15.3) | none | none (accept) | — | false |
@@ -544,3 +554,12 @@ unless it says otherwise. `altered` lists dotted claim paths that differ from th
 | 26 | `env_altered` | add `"TEECUSTODY_SIM_ALTERED": "1"` to `env` | launch_config | CLAIM_MISMATCH | `submods.container.env` | false |
 | 27 | `debug_bad_signature` | `dbgstat` = `enabled`, then corrupt as in #3 | signature | UNTRUSTED_SIGNER | `dbgstat` | false |
 | 28 | `key_id_duplicated` | set the last image signature's `key_id` to the first one's (signed by the first signer; duplicates count once) (D-016) | image | UNTRUSTED_SIGNER | `submods.container.image_signatures` | false |
+| 29 | `hwmodel_missing` | drop `hwmodel` | platform | CLAIM_MISSING | `hwmodel` | false |
+| 30 | `swname_missing` | drop `swname` | platform | CLAIM_MISSING | `swname` | false |
+| 31 | `secboot_missing` | drop `secboot` | platform | CLAIM_MISSING | `secboot` | false |
+| 32 | `support_attributes_missing` | drop `submods.confidential_space.support_attributes` | support_attributes | CLAIM_MISSING | `submods.confidential_space.support_attributes` | false |
+| 33 | `digest_missing` | drop `submods.container.image_digest` | image | CLAIM_MISSING | `submods.container.image_digest` | false |
+| 34 | `signatures_missing` | drop `submods.container.image_signatures` | image | CLAIM_MISSING | `submods.container.image_signatures` | false |
+| 35 | `args_missing` | drop `submods.container.args` | launch_config | CLAIM_MISSING | `submods.container.args` | false |
+| 36 | `env_missing` | drop `submods.container.env` | launch_config | CLAIM_MISSING | `submods.container.env` | false |
+| 37 | `kid_unknown` | header `kid` = `teecustody-sim-unknown-kid` (payload unchanged; signed with the issuer key) | signature | UNTRUSTED_SIGNER | — | false |

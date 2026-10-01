@@ -489,3 +489,23 @@ Participants: Code Reviewer, Security Reviewer, Orchestrator
 **Revisit when:** —
 
 **Follow-ups:** Retro: review rounds frequently find test-gap Mediums (mutation survivors); consider requiring engineers to run their own revert checks per criterion before reporting DONE.
+
+## D-025 — Add T-20 for §G missing-claim vector rows; frozen-file exception for cases.py (INC-1, 2026-10-01)
+
+Type: scope
+Chair / decider: Orchestrator
+Participants: Tech Lead, Security Reviewer
+
+**Options considered**
+1. Add task T-20 (Wave 2, before T-18) owning the changes needed for §G rows 29–37 (eight single-check missing-claim cases + `kid_unknown`), with a one-time exception allowing T-20 to modify the Wave-0 final file `cases.py` (NEGATIVE_CASES).
+2. Defer the rows to INC-2.
+
+**Decision:** Option 1.
+
+**Reasoning:** Spec §13.2 requires negative tests per check and §15.3 requires the simulator to emit any single claim removed; vectors are the cross-implementation oracle, so missing-claim behaviour must be pinned in both languages before T-18 commits the suite. Effort growth: INC-1 18 → 20 tasks (T-19, T-20) ≈ 11%, below escalation.effort_growth_pct (30%). Exception is limited to adding catalog rows; no signature or type change to frozen files.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Tech Lead writes T-20.md; T-18 depends on T-20. Retro: catalog completeness should be reviewed at G4.

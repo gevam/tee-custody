@@ -32,6 +32,13 @@ T-15 (TypeScript). It replaces the matching for R2/R3 in T-08's §15.5 refusal: 
 percent-decoded, and every `projects/` occurrence is checked. It also releases the slot before the connection
 is closed. No API change. T-18 does not depend on T-19, because vectors do not change.
 
+**Amendment log (2026-10-01b, T-17 security review).** T-17 now deduplicates signers by key material (RSA by
+`n`, EC by point), checks that each key type matches its F-11 algorithm (`UNSUPPORTED_SIGNER_KEY`), and
+requires 1 ≤ `signers_required` ≤ the signer count. API.md §G appends rows 29–37: `CLAIM_MISSING` for hwmodel,
+swname, secboot, support_attributes, image_digest, image_signatures, args and env, plus `kid_unknown`. Each row
+fails exactly one check. No `spec/wire` change. T-17 ownership is unchanged. The §G rows need an owner outside
+T-17 (R-13).
+
 ## Waves
 
 | Wave | Task | Title | Tier | Depends on | Human-gated |
@@ -174,6 +181,20 @@ generators compute `key_id` from SPKI and never copy it (T-17 criterion 2). Plea
   lint_command` (Orchestrator-owned) does not include it, so local "lint clean" claims skip the bypass layer.
   Recommend appending `&& uvx semgrep==<pin> --config .semgrep.yml --error --metrics=off` when T-14 merges
   (T-14 reports the pin).
+- **R-12 Production profile tool (BACKLOG B-05, INC-5).** It must apply all four T-17 signer-validation passes
+  (amendment 2026-10-01b): canonical SPKI; duplicate holder by RSA `n` / EC point; key type matches the F-11
+  algorithm (RSA ≥ 2048 with e = 65537, or P-256); and 1 ≤ `signers_required` ≤ signers. Each needs its own
+  test. Architect to carry this into the INC-5 increment entry.
+- **R-13 §G rows 29–37 have no owner yet (blocks T-18).** Adding them touches files T-17 does not own:
+  - `packages/teecustody-sim/src/teecustody_sim/cases.py`, a "final" Wave-0 file. Changing it needs an
+    Orchestrator exception to the Wave-0 freeze; it is data transcribed from §G.
+  - `token.py` (T-07, merged): drop edits, and a header-`kid` edit for `kid_unknown`.
+  - `packages/teecustody-sim/tests/test_token.py` and `tests/test_api_surface.py` (pins `len == 27`).
+  - `tests/integration/contracts/attestation-vectors.contract.test.ts` (`CASE_COUNT = 28` → 37).
+  - Any QA acceptance test that pins the case count.
+  Recommendation: one Wave-2 follow-up task (T-20, STRONG) owning exactly those files. None is owned by T-16,
+  T-17 or T-19, so they stay disjoint. Add the edge T-18 ← T-20. Not drafted here because it is outside the
+  files this amendment may touch.
 - Closed since 2026-09-29: CI-1..CI-10 (ratified), JOSE approach (ADR 0009), `cbor-x` (ADR 0010), §6.8
   reconstructibility (D-016), `framework.yaml` commands (D-015), R-9 framework gap (tracked in STATUS).
 
