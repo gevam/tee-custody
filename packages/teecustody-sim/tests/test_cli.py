@@ -224,3 +224,35 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert [signer.key_id for signer in call["signers"]] == expected_ids
     assert out_file.read_text() == json.dumps(builder(), indent=2, sort_keys=True) + "\n"
     assert stat.S_IMODE(out_file.stat().st_mode) == 0o644
+
+
+class RecordingGenerator:
+    """Stands in for T-17 `generate_suite` / `generate_corpus`."""
+
+    def __init__(self, name: str, calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]]) -> None:
+        self._name = name
+        self._calls = calls
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Path:
+        self._calls.append((self._name, args, kwargs))
+        return Path("/generated") / self._name
+
+
+def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
+    cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(cli_module, "generate_suite", RecordingGenerator("suite", calls))
+    monkeypatch.setattr(cli_module, "generate_corpus", RecordingGenerator("corpus", calls))
+    monkeypatch.chdir(tmp_path)
+    out_dir = tmp_path / "vec"
+
+    code, out, err = cli("vectors", "--out", str(out_dir))
+
+    assert (code, err) == (0, "")
+    assert calls == [
+        ("suite", (out_dir,), {}),
+        ("corpus", (out_dir,), {"seed": 1, "count": 512}),
+    ]
+    assert out == "/generated/suite\n/generated/corpus\n"
+    assert not (tmp_path / ".teecustody-sim").exists()
