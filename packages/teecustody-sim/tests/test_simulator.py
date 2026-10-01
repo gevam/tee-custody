@@ -653,6 +653,55 @@ def test_production_configuration_is_refused(
     assert_nothing_created(config)
 
 
+# T-19 criterion 1: a namespaced name first in a delimited, JSON or percent-encoded value hides
+# nothing. The values are the literal text of the value; JSON escapes are literal characters.
+SIM_A = "projects/teecustody-sim.invalid/topics/a"
+PROD_B = "projects/prod-proj/topics/b"
+BYPASSES = {
+    "comma": f"{SIM_A},{PROD_B}",
+    "semicolon": f"{SIM_A};{PROD_B}",
+    "space": f"{SIM_A} {PROD_B}",
+    "tab": f"{SIM_A}\t{PROD_B}",
+    "newline": f"{SIM_A}\n{PROD_B}",
+    "query": f"?x={SIM_A}&y={PROD_B}",
+    "json-array": f'["{SIM_A}","{PROD_B}"]',
+    "json-nested-key": '{"k":{"n":["' + SIM_A + '",{"' + PROD_B + '":1}]}}',
+    "json-escaped-slash": r'["projects\/prod-proj\/topics\/b"]',
+    "json-subscription": '["projects/prod-proj/subscriptions/b"]',
+    "json-in-json": r'{"c":"[\"projects\\/prod-proj\\/topics\\/b\"]"}',
+    "percent-topic": "projects%2Fprod-proj%2Ftopics%2Fb",
+    "json-escaped-kms": r'["projects\/p\/locations\/l\/keyRings\/r\/cryptoKeys\/k"]',
+    "percent-kms": "projects%2Fp%2Flocations%2Fl%2FkeyRings%2Fr%2FcryptoKeys%2Fk",
+    "json-too-deep": "[" * 100_000 + "]" * 100_000,
+}
+BYPASS_CASES = {
+    f"{label}-{place}": (extra, launch, value)
+    for label, value in BYPASSES.items()
+    for place, (extra, launch) in _placements(value).items()
+}
+
+
+@pytest.mark.parametrize(
+    ("extra", "launch", "offending"), BYPASS_CASES.values(), ids=BYPASS_CASES.keys()
+)
+@pytest.mark.usefixtures("fakes")
+def test_delimited_json_or_percent_encoded_production_name_is_refused(
+    short_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    extra: dict[str, str],
+    launch: LaunchConfig,
+    offending: str,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    config = make_config(short_dir, launch=launch)
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir, **extra)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert str(caught.value) == "PRODUCTION_CREDENTIALS_PRESENT"
+    assert offending not in str(caught.value) + caplog.text
+    assert_nothing_created(config)
+
+
 def _adc_file(directory: Path, *, dangling: bool = False) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ADC

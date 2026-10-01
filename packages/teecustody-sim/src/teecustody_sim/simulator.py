@@ -5,10 +5,11 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import TracebackType
 from typing import Final
+from urllib.parse import unquote
 
 from teecustody.obs import get_logger
 from teecustody_sim.alterations import JsonValue
@@ -42,7 +43,10 @@ _CREDENTIAL_PREFIX: Final = "CLOUDSDK_AUTH_"
 _KMS_KEY_NAME: Final = re.compile(
     r"projects/[^/\s]+/locations/[^/\s]+/keyRings/[^/\s]+/cryptoKeys/[^/\s]+", re.ASCII
 )
-_PUBSUB_NAME: Final = re.compile(r"projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s]+", re.ASCII)
+# Zero-width: every `projects/` occurrence is tested, so one name never absorbs the next (T-19).
+_PUBSUB_NAME: Final = re.compile(
+    r"(?=projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s])", re.ASCII
+)
 # §15.2 item 5 namespace: not a valid GCP project id, and `.invalid` is RFC 6761-reserved.
 _SIM_QUEUE_PROJECT: Final = "teecustody-sim.invalid"
 _ADC_FILE_NAME: Final = "application_default_credentials.json"
@@ -74,18 +78,59 @@ def _adc_path(environ: Mapping[str, str]) -> Path:
     return home / ".config" / "gcloud" / _ADC_FILE_NAME
 
 
+def _json_strings(document: object) -> Iterator[str]:
+    """Every `str` in a parsed JSON document: array elements, object keys and values, any depth."""
+    pending = [document]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+
+
+def _names_production_resource(value: str) -> bool:
+    """R2/R3 over the candidate set of `value` (T-19): the value itself, its percent-decoding
+    (once, never of its own output) and every string reachable through JSON parsing, which gets
+    the same treatment. JSON nested beyond the parser's recursion limit refuses."""
+    pending = [(value, True)]
+    while pending:
+        candidate, may_unquote = pending.pop()
+        if _KMS_KEY_NAME.search(candidate) or any(
+            match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(candidate)
+        ):
+            return True
+        if may_unquote and "%" in candidate:
+            pending.append((unquote(candidate), False))
+        try:
+            document = json.loads(candidate)
+        except RecursionError:
+            return True
+        except ValueError:
+            continue
+        pending.extend((text, True) for text in _json_strings(document))
+    return False
+
+
 def _production_configuration_present(environ: Mapping[str, str], launch: LaunchConfig) -> bool:
     """§15.5: production credentials, KMS key names or queue names in the simulator's own
-    environment or in the workload launch configuration. Never reports what matched."""
+    environment or in the workload launch configuration. Never reports what matched.
+
+    Values are searched as written, percent-decoded and JSON-decoded, and every `projects/`
+    occurrence is checked, so a delimited, JSON or URL-encoded list cannot hide a production name
+    behind a namespaced one. Documented limits, not detected: a name split across variables or
+    arguments (e.g. `PROJECT=prod` with `TOPIC=t`); base64 or any encoding other than
+    percent-encoding and JSON escapes; double percent-encoding; names the workload builds at
+    runtime."""
     names = [*environ, *(name for name, _ in launch.env)]
     if any(name in _CREDENTIAL_NAMES or name.startswith(_CREDENTIAL_PREFIX) for name in names):
         return True
     values = [*environ.values(), *(value for _, value in launch.env), *launch.args]
-    for value in values:
-        if _KMS_KEY_NAME.search(value):
-            return True
-        if any(match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(value)):
-            return True
+    if any(_names_production_resource(value) for value in values):
+        return True
     return os.path.lexists(_adc_path(environ))
 
 
