@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import tracemalloc
+from enum import IntEnum, StrEnum
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -337,3 +338,42 @@ def test_first_violation_in_byte_order_wins(
     with pytest.raises(WireError) as caught:
         decode(bytes.fromhex(hex_input), vector_limits)
     assert caught.value.code is code
+
+
+class _Code(StrEnum):
+    A = "a"
+
+
+class _Number(IntEnum):
+    ONE = 1
+
+
+class _List(list[int]):
+    pass
+
+
+class _Dict(dict[str, int]):
+    pass
+
+
+class _Bytes(bytes):
+    pass
+
+
+@pytest.mark.parametrize(
+    "value",
+    [_Code.A, _Number.ONE, _List([1]), _Dict(a=1), _Bytes(b"x"), {"k": _Code.A}, {_Code.A: 1}],
+    ids=[
+        "str_enum",
+        "int_enum",
+        "list_subclass",
+        "dict_subclass",
+        "bytes_subclass",
+        "nested",
+        "key",
+    ],
+)
+def test_encode_accepts_exact_types_only_never_subclasses(value: object) -> None:
+    with pytest.raises(WireError) as caught:
+        encode(value)  # type: ignore[arg-type]
+    assert caught.value.code is WireErrorCode.UNSUPPORTED_TYPE
