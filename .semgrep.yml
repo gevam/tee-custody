@@ -203,3 +203,19 @@ rules:
           - pattern-not-inside: self = $V
           - pattern-not-inside: global = $V
           - pattern-not-inside: window = $V
+
+  - id: tc-ts-no-function-constructor
+    message: >-
+      Core evaluates no code: no Function, no eval, and no constructor-chain access that reaches the
+      Function constructor (NFR-6). Class `constructor(...)` declarations are unaffected.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-either:
+      - pattern: Function
+      - pattern: eval
+      - pattern: $X.constructor
+      - pattern: $X?.constructor
+      - pattern-regex: \?\.\s*constructor\b
+      - pattern-regex: (["'`])constructor\1
