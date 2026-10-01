@@ -529,3 +529,51 @@ describe("verifyAttestation: a failing sink never changes the decision (criterio
         2_000,
     );
 });
+
+describe("verifyAttestation: profile provenance (criteria 9, 9a; SR-1)", () => {
+    const unbranded: readonly { readonly name: string; readonly make: () => unknown }[] = [
+        { name: "a plain object shaped like a TrustProfile", make: () => ({ ...profileJson }) },
+        { name: "a spread copy of a parsed profile", make: () => ({ ...PROFILE }) },
+        { name: "Object.create of a parsed profile", make: (): unknown => Object.create(PROFILE) },
+        { name: "structuredClone of a parsed profile", make: () => structuredClone(PROFILE) },
+        { name: "the profile JSON cast as TrustProfile", make: () => profileJson },
+        { name: "null", make: () => null },
+        { name: "undefined", make: () => undefined },
+    ];
+
+    it.each(unbranded)(
+        "rejects $name as profile/MALFORMED before any other step",
+        async ({ make }) => {
+            const sink = new MemorySink();
+            const h = harness();
+            const err = await rejection(
+                verifyAttestation(
+                    await mint(debug),
+                    make() as TrustProfile,
+                    { identityNonce: IDENTITY_NONCE },
+                    sink,
+                    h.deps,
+                ),
+            );
+            expect([err.check, err.code]).toEqual(["profile", "MALFORMED"]);
+            expect(h.fetcher.calls).toEqual([]);
+            expect(h.verifyCalls).toEqual([]);
+            expect(sink.events).toEqual([]);
+        },
+    );
+
+    it("accepts the parsed profile itself (control)", async () => {
+        const h = harness();
+        await expect(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                h.deps,
+            ),
+        ).resolves.toBeDefined();
+        expect(h.fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI]);
+        expect(h.verifyCalls).toHaveLength(1);
+    });
+});

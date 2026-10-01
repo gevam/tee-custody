@@ -15,7 +15,9 @@ import { checkLaunchConfig } from "./checks/launch-config.js";
 import { checkSignature } from "./checks/signature.js";
 import { parseToken } from "./token.js";
 import {
+    AttestationError,
     createVerifiedAttestation,
+    isBrandedTrustProfile,
     type ExpectedAttestation,
     type TrustProfile,
     type VerifiedAttestation,
@@ -41,6 +43,10 @@ export async function verifyAttestation(
     events: SecurityEventSink,
     deps: VerifierDeps,
 ): Promise<VerifiedAttestation> {
+    // The TrustProfile brand is compile-time only; provenance is established here, before anything runs.
+    if (!isBrandedTrustProfile(profile)) {
+        throw new AttestationError("MALFORMED", "profile");
+    }
     const t = parseToken(token, deps.limits.maxTokenBytes);
     await checkSignature(t, profile, deps);
     checkIssuer(t, profile);
