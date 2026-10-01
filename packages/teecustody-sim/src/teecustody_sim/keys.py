@@ -7,8 +7,8 @@ import os
 import stat
 from pathlib import Path
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody_sim.alterations import JsonValue
 from teecustody_sim.constants import DEV_SIGNER_ALGORITHM, JWS_ALG, MAX_SIGNERS
@@ -18,6 +18,7 @@ _RSA_PUBLIC_EXPONENT = 65537
 _PRIVATE_DIR_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 _NOT_OWNER_BITS = 0o077
+_PSS_SALT_32 = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32)
 
 
 def _new_rsa_key() -> rsa.RSAPrivateKey:
@@ -89,7 +90,7 @@ class SignerKeyMaterial:
         return f"SignerKeyMaterial(key_id={self.key_id})"
 
     def sign(self, payload: bytes) -> bytes:
-        raise NotImplementedError("T-07")
+        return self._private_key.sign(payload, _PSS_SALT_32, hashes.SHA256())
 
 
 class SimKeys:
@@ -158,4 +159,4 @@ class SimKeys:
         }
 
     def sign_jws(self, signing_input: bytes) -> bytes:
-        raise NotImplementedError("T-07")
+        return self._issuer_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())

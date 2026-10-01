@@ -1,20 +1,54 @@
 """Simulator token minting and alterations."""
 
+import base64
+import json
 from collections.abc import Callable, Sequence
 from typing import Literal
 
 from teecustody_sim.alterations import Alteration, JsonValue
 from teecustody_sim.config import LaunchConfig
-from teecustody_sim.constants import SIM_ISSUER
-from teecustody_sim.keys import SimKeys
+from teecustody_sim.constants import (
+    DBGSTAT_DISABLED,
+    JWS_ALG,
+    SIM_HWMODEL,
+    SIM_ISSUER,
+    SUPPORT_ATTRIBUTES,
+    SWNAME,
+)
+from teecustody_sim.keys import SignerKeyMaterial, SimKeys
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _json_bytes(value: JsonValue) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _docker_reference(image_reference: str) -> str:
+    name = image_reference.split("@", 1)[0]
+    repository, _, last_segment = name.rpartition("/")
+    last_segment = last_segment.split(":", 1)[0]
+    return f"{repository}/{last_segment}" if repository else last_segment
 
 
 def image_signature_payload(image_reference: str, image_digest: str) -> bytes:
-    raise NotImplementedError("T-07")
+    return _json_bytes(
+        {
+            "critical": {
+                "identity": {"docker-reference": _docker_reference(image_reference)},
+                "image": {"docker-manifest-digest": image_digest},
+                "type": "cosign container image signature",
+            },
+            "optional": None,
+        }
+    )
 
 
 def frame_jws(header: bytes, payload: bytes, sign: Callable[[bytes], bytes]) -> str:
-    raise NotImplementedError("T-07")
+    signing_input = f"{_b64url(header)}.{_b64url(payload)}"
+    return f"{signing_input}.{_b64url(sign(signing_input.encode('ascii')))}"
 
 
 def parse_alteration(kind: Literal["alter", "drop", "case"], text: str) -> Alteration:
@@ -31,10 +65,47 @@ class TokenMinter:
         ttl_s: int,
         token_max_age_s: int,
     ) -> None:
-        raise NotImplementedError("T-07")
+        self._keys = keys
+        self._launch = launch
+        self._issuer = issuer
+        self._ttl_s = ttl_s
+        self._token_max_age_s = token_max_age_s
+
+    def _image_signature(self, signer: SignerKeyMaterial, payload: bytes) -> JsonValue:
+        return {
+            "key_id": signer.key_id,
+            "signature": base64.b64encode(signer.sign(payload)).decode("ascii"),
+            "signature_algorithm": signer.algorithm,
+        }
 
     def claims(self, audience: str, nonces: Sequence[str], now: int) -> dict[str, JsonValue]:
-        raise NotImplementedError("T-07")
+        launch = self._launch
+        payload = image_signature_payload(launch.image_reference, launch.image_digest)
+        claims: dict[str, JsonValue] = {
+            "iss": self._issuer,
+            "aud": audience,
+            "iat": now,
+            "nbf": now,
+            "exp": now + self._ttl_s,
+            "eat_nonce": nonces[0],
+            "hwmodel": SIM_HWMODEL,
+            "swname": SWNAME,
+            "secboot": True,
+            "dbgstat": DBGSTAT_DISABLED,
+            "submods": {
+                "confidential_space": {"support_attributes": list(SUPPORT_ATTRIBUTES)},
+                "container": {
+                    "image_reference": launch.image_reference,
+                    "image_digest": launch.image_digest,
+                    "image_signatures": [
+                        self._image_signature(signer, payload) for signer in self._keys.signers
+                    ],
+                    "args": list(launch.args),
+                    "env": dict(launch.env),
+                },
+            },
+        }
+        return claims
 
     def mint(
         self,
@@ -43,4 +114,9 @@ class TokenMinter:
         now: int,
         alteration: Alteration | None = None,
     ) -> str:
-        raise NotImplementedError("T-07")
+        header: JsonValue = {"alg": JWS_ALG, "kid": self._keys.issuer_kid, "typ": "JWT"}
+        return frame_jws(
+            _json_bytes(header),
+            _json_bytes(self.claims(audience, nonces, now)),
+            self._keys.sign_jws,
+        )
