@@ -149,16 +149,28 @@ def test_signer_key_id_is_computed_from_spki_never_copied(
     ]
 
 
-def test_signers_required_above_signer_count_is_rejected(keys: SimKeys) -> None:
+@pytest.mark.parametrize(
+    "signers_required",
+    [3, 0, -1, True, 1.0, "1", None],
+    ids=["above-count", "zero", "negative", "bool", "float", "str", "none"],
+)
+def test_signers_required_outside_one_to_signer_count_is_rejected(
+    keys: SimKeys, signers_required: object
+) -> None:
     with pytest.raises(ValueError, match=r"^INVALID_SIGNERS_REQUIRED$"):
-        build_trust_profile(
-            discovery_url=DISCOVERY_URL,
-            jwks_origin=JWKS_ORIGIN,
-            expected_audience=AUDIENCE,
-            launch=LAUNCH,
-            signers=keys.signers,
-            signers_required=3,
-        )
+        _profile(keys.signers, signers_required)  # type: ignore[arg-type]
+
+
+def test_an_empty_signer_list_is_rejected() -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_SIGNERS_REQUIRED$"):
+        _profile([], 1)
+
+
+@pytest.mark.parametrize("signers_required", [1, 2])
+def test_signers_required_from_one_to_signer_count_is_accepted(
+    keys: SimKeys, signers_required: int
+) -> None:
+    assert _profile(keys.signers, signers_required)["signers_required"] == signers_required
 
 
 def test_the_test_spki_builder_reproduces_the_canonical_encoding(keys: SimKeys) -> None:

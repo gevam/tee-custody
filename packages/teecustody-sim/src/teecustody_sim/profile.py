@@ -65,7 +65,8 @@ def build_trust_profile(
     token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S,
 ) -> dict[str, JsonValue]:
     signer_keys = _signer_entries(signers)
-    if signers_required > len(signers):
+    # `type(...) is int` also refuses `bool`, which `isinstance` would accept.
+    if type(signers_required) is not int or not 1 <= signers_required <= len(signers):
         raise ValueError("INVALID_SIGNERS_REQUIRED")
     args_hash, env_hash = launch_config_hashes(launch.args, launch.env)
     return {
