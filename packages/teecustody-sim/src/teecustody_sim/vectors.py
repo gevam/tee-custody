@@ -3,7 +3,9 @@
 import base64
 import hashlib
 import json
+import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -11,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from teecustody.wire import PROTO, CanonicalValue, encode
+from teecustody.wire import PROTO, CanonicalValue, DecodeLimits, WireError, decode, encode
 from teecustody_sim.alterations import JsonValue, NamedCase
 from teecustody_sim.cases import NEGATIVE_CASES
 from teecustody_sim.config import LaunchConfig
@@ -199,5 +201,133 @@ def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
     return path
 
 
+# Differential corpus (ADR 0010; API.md §F). `random.Random` is used for reproducibility only:
+# the corpus is public test data, never key material.
+_MIN_CORPUS_COUNT: Final = 500
+_CORPUS_LIMITS: Final = DecodeLimits(max_bytes=1024, max_depth=8, max_items=256)
+_MAX_VALUE_DEPTH: Final = 4
+_MAX_CONTAINER_ITEMS: Final = 8
+_MAX_STRING_LENGTH: Final = 8
+_EDGE_INTEGERS: Final = (
+    0,
+    23,
+    24,
+    255,
+    256,
+    65535,
+    65536,
+    2**32 - 1,
+    2**32,
+    2**53 - 1,
+    2**53,
+    2**64 - 1,
+    -1,
+    -24,
+    -25,
+    -(2**64),
+)
+_TEXT_ALPHABET: Final = "az09 _-~\u00e9\u00df\u05d0\u4e2d\U0001f600"
+
+
+def _random_int(rng: random.Random) -> int:
+    if rng.random() < 0.5:
+        return rng.choice(_EDGE_INTEGERS)
+    return rng.randint(-(2**64), 2**64 - 1)
+
+
+def _random_text(rng: random.Random) -> str:
+    return "".join(rng.choice(_TEXT_ALPHABET) for _ in range(rng.randint(0, _MAX_STRING_LENGTH)))
+
+
+def _random_value(rng: random.Random, depth: int) -> CanonicalValue:
+    """A random canonical value; `depth` is this item's depth (top level 1, at most 4)."""
+    kind = rng.choice(
+        ("int", "bytes", "text", "simple", "array", "map")
+        if depth < _MAX_VALUE_DEPTH
+        else ("int", "bytes", "text", "simple")
+    )
+    if kind == "int":
+        return _random_int(rng)
+    if kind == "bytes":
+        return rng.randbytes(rng.randint(0, _MAX_STRING_LENGTH))
+    if kind == "text":
+        return _random_text(rng)
+    if kind == "simple":
+        return rng.choice((None, False, True))
+    size = rng.randint(0, _MAX_CONTAINER_ITEMS)
+    if kind == "array":
+        return [_random_value(rng, depth + 1) for _ in range(size)]
+    return {_random_text(rng): _random_value(rng, depth + 1) for _ in range(size)}
+
+
+def _flip_bit(rng: random.Random, data: bytes) -> bytes:
+    position = rng.randrange(len(data))
+    mutated = bytearray(data)
+    mutated[position] ^= 1 << rng.randrange(8)
+    return bytes(mutated)
+
+
+def _insert_byte(rng: random.Random, data: bytes) -> bytes:
+    position = rng.randint(0, len(data))
+    return data[:position] + bytes([rng.randrange(256)]) + data[position:]
+
+
+def _delete_byte(rng: random.Random, data: bytes) -> bytes:
+    position = rng.randrange(len(data))
+    return data[:position] + data[position + 1 :]
+
+
+def _truncate(rng: random.Random, data: bytes) -> bytes:
+    return data[: rng.randrange(len(data))]
+
+
+def _replace_first_byte(rng: random.Random, data: bytes) -> bytes:
+    return bytes([rng.randrange(256)]) + data[1:]
+
+
+_MUTATIONS: Final[tuple[Callable[[random.Random, bytes], bytes], ...]] = (
+    _flip_bit,
+    _insert_byte,
+    _delete_byte,
+    _truncate,
+    _replace_first_byte,
+)
+
+
+def _corpus_outcome(data: bytes) -> str:
+    try:
+        decode(data, _CORPUS_LIMITS)
+    except WireError as error:
+        return error.code.value
+    return "accept"
+
+
 def generate_corpus(out_dir: Path, *, seed: int = 1, count: int = 512) -> Path:
-    raise NotImplementedError("T-17")
+    if count < _MIN_CORPUS_COUNT:
+        raise ValueError("INVALID_COUNT")
+    rng = random.Random(seed)  # noqa: S311 - seeded for reproducible public test data
+    cases: list[JsonValue] = []
+    for index in range(count):
+        encoded = encode(_random_value(rng, 1))
+        mutated = rng.choice(_MUTATIONS)(rng, encoded)
+        cases.append(
+            {"id": f"m{index:04d}", "hex": mutated.hex(), "outcome": _corpus_outcome(mutated)}
+        )
+    document: dict[str, JsonValue] = {
+        "format": "teecustody-cbor-differential-corpus",
+        "version": 1,
+        "seed": seed,
+        "limits": {
+            "max_bytes": _CORPUS_LIMITS.max_bytes,
+            "max_depth": _CORPUS_LIMITS.max_depth,
+            "max_items": _CORPUS_LIMITS.max_items,
+        },
+        "cases": cases,
+    }
+    path = out_dir / "wire" / "differential-corpus.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(document, indent=None, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return path
