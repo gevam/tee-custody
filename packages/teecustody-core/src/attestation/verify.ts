@@ -17,6 +17,7 @@ import { parseToken } from "./token.js";
 import {
     AttestationError,
     createVerifiedAttestation,
+    type AttestationCheckId,
     isBrandedTrustProfile,
     type ExpectedAttestation,
     type TrustProfile,
@@ -36,6 +37,19 @@ function reportDebugMode(events: SecurityEventSink, deps: VerifierDeps): void {
     }
 }
 
+// Runs one step; any failure that is not already an AttestationError becomes MALFORMED for that step's check.
+// The original error is discarded, never chained (SR-11).
+async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Promise<T> {
+    try {
+        return await run();
+    } catch (error) {
+        if (error instanceof AttestationError) {
+            throw error;
+        }
+        throw new AttestationError("MALFORMED", check);
+    }
+}
+
 export async function verifyAttestation(
     token: string,
     profile: TrustProfile,
@@ -43,30 +57,44 @@ export async function verifyAttestation(
     events: SecurityEventSink,
     deps: VerifierDeps,
 ): Promise<VerifiedAttestation> {
-    // The TrustProfile brand is compile-time only; provenance is established here, before anything runs.
+    // (0) The TrustProfile brand is compile-time only; provenance is established before anything runs.
     if (!isBrandedTrustProfile(profile)) {
         throw new AttestationError("MALFORMED", "profile");
     }
-    const t = parseToken(token, deps.limits.maxTokenBytes);
-    await checkSignature(t, profile, deps);
-    checkIssuer(t, profile);
+    const t = await step("token", () => parseToken(token, deps.limits.maxTokenBytes));
+    await step("signature", () => checkSignature(t, profile, deps));
+    await step("issuer", () => {
+        checkIssuer(t, profile);
+    });
+    // (4) Only a token that passed §6.1 and §6.2 can raise the alert.
     if (isDebugMode(t)) {
         reportDebugMode(events, deps);
     }
-    checkAudience(t, profile);
-    checkTime(t, profile, deps.now());
-    checkNonce(t, expected);
-    checkPlatform(t, profile);
-    checkSupportAttributes(t);
-    const signerKeyIds = checkImage(t, profile);
-    await checkLaunchConfig(t, profile, deps);
+    await step("audience", () => {
+        checkAudience(t, profile);
+    });
+    await step("time", () => {
+        checkTime(t, profile, deps.now());
+    });
+    await step("nonce", () => {
+        checkNonce(t, expected);
+    });
+    await step("platform", () => {
+        checkPlatform(t, profile);
+    });
+    await step("support_attributes", () => {
+        checkSupportAttributes(t);
+    });
+    const signerKeyIds = await step("image", () => checkImage(t, profile));
+    await step("launch_config", () => checkLaunchConfig(t, profile, deps));
+    // Every claim read below has been validated by the step named beside it.
     return createVerifiedAttestation({
-        issuer: profile.issuer,
-        audience: profile.expected_audience,
-        imageDigest: getPath(t.claims, ["submods", "container", "image_digest"]) as string,
+        issuer: profile.issuer, // issuer
+        audience: profile.expected_audience, // audience
+        imageDigest: getPath(t.claims, ["submods", "container", "image_digest"]) as string, // image
         signerKeyIds,
-        hwmodel: getPath(t.claims, ["hwmodel"]) as string,
-        issuedAtMs: (getPath(t.claims, ["iat"]) as number) * 1000,
-        expiresAtMs: (getPath(t.claims, ["exp"]) as number) * 1000,
+        hwmodel: getPath(t.claims, ["hwmodel"]) as string, // platform
+        issuedAtMs: (getPath(t.claims, ["iat"]) as number) * 1000, // time
+        expiresAtMs: (getPath(t.claims, ["exp"]) as number) * 1000, // time
     });
 }

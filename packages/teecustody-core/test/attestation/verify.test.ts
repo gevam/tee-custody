@@ -577,3 +577,97 @@ describe("verifyAttestation: profile provenance (criteria 9, 9a; SR-1)", () => {
         expect(h.verifyCalls).toHaveLength(1);
     });
 });
+
+describe("verifyAttestation: any other failure in step k is MALFORMED/<check k>", () => {
+    function withDeps(overrides: Partial<VerifierDeps>): VerifierDeps {
+        return { ...harness().deps, ...overrides };
+    }
+
+    const brokenFetcher: Fetcher = {
+        get: () => Promise.resolve({ status: 200 } as FetchResponse),
+    };
+
+    const cases: readonly {
+        readonly name: string;
+        readonly token?: () => Promise<string>;
+        readonly deps?: () => VerifierDeps;
+        readonly expected?: ExpectedAttestation;
+        readonly check: AttestationCheckId;
+    }[] = [
+        {
+            name: "(1) deps.limits missing",
+            deps: () => withDeps({ limits: undefined as unknown as VerifierDeps["limits"] }),
+            check: "token",
+        },
+        {
+            name: "(2) fetcher response without a body",
+            deps: () => withDeps({ fetcher: brokenFetcher }),
+            check: "signature",
+        },
+        {
+            name: "(6) clock throws",
+            deps: () =>
+                withDeps({
+                    now: () => {
+                        throw new Error("clock unavailable");
+                    },
+                }),
+            check: "time",
+        },
+        {
+            name: "(7) expected without identityNonce",
+            expected: {} as ExpectedAttestation,
+            check: "nonce",
+        },
+        {
+            name: "(11) sha256 rejects",
+            deps: () =>
+                withDeps({
+                    crypto: {
+                        ...testCrypto(),
+                        sha256: () => Promise.reject(new Error("digest unavailable")),
+                    },
+                }),
+            check: "launch_config",
+        },
+        {
+            name: "(11) an arg with no UTF-8 form",
+            token: () => mint((c) => (containerOf(c).args = ["\ud800"])),
+            check: "launch_config",
+        },
+    ];
+
+    it.each(cases)("$name → $check/MALFORMED", async ({ token, deps, expected, check }) => {
+        const err = await rejection(
+            verifyAttestation(
+                await (token ?? (() => mint()))(),
+                PROFILE,
+                expected ?? { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                (deps ?? (() => harness().deps))(),
+            ),
+        );
+        expect([err.check, err.code]).toEqual([check, "MALFORMED"]);
+        expect(err.message).toBe(`${check}: MALFORMED`);
+        expect(err.cause).toBeUndefined();
+    });
+
+    it("a debug-mode token with a throwing clock reports nothing and rejects time/MALFORMED", async () => {
+        const sink = new MemorySink();
+        const err = await rejection(
+            verifyAttestation(
+                await mint(debug),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                sink,
+                withDeps({
+                    now: () => {
+                        throw new Error("clock unavailable");
+                    },
+                }),
+            ),
+        );
+        expect([err.check, err.code]).toEqual(["time", "MALFORMED"]);
+        expect(sink.events).toEqual([]);
+    });
+});
