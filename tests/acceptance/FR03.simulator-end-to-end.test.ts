@@ -60,6 +60,15 @@ const NEGATIVE: ReadonlyArray<readonly [string, string, string, boolean]> = [
     ["env_altered", "launch_config", "CLAIM_MISMATCH", false],
     ["debug_bad_signature", "signature", "UNTRUSTED_SIGNER", false],
     ["key_id_duplicated", "image", "UNTRUSTED_SIGNER", false],
+    ["hwmodel_missing", "platform", "CLAIM_MISSING", false],
+    ["swname_missing", "platform", "CLAIM_MISSING", false],
+    ["secboot_missing", "platform", "CLAIM_MISSING", false],
+    ["support_attributes_missing", "support_attributes", "CLAIM_MISSING", false],
+    ["digest_missing", "image", "CLAIM_MISSING", false],
+    ["signatures_missing", "image", "CLAIM_MISSING", false],
+    ["args_missing", "launch_config", "CLAIM_MISSING", false],
+    ["env_missing", "launch_config", "CLAIM_MISSING", false],
+    ["kid_unknown", "signature", "UNTRUSTED_SIGNER", false],
 ];
 
 const loopbackFetcher: Fetcher = {
