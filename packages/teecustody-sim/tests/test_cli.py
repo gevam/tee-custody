@@ -150,15 +150,19 @@ def cli(capsys: pytest.CaptureFixture[str]) -> Cli:
 
 
 def test_token_prints_one_jws_bound_to_the_audience_and_nonce(cli: Cli, state_dir: Path) -> None:
+    # The flag's audience, not the one recorded in the state dir, is the token's `aud`.
+    requested = "https://requested.teecustody.test/other"
+    assert json.loads((state_dir / "sim-state.json").read_text())["audience"] != requested
+
     code, out, err = cli(
-        "token", "--state-dir", str(state_dir), "--audience", AUDIENCE, "--nonce", NONCE
+        "token", "--state-dir", str(state_dir), "--audience", requested, "--nonce", NONCE
     )
 
     assert (code, err) == (0, "")
     assert out.endswith("\n")
     assert out.count("\n") == 1
     claims = _payload(out.strip())
-    assert claims["aud"] == AUDIENCE
+    assert claims["aud"] == requested
     assert claims["eat_nonce"] == NONCE
 
 
