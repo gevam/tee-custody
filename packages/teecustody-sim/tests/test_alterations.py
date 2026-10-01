@@ -78,7 +78,7 @@ def _signed_by(keys: SimKeys, signature_b64: str) -> str:
 def normalized(keys: SimKeys, claims: Claims) -> Claims:
     """Claims with each (randomized PSS) image signature replaced by the key that made it."""
     result = copy.deepcopy(claims)
-    for entry in result["submods"]["container"]["image_signatures"]:
+    for entry in result["submods"]["container"].get("image_signatures", []):
         entry["signature"] = _signed_by(keys, entry["signature"])
     return result
 
@@ -138,9 +138,12 @@ def _set(path: tuple[str, ...], value: Any) -> Callable[[Claims, SimKeys], None]
     return apply
 
 
-def _drop(name: str) -> Callable[[Claims, SimKeys], None]:
+def _drop(*path: str) -> Callable[[Claims, SimKeys], None]:
     def apply(claims: Claims, keys: SimKeys) -> None:
-        del claims[name]
+        node = claims
+        for name in path[:-1]:
+            node = node[name]
+        del node[path[-1]]
 
     return apply
 
@@ -218,8 +221,18 @@ CLAIM_EDITS: dict[str, Callable[[Claims, SimKeys], None]] = {
     ),
     "debug_bad_signature": _set(("dbgstat",), "enabled"),
     "key_id_duplicated": _set(SIGS, _first_duplicated_last),
+    "hwmodel_missing": _drop("hwmodel"),
+    "swname_missing": _drop("swname"),
+    "secboot_missing": _drop("secboot"),
+    "support_attributes_missing": _drop("submods", "confidential_space", "support_attributes"),
+    "digest_missing": _drop("submods", "container", "image_digest"),
+    "signatures_missing": _drop(*SIGS),
+    "args_missing": _drop("submods", "container", "args"),
+    "env_missing": _drop("submods", "container", "env"),
+    "kid_unknown": _unchanged,
 }
 CORRUPTED_SIGNATURE = {"token_signature_corrupted", "debug_bad_signature"}
+UNKNOWN_KID = "teecustody-sim-unknown-kid"
 CASE_IDS = [case.case_id for case in NEGATIVE_CASES]
 
 
@@ -266,15 +279,20 @@ def test_named_case_header_and_token_signature_are_as_specified(
 ) -> None:
     default_header, _ = default
 
-    header, _, signing_input, signature = split(
-        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
-    )
+    token = minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
+    header, _, signing_input, signature = split(token)
 
     if case_id == "alg_none":
         assert header == b'{"alg":"none","typ":"JWT"}'
         assert signature == b""
         return
-    assert header == default_header
+    if case_id == "kid_unknown":
+        assert keys.issuer_kid != UNKNOWN_KID
+        default_kid = f'"kid":"{keys.issuer_kid}"'.encode()
+        assert header == default_header.replace(default_kid, f'"kid":"{UNKNOWN_KID}"'.encode())
+        assert token.split(".")[1] == minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
+    else:
+        assert header == default_header
     correct = issuer_signature(keys, signing_input)
     if case_id in CORRUPTED_SIGNATURE:
         assert signature == bytes([correct[0] ^ 0x01]) + correct[1:]
