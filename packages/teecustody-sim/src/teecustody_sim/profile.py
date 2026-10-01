@@ -4,6 +4,8 @@ import hashlib
 from collections.abc import Sequence
 
 from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     PublicFormat,
@@ -26,32 +28,37 @@ def launch_config_hashes(args: Sequence[str], env: Sequence[tuple[str, str]]) ->
     )
 
 
-def _canonical_spki(spki_der: bytes) -> bytes:
-    """The DER SPKI `cryptography` re-encodes `spki_der` to, or NONCANONICAL_SIGNER_SPKI."""
+def _canonical_key(spki_der: bytes) -> PublicKeyTypes:
+    """Pass 1: the key `spki_der` holds, if `spki_der` is its canonical DER SPKI."""
     try:
-        canonical = load_der_public_key(spki_der).public_bytes(
-            Encoding.DER, PublicFormat.SubjectPublicKeyInfo
-        )
+        key = load_der_public_key(spki_der)
     except (ValueError, UnsupportedAlgorithm):
         raise ValueError("NONCANONICAL_SIGNER_SPKI") from None
-    if canonical != spki_der:
+    if key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo) != spki_der:
         raise ValueError("NONCANONICAL_SIGNER_SPKI")
-    return canonical
+    return key
+
+
+def _holder(key: PublicKeyTypes, canonical: bytes) -> tuple[object, ...]:
+    """Pass 2 identity: the key material, so one holder under any encoding or `e` counts once."""
+    if isinstance(key, rsa.RSAPublicKey):
+        return ("RSA", key.public_numbers().n)
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        point = key.public_numbers()
+        return ("EC", key.curve.name, point.x, point.y)
+    return ("OTHER", canonical)
 
 
 def _signer_entries(signers: Sequence[SignerKeyMaterial]) -> list[JsonValue]:
-    """One `{key_id, algorithm}` per signer; each key once, in its one canonical encoding."""
-    seen: set[bytes] = set()
-    entries: list[JsonValue] = []
-    for signer in signers:
-        canonical = _canonical_spki(signer.spki_der)
-        if canonical in seen:
-            raise ValueError("DUPLICATE_SIGNER_KEY")
-        seen.add(canonical)
-        entries.append(
-            {"key_id": hashlib.sha256(canonical).hexdigest(), "algorithm": signer.algorithm}
-        )
-    return entries
+    """One `{key_id, algorithm}` per signer, after the validation passes (amendment 2026-10-01b)."""
+    keys = [_canonical_key(signer.spki_der) for signer in signers]
+    holders = [_holder(key, signer.spki_der) for key, signer in zip(keys, signers, strict=True)]
+    if len(set(holders)) != len(holders):
+        raise ValueError("DUPLICATE_SIGNER_KEY")
+    return [
+        {"key_id": hashlib.sha256(signer.spki_der).hexdigest(), "algorithm": signer.algorithm}
+        for signer in signers
+    ]
 
 
 def build_trust_profile(

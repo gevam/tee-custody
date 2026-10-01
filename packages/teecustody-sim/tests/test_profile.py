@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
 from teecustody_sim import (
     DEV_SIGNER_ALGORITHM,
@@ -60,6 +63,25 @@ def _spki(algorithm_identifier: bytes, subject_public_key: bytes) -> bytes:
 def _rsa_public_key_der(signer: SignerKeyMaterial) -> bytes:
     public_key = serialization.load_der_public_key(signer.spki_der)
     return public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.PKCS1)
+
+
+def _signer(public_key: PublicKeyTypes, algorithm: str) -> SignerKeyMaterial:
+    """A signer as the profile builder sees it: canonical SPKI DER plus a declared algorithm."""
+    signer = SignerKeyMaterial.__new__(SignerKeyMaterial)
+    signer.spki_der = public_key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    signer.algorithm = algorithm
+    signer.key_id = hashlib.sha256(signer.spki_der).hexdigest()
+    return signer
+
+
+def _rsa_private_key(key_size: int = 2048) -> rsa.RSAPrivateKey:
+    return rsa.generate_private_key(public_exponent=65537, key_size=key_size)
+
+
+def _same_modulus(key: rsa.RSAPrivateKey, public_exponent: int) -> rsa.RSAPublicKey:
+    return rsa.RSAPublicNumbers(public_exponent, key.public_key().public_numbers().n).public_key()
 
 
 def _profile(signers: Sequence[SignerKeyMaterial], signers_required: int) -> dict[str, object]:
@@ -257,3 +279,39 @@ def test_generated_signers_pass_with_distinct_key_ids(keys: SimKeys) -> None:
     key_ids = [entry["key_id"] for entry in signer_keys]
     assert len(key_ids) == 2
     assert len(set(key_ids)) == 2
+
+
+@pytest.mark.parametrize("other_exponent", ["3", "65537+lambda(n)"])
+def test_rsa_signers_sharing_a_modulus_are_one_holder(other_exponent: str) -> None:
+    key = _rsa_private_key()
+    private = key.private_numbers()
+    carmichael = math.lcm(private.p - 1, private.q - 1)
+    exponent = 3 if other_exponent == "3" else 65537 + carmichael
+    first = _signer(key.public_key(), "RSASSA_PSS_SHA256")
+    second = _signer(_same_modulus(key, exponent), "RSASSA_PSS_SHA256")
+    assert first.spki_der != second.spki_der
+
+    with pytest.raises(ValueError, match=r"^DUPLICATE_SIGNER_KEY$"):
+        _profile([first, second], 1)
+
+
+def test_p256_signers_with_the_same_point_are_one_holder_whatever_they_declare() -> None:
+    point = ec.generate_private_key(ec.SECP256R1()).public_key()
+
+    with pytest.raises(ValueError, match=r"^DUPLICATE_SIGNER_KEY$"):
+        _profile([_signer(point, "ECDSA_P256_SHA256"), _signer(point, "RSASSA_PSS_SHA256")], 1)
+
+
+def test_distinct_rsa_and_p256_keys_are_distinct_holders() -> None:
+    signers = [
+        _signer(_rsa_private_key().public_key(), "RSASSA_PSS_SHA256"),
+        _signer(_rsa_private_key().public_key(), "RSASSA_PKCS1V15_SHA256"),
+        _signer(ec.generate_private_key(ec.SECP256R1()).public_key(), "ECDSA_P256_SHA256"),
+        _signer(ec.generate_private_key(ec.SECP256R1()).public_key(), "ECDSA_P256_SHA256"),
+    ]
+
+    profile = _profile(signers, 4)
+
+    assert profile["signer_keys"] == [
+        {"key_id": signer.key_id, "algorithm": signer.algorithm} for signer in signers
+    ]
