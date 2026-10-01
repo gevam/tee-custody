@@ -243,3 +243,59 @@ describe("checkSignature: header matrix, fetcher never called (criterion 3)", ()
         await expectRejectedBeforeFetch({ ...token, signature: new Uint8Array(0) }, code);
     });
 });
+
+async function hs256Token(header: object, macKey: Uint8Array): Promise<ParsedToken> {
+    const encode = (part: object): string =>
+        Buffer.from(JSON.stringify(part), "utf8").toString("base64url");
+    const signingInput = `${encode(header)}.${encode(CLAIMS)}`;
+    const key = await crypto.subtle.importKey(
+        "raw",
+        macKey.slice(),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, utf8Encode(signingInput).slice());
+    return toParsed(`${signingInput}.${Buffer.from(mac).toString("base64url")}`);
+}
+
+async function issuerSpkiDer(): Promise<Uint8Array> {
+    const publicKey = await crypto.subtle.importKey(
+        "jwk",
+        { ...issuerKey.jwk },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        true,
+        ["verify"],
+    );
+    return new Uint8Array(await crypto.subtle.exportKey("spki", publicKey));
+}
+
+describe("checkSignature: algorithm confusion and embedded keys (criterion 4)", () => {
+    it("rejects an HS256 token MACed with the issuer's public JWK JSON", async () => {
+        const token = await hs256Token({ alg: "HS256", kid: KID }, json(issuerKey.jwk));
+        await expectRejectedBeforeFetch(token, "UNSUPPORTED_ALGORITHM");
+    });
+
+    it("rejects an HS256 token MACed with the issuer's SPKI DER", async () => {
+        const token = await hs256Token({ alg: "HS256", kid: KID }, await issuerSpkiDer());
+        await expectRejectedBeforeFetch(token, "UNSUPPORTED_ALGORITHM");
+    });
+
+    it("rejects an attacker-signed token that embeds its key in jwk", async () => {
+        const attacker = await generateRsaKey();
+        const header = { alg: "RS256", kid: KID, jwk: attacker.jwk };
+        await expectRejectedBeforeFetch(
+            await tokenWith(header, attacker.privateKey),
+            "UNSUPPORTED_ALGORITHM",
+        );
+    });
+
+    it("rejects an attacker-signed token that points to its key with jku", async () => {
+        const attacker = await generateRsaKey();
+        const header = { alg: "RS256", kid: KID, jku: "https://www.googleapis.com/attacker" };
+        await expectRejectedBeforeFetch(
+            await tokenWith(header, attacker.privateKey),
+            "UNSUPPORTED_ALGORITHM",
+        );
+    });
+});
