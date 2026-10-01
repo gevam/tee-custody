@@ -219,3 +219,13 @@ describe("checkImage requires an allow-listed image_digest before signatures", (
         );
     });
 });
+
+describe("checkImage never decodes signature bytes (D-016)", () => {
+    it.each(["not base64!", "%%%", "c2ln=x", "a"])(
+        "counts an entry whose signature %j is not valid base64",
+        (signature) => {
+            const t = tokenWithSignatures([{ ...sig(KEY_A), signature }, sig(KEY_B)]);
+            expect(checkImage(t, profile())).toEqual([KEY_A, KEY_B]);
+        },
+    );
+});
