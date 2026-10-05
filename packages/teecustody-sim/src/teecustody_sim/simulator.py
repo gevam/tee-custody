@@ -172,6 +172,11 @@ def _production_configuration_present(environ: Mapping[str, str], launch: Launch
     return os.path.lexists(_adc_path(environ))
 
 
+def _is_carriable_env(name: str, value: str) -> bool:
+    """An environment entry the container runtime can pass on as `NAME=VALUE` (D-04)."""
+    return bool(name) and "=" not in name and "\0" not in name and "\0" not in value
+
+
 def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
     """Every spec §15.5 / API.md §C startup rule, checked before any file or socket exists."""
     if not 1 <= config.signers_required <= MAX_SIGNERS:
@@ -184,6 +189,7 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
         not launch.image_reference
         or not _DIGEST.fullmatch(launch.image_digest)
         or len(set(env_names)) != len(env_names)
+        or not all(_is_carriable_env(name, value) for name, value in launch.env)
         or not config.audience
     ):
         raise SimConfigError(SimConfigErrorCode.INVALID_LAUNCH_CONFIG)

@@ -192,6 +192,22 @@ REJECTED: dict[str, tuple[dict[str, object], SimConfigErrorCode]] = {
         SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
     ),
     "empty-audience": ({"audience": ""}, SimConfigErrorCode.INVALID_LAUNCH_CONFIG),
+    "env-name-empty": (
+        {"launch": _launch(env=(("", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-name-with-equals": (
+        {"launch": _launch(env=(("A=B", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-name-with-nul": (
+        {"launch": _launch(env=(("A\0", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-value-with-nul": (
+        {"launch": _launch(env=(("A", "x\0"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
     "port-negative": ({"issuer_port": -1}, SimConfigErrorCode.INVALID_PORT),
     "port-too-large": ({"issuer_port": 65536}, SimConfigErrorCode.INVALID_PORT),
 }
