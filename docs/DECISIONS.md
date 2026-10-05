@@ -609,3 +609,24 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer
 **Revisit when:** Any regeneration of spec/vectors.
 
 **Follow-ups:** Merge T-18.
+
+## D-031 — G6 Low defects: fix all within INC-1 (INC-1, 2026-10-05)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, QA Engineer
+
+**Options considered**
+1. Defer D-01..D-04 and the vectors-overwrite guard to INC-2.
+2. Fix the overwrite guard now, defer the rest.
+3. Fix all now, in a small INC-1 fix wave before G7.
+
+**Decision:** Option 3.
+
+**Reasoning:** Human decision. QA Phase 2: all INC-1 requirements pass; 0 Critical/High/Medium; 4 Low (D-01 CLI maps OS failures to INTERNAL; D-02 dev profile accepts non-canonical loopback `0x7f.1`; D-03 launcher drops connections under a 100-connection burst; D-04 `serve --env "=x"` accepted) plus an unguarded `vectors --out` overwrite of human-approved spec/vectors (QA near-miss; verified intact).
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Tech Lead writes Wave-4 fix contracts; G4/G5/G6/G7 re-checked for the fix wave; then G8.
