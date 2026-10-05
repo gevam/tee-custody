@@ -196,6 +196,7 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
     if (
         len(os.fsencode(config.socket_path)) > _MAX_SOCKET_PATH_BYTES
         or not config.socket_path.parent.is_dir()
+        or os.path.lexists(config.socket_path)
         or not config.token_file_path.parent.is_dir()
     ):
         raise SimConfigError(SimConfigErrorCode.INVALID_PATH)

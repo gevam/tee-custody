@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import logging
+import os
 import shutil
 import socket
 import stat
@@ -249,6 +250,75 @@ def test_missing_parent_directory_is_invalid_path(short_dir: Path, missing: str)
     assert_nothing_created(config)
 
 
+def _bound_unix_socket(path: Path, *, listening: bool) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    if listening:
+        sock.listen()
+    return sock
+
+
+def _entry_snapshot(path: Path) -> tuple[int, int, object]:
+    info = path.lstat()
+    content: object = None
+    if path.is_symlink():
+        content = os.readlink(path)
+    elif path.is_dir():
+        content = sorted(child.name for child in path.iterdir())
+    elif path.is_file():
+        content = path.read_bytes()
+    return info.st_ino, info.st_mode, content
+
+
+def _occupy(socket_path: Path, kind: str, held: list[socket.socket]) -> None:
+    other = socket_path.parent / "other.sock"
+    if kind == "regular-file":
+        socket_path.write_bytes(b"not a socket")
+    elif kind == "directory":
+        socket_path.mkdir()
+        (socket_path / "inside").write_bytes(b"kept")
+    elif kind == "dangling-symlink":
+        socket_path.symlink_to(socket_path.parent / "absent")
+    elif kind == "symlink-to-socket":
+        held.append(_bound_unix_socket(other, listening=True))
+        socket_path.symlink_to(other)
+    elif kind == "stale-socket":
+        _bound_unix_socket(socket_path, listening=False).close()
+    else:
+        held.append(_bound_unix_socket(socket_path, listening=True))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "regular-file",
+        "directory",
+        "dangling-symlink",
+        "symlink-to-socket",
+        "stale-socket",
+        "live-socket",
+    ],
+)
+@pytest.mark.usefixtures("fakes")
+def test_any_existing_entry_at_socket_path_is_invalid_path(short_dir: Path, kind: str) -> None:
+    config = make_config(short_dir)
+    held: list[socket.socket] = []
+    try:
+        _occupy(config.socket_path, kind, held)
+        before = _entry_snapshot(config.socket_path)
+        with pytest.raises(SimConfigError) as caught:
+            Simulator(config, environ=clean_environ(short_dir)).start()
+        assert caught.value.code is SimConfigErrorCode.INVALID_PATH
+        assert str(caught.value) == "INVALID_PATH"
+        assert _entry_snapshot(config.socket_path) == before
+        assert not config.token_file_path.exists()
+        assert not config.state_dir.exists()
+        assert FakeKeys.loaded == []
+    finally:
+        for sock in held:
+            sock.close()
+
+
 @pytest.mark.parametrize(
     "name",
     ["GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUDSDK_AUTH_"],
@@ -427,19 +497,24 @@ def test_socket_path_of_exactly_100_bytes_is_accepted(short_dir: Path) -> None:
 
 
 @pytest.mark.usefixtures("fakes")
-def test_a_failed_start_stops_whatever_it_started(short_dir: Path) -> None:
+def test_a_failed_start_stops_whatever_it_started(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_start(self: object) -> None:
+        raise RuntimeError("launcher failed")
+
+    monkeypatch.setattr(simulator_module.LauncherServer, "start", failing_start)
     config = make_config(short_dir)
-    config.socket_path.write_text("not a socket")
     simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
 
-    with pytest.raises(OSError, match="Address already in use"):
+    with pytest.raises(RuntimeError, match="launcher failed"):
         simulator.start()
 
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection(
             ("127.0.0.1", urlsplit(simulator.issuer_origin).port or 0), timeout=5.0
         )
-    assert config.socket_path.read_text() == "not a socket"
+    assert not config.socket_path.exists()
     assert not config.token_file_path.exists()
     assert not (config.state_dir / "sim-state.json").exists()
 
