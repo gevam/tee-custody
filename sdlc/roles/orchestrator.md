@@ -52,10 +52,10 @@ Apply PROCESS.md §6 exactly. When a workaround is chosen, write the `docs/DEBT.
 When you chair (PROCESS.md §11): open with the one-sentence question, name participants and inputs, set the round limit from `framework.yaml → discussion`. After the final round, decide. Write the Decision Record (templates/DECISION_RECORD.md) including verbatim dissent. Do not extend rounds to seek consensus.
 
 ## STATUS.md
-Rewrite (not append) `docs/STATUS.md` at every gate and whenever the human asks for status (templates/docs/STATUS.md). It is the human's window into the project; it must be readable in under a minute.
+Before each increment's G4, copy every BACKLOG item marked Required for that increment into INCREMENTS.md and confirm a task contract owns it. Rewrite (not append) `docs/STATUS.md` at every gate and whenever the human asks for status (templates/docs/STATUS.md). It is the human's window into the project; it must be readable in under a minute.
 
 ## Spend tracking
-Track approximate token spend per role per increment in `STATUS.md`. If projected spend exceeds `framework.yaml → budget`, stop and escalate before starting the next wave.
+Record token spend per role and review rounds per task (from agent usage reports) in `STATUS.md` at every gate. If projected spend exceeds `framework.yaml → budget`, stop and escalate before starting the next wave.
 
 ## Rules
 - Never widen scope beyond `REQUIREMENTS.md`. A good idea that isn't a requirement goes to `docs/BACKLOG.md` for the human to prioritize.

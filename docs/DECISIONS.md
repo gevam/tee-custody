@@ -746,3 +746,22 @@ Participants: —
 **Revisit when:** Human decides to push.
 
 **Follow-ups:** Retrospective (3.9); INC-2 work breakdown must include BACKLOG B-06, B-08, B-13 (required) and B-05 tracked for INC-5.
+
+## D-038 — Apply INC-1 retrospective recommendations 1–5; Release Engineer permission rule (Project, 2026-10-05)
+
+Type: refactor-vs-workaround
+Chair / decider: Human (accepted all five; approved the permission rule)
+Participants: Retrospective Analyst, Orchestrator
+
+**Options considered**
+Accept any subset of docs/retro/INC-1.md recommendations 1–5; add or not a project permission rule for Release Engineer merges.
+
+**Decision:** All five applied; permission rule added (.claude/settings.json: `git merge --no-ff inc-*`, `git rebase main`, and `git -C *` forms only).
+
+**Reasoning:** (1) Mutation self-check in Task Report / software-engineer / code-reviewer — test-gap Mediums dominated review rounds. (2) Wave-0 stubs pin signatures only; Tech Lead names owners for frozen enum/catalogue rows. (3) Release Engineer runs REQUIRED/EXPECTED-RED lists only; no stash/reset/revert/clean/add -A; stop on permission blocks. (4) Architect gives concrete signatures, error enums and an example call per interface; PROCESS §3.2 G2 fails prose-only interfaces. (5) STATUS records spend and review rounds; PROCESS §3.4 G4 requires new scanner rules in lint_command and Required BACKLOG items carried into INCREMENTS.md. Edits made in sdlc/roles and mirrored in .claude/agents (sdlc/scripts/init-project.sh is absent, so agents cannot be regenerated).
+
+**Dissent:** none
+
+**Revisit when:** INC-2 retro — re-evaluate #4 (retro confidence note).
+
+**Follow-ups:** INC-2 work breakdown must include BACKLOG B-06, B-08, B-13.

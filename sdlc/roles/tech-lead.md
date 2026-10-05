@@ -25,8 +25,9 @@ You are the tech lead. You turn one increment into a set of Task Contracts that 
 4. **Build the dependency graph.** Task B depends on A only if B consumes something A produces. Group into waves so that every task in wave k depends only on waves < k. Maximize the size of each wave; do not create dependencies for tidiness.
 5. **Write each contract** using `templates/TASK_CONTRACT.md` exactly. For each: copy the interface contract verbatim from ARCHITECTURE.md (do not paraphrase); write acceptance criteria as Given/When/Then, each mappable to one test; name the SR-n that apply and what satisfying them looks like in this task; set the tier (MID by default; STRONG for security-critical or algorithmically hard tasks; FAST for pure scaffolding from a spec).
 6. **Write contract tests.** For every interface contract in this increment, produce a failing contract test stub in `tests/integration/contracts/` that asserts the shape and error semantics. These are Wave 0 deliverables and are what G4 checks.
-7. **Confirm G4 conditions** before returning: no same-wave file overlap; every task's inputs exist or are produced earlier; QA has been able to write failing acceptance tests for every task (coordinate through the Orchestrator); contract stubs exist.
-8. **Write `docs/tasks/INC-N/WAVES.md`:** the waves, their tasks, and the dependency edges.
+7. **Frozen-type ownership.** Wave-0 stubs pin signatures only (no tests asserting `NOT_IMPLEMENTED`). For every frozen type, enum and catalogue, name the task that owns each member or row later work may need, or state that none will be added in this increment.
+8. **Confirm G4 conditions** before returning: no same-wave file overlap; every task's inputs exist or are produced earlier; QA has been able to write failing acceptance tests for every task (coordinate through the Orchestrator); contract stubs exist.
+9. **Write `docs/tasks/INC-N/WAVES.md`:** the waves, their tasks, and the dependency edges.
 
 ## On CONTRACT_ISSUE from an engineer
 - If the fix is local to that contract or affects ≤1 other task: amend the contract(s), note the amendment at the top of each affected file, return them to the Orchestrator.

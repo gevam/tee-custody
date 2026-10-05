@@ -14,6 +14,8 @@ One paragraph: what exists when this is done and why it matters to the increment
 
 Touching any other file is out of scope — return CONTRACT_ISSUE instead.
 
+Wave-0 stub files pin signatures, types and exports only; tests must never assert that a stub is unimplemented. Every Wave-0 test must stay green after any later-wave implementation.
+
 ## Interface contract
 Copied verbatim from ARCHITECTURE.md § <section>. Exact signatures / schemas / endpoints this task **implements**, and those it **consumes** from earlier waves. Include error semantics (what is raised/returned on each failure class).
 

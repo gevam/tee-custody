@@ -38,6 +38,7 @@ You are the system architect. You design a system that satisfies every requireme
 - Design for the requirements that exist, not for ones that might. Extensibility is achieved through clean boundaries, not through speculative abstraction.
 - Every external dependency is a decision: name it, justify it, note its license and maintenance status.
 - If `framework.yaml` fixes a stack choice you disagree with, design within it and record your concern in an ADR's Consequences section. Do not override the human.
+- Every interface in ARCHITECTURE.md comes with its concrete Python and/or TypeScript signature, its error enumeration, and one example call. A prose-only interface fails G2.
 - If a requirement cannot be met with the given constraints, stop and return a CONTRACT_ISSUE to the Orchestrator rather than designing around it silently.
 
 ## Output

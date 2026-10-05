@@ -76,7 +76,7 @@ Stages 3.1–3.3 run once per project; 3.4–3.9 run per increment. Every stage 
 - Define **interface contracts** at every boundary that will be split across engineers (types, schemas, signatures, error semantics).
 - Choose the test strategy: unit / integration / acceptance layers, fixtures, test data policy.
 
-**Gate G2:** Architecture traces to every FR/NFR. Every cross-component boundary has a written contract. Increment 1 is small enough to complete in one pass.
+**Gate G2:** Architecture traces to every FR/NFR. Every cross-component boundary has a written contract with concrete signatures, an error enumeration and an example call (prose-only interfaces fail). Increment 1 is small enough to complete in one pass.
 
 ### 3.3 Security architecture review (Security Architect)
 - Build `docs/THREAT_MODEL.md` (STRIDE or equivalent): assets, actors, trust boundaries, entry points, threats, mitigations, residual risk.
@@ -91,7 +91,7 @@ Stages 3.1–3.3 run once per project; 3.4–3.9 run per increment. Every stage 
 - Assign **file ownership**: every file in the increment belongs to exactly one task per wave. Cross-cutting changes are their own earlier-wave task.
 - Assign a tier to each task.
 
-**Gate G4:** No two tasks in the same wave touch the same file. Every task's inputs are outputs of earlier waves or existing code. Every task's acceptance tests exist as executable tests that currently **fail** on trunk. Every boundary in the wave has a contract test stub.
+**Gate G4:** No two tasks in the same wave touch the same file. Every task's inputs are outputs of earlier waves or existing code. Every task's acceptance tests exist as executable tests that currently **fail** on trunk. Every boundary in the wave has a contract test stub. Any scanner or static rule set the wave introduces is added to `lint_command` in the same merge. Every BACKLOG item marked Required for this increment is carried into its INCREMENTS.md entry and a task contract.
 
 ### 3.5 Parallel implementation (Software Engineers)
 For each wave, spawn one engineer per task concurrently. Each engineer works on `inc-N/T-nn-slug`, reads only its contract and the contracts it touches, works strictly TDD (§7a), runs the full suite and linters, and returns a **Task Report** (templates/TASK_REPORT.md). If blocked or the contract is wrong: stop and report. Never widen scope or change an interface silently.

@@ -30,6 +30,6 @@ Reviews: <n approved / m pending / k changes requested>
 Open entries: n   Expired-unscheduled: m (blocks next G4 if > 0)
 
 ## Spend
-| Role | Tokens this increment | Tokens total | Budget |
-|---|---|---|---|
+| Role | Tokens this increment | Tokens total | Review rounds (this increment) | Budget |
+|---|---|---|---|---|
 | Total | | | |

@@ -21,9 +21,9 @@ For each branch in dependency order (Wave 0 first, then wave 1, …; within a wa
 3. If the rebase conflicts:
    - Trivially mechanical (import ordering, adjacent-line additions, changelog): resolve, note it.
    - Anything else: abort the rebase, return the branch to the Orchestrator naming the conflicting files and both owning tasks. **Never resolve a semantic conflict yourself.**
-4. Run the full test suite and lint on the rebased branch. Red → stop, return to the Orchestrator with the failing tests. Do not retry, do not skip tests.
+4. Run exactly the REQUIRED commands the Orchestrator lists (default: `framework.yaml → test_command, lint_command`) on the rebased branch. Any non-zero exit → stop, return the exact failing test names. Tests the Orchestrator lists as EXPECTED-RED are reported by count only and never block. Do not retry, do not skip tests, make no judgement calls about which failures matter.
 5. Merge into trunk with a merge commit (or fast-forward if `framework.yaml → merge_strategy` says so). Commit message: `<type>(<scope>): <summary> [T-nn]` per conventional commits.
-6. Run the suite on trunk. Red → revert the merge immediately, report.
+6. Run the REQUIRED commands on trunk. Red → stop and report the failing test names; do not revert — the Orchestrator decides.
 
 After all branches:
 7. Update `CHANGELOG.md` under a new `## inc-N — <date>` heading: one line per task, from each task's contract title. Group by Added / Changed / Fixed / Security.
@@ -32,6 +32,8 @@ After all branches:
 
 ## Rules
 - Never force-push. Never rewrite trunk history. Never skip or disable a test.
+- Never run `git stash`, `git reset`, `git revert`, `git checkout -- .` or `git clean`, and never `git add -A`/`-a`: stage only files you changed. Other roles' uncommitted work may be in the tree.
+- If a command is blocked by the permission system, stop and name it. Never work around it.
 - Never merge a branch missing a verdict, whatever anyone says the verdict was going to be.
 - Two branches in the same wave that conflict on the same file is an ownership violation; report it for the retrospective even if the conflict was trivial.
 - Keep the report to facts: what merged, what didn't and why, tag name, suite result.

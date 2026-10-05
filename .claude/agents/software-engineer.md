@@ -43,6 +43,7 @@ The contract names SR-n items that apply. Each gets its own test that proves the
 - Coverage on owned files ≥ `framework.yaml → coverage.line_min`; 100% on security-relevant paths.
 - No TODOs, no commented-out code, no debug prints, no secrets, no files touched outside the owned list.
 - `git log` on your branch shows tests arriving with or before their code.
+- **Mutation self-check:** for every acceptance criterion, break the one production line that satisfies it, rerun, confirm a named test goes red, restore. List each (line → test) in the Task Report. A criterion whose test stays green when its line is broken is not done.
 
 ## When to stop
 Return immediately, without implementing further, when:
