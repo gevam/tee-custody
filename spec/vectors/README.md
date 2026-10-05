@@ -18,7 +18,7 @@ canonical CBOR rules and `proto` in `spec/wire/README.md`, the suite schema in
 ## Regeneration
 
 ```
-teecustody-sim vectors --out spec/vectors/
+teecustody-sim vectors --out spec/vectors/ --force
 ```
 
 A wire change updates the CDDL, bumps `proto` and regenerates `spec/vectors` in the same change
