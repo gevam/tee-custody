@@ -1,7 +1,23 @@
 # INC-2 contracts: encrypted channel and browser client
 
-Owner: Architect. Status: **draft for G2 re-check / pre-G4** (2026-10-05). The Tech Lead transcribes §3–§8 into
-Wave-0 stubs and Task Contracts verbatim. Precision model: `docs/tasks/INC-1/API.md`.
+Owner: Architect. Status: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
+R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
+(THREAT_MODEL review log 2026-10-05; SR-14). The Tech Lead transcribes §3–§8 into Wave-0 stubs and Task
+Contracts verbatim. Precision model: `docs/tasks/INC-1/API.md`.
+
+**Revision 2 change log.**
+- R-1: `unix-s` ≤ 2^53−1 for every time field (§3, §4.5, §7.3).
+- R-2: pre-key ids strictly ascending.
+- R-3: `ok` ⇔ non-nil `session_id`.
+- R-4: reply route held only by the channel; `claimed_client_id`; principal must equal the claim (§4.8, §4.10, §7.4).
+- **R-5 (High):** `seq` allocated only inside sealing, never supplied and never rolled back (§4.9, §7.4, D2-16).
+- R-6: replay entries expire at `timestamp + skew` (§4.9).
+- R-7: `re.fullmatch` (§0 conventions, §4).
+- R-8: idle eviction before rejecting (§4.9).
+- Q3 is confirmed (D2-4).
+- C1: `pyhpke` (§4.6, §11, §12).
+- C3–C5, C7: §9, §11, §14.
+- Notes: layout and result vectors (§3.2), gateway CORS (§6), random WebAuthn `user.id` (§8.4).
 
 Normative sources, in precedence order: `docs/security/tee-security-architecture.md` (cited "spec §n");
 the human-approved `spec/wire` binding (`spec/wire/README.md`); ADRs 0002–0010; `docs/ARCHITECTURE.md`.
@@ -30,7 +46,12 @@ Contents
 
 Conventions. Python: 3.12, `mypy --strict`, frozen slotted dataclasses, `StrEnum` codes, every exception
 carries only a code and `str(err) == err.code.value`. TypeScript: strict, no `any`, errors carry only a code and
-`message === code`. "Reject" means raise/throw with the listed code; no other information crosses the
+`message === code`.
+
+**Pattern rule (R-7).** Every `*_PATTERN` constant below is written without `^`/`$`, and Python checks it only with
+`PATTERN.fullmatch(value)`. `re.match`/`re.search` are never used for validation: `$` also matches before a
+trailing `"\n"`. A semgrep rule bans `re.match`/`re.search` on any pattern ending in `$` in `packages/**` and
+`examples/**`. TypeScript patterns are written `^…$` with no `m` flag. CDDL `.regexp` is whole-string. "Reject" means raise/throw with the listed code; no other information crosses the
 boundary (SR-11). All byte strings are `bytes` / `Uint8Array`. Hex is lowercase.
 
 ---
@@ -44,10 +65,10 @@ Each fills a gap the spec leaves open without weakening it. A reviewer who disag
 | D2-1 | Every `||` concatenation in spec §5 uses fixed-width encodings (§2), so concatenations are unambiguous. `prekey_id` is a uint32, `not_after` a uint64 Unix-seconds value, `instance_id`/`client_id` are 32-char lowercase hex. | §5.1 step 3, §5.3 step 9 |
 | D2-2 | `Sig_IK(H(m))` is Ed25519 (RFC 8032 PureEdDSA) over the 32-byte SHA-256 digest as the message. | §5 notation, §4 |
 | D2-3 | The `open_result` response (spec step 16 "`nonce = seq_t2c`") uses t2c `seq` 0. The first frame response uses t2c `seq` 1. c2t frames start at `seq` 0. Receivers accept a `seq` strictly greater than the last accepted one (gaps allowed, because the queue may lose messages) and at most 2^53−1. | §5.4 step 16, §5.5 step 17 |
-| D2-4 | Any pre-key signature failure discards the whole bundle. Expired pre-keys are excluded from selection but do not invalidate the bundle; a bundle with no unexpired pre-key is unusable. Only keys that passed every check can be selected. | §5.2 step 5 |
+| D2-4 | **Confirmed by the Security Architect (Q3; not a deviation).** The bundle-binding checks are the §6 token, the `H(IK_pub)` nonce, **every** pre-key signature (expired entries included) and the `image_digest` binding. Any one failing discards the whole bundle. Only after all of them pass are expired pre-keys filtered out individually. No usable key → `NO_USABLE_PREKEY`; no verified bundle → fatal `NO_VERIFIED_BUNDLE`. The selection margin is `notAfterMs > now + 5000`. | §5.2 step 5 |
 | D2-5 | Response correlation: the t2c frame plaintext carries `re` (the c2t `seq` it answers). The spec AAD `{session_id, seq, op}` is unchanged. | §5.5 step 17 |
 | D2-6 | Two request ids exist and are never mixed. The **protocol `request_id`** is 16 random bytes in the open AAD (authenticated; replay cache key; audit/log `request_id` = its hex). The **relay request id** (`RequestId`, 32 hex) is minted by the gateway, carried as queue metadata and echoed with the response; it is an untrusted hint (ARCHITECTURE "Queue and gateway"). | §5.3 step 8; ARCHITECTURE |
-| D2-7 | For `enroll` the client puts a fresh random `client-id`-shaped value in the AAD `client_id`. It is the reply route for that one response only. The session's principal is the id the opener returns (INC-3 mints it). | §5.3 steps 7–8, §9 topics; FR-7 |
+| D2-7 | For `enroll` the client puts a fresh CSPRNG `client-id`-shaped value in the AAD `client_id`, new for every enrol. **This reply route is never an identity or authorization input (R-4).** Only the channel holds it, and it uses it for exactly one thing: the route of that one `open_result`. The opener receives `claimed_client_id = None`. For `open_session`, the AAD `client_id` is a *claim*, and the channel rejects with `INTERNAL` unless the opener's accepted principal equals it. Sessions, logs and audit use only the opener-returned principal. | §5.3 steps 7–8, §9 topics; FR-7; SR-14 |
 | D2-8 | The workload sends no response to anything that fails before or during HPKE `Open`, or to a frame that fails AEAD. It responds (encrypted) only once it holds the peer's keys. | §5.4 step 14 |
 | D2-9 | INC-2 ships `ChannelClient`/`Session` in Core. `TeeClient` (`enroll`, `openSession`, which need `key_id`/`epoch` storage) composes them in INC-3. ARCHITECTURE's "(INC-2)" tag on the `TeeClient` config is moved to INC-3 (§13). | PROJECT.md §4.3 |
 | D2-10 | Session establishment is split at a port: the channel decrypts and authenticates transport, and a `SessionOpener` decides whether a principal exists. INC-3 custody implements it (kcv). INC-2 tests use doubles in `tests/support/` that never ship in any distribution. Same for `FrameHandler` (INC-3 dispatcher). | §5.4 steps 13–15 |
@@ -56,6 +77,10 @@ Each fills a gap the spec leaves open without weakening it. A reviewer who disag
 | D2-13 | The gateway never answers `404 UNKNOWN_CLIENT`: any well-formed client route returns a (possibly empty) page, which removes route probing (T-01). It adds `429 RATE_LIMITED` for SR-4. | D-003; SR-4 |
 | D2-14 | Fetcher adapters refuse **every** redirect (same- or cross-origin). This is stricter than B-06. The RSA ≥ 2048 rule of B-06 is enforced in the `Crypto.verifySignature` adapter, which is where the key is imported. | B-06; ADR 0009 rule 5 |
 | D2-15 | Session caps: `MAX_SEQ = 2^53 − 1` in both directions (TypeScript `number`). At the cap the session closes (`SEQUENCE_EXHAUSTED`). | §5.5 |
+| D2-16 | **Nonce discipline (R-5, High).** `seq` is allocated, and the counter advanced, *inside* the one sealing call of each language's session object. That happens before the ciphertext is returned. No public or internal sealing API takes a `seq`, nonce or key argument. The counter is never decremented, reset or restored: not after a failed post/publish, not after an exception later in the call, and not after a timeout. A retry either re-sends the **identical** envelope bytes or is a new request that gets a new `seq`. t2c nonce 0 is used exactly once per session key pair, for the `open_result`, through a one-shot method. Each direction has its own exported key. | §4 ("never reused under the same key"), §5.4 step 16, §5.5; SR-14; T-23 |
+| D2-17 | Every time field (`published_at`, `not_after`, `timestamp`) is `unix-s`, an integer in [0, 2^53−1] (R-1). It decodes as a JS `number`, never a `bigint`, and fits `u64be`. A larger value is a schema failure in both languages. | §5; SR-3 |
+| D2-18 | A replay-cache entry expires at `aad.timestamp + request_skew_s`, not at insertion time plus retention (R-6). It therefore lives exactly as long as the message could still be accepted. | §5.4 step 12, §11 |
+| D2-19 | When the session table is full, the least-recently-active session idle for at least `session_evict_min_idle_s` is evicted before the new session is rejected (R-8, D-040 keeps this in INC-2). INC-3 adds the global enrol budget. | §11 Concurrency; SR-4; T-25 |
 
 ---
 
@@ -73,7 +98,8 @@ are ASCII by construction). `H` = SHA-256. `PROTO = "tee-chan-v1"`.
 | relay request id | hex of 16 random bytes, gateway-generated | 32 chars |
 | `prekey_id` | uint32, assigned by the workload, unique per instance, never reused | — |
 | `image_digest` | `"sha256:" + 64 hex`, read by the workload from its own token's `submods.container.image_digest`; on the client, `VerifiedAttestation.imageDigest` | 71 chars |
-| pre-key signing message `m` | `H( ascii("prekey-v1") ‖ ascii(instance_id) ‖ u32be(id) ‖ pub ‖ u64be(not_after) ‖ ascii(image_digest) )` | 32 B |
+| `unix-s` | integer Unix seconds in [0, 2^53−1] (D2-17) | — |
+| pre-key signing message `m` | `H( ascii("prekey-v1") ‖ ascii(instance_id) ‖ u32be(id) ‖ pub ‖ u64be(not_after) ‖ ascii(image_digest) )`; preimage is exactly 156 B (9+32+4+32+8+71) | 32 B |
 | pre-key `sig` | `Ed25519.Sign(IK_priv, m)` (D2-2) | 64 B |
 | HPKE suite | RFC 9180 **Base mode** (`mode_base` 0x00), KEM `0x0020` DHKEM(X25519, HKDF-SHA256), KDF `0x0001` HKDF-SHA256, AEAD `0x0002` AES-256-GCM | — |
 | HPKE `info` | `ascii(PROTO) ‖ H(IK_pub) ‖ u32be(prekey_id)` | 47 B |
@@ -83,7 +109,16 @@ are ASCII by construction). `H` = SHA-256. `PROTO = "tee-chan-v1"`.
 | `MAX_SEQ` | 2^53 − 1 | — |
 | `IK_pub`, pre-key `pub` | raw 32-byte Ed25519 / X25519 public keys | 32 B |
 
-Every hash and signature input above is computed over the bytes listed, never over a re-serialization.
+Every hash and signature input above is computed over the bytes listed, never over a re-serialization. Every
+builder, in both languages, rejects every width or range violation **before** hashing, signing or sealing:
+- `instance_id` that is not 32 lowercase hex;
+- `prekey_id` > 2^32−1;
+- `pub` or `IK_pub` ≠ 32 B;
+- `not_after` outside `unix-s`;
+- `image_digest` that is not `sha256:` + 64 lowercase hex;
+- `seq` ∉ [0, `MAX_SEQ`].
+
+Python raises `ValueError("<FIELD>_RANGE")`. TS throws `RangeError("<FIELD>_RANGE")` (SR-14 layouts).
 
 ---
 
@@ -92,7 +127,26 @@ Every hash and signature input above is computed over the bytes listed, never ov
 These are **proposals** for the human. Nothing under `spec/` is written by this document. The approving PR
 adds, in one change: the two CDDL files below, a "Channel byte layouts" section in `spec/wire/README.md`
 copying §2 verbatim, the channel vector suite (§5.3), and both implementations' tests (NFR-7). `proto` stays
-`"tee-chan-v1"`: these are new structures, no existing structure changes (see §15 Q1).
+`"tee-chan-v1"`: these are new structures, no existing structure changes (see §15 Q1). Security Architect review:
+the byte layouts are confirmed unambiguous, and R-1..R-3 are applied below (THREAT_MODEL review log 2026-10-05).
+
+**Plain-language summary for the human (what you are approving).**
+1. A **bundle** is what each workload instance publishes. It holds its attestation token, its long-lived public
+   identity key, and up to 256 single-use public "pre-keys", each signed by the identity key and tied to the image.
+2. An **open request** is how a browser starts a session. A readable header (`aad`) names the instance, the pre-key,
+   a random request id and the time. A ciphertext sealed to that pre-key (HPKE) carries the share, or "enroll".
+3. A **frame** is every later request in a session. Its readable header has the session id, a counter (`seq`) and
+   the operation name. The body is encrypted with a per-session key.
+4. Two **result** messages come back: one answering an open (with the new session id, or a refusal), and one
+   answering each frame (repeating which request it answers).
+5. Everything readable is also authenticated. Changing one byte makes decryption fail.
+6. Every number that is a time or a counter is capped at 2^53−1, so both languages read it identically.
+7. Ids are fixed-size random values. Operation names and error codes are open text patterns, so later increments
+   can add operations without changing the wire format.
+8. Fields that are cleartext stay cleartext. They are already visible in the spec's own design.
+9. A second file defines the shared **test vectors**. Python and TypeScript must both pass them, which is how we
+   prove the two implementations agree byte for byte.
+10. No existing structure changes, which is why `proto` stays `tee-chan-v1`. Your separate decision is Q1.
 
 ### 3.1 `spec/wire/channel.cddl` (new)
 
@@ -104,6 +158,7 @@ prekey-id    = uint .le 4294967295
 request-id   = bstr .size 16
 session-id   = bstr .size 16
 seq          = uint .le 9007199254740991            ; MAX_SEQ = 2^53 - 1 (D2-15)
+unix-s       = uint .le 9007199254740991            ; Unix seconds; every time field (D2-17, R-1)
 op-name      = tstr .regexp "[a-z][a-z0-9_.]{0,63}"
 error-code   = tstr .regexp "[A-Z][A-Z0-9_]{0,63}"  ; open set; known codes in INC-2-API §7.5
 value        = nil / bool / int / bstr / tstr / [* value] / { * tstr => value }
@@ -113,13 +168,13 @@ prekey-bundle = {
   "instance_id":  instance-id,
   "token":        tstr .size (1..16384),             ; compact JWS from the launcher
   "IK_pub":       bstr .size 32,                      ; raw Ed25519
-  "published_at": uint,                               ; Unix s
-  "prekeys":      [1*256 prekey-entry],
+  "published_at": unix-s,
+  "prekeys":      [1*256 prekey-entry],               ; "id" strictly ascending, hence unique (R-2)
 }
 prekey-entry = {
   "id":        prekey-id,
   "pub":       bstr .size 32,                         ; raw X25519
-  "not_after": uint,                                  ; Unix s
+  "not_after": unix-s,
   "sig":       bstr .size 64,                         ; Ed25519 over the pre-key signing message (README)
 }
 
@@ -137,8 +192,9 @@ open-aad = {                                          ; spec §5.3 step 8
   "instance_id": instance-id,
   "prekey_id":   prekey-id,
   "request_id":  request-id,
-  "timestamp":   uint,                                ; Unix s, client clock
+  "timestamp":   unix-s,                              ; client clock
 }
+; For "enroll", client_id is a fresh random reply route, never an identity (D2-7, R-4).
 open-plaintext = open-session-payload / enroll-payload   ; spec §5.3 step 7
 open-session-payload = {
   "op":     "open_session",
@@ -168,11 +224,13 @@ open-result-envelope = {
   "ct":   bstr .size (16..32784),
 }
 open-result-aad = {                                   ; spec §5.4 step 16 aad_r
-  "session_id": session-id / nil,                     ; nil iff the open was rejected
+  "session_id": session-id / nil,
   "request_id": request-id,
-  "seq":        0,
+  "seq":        0,                                    ; the only use of t2c nonce 0 (D2-16)
 }
 open-result = { "ok": true, "payload": value } / { "ok": false, "error": error-code }
+; Cross-field rule (R-3): open-result "ok" is true  <=>  open-result-aad "session_id" is not nil.
+; A violation after successful AEAD is INVALID_RESPONSE at the client; the workload never produces one.
 
 frame-result-envelope = {
   "kind": "frame_result",
@@ -184,6 +242,8 @@ frame-result = { "re": seq, "ok": true, "payload": value } / { "re": seq, "ok": 
 
 Notes for the approver:
 - Field names in `prekey-bundle` are spec §5.1 verbatim, including `IK_pub`.
+- Two rules cannot be expressed in CDDL, so both codecs enforce them as schema checks: ascending pre-key ids (R-2)
+  and `ok` ⇔ non-nil `session_id` (R-3). The `.regexp` patterns are whole-string matches.
 - `key_id` (16 bytes) and `epoch` (uint32) are fixed here because spec §5.3 step 7 puts them in the open
   payload. INC-3's `kcv` input (spec §7.2) then uses `ascii(client_id) ‖ key_id ‖ u32be(epoch)`. INC-3 confirms.
 - `enroll-payload` is exactly spec §5.3 step 7 `{ op: "enroll" }`.
@@ -201,6 +261,25 @@ channel-vector-suite = {
   "bundles": [+ bundle-case],
   "opens":   [+ open-case],
   "frames":  [+ frame-case],
+  "results": [+ result-case],                         ; open_result / frame_result as the client sees them
+  "layouts": [+ layout-case],                         ; derived byte strings (§2), for diagnosability
+}
+result-case = {
+  "id": tstr, "key": bstr .size 32,                   ; sk_t2c
+  "request_id": bstr .size 16 / nil,                  ; expected request_id (open_result) or nil
+  "session_id": bstr .size 16 / nil,                  ; expected session (frame_result) or nil
+  "re": int, "last_seq": int,                         ; expected re and last accepted t2c seq (-1 for open)
+  "envelope": bstr,
+  "expect": "accept" / "ignore" / "reject",           ; ignore = unauthenticated or unmatched, keep polling
+  "plaintext": bstr / nil,
+  "error_code": result-error / "none",
+}
+result-error = "INVALID_RESPONSE"
+layout-case = {
+  "id": tstr, "kind": "prekey_preimage" / "hpke_info" / "session_nonce",
+  "inputs": { * tstr => int / tstr / bstr },          ; named builder inputs
+  "expect": "accept" / "reject",
+  "bytes": bstr / nil,                                ; exact output iff accept
 }
 bundle-case = {
   "id": tstr, "instance_id": tstr, "bundle": bstr,
@@ -235,11 +314,29 @@ frame-error = "INVALID_ENVELOPE" / "SEQ_REJECTED" / "AUTH_FAILED"
 Required named cases (generator §5.3): bundles — `valid`, `prekey_sig_corrupted`, `prekey_sig_other_digest`
 (signed over a different `image_digest`), `prekey_sig_other_instance`, `instance_mismatch` (published
 `instance_id` ≠ bundle's), `ik_nonce_mismatch` (token nonce ≠ `H(IK_pub)`), `all_prekeys_expired`,
-`some_prekeys_expired` (accept; only unexpired ids usable), `unknown_key`, `noncanonical`, `token_dbgstat_enabled`.
-Opens — `valid_open_session`, `valid_enroll`, `aad_modified` (one byte of `client_id`), `info_other_prekey`
-(sealed with `prekey_id`+1 in `info`), `ct_truncated`, `enc_wrong_length`. Frames (each direction) — `valid`,
-`seq_equal_last`, `seq_below_last`, `seq_above_max`, `aad_op_modified`, `aad_session_modified`, `wrong_key`,
-`ct_bitflip`.
+`some_prekeys_expired` (accept; only unexpired ids usable), `expired_prekey_sig_corrupted` (reject
+`PREKEY_SIGNATURE_INVALID`: signatures are verified before filtering, Q3), `prekey_ids_unsorted_or_duplicate`
+(`MALFORMED`, R-2), `published_at_over_max` and `not_after_over_max` (2^53, `MALFORMED`, R-1), `unknown_key`,
+`noncanonical`, `token_dbgstat_enabled`.
+
+Opens:
+- `valid_open_session`, `valid_enroll`;
+- `aad_modified` (one byte of `client_id`);
+- `info_other_prekey` (sealed with `prekey_id`+1 in `info`);
+- `ct_truncated`, `enc_wrong_length`;
+- `timestamp_over_max` (2^53, `INVALID_ENVELOPE`, R-1).
+
+Frames (each direction): `valid`, `seq_equal_last`, `seq_below_last`, `seq_above_max`, `aad_op_modified`,
+`aad_session_modified`, `wrong_key`, `ct_bitflip`.
+
+Results:
+- `open_ok`, `open_rejected`;
+- `open_ok_nil_session` and `open_error_with_session` (`INVALID_RESPONSE`, R-3);
+- `open_other_request_id` (ignore), `open_ct_bitflip` (ignore);
+- `frame_ok`;
+- `frame_re_mismatch` and `frame_seq_not_above_last` (ignore).
+
+Layouts: one accept case per builder, plus one reject per width/range rule in §2.
 
 ---
 
@@ -297,7 +394,7 @@ Only the pre-key signing message (§2) is ever signed. Example: `sig = ik.sign(p
 ### 4.3 Own image digest (`attest/claims.py`; spec §5.1 step 3)
 
 ```python
-IMAGE_DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+IMAGE_DIGEST_PATTERN: Final = re.compile(r"sha256:[0-9a-f]{64}")   # IMAGE_DIGEST_PATTERN.fullmatch only (R-7)
 def own_image_digest(token: AttestationToken, *, max_token_bytes: int) -> str: ...
     # Reads submods.container.image_digest from the launcher-supplied token (trusted source, spec §11).
     # LauncherError(TOKEN_REJECTED) if the token exceeds max_token_bytes, is not three base64url segments,
@@ -334,6 +431,7 @@ class BoundaryLimits:                              # ARCHITECTURE "Validation an
     pull_max_messages: int = 32
     pull_wait_s: float = 1.0                       # 0 < x <= 30
     max_sessions: int = 1024
+    session_evict_min_idle_s: int = 60             # R-8; 1 <= x <= ChannelParams.idle_timeout_s (checked by RunLoop)
     replay_cache_max_entries: int = 100_000
     audit_aggregate_interval_s: int = 60           # AUDIT_AGGREGATE_INTERVAL
     audit_alert_cap: int = 100                     # AUDIT_ALERT_CAP
@@ -343,19 +441,31 @@ class BoundaryLimits:                              # ARCHITECTURE "Validation an
     bundle_republish_min_interval_s: int = 5
 ```
 `__post_init__` rejects any value that is not a finite positive number of the declared type (bool is not an
-int), any `DecodeLimits` field < 1 or `max_depth` > 16, and the cross-field rules above. Values are project
-defaults, not normative. Example: `BoundaryLimits(max_sessions=64)`; `BoundaryLimits(pull_wait_s=0)` →
+int), any `DecodeLimits` field < 1 or `max_depth` > 16, and the cross-field rules above. `RunLoop.__init__` checks
+the one rule that spans both objects (`session_evict_min_idle_s <= idle_timeout_s`) and raises
+`ConfigError("INVALID_LIMITS:session_evict_min_idle_s")`. Values are project defaults, not normative. Example: `BoundaryLimits(max_sessions=64)`; `BoundaryLimits(pull_wait_s=0)` →
 `ConfigError("INVALID_LIMITS:pull_wait_s")`.
 
 ### 4.5 Channel codec (`channel/codec.py`; §3.1)
 
-Single place where channel structures are encoded/decoded; every decode goes through `teecustody.wire.decode`
-with the stated limits and then a strict schema check (exact key set, types, ranges, regexes).
+This is the single place where channel structures are encoded and decoded. Every decode goes through
+`teecustody.wire.decode` with the stated limits, then a strict schema check: exact key set, types, ranges, and
+`fullmatch` patterns. Schema rules beyond the CDDL types:
+- every time field is an `int` in [0, `MAX_UNIX_S` = 2^53−1] (R-1);
+- `prekeys` ids are strictly ascending (R-2);
+- in a decoded `open_result`, `ok is True` iff `session_id is not None` (R-3).
+
+This module holds no keys and performs no AEAD. Sealing lives only in `channel/session.py` (§4.9, D2-16).
 
 ```python
 class EnvelopeErrorCode(StrEnum):
     TOO_LARGE = "TOO_LARGE"; INVALID = "INVALID"
 class EnvelopeError(Exception): code: EnvelopeErrorCode
+HEX32_PATTERN: Final = re.compile(r"[0-9a-f]{32}")          # instance_id, client_id; fullmatch only
+CLIENT_ID_PATTERN: Final = HEX32_PATTERN; INSTANCE_ID_PATTERN: Final = HEX32_PATTERN
+OP_NAME_PATTERN: Final = re.compile(r"[a-z][a-z0-9_.]{0,63}")
+ERROR_CODE_PATTERN: Final = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+MAX_UNIX_S: Final = 2**53 - 1; MAX_SEQ: Final = 2**53 - 1
 
 @dataclass(frozen=True, slots=True)
 class PreKeyEntry: id: int; pub: bytes; not_after: int; sig: bytes
@@ -385,19 +495,30 @@ def decode_request(body: bytes, limits: BoundaryLimits) -> OpenRequestEnvelope |
     # The nested aad is decoded with limits.aad_decode and must re-encode to aad_bytes (canonical).
 def decode_open_payload(pt: Secret, limits: DecodeLimits) -> OpenSessionPayload | EnrollPayload: ...
     # cs is copied into a new Secret; INVALID on any failure.
-def encode_open_result(aad: OpenResultAad, sk_t2c: Secret, result: OpenResult) -> bytes: ...
-def encode_frame_result(aad: FrameAad, sk_t2c: Secret, result: FrameResult) -> bytes: ...
+def encode_open_result_aad(aad: OpenResultAad) -> bytes: ...     # canonical; seq field is the literal 0
+def encode_frame_aad(aad: FrameAad) -> bytes: ...
+def encode_open_result_plaintext(result: OpenAccepted | OpenRejected) -> bytes: ...
+def encode_frame_result_plaintext(re: int, body: HandlerOk | HandlerError) -> bytes: ...
+def encode_response_envelope(kind: Literal["open_result", "frame_result"], aad_bytes: bytes, ct: bytes) -> bytes: ...
+def decode_response(body: bytes, limits: BoundaryLimits) -> OpenResultEnvelope | FrameResultEnvelope: ...  # sim/tests
+def decode_open_result_plaintext(pt: bytes, aad: OpenResultAad, limits: DecodeLimits) -> OpenResultBody: ...
+    # sim/tests; R-3 violation → INVALID
 def prekey_signing_message(instance_id: str, prekey_id: int, pub: bytes, not_after: int,
-                           image_digest: str) -> bytes: ...   # §2; ValueError on any width violation
-def hpke_info(ik_pub: bytes, prekey_id: int) -> bytes: ...   # §2, 47 bytes
-def session_nonce(seq: int) -> bytes: ...                    # §2, 12 bytes; ValueError if seq ∉ [0, MAX_SEQ]
+                           image_digest: str) -> bytes: ...   # §2; ValueError("<FIELD>_RANGE") before hashing
+def hpke_info(ik_pub: bytes, prekey_id: int) -> bytes: ...   # §2, 47 bytes; ValueError("<FIELD>_RANGE")
 ```
-`OpenResult`/`FrameResult` are defined in §4.8. Example:
+`OpenResultEnvelope`/`FrameResultEnvelope` mirror the request envelopes (`aad_bytes`, decoded `aad`, `ct`).
+`OpenResultBody` is `{ok, payload | error}`. The nonce builder is private to `channel/session.py` (§4.9). Example:
 `env = decode_request(msg.body, limits)` → `OpenRequestEnvelope(...)` or `EnvelopeError(INVALID)`.
 
 ### 4.6 HPKE (`channel/hpke.py`; spec §5.3–§5.4, §11 libraries)
 
-The only module that imports the HPKE library (semgrep rule, §9.4). Library choice per ADR 0011 (V-2.3).
+This is the only module in `teecustody` that imports the HPKE library (semgrep rule, §9.4).
+- **Library (ADR 0011 C1).** It is `pyhpke` over `cryptography`, as spec §11 names it. Using `cryptography`'s own
+  HPKE API would be a `constraint-deviation` that only the human can approve. V-2.3 records whether it is
+  available, but nothing switches without a D-record.
+- **No seams (C5).** No ephemeral-key (`eks`), PSK, PSK-id or sender/auth-key parameter exists or is passed here.
+- **No composition (C2).** No HKDF or HPKE composition in project code.
 
 ```python
 KEM_ID: Final = 0x0020; KDF_ID: Final = 0x0001; AEAD_ID: Final = 0x0002   # Base mode only
@@ -439,6 +560,8 @@ def build_bundle(*, instance_id: str, token: AttestationToken, ik_pub: bytes,
                  prekeys: Sequence[PreKeyPublic], published_at: int) -> bytes: ...   # canonical prekey-bundle
 ```
 `not_after = floor(now) + prekey_ttl_s`; `sig` is computed once at generation (it does not cover the token).
+`IdentityKey.sign` is called only from `channel/prekeys.py` (semgrep; any future IK signature needs a distinct
+prefix).
 Example: `store.top_up(); body = build_bundle(instance_id=iid, token=tok, ik_pub=ik.public_bytes(), prekeys=store.public_entries(), published_at=int(clock()))`.
 
 ### 4.8 Channel ports (`channel/ports.py`) — implemented by INC-3
@@ -451,12 +574,14 @@ class RemoteErrorCode(StrEnum):            # peer-facing; ARCHITECTURE dispatch 
     LIMIT_EXCEEDED = "LIMIT_EXCEEDED"; RECORD_NOT_FOUND = "RECORD_NOT_FOUND"
     BACKEND_UNAVAILABLE = "BACKEND_UNAVAILABLE"; INTERNAL = "INTERNAL"
 
+# OpenSessionPayload and EnrollPayload are defined here (codec.py imports them), avoiding an import cycle.
 @dataclass(frozen=True, slots=True, eq=False)
 class OpenRequest:
-    client_id: str             # from the HPKE-authenticated AAD: a claim until the opener proves possession (kcv, INC-3)
+    claimed_client_id: str | None   # open_session: the AAD client_id, a CLAIM the opener must prove (kcv, INC-3).
+                                    # enroll: always None. The reply route is never passed to the opener (R-4).
     request_id: bytes
     instance_id: str
-    session_id: bytes          # pre-minted; becomes the session id if accepted
+    session_id: bytes               # pre-minted; becomes the session id if accepted
     payload: OpenSessionPayload | EnrollPayload
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +595,8 @@ class SessionInfo: client_id: str; session_id: bytes; instance_id: str
 class CloseReason(StrEnum):
     CLIENT_CLOSE = "CLIENT_CLOSE"; IDLE_TIMEOUT = "IDLE_TIMEOUT"; REPLACED = "REPLACED"
     SEQUENCE_EXHAUSTED = "SEQUENCE_EXHAUSTED"; SHUTDOWN = "SHUTDOWN"
+    EVICTED = "EVICTED"             # R-8: table full, least-recently-active idle session evicted
+    OPEN_ABORTED = "OPEN_ABORTED"   # accepted by the opener, then refused by the channel (principal mismatch, table full)
 
 class SessionOpener(Protocol):
     def open(self, request: OpenRequest) -> OpenResult: ...
@@ -484,42 +611,101 @@ type FrameResultBody = HandlerOk | HandlerError
 class FrameHandler(Protocol):
     def handle(self, session: SessionInfo, op: str, payload: CanonicalValue) -> FrameResultBody: ...
 ```
-Rules: the channel wipes `payload.cs` after `open` returns or raises. An exception from either port is caught
-and becomes `BACKEND_UNAVAILABLE` (text discarded, SR-11). `op == "close"` is handled by the channel and is never
-passed to `handle`. Example: `opener.open(OpenRequest(client_id=c, request_id=r, instance_id=i, session_id=s, payload=p))` → `OpenAccepted(client_id=c, payload=None)`.
+Rules:
+- The channel wipes `payload.cs` after `open` returns or raises.
+- An exception from either port is caught and becomes `BACKEND_UNAVAILABLE` (text discarded, SR-11).
+- `op == "close"` is handled by the channel and is never passed to `handle`.
+- **Principal binding (R-4, SR-14).** For `open_session`, an `OpenAccepted` whose `client_id != claimed_client_id`
+  is refused. The channel calls `opener.closed(info, OPEN_ABORTED)`, creates no session, and responds `INTERNAL`.
+  For `enroll`, the accepted `client_id` is the principal (minted in INC-3), and it must match `CLIENT_ID_PATTERN`
+  (else the same refusal).
+- `SessionTable.create`, the `SESSION_OPENED` log and every audit field use only `OpenAccepted.client_id`.
+
+Example: `opener.open(OpenRequest(claimed_client_id=c, request_id=r, instance_id=i, session_id=s, payload=p))` → `OpenAccepted(client_id=c, payload=None)`.
 
 ### 4.9 Replay cache and sessions (`channel/replay.py`, `channel/session.py`; spec §5.4 step 12, §5.5, §11)
 
 ```python
 class ReplayCache:
-    def __init__(self, *, retention_s: int, max_entries: int, clock: Callable[[], float]) -> None: ...
-    def seen(self, client_id: str, request_id: bytes) -> bool: ...   # purges entries older than retention_s first
-    def record(self, client_id: str, request_id: bytes) -> None: ...
-        # after a successful Open only; full → OverflowError("REPLAY_CACHE_FULL"); never evicts a live entry
+    def __init__(self, *, skew_s: int, max_entries: int, clock: Callable[[], float]) -> None: ...
+    def seen(self, aad_client_id: str, request_id: bytes) -> bool: ...
+        # first purges every entry whose expires_at <= now
+    def record(self, aad_client_id: str, request_id: bytes, timestamp: int) -> None: ...
+        # after a successful Open only; expires_at = timestamp + skew_s (R-6; D2-18), so the entry lives exactly
+        # as long as the message could still pass the |now - timestamp| <= skew check.
+        # full → OverflowError("REPLAY_CACHE_FULL"); never evicts an unexpired entry.
+        # The key is the AAD value as received (a replay key, never an identity; for enroll it is the reply route).
 
 class SessionRejectCode(StrEnum):
-    SEQ_REJECTED = "SEQ_REJECTED"; AUTH_FAILED = "AUTH_FAILED"; EXHAUSTED = "EXHAUSTED"
+    SEQ_REJECTED = "SEQ_REJECTED"; AUTH_FAILED = "AUTH_FAILED"; EXHAUSTED = "EXHAUSTED"; USED = "USED"
 class SessionReject(Exception): code: SessionRejectCode
+
+class T2cSealer:
+    """Sole owner of sk_t2c and the t2c counter (D2-16, R-5). Created by ChannelServer right after Open."""
+    def __init__(self, sk_t2c: Secret) -> None: ...      # takes ownership; next_seq = 0
+    def seal_open_result(self, aad: OpenResultAad, plaintext: bytes) -> tuple[bytes, bytes]: ...
+        # (aad_bytes, ct) with nonce(0). Allowed only while next_seq == 0, else SessionReject(USED).
+        # Sets next_seq = 1 BEFORE encrypting, so an exception can never leave nonce 0 reusable.
+    def seal_frame_result(self, op: str, session_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]: ...
+        # seq = next_seq; next_seq = seq + 1 (persisted first); then build frame-aad {session_id, seq, op} and encrypt.
+        # seq == 0 (open_result not yet sealed) → USED; seq > MAX_SEQ → EXHAUSTED.
+    def wipe(self) -> None: ...
+    # There is no getter, setter, reset or decrement for next_seq, and no method takes a seq, a nonce or a key.
 
 class Session:                                     # constructed only by SessionTable
     session_id: bytes; client_id: str; opened_at: float; last_activity: float
     def open_c2t(self, aad: FrameAad, aad_bytes: bytes, ct: bytes, now: float) -> Secret: ...
         # seq <= last accepted → SEQ_REJECTED (before decrypt); AEAD failure → AUTH_FAILED; state unchanged on failure.
         # On success: last_c2t_seq = seq, last_activity = now.
+    def seal_open_result(self, request_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]: ...
+        # T2cSealer.seal_open_result with aad {session_id: this session, request_id, seq: 0}; once only (USED)
     def seal_t2c(self, op: str, plaintext: bytes) -> tuple[FrameAad, bytes, bytes]: ...
-        # (aad, aad_bytes, ct) using the next t2c seq; at MAX_SEQ → EXHAUSTED
+        # delegates to the session's T2cSealer.seal_frame_result; (aad, aad_bytes, ct)
 
 class SessionTable:
-    def __init__(self, *, instance_id: str, max_sessions: int, idle_timeout_s: int,
+    def __init__(self, *, instance_id: str, max_sessions: int, idle_timeout_s: int, evict_min_idle_s: int,
                  on_close: Callable[[SessionInfo, CloseReason], None], clock: Callable[[], float]) -> None: ...
-    def create(self, *, session_id: bytes, client_id: str, sk_c2t: Secret, sk_t2c: Secret) -> Session: ...
-        # closes an existing session for client_id first (REPLACED; spec §11 Concurrency);
-        # full → OverflowError("SESSIONS_FULL"); takes ownership of both Secrets
+    def create(self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer) -> Session: ...
+        # `t2c` must be fresh (nothing sealed yet), else ValueError("T2C_USED"). The caller then seals the
+        # open_result through Session.seal_open_result. If create raises, the caller still holds `t2c` and seals
+        # the rejection with it, so nonce 0 is used exactly once on every path.
+        # 1. an existing session for this principal is closed first (REPLACED; spec §11 Concurrency).
+        # 2. if the table is still full: expire_idle(); then evict (R-8, below); else OverflowError("SESSIONS_FULL").
+        # Takes ownership of sk_c2t and t2c.
     def get(self, session_id: bytes) -> Session | None: ...
     def close(self, session_id: bytes, reason: CloseReason) -> None: ...    # wipes keys; idempotent
-    def expire_idle(self) -> int: ...
+    def expire_idle(self) -> int: ...                                        # idle >= idle_timeout_s → IDLE_TIMEOUT
     def close_all(self) -> None: ...                                         # SHUTDOWN
 ```
+
+**Nonce discipline (R-5, High; D2-16; SR-14; T-23).**
+- c2t: the workload only decrypts, and it accepts each `seq` at most once (strictly increasing).
+- t2c: every encryption under `sk_t2c` goes through the one `T2cSealer` of that key pair, which allocates `seq`
+  internally and persists the increment before calling AES-GCM.
+- `ChannelServer` seals each response exactly once. If `publish_response` fails, the run loop may re-publish the
+  **identical bytes**. It never asks for a new seal of the same result, and the sealer never rolls back.
+- The nonce builder (`_nonce(seq) = b"\x00" * 4 + seq.to_bytes(8, "big")`) is module-private to
+  `channel/session.py`. An API-surface test asserts two things:
+  - no public callable in `teecustody.channel` has a parameter named `seq` or `nonce` (the decrypt side reads
+    `aad.seq` from a decoded frame);
+  - no sealing method takes a key. Keys enter only through `T2cSealer.__init__` and `SessionTable.create`, which
+    take ownership.
+
+**Idle and eviction (R-8; D2-19; T-25).**
+- *Idle time* is `now − last_activity`. `last_activity` is set at creation and on each **authenticated** c2t frame,
+  never on an unauthenticated or rejected one.
+- When `create` finds the table full after step 1 and after `expire_idle()`, it picks the session with the smallest
+  `last_activity` (ties: smallest `session_id` bytewise).
+- It evicts that one session (`EVICTED`, `on_close` called, keys wiped) only if its idle time is at least
+  `evict_min_idle_s`. Otherwise it raises `OverflowError("SESSIONS_FULL")`.
+- Bounds:
+  - at most one eviction per `create`;
+  - selection costs O(`max_sessions`);
+  - an active session (idle < `evict_min_idle_s`) is never evicted;
+  - `evict_min_idle_s <= idle_timeout_s`.
+- Log `SESSION_EVICTED(client_id, session_id)`.
+- INC-3 adds the global enrol budget (`ENROLL_BUDGET_EXCEEDED` aggregate).
+
 Example: `s = table.get(aad.session_id); pt = s.open_c2t(aad, env.aad_bytes, env.ct, now)`.
 
 ### 4.10 Channel server (`channel/server.py`; spec §5.4–§5.5)
@@ -546,14 +732,26 @@ class ChannelServer:
 1. `decode_request` → `TOO_LARGE`/`INVALID` ⇒ `REQUEST_INVALID`.
 2. **Open:** `aad.instance_id != instance_id` ⇒ `REQUEST_WRONG_INSTANCE`; pre-key not live ⇒ `PREKEY_UNKNOWN`;
    `|now − timestamp| > request_skew_s` ⇒ `REQUEST_STALE`; `replay.seen` ⇒ `REQUEST_REPLAYED`.
-3. `sk = prekeys.take(id)`; `try: open_base(...) finally: sk.wipe()` ⇒ failure `OPEN_FAILED`.
-4. `replay.record` (full ⇒ `CHANNEL_LIMIT_EXCEEDED`, respond `LIMIT_EXCEEDED`).
+3. `sk = prekeys.take(id)`; `try: open_base(...) finally: sk.wipe()` ⇒ failure `OPEN_FAILED`. On success,
+   `sealer = T2cSealer(opened.sk_t2c)` immediately. From here on, every exit path seals exactly one `open_result`
+   with `sealer` (D2-16).
+4. `replay.record(aad.client_id, aad.request_id, aad.timestamp)` (full ⇒ `CHANNEL_LIMIT_EXCEEDED`, respond
+   `LIMIT_EXCEEDED`).
 5. `decode_open_payload` failure ⇒ count `OPEN_PAYLOAD_INVALID`, respond `INVALID_FRAME` (D2-8: keys are held).
-6. `session_id = rng(16)`; `opener.open(...)`. Rejected ⇒ count `OPEN_REJECTED`, respond with
-   `open-result-aad.session_id = nil`. Accepted ⇒ `sessions.create(...)` (full ⇒ `opener.closed(..., SHUTDOWN)`,
-   respond `LIMIT_EXCEEDED`); respond `ok` with the opener's payload.
-7. Response route: `OutboundResponse(client_id=aad.client_id, ...)` (D2-7). Both HPKE exports and the open
-   plaintext are wiped before return; on rejection the session keys are wiped after the response is sealed.
+6. Hold `reply_route = aad.client_id` in a local only. Build the request with
+   `claimed_client_id = aad.client_id` for `open_session`, or `None` for `enroll` (R-4). Then
+   `session_id = rng(16)` and `opener.open(...)`.
+   - **Rejected** ⇒ count `OPEN_REJECTED`; respond `{ok: false}` with `open-result-aad.session_id = nil`.
+   - **Accepted** with a principal mismatch (§4.8) ⇒ `opener.closed(OPEN_ABORTED)`, count `OPEN_REJECTED`,
+     respond `INTERNAL`.
+   - **Accepted** otherwise ⇒ `sessions.create(session_id=…, client_id=accepted.client_id, sk_c2t=…, t2c=sealer)`.
+     If that raises `SESSIONS_FULL` (after eviction, §4.9) ⇒ `opener.closed(OPEN_ABORTED)`, count
+     `CHANNEL_LIMIT_EXCEEDED`, respond `LIMIT_EXCEEDED` with `session_id = nil`. Otherwise
+     `session.seal_open_result(...)` with `{ok: true, payload}`.
+7. Response route: `OutboundResponse(client_id=reply_route, ...)`, the only use of `reply_route`. The log
+   `SESSION_OPENED(client_id=accepted.client_id, …)` and every audit field use the principal (R-4). The HPKE
+   plaintext and `sk_c2t` (when no session took it) are wiped before return, and `sealer` is wiped on every path
+   without a session.
 8. **Frame:** unknown session ⇒ `SESSION_UNKNOWN`; `SEQ_REJECTED` ⇒ `FRAME_SEQ_REJECTED`; `AUTH_FAILED` ⇒
    `FRAME_AUTH_FAILED`. Plaintext that fails `decode(pt, limits.payload_decode)` ⇒ respond `INVALID_FRAME`.
    `op == "close"` ⇒ respond `ok` (payload `nil`), then `sessions.close(CLIENT_CLOSE)`. Otherwise `handler.handle`
@@ -568,8 +766,8 @@ Logs (allow-listed fields only): `SESSION_OPENED(client_id, session_id hex, prek
 ### 4.11 Queue port (`queue/ports.py`; spec §9; ARCHITECTURE "Queue and gateway")
 
 ```python
-RELAY_ID_PATTERN: Final = re.compile(r"^[0-9a-f]{32}$")     # relay request id, message id
-CURSOR_PATTERN: Final = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+RELAY_ID_PATTERN: Final = re.compile(r"[0-9a-f]{32}")       # relay request id, message id; fullmatch only (R-7)
+CURSOR_PATTERN: Final = re.compile(r"[A-Za-z0-9_-]{1,128}")  # fullmatch only
 
 class QueueErrorCode(StrEnum):
     INVALID_ARGUMENT = "INVALID_ARGUMENT"; NOT_FOUND = "NOT_FOUND"; CONFLICT = "CONFLICT"
@@ -603,14 +801,15 @@ Errors: malformed id/cursor/limit → `INVALID_ARGUMENT`; unknown instance on `p
 capacity or backend outage → `UNAVAILABLE`. Delivery is at-least-once; a pulled, un-acked message is redelivered
 after the adapter's ack deadline. The workload acks every message after `process` returns (accepted or permanently
 rejected), and after a response publish failure too (logged `RESPONSE_PUBLISH_FAILED`), because reprocessing
-would be rejected as replay anyway. Example: `msgs = queue.pull_requests(iid, limits.pull_max_messages, limits.pull_wait_s)`.
+would be rejected as replay anyway. A failed `publish_response` may be retried once with the **identical body
+bytes**. The response is never re-sealed (D2-16). Example: `msgs = queue.pull_requests(iid, limits.pull_max_messages, limits.pull_wait_s)`.
 
 ### 4.12 Audit port, validation and emitter (`audit/*`; SR-6, SR-12, D-007, D-012; ADR 0005)
 
 ```python
 class AuditClass(StrEnum):
     EVENT = "EVENT"; ALERT = "ALERT"; AGGREGATE = "AGGREGATE"; RELEASE = "RELEASE"
-AUDIT_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9_-]{1,128}(/[A-Za-z0-9_-]{1,64}){0,2}$")
+AUDIT_ID_PATTERN: Final = re.compile(r"[A-Za-z0-9_-]{1,128}(/[A-Za-z0-9_-]{1,64}){0,2}")   # fullmatch only
 MAX_COUNT: Final = 2**53 - 1
 
 @dataclass(frozen=True, slots=True)
@@ -636,7 +835,7 @@ class AuditSink(Protocol):
 def validate_audit(key: AuditKey, record: AuditRecord) -> None: ...   # AuditError(INVALID_ARGUMENT); both adapters call it first
 def audit_json(record: AuditRecord) -> bytes: ...                     # sorted keys, None omitted, separators (",", ":")
 ```
-`validate_audit` rejects: id not matching `AUDIT_ID_PATTERN`; any identifier not `^[0-9a-f]{32}$`; ints out of
+`validate_audit` rejects: id failing `AUDIT_ID_PATTERN.fullmatch`; any identifier failing `HEX32_PATTERN.fullmatch`; outcome failing `OUTCOME_PATTERN.fullmatch`; ints out of
 range or `bool`; interval fields on `EVENT`/`RELEASE`, only one of the pair, or `start >= end`; `count` on any
 non-`AGGREGATE` class, missing on `AGGREGATE`, or out of range.
 
@@ -733,8 +932,13 @@ Example: `q = InMemoryQueue(); q.publish_bundle(iid, body, expires_at=exp)`.
 ```python
 class StaticShareOpener:                   # SessionOpener for INC-2 tests only (D2-10)
     def __init__(self, shares: Mapping[str, bytes]) -> None: ...
-    # open_session: accepted iff cs equals (hmac.compare_digest) shares[aad client_id]; else AUTHENTICATION_FAILED.
-    # enroll: UNKNOWN_OPERATION. closed(): records (session_id, reason) for assertions.
+    # open_session: accepted (client_id = claimed_client_id) iff cs equals (hmac.compare_digest)
+    # shares[claimed_client_id]; else AUTHENTICATION_FAILED.
+    # enroll: UNKNOWN_OPERATION. closed(): records (session_id, reason) for assertions; records every OpenRequest.
+class MismatchingOpener:                   # SR-14 principal-binding test: accepts with a fixed different client_id
+    def __init__(self, principal: str) -> None: ...
+class EnrollingOpener:                     # SR-14 enroll-route test: enroll → OpenAccepted(client_id=<fresh random>)
+    def __init__(self) -> None: ...
 class EchoHandler:                         # FrameHandler: op "test.echo" → HandlerOk(payload); other ops → UNKNOWN_OPERATION
     def __init__(self) -> None: ...
 ```
@@ -745,9 +949,10 @@ A semgrep rule fails CI if `packages/**` imports `tests.support` or defines a cl
 ```python
 def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path: ...   # writes out_dir/channel/suite.cbor
 ```
-Uses freshly generated ephemeral keys and a fresh simulator issuer (never the state dir), the pinned HPKE library
-for `seal` with a library-supported deterministic ephemeral for reproducible bytes inside one run, and the named
-cases of §3.2. `teecustody-sim vectors --out DIR [--force]` additionally writes `DIR/channel/suite.cbor` and
+It uses freshly generated keys from `os.urandom` and a fresh simulator issuer, never the state dir. Sealing uses
+`pyhpke` directly. Ephemeral-key injection (`eks`) is permitted here and in tests only (ADR 0011 C5). The output
+covers the named cases of §3.2. Synthetic keys in the suite are covered by a gitleaks allow-list scoped to
+`spec/vectors/channel/suite.cbor`. `teecustody-sim vectors --out DIR [--force]` additionally writes `DIR/channel/suite.cbor` and
 prints three paths in the order attestation, corpus, channel. `OUTPUT_EXISTS` covers all three files.
 
 ---
@@ -766,6 +971,7 @@ class GatewayLimits:
     global_burst: int = 1000
     max_concurrency: int = 64
     max_sources_tracked: int = 10_000      # LRU of per-source buckets
+    cors_origins: tuple[str, ...] = ()     # empty = same-origin only (no CORS headers at all)
 def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
                rng: Callable[[int], bytes] = os.urandom,
                clock: Callable[[], float] = time.monotonic) -> fastapi.FastAPI: ...
@@ -779,7 +985,16 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
 | any rate-limited request | — | — | `429 {"code":"RATE_LIMITED"}` with `Retry-After: <int s>` |
 | other path / method | — | — | `404 {"code":"NOT_FOUND"}` / `405 {"code":"METHOD_NOT_ALLOWED"}` |
 
-- `{instance}` and `{client}` must match `^[0-9a-f]{32}$`. Unknown clients get `200` with an empty page (D2-13).
+- `{instance}` and `{client}` are checked with `HEX32_PATTERN.fullmatch` on the decoded path segment (R-7). So
+  `%0A`, uppercase hex, and 31 or 33 characters are each a 400 `INVALID_ARGUMENT` with no queue call. `after` is
+  checked with `CURSOR_PATTERN.fullmatch`. Unknown clients get `200` with an empty page (D2-13).
+- CORS (security note (c)): by default no CORS headers are sent (same-origin). With `cors_origins` set, each entry
+  must be an exact `https://host[:port]` origin, or a loopback `http:` origin, and is validated at `create_app`
+  (`ValueError("INVALID_CORS_ORIGIN")`). Only a request whose `Origin` equals an entry gets
+  `Access-Control-Allow-Origin: <that origin>` and `Vary: Origin`. Preflight allows only `GET`/`POST` and the
+  `Content-Type` header. `Access-Control-Allow-Credentials` is never sent. Behind a reverse proxy, every client
+  shares the proxy's peer address, so the per-source limit collapses to the global limit; the gateway README says
+  so.
 - `b64url` = RFC 4648 §5 without padding. `next: null` means "omit `after` next time".
 - Every error body is exactly `{"code":"<CODE>"}`: `INVALID_ARGUMENT` (400), `UNKNOWN_INSTANCE` (404),
   `RATE_LIMITED` (429), `UNAVAILABLE` (503), `INTERNAL` (500). FastAPI's default validation and error bodies are
@@ -847,13 +1062,19 @@ export function isVerifiedBundle(v: unknown): v is VerifiedBundle;      // inter
 export function prekeySigningMessage(crypto: Pick<Crypto, "sha256">, instanceId: string, id: number,
     pub: Bytes, notAfter: number, imageDigest: string): Promise<Bytes>; // §2
 ```
-Order: (1) `decodeCanonical(bundle, limits.decode)` and strict schema (§3.1) else `MALFORMED`; more than
-`maxPrekeys` entries → `MALFORMED`. (2) `instance_id !== published.instanceId` → `INSTANCE_MISMATCH`.
+Order: (1) `decodeCanonical(bundle, limits.decode)` and strict schema (§3.1) else `MALFORMED`. That includes:
+- every time field a safe-integer `number` in [0, 2^53−1] (a decoded `bigint` → `MALFORMED`, R-1);
+- `prekeys` ids strictly ascending (R-2);
+- no more than `maxPrekeys` entries.
+
+(2) `instance_id !== published.instanceId` → `INSTANCE_MISMATCH`.
 (3) `verifyAttestation(token, profile, { identityNonce: sha256(IK_pub) }, events, …)`; any `AttestationError` →
 `ATTESTATION_FAILED` with its `check` (the debug-mode report happens inside, unchanged). (4) brand check (B-13).
-(5) for every entry: `verifyEd25519(IK_pub, m, sig)` with `m` built from `va.imageDigest`; any `false` →
-`PREKEY_SIGNATURE_INVALID`; a `CapabilityError("UNSUPPORTED")` → `UNSUPPORTED`; any other rejection →
-`PREKEY_SIGNATURE_INVALID`. (6) keep entries with `not_after × 1000 > now()`; none → `NO_USABLE_PREKEY`.
+(5) for **every** entry, expired or not: `verifyEd25519(IK_pub, m, sig)` with `m` built from `va.imageDigest`.
+Any `false` → `PREKEY_SIGNATURE_INVALID`; a `CapabilityError("UNSUPPORTED")` → `UNSUPPORTED`; any other rejection →
+`PREKEY_SIGNATURE_INVALID`. (6) Only after (5) has passed for all entries (Q3 ruling, D2-4): keep entries with
+`not_after × 1000 > now()`; none → `NO_USABLE_PREKEY`. Every builder input is range-checked first (§2; `RangeError`
+→ `MALFORMED`).
 Example: `const vb = await verifyBundle(pb, profile, events, deps);`.
 
 ```ts
@@ -865,9 +1086,15 @@ export function selectPreKey(bundle: VerifiedBundle, used: ReadonlySet<number>, 
 
 ### 7.3 Channel wire (`channel/wire.ts`; §3.1)
 
-Mirror of §4.5: `encodeOpenRequest`, `decodeResponse` (→ `OpenResultEnvelope | FrameResultEnvelope`),
-`encodeFrameRequest`, `encodeOpenAad`, `encodeFrameAad`, `hpkeInfo(crypto, ikPub, prekeyId)`,
-`sessionNonce(seq)`, all through `encodeCanonical`/`decodeCanonical` only, with exact-key-set schema checks.
+This mirrors §4.5: `encodeOpenRequest`, `decodeResponse` (→ `OpenResultEnvelope | FrameResultEnvelope`),
+`encodeFrameRequest`, `encodeOpenAad`, `encodeFrameAad`, `decodeOpenResultPlaintext`,
+`decodeFrameResultPlaintext` and `hpkeInfo(crypto, ikPub, prekeyId)`. All of them go through
+`encodeCanonical`/`decodeCanonical` only, with exact-key-set schema checks. Patterns are `^…$` with no flags.
+Further rules:
+- Time fields and `seq` must be safe-integer `number`s ≤ 2^53−1. A `bigint` fails the schema (R-1).
+- `decodeOpenResultPlaintext(pt, aad)` enforces `ok === true` ⇔ `aad.session_id !== null` (R-3).
+- The nonce builder is **not** exported from `channel/wire.ts`. It is module-private to `channel/session.ts` (R-5).
+
 Decoding failure → `WireError` or `ChannelError("INVALID_RESPONSE")` as stated in §7.5. Example:
 `const env = decodeResponse(body, limits.envelopeDecode, limits.aadDecode);`.
 
@@ -900,14 +1127,15 @@ export interface ChannelClientConfig {
     readonly limits?: ChannelLimits;
 }
 export type OpenPayload =
-    | { readonly op: "open_session"; readonly cs: ClientShare; readonly keyId: Bytes; readonly epoch: number }
-    | { readonly op: "enroll" };
+    | { readonly op: "open_session"; readonly clientId: ClientId; readonly cs: ClientShare;
+        readonly keyId: Bytes; readonly epoch: number }
+    | { readonly op: "enroll" };                     // no client id: the reply route is generated inside open (R-4)
 export interface OpenOutcome { readonly session: Session; readonly payload: CanonicalValue }
 
 export class ChannelClient {
     constructor(config: ChannelClientConfig);        // TypeError("INVALID_CONFIG") on a missing capability or bad limits
     fetchVerifiedBundles(): Promise<readonly VerifiedBundle[]>;
-    open(clientId: ClientId, payload: OpenPayload, bundle?: VerifiedBundle): Promise<OpenOutcome>;
+    open(payload: OpenPayload, bundle?: VerifiedBundle): Promise<OpenOutcome>;
 }
 export class Session {                               // constructed only by ChannelClient
     readonly sessionId: Bytes; readonly instanceId: InstanceId; readonly clientId: ClientId;
@@ -923,21 +1151,61 @@ surface a fatal error"; never an unverified fallback).
 `open`: (1) `bundle` given → `isVerifiedBundle` and `isVerifiedAttestation(bundle.attestation)` else
 `UNVERIFIED_BUNDLE`; older than `bundleMaxAgeMs` or attestation expired → re-fetch. Not given → fetch and pick one
 bundle uniformly at random. (2) `selectPreKey` with this client's used set; none → `NO_USABLE_PREKEY`. Mark it used
-before sealing. (3) `request_id = randomBytes(16)`; AAD per §3.1 with `client_id = clientId`,
-`timestamp = floor(now/1000)`. (4) `setupHpkeSender(pub, hpkeInfo)`; `seal(aadBytes, pt)`; `export("c2t",32)`,
-`export("t2c",32)`; `destroy()`; zero `pt` and `payload.cs` (spec §5.3 step 10; the caller passes a buffer it owns).
-(5) `postRequest(instanceId, envelope)`. (6) poll `getResponses(clientId, cursor)` every ≥ `pollIntervalMs` until an
-`open_result` whose AAD `request_id` equals ours and that decrypts under `sk_t2c` with nonce(0); responses that
-fail to decode or decrypt are ignored (the queue is untrusted). (7) `ok:false` → zero keys, `REMOTE_ERROR`;
-`ok:true` with `session_id` → `Session`. Timeout → zero keys, `TIMEOUT`.
+before sealing.
 
-`Session.request`: `op` must match `op-name` and not be `"close"`; encoded payload ≤ `maxPayloadBytes`
-(`INVALID_ARGUMENT`); more than `maxInFlight` pending → `INVALID_ARGUMENT`. Assign the next c2t `seq`, seal, post,
-poll the session's route (`session.clientId`) for a `frame_result` with the same `session_id` and `op`, t2c `seq`
-greater than the last accepted, that decrypts, and whose plaintext `re` equals our `seq`. `ok:false` →
-`REMOTE_ERROR`. At `MAX_SEQ` → close locally, `SEQUENCE_EXHAUSTED`. One poll loop per client route is shared by
-all sessions and pending opens of a `ChannelClient`; unmatched responses are discarded. Example:
-`const { session } = await cc.open(clientId, { op: "open_session", cs, keyId, epoch }); const r = await session.request("test.echo", new Map([["x", 1]])); await session.close();`.
+(3) `request_id = randomBytes(16)`, `timestamp = floor(now/1000)`, then build the AAD per §3.1:
+- `open_session`: `client_id = payload.clientId`, which must match `^[0-9a-f]{32}$` (`INVALID_ARGUMENT`).
+- `enroll`: `client_id = hexEncode(randomBytes(16))`, a fresh CSPRNG reply route for this call only, never stored
+  or reused (R-4).
+
+(4) `setupHpkeSender(pub, hpkeInfo)`; `seal(aadBytes, pt)` exactly once; `export("c2t",32)`, `export("t2c",32)`;
+`destroy()`. Then zero `pt` and `payload.cs` (spec §5.3 step 10; the caller passes a buffer it owns).
+
+(5) `postRequest(instanceId, envelope)`. On a transport failure the open fails with `TRANSPORT`, and the pre-key
+stays marked used. `open` never re-seals; a caller retry is a new `open` with a new request id and pre-key.
+
+(6) Poll `getResponses(route, cursor)` every ≥ `pollIntervalMs`. The `route` is the AAD `client_id`. Wait for an
+`open_result` whose AAD `request_id` equals ours and that decrypts under `sk_t2c` with nonce(0). Responses that fail
+to decode or decrypt are ignored, because the queue is untrusted.
+
+(7) An authenticated plaintext that violates R-3 → `INVALID_RESPONSE`. `ok:false` → zero keys, `REMOTE_ERROR`.
+`ok:true` → `Session`, with `session.clientId` set as follows:
+- `open_session`: `payload.clientId`.
+- `enroll`: the `client_id` field of the open-result payload map. It must match the pattern, else
+  `INVALID_RESPONSE`. INC-3 defines the rest of the enrol result.
+
+Timeout → zero keys, `TIMEOUT`.
+
+**Nonce discipline, client side (R-5, High; D2-16; SR-14; T-23).**
+- `Session` holds `sk_c2t` and a private `nextC2tSeq`, starting at 0. The client only encrypts c2t; its t2c side
+  only decrypts.
+- The one private sealing method `#sealNext(op, payloadBytes)` reads `seq = nextC2tSeq` and **assigns
+  `nextC2tSeq = seq + 1` synchronously, before its first `await`**. It then builds the frame AAD and calls
+  `aes256GcmEncrypt`. Concurrent `request()` calls therefore always get distinct `seq`s.
+- Nothing ever decrements, resets or restores `nextC2tSeq`: not when `postRequest` rejects, not on a timeout, not
+  when `aes256GcmEncrypt` rejects.
+- `request()` never re-seals. It never auto-retries either; re-posting identical bytes is the only permitted
+  transport retry, and INC-2 does not do it. A host retry is a new `request()`, with a new `seq`.
+- No exported or internal function takes a `seq`, nonce or key for sealing. The nonce builder is module-private.
+  An API-surface test asserts this for `index.ts` and for the module's exports.
+
+`Session.request`:
+- `op` must match `op-name` and not be `"close"`.
+- The encoded payload must be ≤ `maxPayloadBytes` (`INVALID_ARGUMENT`).
+- More than `maxInFlight` pending → `INVALID_ARGUMENT`.
+
+It seals with `#sealNext`, posts, then polls the session's route (`session.clientId`) for a matching
+`frame_result`, which must:
+- have the same `session_id` and `op`;
+- have a t2c `seq` greater than the last accepted one;
+- decrypt;
+- carry a plaintext `re` equal to our `seq`.
+
+`ok:false` → `REMOTE_ERROR`. When the next `seq` would exceed `MAX_SEQ` → close locally, `SEQUENCE_EXHAUSTED`. One
+poll loop per route is shared by all sessions and pending opens of a `ChannelClient`; unmatched responses are
+discarded.
+
+Example: `const { session } = await cc.open({ op: "open_session", clientId, cs, keyId, epoch }); const r = await session.request("test.echo", new Map([["x", 1]])); await session.close();`.
 
 ### 7.5 Errors
 
@@ -982,7 +1250,9 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto;   // works 
 - `verifySignature`: INC-1 contract unchanged; modulus < 2048 → `INVALID_ARGUMENT` (read from the imported key).
 - `setupHpkeSender(pkR, info)` / `setupHpkeReceiver(skR, enc, info)`: `@hpke/core` `CipherSuite` with
   `DhkemX25519HkdfSha256`, `HkdfSha256`, `Aes256Gcm`, Base mode (no PSK, no sender key). Native WebCrypto X25519
-  missing → `UNSUPPORTED`; never a JS curve fallback. Key length ≠ 32 → `INVALID_ARGUMENT`; open failure →
+  missing → `UNSUPPORTED`; never a JS curve fallback (ADR 0011 C3, T-28). Neither function takes, nor passes to
+  `@hpke/core`, an `ekm`, PSK, PSK id or sender key (C5; ESLint rule). This file is the only `@hpke/*` import site
+  in the packages. Key length ≠ 32 → `INVALID_ARGUMENT`; open failure →
   `AUTHENTICATION_FAILED`; `export` label ≤ 64 bytes, length 1..64. `destroy()` drops the context; a later call →
   `INVALID_ARGUMENT`.
 - `aes256GcmEncrypt/Decrypt`: key 32, nonce 12 else `INVALID_ARGUMENT`; output `ct ‖ tag`; tag failure →
@@ -1072,7 +1342,8 @@ ct: Uint8Array(48) }`.
 `encodeCanonical(Map{"v":1,"client_id":…,"credential_id":…})`.
 
 **Ceremonies.** `userVerification: "required"`, `timeout = timeoutMs`. `set`: validate (`client` 32 hex, share 32
-bytes) before any ceremony; if no record, `credentials.create` a discoverable passkey with `extensions: { prf: {} }`
+bytes) before any ceremony; if no record, `credentials.create` a discoverable passkey with WebAuthn
+`user.id` = 16 fresh random bytes (never `client_id`; security note (d)) and `extensions: { prf: {} }`
 and require `getClientExtensionResults().prf.enabled === true`; obtain the PRF output from the create results if
 present, otherwise from one `credentials.get` with `allowCredentials: [credential_id]` and `prf.eval.first`. If a
 record exists, reuse its credential with a fresh `prf_salt` and nonce. Write the record in one transaction. Copy
@@ -1139,7 +1410,18 @@ One Python process: `Simulator` (`teecustody-sim serve` equivalent, loopback), `
 It prints one stdout line `gateway=<origin> issuer=<origin> profile=<path>` once ready, and stops on SIGTERM. The
 workload component has no listener; only the gateway listens (D-003). `FIXTURE_CS` is generated per run and
 written only to the harness's temporary directory for the browser test to `vault.set`; it is never committed.
-Semgrep: `pyhpke` (or the chosen HPKE import) only in `teecustody/channel/hpke.py` and `teecustody_sim/**`.
+
+### 9.5 Static rules added in INC-2 (all in `lint_command`, D-038)
+- **HPKE imports.** `pyhpke` imports only in `teecustody/channel/hpke.py`, `teecustody_sim/**` and tests;
+  `@hpke/*` only in `teecustody-web/src/crypto/webcrypto.ts` and tests (SR-14).
+- **No seams (C5).** No `eks`/`ekm`/`psk`/`psk_id`/`pks`/`senderKey` argument outside tests and `teecustody_sim/**`.
+- **No composition (C2).** No HMAC-based expand loop in project code.
+- **Signing.** `IdentityKey.sign` is called only from `channel/prekeys.py`.
+- **Patterns (R-7).** No `re.match`/`re.search` on a pattern ending in `$` in `packages/**` or `examples/**`.
+- **Test doubles.** No `tests.support` import from `packages/**` (§5.2).
+- **Dependency closure (C3).** The CI dependency-policy job fails if `@hpke/dhkem-*`, `@hpke/chacha20poly1305`,
+  `@noble/*`, `tweetnacl` or any other JS curve or cipher package appears in a runtime closure. It also fails on a
+  non-exact `@hpke/core`/`@hpke/common`/`pyhpke` version, or a `pyhpke` runtime dependency other than `cryptography`.
 
 ---
 
@@ -1157,11 +1439,11 @@ Semgrep: `pyhpke` (or the chosen HPKE import) only in `teecustody/channel/hpke.p
 | `REQUEST_REPLAYED` | `(client_id, request_id)` seen | replayed `request_id` |
 | `OPEN_FAILED` | HPKE `Open` failure | HPKE `Open` failure |
 | `OPEN_PAYLOAD_INVALID` | open plaintext fails schema | bad frame |
-| `OPEN_REJECTED` | opener returned `OpenRejected` | (INC-3 adds alert-class codes such as `KCV_MISMATCH` via `pre_principal_alert`) |
+| `OPEN_REJECTED` | opener returned `OpenRejected`, or accepted a principal ≠ the claim (R-4) | (INC-3 adds alert-class codes such as `KCV_MISMATCH` via `pre_principal_alert`) |
 | `SESSION_UNKNOWN` | frame for an unknown or closed session | session-frame authentication failure |
 | `FRAME_SEQ_REJECTED` | `seq` ≤ last accepted | replay |
 | `FRAME_AUTH_FAILED` | AEAD failure on a frame | session-frame authentication failure |
-| `CHANNEL_LIMIT_EXCEEDED` | replay cache or session table full | SR-4 |
+| `CHANNEL_LIMIT_EXCEEDED` | replay cache full, or session table full with no session idle ≥ `session_evict_min_idle_s` (R-8) | SR-4 |
 
 `ALERT` codes written in INC-2: `PREKEY_BURN_HIGH` (with `interval_start`/`interval_end`, no `count`),
 `ALERT_CAP_REACHED`, `AUDIT_WRITE_CONFLICT` (with `request_id`). No `EVENT` record is written in INC-2 (no
@@ -1173,17 +1455,19 @@ authenticated-principal authorization exists until INC-3).
 
 | Package | Where | Kind | Licence | Maintenance (verify at adoption) | Decision |
 |---|---|---|---|---|---|
-| `pyhpke` | `teecustody` runtime; `teecustody-sim` | **crypto** | MIT | Allow-listed. Last release date to be confirmed ≤ 18 months (V-2.3) | ADR 0011 (Proposed); not needed if `cryptography` 50.0.2 provides RFC 9180 HPKE with export (V-2.3) |
-| `@hpke/core` (+ its runtime deps, e.g. `@hpke/common`) | `@teecustody/web` runtime | **crypto** | MIT | Allow-listed; actively released (confirm V-2.4) | ADR 0011 (Proposed); must use native WebCrypto X25519, never `@hpke/dhkem-x25519` (pure-JS curve, forbidden) |
+| `pyhpke` | `teecustody` runtime; `teecustody-sim` | **crypto** | MIT | Allow-listed; release ≤ 18 months confirmed in V-2.3 | ADR 0011 **Accepted, C1**: the workload library (spec §11). Runtime deps ⊆ {`cryptography`} (C3) |
+| `@hpke/core` + `@hpke/common` (same repo and publisher) | `@teecustody/web` runtime | **crypto** | MIT | Allow-listed; confirm in V-2.4 | ADR 0011 **Accepted, C3/C7**: runtime closure exactly these two; native WebCrypto X25519 only; never `@hpke/dhkem-x25519` |
 | `fastapi`, `starlette`, `pydantic`, `uvicorn` | `examples/notes-app/gateway` only | example runtime | MIT / BSD-3 / MIT / BSD-3 | maintained | SR-9 rules; FastAPI is in `stack.frameworks` |
 | `httpx` | gateway tests (`TestClient`) | dev | BSD-3 | maintained | SR-9 (D-019 dev scope) |
 | `fake-indexeddb` | `@teecustody/web` unit tests | dev | Apache-2.0 | maintained | SR-9 (D-019 dev scope) |
 | `@playwright/test` | `@teecustody/web` browser tests | dev | Apache-2.0 | admitted by ADR 0008 | — |
 | `esbuild` | bundle scan, harness bundle | build/dev | MIT | admitted by ADR 0008 | — |
 
-All runtime and crypto entries are pinned by exact version and hash (`uv.lock`, `pnpm-lock.yaml`). Draft ADR:
-`docs/adr/0011-hpke-libraries-and-browser-crypto-adapters.md` (Proposed; needs Security Architect sign-off before
-lock-file approval).
+All runtime and crypto entries are pinned by exact version and hash (`uv.lock`, `pnpm-lock.yaml`). ADR 0011 is
+Accepted with conditions C1–C7. The adopting task writes the **C6 pin amendment** (version, registry hash, licence,
+release date, C2 primitive-source table, C4 KAT result, §9.2 scan result). The Security Architect signs it off,
+scoped to that evidence, before the lock-file change merges. C4 KAT source: the CFRG `test-vectors.json`,
+committed under the test tree with its source URL and SHA-256 in an adjacent README, never fetched at test time.
 
 ---
 
@@ -1192,8 +1476,8 @@ lock-file approval).
 | Id | Verify | Pass condition | If it fails |
 |---|---|---|---|
 | V-2.2 | (unchanged, INCREMENTS) CSP hash sources for SRI-tagged external scripts per browser | as in INCREMENTS | as in INCREMENTS |
-| V-2.3 | Python HPKE: does pinned `cryptography` 50.0.2 expose RFC 9180 Base mode for 0x0020/0x0001/0x0002 **with secret export**? If not, `pyhpke`: latest release date, licence, exporter API, that it delegates X25519/HKDF/AES-GCM to `cryptography`, and that it passes the CFRG RFC 9180 test vectors for this suite (mode 0) and RFC 9180 A.1 | One library meets all conditions | No compliant library → CONTRACT_ISSUE to human (Tink's public hybrid API exposes no exporter, to my knowledge; verify) |
-| V-2.4 | `@hpke/core`: `DhkemX25519HkdfSha256` uses native WebCrypto X25519 (no bundled JS curve); passes the CFRG vectors for the suite; bundle passes §9.2 scan; supported in Node ≥ 22 and target browsers | All true | Browser without native X25519 → fail closed (`CRYPTO_UNAVAILABLE`), recorded in the support matrix; a JS curve fallback is never added |
+| V-2.3 | `pyhpke` (ADR 0011 C1): latest release date, OSI licence, exporter API, runtime deps ⊆ {`cryptography`}, every primitive delegated to `cryptography` (C2 table), and CFRG KATs passing for both non-empty filtered sets (C4). Also record, for information only, whether `cryptography` 50.0.2 exposes RFC 9180 Base mode with export | `pyhpke` meets every condition | A `pyhpke` failure → CONTRACT_ISSUE to the human. Switching to `cryptography`'s HPKE is a `constraint-deviation` (human only); the Architect may raise it with the V-2.3 evidence |
+| V-2.4 | `@hpke/core`: `DhkemX25519HkdfSha256` uses native WebCrypto X25519 (no bundled JS curve); runtime closure ⊆ {`@hpke/core`, `@hpke/common`} (C3); CFRG KATs pass sender and receiver side (C4); the `platform: "browser"` bundle has no unresolved Node built-ins and passes §9.2 with no allow-list (C7); supported in Node ≥ 22 and target browsers | All true | Browser without native X25519 → fail closed (`CRYPTO_UNAVAILABLE`), recorded in the support matrix. A JS curve fallback, shim or CSP relaxation is never added; a C3/C7 failure is a CONTRACT_ISSUE |
 | V-2.5 | WebAuthn PRF under Playwright: Chromium CDP virtual authenticator with `hasPrf`; whether PRF results arrive at `create` or only at `get`; behaviour of Firefox/WebKit | PRF obtainable in Chromium CI | Vault tests in CI are Chromium-only; others assert fail-closed |
 | V-2.6 | WebCrypto `Ed25519` verify availability per target browser and Node 22 | Recorded per browser | Unsupported → `UNSUPPORTED` → bundle rejected (fail closed), recorded in the support matrix |
 
@@ -1202,7 +1486,7 @@ lock-file approval).
 ## 13. Amendments to INC-1 frozen files and to ARCHITECTURE (for the Orchestrator)
 
 **No INC-1 exported signature changes.** The following are **additive** changes to files that INC-1 marked
-"final". They need the Orchestrator's acknowledgement (frozen-file exception in the INC-2 Wave-0 contracts):
+"final". The Orchestrator accepted them in D-039, and each is owned by exactly one INC-2 task:
 
 | # | File | Change |
 |---|---|---|
@@ -1215,7 +1499,8 @@ lock-file approval).
 ARCHITECTURE text to align after approval (Architect edits): Queue port split and `publish_bundle(..., expires_at)`,
 `withdraw_bundle`, `list_bundles(max_bundles)` (D2-12); gateway `429 RATE_LIMITED` and no `UNKNOWN_CLIENT` (D2-13);
 `TeeClient` moves to INC-3 (D2-9); in-memory adapters in `teecustody_sim` (D2-11); Fetcher refuses all redirects and
-may reject `INVALID_RESPONSE` for oversize bodies (D2-14); `SessionOpener`/`FrameHandler` ports (D2-10).
+may reject `INVALID_RESPONSE` for oversize bodies (D2-14); `SessionOpener`/`FrameHandler` ports (D2-10); reply route
+vs. claimed principal (D2-7, R-4); nonce discipline (D2-16); `session_evict_min_idle_s` (D2-19).
 
 No constraint-deviation is required by this document.
 
@@ -1249,8 +1534,50 @@ No constraint-deviation is required by this document.
 - **SR-3:** fuzz `decode_request`/`decodeResponse`/`verifyBundle` from the channel vectors (seeded mutations): only
   documented errors, no exceptions escape, bounded time.
 - **SR-11:** sentinel `cs`, payload and key bytes never appear in logs, errors, audit records or gateway logs.
-- **HPKE KATs:** CFRG RFC 9180 vectors for this suite in both languages (spec §11), plus an all-zero-DH (low-order
-  `enc`) case → `OPEN_FAILED` / `AUTHENTICATION_FAILED`.
+- **HPKE KATs (ADR 0011 C4):** use the committed CFRG `test-vectors.json` with its SHA-256 recorded.
+  - Filter to (mode 0, 0x0020, 0x0001, 0x0002) and to A.1, and assert each filtered set is non-empty.
+  - Per case, check DeriveKeyPair → pkEm/pkRm, `enc`, every encryption and every export. Python checks the
+    receiver side; TS checks the sender and receiver sides.
+  - An all-zero or low-order `enc` → `OPEN_FAILED` / `AUTHENTICATION_FAILED`.
+- **Nonce discipline (R-5, High; SR-14; T-23). Property test in each language:**
+  - Drive a session through N ≥ 1,000 seals in each direction the language seals: Python t2c through
+    `T2cSealer`, TS c2t through `Session.request`.
+  - Randomly inject failures: `publish_response` / `postRequest` rejections, `aes256GcmEncrypt` rejections,
+    timeouts, and host retries of the same logical request. In TS, also issue up to `maxInFlight` concurrent
+    `request()` calls.
+  - Record every `(key id, nonce)` actually passed to AES-GCM through a spy on the AEAD primitive. Assert no
+    duplicates, and that the counter never decreases.
+  - Also assert that, after a failed publish, a retry re-sends byte-identical envelope bytes.
+  - Python: `seal_open_result` twice → `SessionReject(USED)`; `seal_frame_result` before `seal_open_result` →
+    `USED`. An exception injected inside `seal_open_result` after the counter moved still leaves nonce 0 unusable.
+  - API-surface tests (Python module introspection; TS `index.ts` and module exports): no sealing callable has a
+    `seq`/`nonce`/key parameter, and the nonce builder is not exported.
+- **Principal binding (R-4; SR-14; T-24):**
+  - With `EnrollingOpener`, an `enroll` whose AAD `client_id` equals an existing live client's id:
+    - the opener receives `claimed_client_id is None`;
+    - the victim's session is not `REPLACED`;
+    - the `open_result` goes only to the AAD route;
+    - logs and audit name only the minted principal.
+  - With `MismatchingOpener`: no session is created, the result is `INTERNAL`, and `closed(OPEN_ABORTED)` is called.
+  - TS: two consecutive `enroll`s use different, CSPRNG-derived routes (spy on `randomBytes`).
+- **Replay window (R-6; SR-14):** `ReplayCache` unit test. A message with `timestamp = now + skew − 1` is recorded.
+  An identical `seen` at `now + 2·skew − 2` returns `True`, and at `timestamp + skew` the entry is gone.
+- **Time and schema bounds (R-1, R-2, R-3; SR-3):** the §3.2 vectors `*_over_max`,
+  `prekey_ids_unsorted_or_duplicate`, `open_ok_nil_session` and `open_error_with_session` pass in both languages.
+  The TS decoder yields `bigint` for 2^53 and the schema rejects it.
+- **Patterns (R-7; SR-3):** every Python pattern check rejects the valid value plus `"\n"`. Gateway paths with `%0A`,
+  uppercase hex, and 31 or 33 characters → 400 with no queue call. `FetchTransport` rejects gateway JSON with unknown
+  or duplicate keys, non-canonical base64url, or an id/cursor outside its pattern → `INVALID_RESPONSE`.
+- **Session eviction (R-8; SR-4; T-25):**
+  - Fill the table; age one session past `session_evict_min_idle_s` → a new `create` evicts exactly that session
+    (`EVICTED`, keys wiped, `closed` called).
+  - With every session active → `SESSIONS_FULL` / `LIMIT_EXCEEDED`, and no session is evicted.
+  - Ties are broken by the smallest `session_id`.
+  - An unauthenticated frame never refreshes `last_activity`.
+- **Bundles (Q3; SR-1):** `expired_prekey_sig_corrupted` → `PREKEY_SIGNATURE_INVALID`; `some_prekeys_expired` →
+  only unexpired ids selectable; a key with `notAfterMs ≤ now + 5000` is never selected.
+- **Gateway CORS:** with no `cors_origins`, no CORS header is sent. With an allow-list, only exact matches are
+  echoed, and `Access-Control-Allow-Credentials` is never present.
 
 ---
 
@@ -1259,9 +1586,10 @@ No constraint-deviation is required by this document.
 | # | Question | Blocking? | Recommendation |
 |---|---|---|---|
 | Q1 | `proto` policy for additive pre-1.0 CDDL (INC-2 channel; INC-3/INC-4 op payloads): keep `"tee-chan-v1"` when only new structures are added, bump only when an existing structure changes? PROJECT.md §5 says "a change to the wire format bumps the proto string". | Yes, for the §3 PR (human) | Keep `tee-chan-v1` until v1.0.0 for additive structures; bump on any change to an existing structure |
-| Q2 | Approve the §3 CDDL, including `key_id` = 16 bytes and `epoch` = uint32 (which fix INC-3's `kcv` input widths) and D2-7 (random reply route for `enroll`) | Yes (human, spec/wire) | Approve |
-| Q3 | D2-4: expired pre-keys filtered rather than discarding the whole bundle — Security Architect to confirm this reading of spec §5.2 step 5 | No (pre-G4) | Confirm |
-| Q4 | Browser tests (Playwright) need downloaded browsers; `test_command` must stay clean-checkout runnable. Put `test:browser` in a separate required CI job rather than in `pnpm -r test`? | No | Separate required CI job; `framework.yaml` unchanged |
-| Q5 | Add `teecustody/queue/**`, `teecustody/audit/**`, `teecustody/runtime/**`, `teecustody-web/src/crypto/**`, `teecustody-web/src/fetch/**`, `teecustody-web/src/transport/**` and `examples/notes-app/gateway/**` to `security.paths` (human-owned config) | No | Yes |
+| Q2 | Approve the §3 CDDL (revision 2: R-1 `unix-s`, R-2/R-3 rules, result and layout vectors), including `key_id` = 16 bytes and `epoch` = uint32 (which fix INC-3's `kcv` input widths) and D2-7 (random reply route for `enroll`, never an identity) | Yes (human, spec/wire) | Approve; the Security Architect found the CDDL otherwise acceptable |
+| Q3 | **Resolved** (Security Architect, D-040): filter expired pre-keys individually, only after every signature verifies (D2-4). Record in traceability (§5.2 row) | — | — |
+| Q4 | **Resolved** (D-039): Playwright suites run in the simulator CI test job with pinned browser builds; they join `test_command` only if deterministic and fast, otherwise a separate required job (Tech Lead specifies) | — | — |
+| Q5 | Add to `security.paths` (human-owned config), per the Security Architect's list: `teecustody/{audit,runtime,queue}/**`, `teecustody/config.py`, `teecustody-web/src/{crypto,fetch,transport}/**`, `examples/notes-app/gateway/**`, `tools/scan-bundle.mjs` | No (human batch) | Yes |
+| Q8 | Queue ordering under pipelining (security note (b)). With unordered delivery and `maxInFlight` 8, the spec's backwards-`seq` rejection causes spurious timeouts, which in INC-3 invites host retries of non-idempotent custody operations | No (INC-3) | INC-3: a per-session ordering key in `PubSubQueue`, or serialise built-in custody operations |
 | Q6 | Cross-process simulator queue for INC-3's containerised notes-app (the INC-2 harness runs gateway and workload in one process) | No (INC-3) | INC-3 Architect item |
 | Q7 | `StaticShareOpener` must never be selectable by INC-3's `Config.from_env`; INC-3 must add a test proving it | No (INC-3) | Carry to INC-3 contracts |

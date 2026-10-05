@@ -126,3 +126,16 @@ binding. A task that cannot meet one returns CONTRACT_ISSUE. It never takes a lo
 Residuals recorded in THREAT_MODEL.md (Low): JavaScript cannot wipe HPKE or AES key material (T-28 note); browsers
 without native X25519/Ed25519 fail closed (availability; support matrix); `pyhpke` maintenance is a watch item that
 SR-9's 18-month rule re-evaluates on every lock change.
+
+### 2026-10-05 — Architect: alignment with C1–C7 (D-040)
+- **C1 supersedes the Option 1 wording above.** The Python decision is `pyhpke` over `cryptography`.
+  - The clause "`cryptography` native HPKE, if the pinned 50.0.2 exposes it" is withdrawn as a decision path.
+  - V-2.3 now records `cryptography`'s HPKE availability for information only.
+  - Any switch is a human `constraint-deviation` that the Architect may raise with that evidence.
+- **Where C2–C5 and C7 are implemented** (docs/INC-2-API.md revision 2):
+  - C2 and C5: §4.6, §8.1 and §9.5 (no composition, no seams; semgrep and ESLint rules);
+  - C3: §9.5 and §11 (closure and exact pins);
+  - C4: §11 and §14 (committed CFRG file with its SHA-256, non-empty filtered sets, export checks);
+  - C7: §12 V-2.4.
+- **C6:** the pin amendment is appended here by the adopting task and needs the scoped Security Architect sign-off
+  before the lock-file merge. It is not written yet; no versions are pinned.
