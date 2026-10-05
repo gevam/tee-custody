@@ -39,6 +39,25 @@ swname, secboot, support_attributes, image_digest, image_signatures, args and en
 fails exactly one check. No `spec/wire` change. T-17 ownership is unchanged. The §G rows need an owner outside
 T-17 (R-13).
 
+**Amendment log (2026-10-05, D-031: fix every G6 Low before G7).** Wave 4 adds three tasks, grouped by file
+ownership. No two of them share a file:
+- **T-21** owns `config.py` (one enum member, `BIND_FAILED`), `simulator.py`, `issuer.py`, `launcher.py`,
+  `test_simulator.py`, `test_issuer.py`, `test_launcher.py` and `test_api_surface.py`.
+- **T-23** owns `cli.py`, `test_cli.py` and `spec/vectors/README.md`.
+- **T-24** owns Core `profile.ts` and `profile.test.ts`.
+
+The D-01 serve-path cases (socket path, bind, state dir) are fixed in the library (T-21), and the CLI passes
+`SimConfigError` through unchanged, so T-23 does not depend on T-21. B-02 and B-03 are closed by T-24 (same
+file as D-02).
+**Orchestrator actions before Wave 4 starts:**
+1. A frozen-file exception for `config.py` (T-21).
+2. API.md §C text: `BIND_FAILED` (T-21), and `vectors --force` plus `OUTPUT_EXISTS` (T-23).
+3. Human gate on T-23's `spec/vectors/README.md` line.
+4. QA writes failing acceptance tests for D-01..D-04 and the overwrite guard. QA's phase-2 exploratory tests
+   do not pin them yet. Suggested homes: `tests/acceptance/test_FR03_cli.py` (D-01 serve/vectors, D-04,
+   overwrite), `tests/acceptance/test_EXPLORE_hostile_launcher.py` (D-03 burst: no `connect()` failure, every
+   client gets 200 or 503), `tests/acceptance/SR01.trust-profile.test.ts` (D-02 `0x7f.1`, B-03 trailing dot).
+
 ## Waves
 
 | Wave | Task | Title | Tier | Depends on | Human-gated |
@@ -65,8 +84,11 @@ T-17 (R-13).
 | 2 | T-19 | Simulator §15.5 refusal hardening + deterministic slot release (T-08 review follow-up) | STRONG | T-08 | |
 | 2 | T-20 | §G rows 29–37: catalog, minter, transcriptions (D-025; `cases.py` frozen-file exception) | STRONG | T-07 | **YES** — `spec/vectors/test_attestation_suite.py` |
 | 3 | T-18 | Generate and commit `spec/vectors/attestation/suite.cbor` and `spec/vectors/wire/differential-corpus.json` | FAST | T-15, T-16, T-17, T-20 | **YES** — `spec/vectors` |
+| 4 | T-21 | Simulator library: start-up OS failures → codes (`BIND_FAILED` new), env-name validation, launcher backlog + busy reply (D-01 lib, D-03, D-04 lib) | STRONG | T-08, T-19 | No (needs Orchestrator frozen-file exception for `config.py`, like D-025) |
+| 4 | T-23 | Simulator CLI: `OSError` → `INVALID_PATH`, empty `--env` name, `vectors --force` overwrite guard (D-01 CLI, D-04 CLI) | STRONG | T-16, T-17 | **YES** — `spec/vectors/README.md` (one line) |
+| 4 | T-24 | Core `parseTrustProfile`: canonical development issuer/discovery URL (D-02, B-02, B-03) | STRONG | T-10, T-15 | |
 
-Counts: 21 items (20 tasks + V-01), 4 waves; largest wave is Wave 1 with 11 tasks; Wave 2 has 5.
+Counts: 24 items (23 tasks + V-01), 5 waves; largest wave is Wave 1 with 11 tasks; Wave 2 has 5; Wave 4 has 3.
 `parallelism.max_engineers` = 4, so Wave 1 runs in batches. Suggested order, critical path first:
 B1 T-04, T-07, T-09, T-10 · B2 T-08, T-11, T-12, T-13 · B3 T-05, T-06, T-14.
 Early starts are safe on these edges only: T-17 once T-04 and T-07 merge; T-16 once T-07 and T-08 merge;
@@ -74,7 +96,7 @@ T-15 once T-09..T-13 merge; T-20 once T-07 merges (done).
 
 Dependency edges (consumer ← producer): T-04←T-01,T-03 · T-05←T-01 · T-06←T-01,V-01 · T-07←T-01,V-01 ·
 T-08←T-01,V-01 · T-09←T-02,T-03 · T-10..T-13←T-02,V-01 · T-14←T-01,T-02 · T-15←T-09..T-13 · T-16←T-07,T-08 ·
-T-17←T-04,T-07,V-01 · T-19←T-08 · T-20←T-07 · T-18←T-15,T-16,T-17,T-20. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
+T-17←T-04,T-07,V-01 · T-19←T-08 · T-20←T-07 · T-18←T-15,T-16,T-17,T-20 · T-21←T-08,T-19 · T-23←T-16,T-17 · T-24←T-10,T-15. T-08 and T-16 consume same-wave stubs (T-07 and T-17) only
 through monkeypatched tests; their contracts say so.
 
 ## Ownership rules

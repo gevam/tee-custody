@@ -630,3 +630,23 @@ Participants: Orchestrator, QA Engineer
 **Revisit when:** —
 
 **Follow-ups:** Tech Lead writes Wave-4 fix contracts; G4/G5/G6/G7 re-checked for the fix wave; then G8.
+
+## D-032 — Wave-4 enablers: config.py exception; README pre-approval (INC-1, 2026-10-05)
+
+Type: scope
+Chair / decider: Orchestrator (config.py exception); Human (spec/vectors/README.md line)
+Participants: Tech Lead
+
+**Options considered**
+1. Grant T-21 a one-time Wave-0 frozen-file exception for packages/teecustody-sim config.py to add the `BIND_FAILED` error code only (no signature/type change); human pre-approves T-23's single README line under spec/vectors.
+2. Route D-01 through existing codes only / defer.
+
+**Decision:** Option 1.
+
+**Reasoning:** D-031 requires D-01 fixed now; a specific bind-failure code is the minimal interface addition (pattern of D-025). Human pre-approved the README change `teecustody-sim vectors --out spec/vectors/` → `... --force` on the condition the merged diff is exactly that one line (Orchestrator verifies at merge; anything more returns to the human).
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Tech Lead applies API.md §C text (BIND_FAILED, OUTPUT_EXISTS, `vectors --force`). QA writes failing acceptance tests for D-01..D-04 + guard (G4 for Wave 4).
