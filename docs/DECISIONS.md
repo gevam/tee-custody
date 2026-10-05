@@ -708,3 +708,22 @@ Participants: QA Engineer
 **Revisit when:** —
 
 **Follow-ups:** Merge inc-1/qa-g6 (docs only). G7 pending.
+
+## D-036 — G7 passes for INC-1 (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Security Reviewer
+
+**Options considered**
+1. Pass G7. 2. Hold.
+
+**Decision:** Option 1.
+
+**Reasoning:** Every INC-1 branch had Code + Security APPROVE. Increment-level pass on main 94dd29a: APPROVE, no finding ≥ Medium. gitleaks full history clean; pip-audit/pnpm audit clean; bandit/semgrep Medium+ only false positives in fixtures/negative tests; dependency policy exit 0; trivy N/A. Spec, security README and all 33 matrix rows at 1.0; all 70 tests cited by covered/partial rows exist and fail when their control is broken; non-negotiables hold. §13.11 correctly GAP (CI workflow exists but has never run — no upstream). B-06, B-08, B-13 must be in INC-2 contracts.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** G8 (tag inc-1) on human decision; retrospective.
