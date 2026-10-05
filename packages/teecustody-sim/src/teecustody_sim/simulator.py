@@ -6,6 +6,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Final
@@ -206,6 +207,15 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
         raise SimConfigError(SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT)
 
 
+@contextmanager
+def _os_error_as(code: SimConfigErrorCode) -> Iterator[None]:
+    """One start-up step: any `OSError` becomes `code` alone, with no OS detail attached."""
+    try:
+        yield
+    except OSError:
+        raise SimConfigError(code) from None
+
+
 def _write_file(path: Path, text: str, mode: int) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -272,7 +282,8 @@ class Simulator:
             raise
 
     def _serve(self, config: SimulatorConfig) -> None:
-        keys = SimKeys.load_or_create(config.state_dir, config.signers_required)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            keys = SimKeys.load_or_create(config.state_dir, config.signers_required)
         self._keys = keys
         self._issuer = IssuerServer(
             config.issuer_host,
@@ -281,10 +292,8 @@ class Simulator:
             jwks=keys.issuer_jwks(),
             limits=config.limits,
         )
-        try:
+        with _os_error_as(SimConfigErrorCode.BIND_FAILED):
             self._issuer.start()
-        except OSError:
-            raise SimConfigError(SimConfigErrorCode.BIND_FAILED) from None
         minter = TokenMinter(
             keys,
             config.launch,
@@ -296,11 +305,14 @@ class Simulator:
             mint=lambda audience, nonces: minter.mint(audience, nonces, int(self._clock())),
             limits=config.limits,
         )
-        self._launcher.start()
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            self._launcher.start()
         default_token = minter.mint(DEFAULT_TOKEN_AUDIENCE, [], int(self._clock()))
-        _write_file(config.token_file_path, default_token, _TOKEN_FILE_MODE)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            _write_file(config.token_file_path, default_token, _TOKEN_FILE_MODE)
         state = _state_document(config, self._issuer.origin)
-        _write_file(config.state_dir / _STATE_FILE_NAME, json.dumps(state), _STATE_FILE_MODE)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            _write_file(config.state_dir / _STATE_FILE_NAME, json.dumps(state), _STATE_FILE_MODE)
 
     def stop(self) -> None:
         if self._launcher is not None:
