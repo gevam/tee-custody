@@ -21,5 +21,6 @@
 - T-16: Simulator CLI (`up`, `token`, `vectors`, `profile`, `serve`) and container runtime
 - T-18: Commit generated attestation vector suite (37 cases) and CBOR differential corpus (512 cases)
 - T-17: Implement development trust-profile building and the attestation vector-suite generator
+- T-19: §15.5 detection hardening and deterministic slot release
 - QA: Acceptance tests for INC-1 (expected red)
 
