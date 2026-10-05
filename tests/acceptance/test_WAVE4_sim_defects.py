@@ -130,14 +130,14 @@ def test_D03_burst_of_100_connections_each_gets_a_response(running_sim: RunningS
     def one() -> None:
         outcome = "?"
         try:
-            c = socket.socket(socket.AF_UNIX)
-            c.settimeout(15)
             barrier.wait(timeout=20)
-            c.connect(str(running_sim.config.socket_path))
-            c.sendall(req)
-            data = b""
-            while chunk := c.recv(65536):
-                data += chunk
+            with socket.socket(socket.AF_UNIX) as c:
+                c.settimeout(15)
+                c.connect(str(running_sim.config.socket_path))
+                c.sendall(req)
+                data = b""
+                while chunk := c.recv(65536):
+                    data += chunk
             outcome = data.split(b"\r\n", 1)[0].decode(errors="replace")
         except Exception as exc:  # noqa: BLE001
             outcome = type(exc).__name__
