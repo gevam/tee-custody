@@ -441,11 +441,6 @@ describe("parseTrustProfile rejects each rule violation with its code and field 
 
     it.each([
         [
-            "dev issuer with a path (ruling 3)",
-            developmentJson,
-            { issuer: "https://issuer.unit.test/tenant" },
-        ],
-        [
             "dev discovery on localhost",
             developmentJson,
             { discovery_url: "http://localhost:8791/.well-known/openid-configuration" },
@@ -736,5 +731,19 @@ describe("parseTrustProfile requires a canonical development discovery_url (T-24
         `http://LOCALHOST${WELL_KNOWN}`,
     ])("rejects %s", (url) => {
         expectRejected({ discovery_url: url }, "discovery_url");
+    });
+});
+
+describe("parseTrustProfile requires a canonical development issuer origin (T-24 criterion 2)", () => {
+    it.each([
+        "https://confidentialcomputing.googleapis.com.",
+        "https://tee-sim.localhost/",
+        "https://tee-sim.localhost/p",
+        "https://TEE-SIM.localhost",
+        "https://tee-sim.localhost:443",
+        "https://u@tee-sim.localhost",
+        "https://tee-sim.localhost.",
+    ])("rejects %s", (issuer) => {
+        expectRejected({ issuer }, "issuer");
     });
 });
