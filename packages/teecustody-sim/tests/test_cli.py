@@ -838,6 +838,20 @@ def test_vectors_refuses_to_overwrite_an_existing_output_without_force(
     assert sorted(tmp_path.rglob("*")) == sorted({out, *before, *(p.parent for p in before)})
 
 
+def test_vectors_with_force_regenerates_both_existing_outputs(cli: Cli, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _existing_suite(out)
+    _existing_corpus(out)
+    suite, corpus = out / "attestation" / "suite.cbor", out / "wire" / "differential-corpus.json"
+
+    code, stdout, err = cli("vectors", "--out", str(out), "--force")
+
+    assert (code, stdout, err) == (0, f"{suite}\n{corpus}\n", "")
+    assert suite.read_bytes() != b"approved suite"
+    assert corpus.read_bytes() != b"approved corpus"
+    assert set(_tree(tmp_path)) == {suite, corpus}
+
+
 @pytest.fixture
 def recorded_profile(monkeypatch: pytest.MonkeyPatch) -> RecordingProfileBuilder:
     builder = RecordingProfileBuilder()
