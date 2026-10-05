@@ -320,6 +320,13 @@ def test_connection_flood_is_capped_and_the_server_recovers(
     assert status == 200
 
 
+def test_issuer_backlog_is_128_and_beyond_capacity_it_sends_nothing() -> None:
+    # A TCP close with unread data can reset away a reply, so the issuer only closes (T-21).
+    for server_class in (issuer_module._IssuerHTTPServer, issuer_module._IssuerHTTPServer6):
+        assert server_class.request_queue_size == 128
+        assert server_class.busy_reply is None
+
+
 class RecordingLogger:
     def __init__(self, records: list[tuple[str, str, str, dict[str, str | int]]], name: str):
         self._records = records
