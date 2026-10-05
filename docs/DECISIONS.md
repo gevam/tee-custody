@@ -689,3 +689,22 @@ Participants: —
 **Revisit when:** —
 
 **Follow-ups:** G6 confirmation by QA; G7 increment-level security pass.
+
+## D-035 — G6 passes for INC-1 (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: QA Engineer
+
+**Options considered**
+1. Pass G6. 2. Hold.
+
+**Decision:** Option 1.
+
+**Reasoning:** QA re-ran on integrated main 94dd29a: Python acceptance 124/124, TS @teecustody/tests 323/323, spec/vectors + tests/integration 255/255. D-01..D-04 fixed in Wave 4 (T-21, T-23, T-24) and closed with verifying tests (D-031); no open defects at any severity. Every INC-1 acceptance criterion passes (docs/qa/INC-1.md, inc-1/qa-g6 bab6ed3).
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Merge inc-1/qa-g6 (docs only). G7 pending.
