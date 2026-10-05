@@ -22,5 +22,7 @@
 - T-18: Commit generated attestation vector suite (37 cases) and CBOR differential corpus (512 cases)
 - T-17: Implement development trust-profile building and the attestation vector-suite generator
 - T-19: §15.5 detection hardening and deterministic slot release
+- T-21: Simulator startup codes, burst handling and environment variable names (D-01, D-03, D-04)
+- T-24: Canonical development profile URLs (D-02)
 - QA: Acceptance tests for INC-1 (expected red)
 
