@@ -5,10 +5,11 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import TracebackType
 from typing import Final
+from urllib.parse import unquote
 
 from teecustody.obs import get_logger
 from teecustody_sim.alterations import JsonValue
@@ -42,7 +43,24 @@ _CREDENTIAL_PREFIX: Final = "CLOUDSDK_AUTH_"
 _KMS_KEY_NAME: Final = re.compile(
     r"projects/[^/\s]+/locations/[^/\s]+/keyRings/[^/\s]+/cryptoKeys/[^/\s]+", re.ASCII
 )
-_PUBSUB_NAME: Final = re.compile(r"projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s]+", re.ASCII)
+# Zero-width: every `projects/` occurrence is tested, so one name never absorbs the next (T-19).
+_PUBSUB_NAME: Final = re.compile(
+    r"(?=projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s])", re.ASCII
+)
+# Per inspected value: decoding work beyond either bound refuses (T-19 step 4, fail closed).
+_MAX_CANDIDATES: Final = 1024
+_MAX_CANDIDATE_CHARS: Final = 1_048_576
+_JSON_ESCAPE: Final = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))', re.ASCII)
+_JSON_SHORT_ESCAPES: Final = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
 # §15.2 item 5 namespace: not a valid GCP project id, and `.invalid` is RFC 6761-reserved.
 _SIM_QUEUE_PROJECT: Final = "teecustody-sim.invalid"
 _ADC_FILE_NAME: Final = "application_default_credentials.json"
@@ -74,18 +92,83 @@ def _adc_path(environ: Mapping[str, str]) -> Path:
     return home / ".config" / "gcloud" / _ADC_FILE_NAME
 
 
+def _json_strings(document: object) -> Iterator[str]:
+    """Every `str` in a parsed JSON document: array elements, object keys and values, any depth."""
+    pending = [document]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+
+
+def _json_unescape(text: str) -> str:
+    """JSON string escapes decoded in one left-to-right pass, wherever they appear in `text`."""
+    return _JSON_ESCAPE.sub(
+        lambda escape: chr(int(escape[1], 16)) if escape[1] else _JSON_SHORT_ESCAPES[escape[2]],
+        text,
+    )
+
+
+def _names_production_resource(value: str) -> bool:
+    """R2/R3 over the candidate set of `value` (T-19): the value itself, its percent-decoding and
+    its JSON-escape decoding (each at most once in a chain, never of its own output), and every
+    string reachable through JSON parsing, which starts a fresh chain. JSON that the parser
+    refuses for a limit (nesting depth, integer digits) refuses. Candidates are deduplicated, and
+    examining more than `_MAX_CANDIDATES` of them or `_MAX_CANDIDATE_CHARS` in total refuses."""
+    pending = [(value, True, True)]
+    seen = set(pending)
+    examined = chars = 0
+    while pending:
+        candidate, may_unquote, may_unescape = pending.pop()
+        examined += 1
+        chars += len(candidate)
+        if examined > _MAX_CANDIDATES or chars > _MAX_CANDIDATE_CHARS:
+            return True
+        if _KMS_KEY_NAME.search(candidate) or any(
+            match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(candidate)
+        ):
+            return True
+        derived = []
+        if may_unquote and "%" in candidate:
+            derived.append((unquote(candidate), False, may_unescape))
+        if may_unescape and "\\" in candidate:
+            derived.append((_json_unescape(candidate), may_unquote, False))
+        try:
+            document = json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        except (ValueError, RecursionError):
+            return True
+        else:
+            derived.extend((text, True, True) for text in _json_strings(document))
+        for item in derived:
+            if item not in seen:
+                seen.add(item)
+                pending.append(item)
+    return False
+
+
 def _production_configuration_present(environ: Mapping[str, str], launch: LaunchConfig) -> bool:
     """§15.5: production credentials, KMS key names or queue names in the simulator's own
-    environment or in the workload launch configuration. Never reports what matched."""
+    environment or in the workload launch configuration. Never reports what matched.
+
+    Values are searched as written, percent-decoded, JSON-escape-decoded wherever escapes appear,
+    and JSON-decoded, and every `projects/` occurrence is checked, so a delimited, JSON or
+    URL-encoded list cannot hide a production name behind a namespaced one. Documented limits,
+    not detected: a name split across variables or arguments (e.g. `PROJECT=prod` with
+    `TOPIC=t`); base64 or any encoding other than percent-encoding and JSON escapes; double
+    percent-encoding; names the workload builds at runtime."""
     names = [*environ, *(name for name, _ in launch.env)]
     if any(name in _CREDENTIAL_NAMES or name.startswith(_CREDENTIAL_PREFIX) for name in names):
         return True
     values = [*environ.values(), *(value for _, value in launch.env), *launch.args]
-    for value in values:
-        if _KMS_KEY_NAME.search(value):
-            return True
-        if any(match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(value)):
-            return True
+    if any(_names_production_resource(value) for value in values):
+        return True
     return os.path.lexists(_adc_path(environ))
 
 

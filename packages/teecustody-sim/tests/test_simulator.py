@@ -7,10 +7,11 @@ import shutil
 import socket
 import stat
 import tempfile
+import time
 import urllib.request
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -653,6 +654,74 @@ def test_production_configuration_is_refused(
     assert_nothing_created(config)
 
 
+# T-19 criterion 1: a namespaced name first in a delimited, JSON or percent-encoded value hides
+# nothing. The values are the literal text of the value; JSON escapes are literal characters.
+SIM_A = "projects/teecustody-sim.invalid/topics/a"
+PROD_B = "projects/prod-proj/topics/b"
+BYPASSES = {
+    "comma": f"{SIM_A},{PROD_B}",
+    "semicolon": f"{SIM_A};{PROD_B}",
+    "space": f"{SIM_A} {PROD_B}",
+    "tab": f"{SIM_A}\t{PROD_B}",
+    "newline": f"{SIM_A}\n{PROD_B}",
+    "query": f"?x={SIM_A}&y={PROD_B}",
+    "json-array": f'["{SIM_A}","{PROD_B}"]',
+    "json-nested-key": '{"k":{"n":["' + SIM_A + '",{"' + PROD_B + '":1}]}}',
+    "json-escaped-slash": r'["projects\/prod-proj\/topics\/b"]',
+    "json-subscription": '["projects/prod-proj/subscriptions/b"]',
+    "json-in-json": r'{"c":"[\"projects\\/prod-proj\\/topics\\/b\"]"}',
+    "percent-topic": "projects%2Fprod-proj%2Ftopics%2Fb",
+    "json-escaped-kms": r'["projects\/p\/locations\/l\/keyRings\/r\/cryptoKeys\/k"]',
+    "percent-kms": "projects%2Fp%2Flocations%2Fl%2FkeyRings%2Fr%2FcryptoKeys%2Fk",
+    "json-too-deep": "[" * 100_000 + "]" * 100_000,
+    # Review round 1: an escaped key is reached only through key traversal; a percent-encoded
+    # member only through decoding JSON members (the second hides `%` behind a JSON escape).
+    "json-escaped-key": r'{"projects\/prod-proj\/topics\/b": 1}',
+    "json-percent-member": '["projects%2Fprod-proj%2Ftopics%2Fb"]',
+    "json-escaped-percent-member": r'["projects\u00252Fprod-proj\u00252Ftopics\u00252Fb"]',
+    # The same two branches, escaped once more so one-pass escape decoding cannot reach the name.
+    "json-in-escaped-key": r'{"{\"projects\\/prod-proj\\/topics\\/b\":1}": 1}',
+    "double-escaped-percent-member": r'["projects\\u00252Fprod-proj\\u00252Ftopics\\u00252Fb"]',
+    # Criterion 1a: escapes outside JSON, and both orders of percent- and escape-decoding.
+    "escaped-slashes-in-text": r"projects\/prod-proj\/topics\/b",
+    "percent-then-escape": "projects%5C%2Fprod-proj%5C%2Ftopics%5C%2Fb",
+    "escape-then-percent": r"projects\u00252Fprod-proj\u00252Ftopics\u00252Fb",
+    # Review round 1 item 3: JSON escapes inside a value that is not JSON as a whole.
+    "escapes-after-bom": "\ufeff" + r'["projects\/prod-proj\/topics\/b"]',
+    "escapes-before-text": r'["projects\/prod-proj\/topics\/b"] x',
+    "escapes-after-flag": r'--topics=["projects\/prod-proj\/topics\/b"]',
+    "unicode-escapes-in-text": r"--topics=projects\u002fprod-proj\u002ftopics\u002fb",
+    # Item 4: JSON refused by a parser limit (int digits) refuses, whatever it would decode to.
+    "json-int-digit-limit": r'["[\"projects\\/prod-proj\\/topics\\/b\"]", ' + "1" * 5000 + "]",
+}
+BYPASS_CASES = {
+    f"{label}-{place}": (extra, launch, value)
+    for label, value in BYPASSES.items()
+    for place, (extra, launch) in _placements(value).items()
+}
+
+
+@pytest.mark.parametrize(
+    ("extra", "launch", "offending"), BYPASS_CASES.values(), ids=BYPASS_CASES.keys()
+)
+@pytest.mark.usefixtures("fakes")
+def test_delimited_json_or_percent_encoded_production_name_is_refused(
+    short_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    extra: dict[str, str],
+    launch: LaunchConfig,
+    offending: str,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    config = make_config(short_dir, launch=launch)
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir, **extra)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert str(caught.value) == "PRODUCTION_CREDENTIALS_PRESENT"
+    assert offending not in str(caught.value) + caplog.text
+    assert_nothing_created(config)
+
+
 def _adc_file(directory: Path, *, dangling: bool = False) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ADC
@@ -711,6 +780,19 @@ ALLOWED: dict[str, tuple[dict[str, str], LaunchConfig]] = {
     "cloudsdk-core-project": ({"CLOUDSDK_CORE_PROJECT": "dev-proj"}, LAUNCH),
     **{f"sim-topic-{place}": case for place, case in _placements(SIM_TOPIC).items()},
     **{f"projects-alone-{place}": case for place, case in _placements("projects/p").items()},
+    # T-19 criterion 2: namespaced lists, JSON without production names, and undecodable escapes.
+    **{
+        f"{label}-{place}": case
+        for label, value in {
+            "sim-list": f"{SIM_A},projects/teecustody-sim.invalid/subscriptions/c",
+            "sim-json": f'["{SIM_A}"]',
+            "json-scalars": '{"n":1,"b":true,"z":null}',
+            "bad-percent": "%zz",
+            "json-numbers": "[1,2]",
+            "not-an-escape": r"C:\dir",
+        }.items()
+        for place, case in _placements(value).items()
+    },
 }
 
 
@@ -734,3 +816,77 @@ def test_cloudsdk_config_without_adc_wins_over_home_with_adc(short_dir: Path) ->
     config = make_config(short_dir)
     with Simulator(config, environ=environ, clock=fixed_clock):
         assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+# Criterion 1b: dedupe and a per-value budget bound the decoding work, failing closed.
+def _nested_decoding_attack(target: int) -> str:
+    """The Security Reviewer's round-2 input: level 0 is `["\\/","x"]` and level k+1 is
+    `["\\/","<level k percent-encoded>"]`. Returns the largest level of at most `target` chars."""
+    level = r'["\\/","x"]'
+    while len(wrapped := r'["\\/","' + quote(level, safe="") + '"]') <= target:
+        level = wrapped
+    return level
+
+
+@pytest.mark.parametrize(("target", "refused"), [(2048, False), (65536, True)], ids=["2KB", "64KB"])
+@pytest.mark.usefixtures("fakes")
+def test_nested_decoding_attack_is_decided_within_two_seconds(
+    short_dir: Path, target: int, refused: bool
+) -> None:
+    attack = _nested_decoding_attack(target)
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, attack)))
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
+    start = time.monotonic()
+    try:
+        simulator.start()
+    except SimConfigError as error:
+        outcome: SimConfigErrorCode | None = error.code
+    else:
+        outcome = None
+    elapsed = time.monotonic() - start
+    simulator.stop()
+
+    assert elapsed < 2.0
+    assert outcome is (SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT if refused else None)
+
+
+BUDGET_REFUSALS = {
+    "1025-distinct-strings": json.dumps([f"s{index}" for index in range(1025)]),
+    "over-1-mib-of-candidates": json.dumps(["a" * 600_000]),
+}
+
+
+@pytest.mark.parametrize("value", BUDGET_REFUSALS.values(), ids=BUDGET_REFUSALS.keys())
+@pytest.mark.usefixtures("fakes")
+def test_value_over_the_decoding_budget_is_refused(short_dir: Path, value: str) -> None:
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, value)))
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert_nothing_created(config)
+
+
+BUDGET_ALLOWED = {
+    "1023-distinct-strings": json.dumps([f"s{index}" for index in range(1023)]),
+    "1000-copies": json.dumps(["s"] * 1000),
+    "2000-copies": json.dumps(["s"] * 2000),
+}
+
+
+@pytest.mark.parametrize("value", BUDGET_ALLOWED.values(), ids=BUDGET_ALLOWED.keys())
+@pytest.mark.usefixtures("fakes")
+def test_value_within_the_decoding_budget_is_allowed(short_dir: Path, value: str) -> None:
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, value)))
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock):
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+@pytest.mark.usefixtures("fakes")
+def test_candidate_budget_is_max_candidates(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(simulator_module, "_MAX_CANDIDATES", 1)
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, '["s"]')))
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
