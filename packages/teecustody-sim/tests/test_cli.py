@@ -801,15 +801,17 @@ def _output_is_a_directory(root: Path) -> Path:
         _output_is_a_directory,
     ],
 )
+@pytest.mark.parametrize("force", [(), ("--force",)])
 def test_vectors_refuses_to_write_through_symlinks_or_onto_non_directories(
     cli: Cli,
     tmp_path: Path,
     recorded_generators: list[tuple[str, Any, Any]],
     make_out: Callable[[Path], Path],
+    force: tuple[str, ...],
 ) -> None:
     out = make_out(tmp_path)
 
-    code, stdout, err = cli("vectors", "--out", str(out))
+    code, stdout, err = cli("vectors", "--out", str(out), *force)
 
     assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
     assert recorded_generators == []
