@@ -74,3 +74,16 @@ fetcher timeout behaviour is owned by the injected Fetcher (verifier takes no ti
 | D-04 | Low | `serve --env "=x"` accepted |
 
 Critical 0, High 0, Medium 0, Low 4. No open Critical/High: G6 criteria for INC-1 are met pending the T-19 re-run.
+
+## G6 confirmation (main 94dd29a, after Wave 4: T-21, T-23, T-24)
+
+Full re-run: Python tests/acceptance 124/124 pass; TS @teecustody/tests 323/323 pass (13 files); spec/vectors + tests/integration 255/255 pass.
+Every requirement row above remains pass (FR-1, FR-2, FR-3, NFR-3/5/6/7/8, SR-1/3/11/12), now including the Wave-4
+acceptance tests (test_WAVE4_sim_defects.py, D02.profile-canonical.test.ts). NFR-8 lifecycle test passes.
+
+Defects D-01, D-02, D-03, D-04: all CLOSED (fix commit and verifying test recorded in each D-nn.md).
+Manual re-check (temp dirs only, never spec/vectors): directory at socket path and unwritable vectors dir give INVALID_PATH;
+unbindable host and port in use give BIND_FAILED; over-long socket path gives INVALID_PATH; `--env =x` gives INVALID_ARGUMENT;
+`vectors` into an existing suite gives OUTPUT_EXISTS with hashes unchanged; with `--force` it rewrites; symlinked output gives INVALID_PATH.
+
+Open defects: Critical 0, High 0, Medium 0, Low 0. G6 criteria met.
