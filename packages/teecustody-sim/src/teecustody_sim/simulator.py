@@ -47,6 +47,9 @@ _KMS_KEY_NAME: Final = re.compile(
 _PUBSUB_NAME: Final = re.compile(
     r"(?=projects/([^/\s]+)/(?:topics|subscriptions)/[^/\s])", re.ASCII
 )
+# Per inspected value: decoding work beyond either bound refuses (T-19 step 4, fail closed).
+_MAX_CANDIDATES: Final = 1024
+_MAX_CANDIDATE_CHARS: Final = 1_048_576
 _JSON_ESCAPE: Final = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))', re.ASCII)
 _JSON_SHORT_ESCAPES: Final = {
     '"': '"',
@@ -114,26 +117,39 @@ def _json_unescape(text: str) -> str:
 def _names_production_resource(value: str) -> bool:
     """R2/R3 over the candidate set of `value` (T-19): the value itself, its percent-decoding and
     its JSON-escape decoding (each at most once in a chain, never of its own output), and every
-    string reachable through JSON parsing, which gets the same treatment. JSON that the parser
-    refuses for a limit (nesting depth, integer digits) refuses."""
+    string reachable through JSON parsing, which starts a fresh chain. JSON that the parser
+    refuses for a limit (nesting depth, integer digits) refuses. Candidates are deduplicated, and
+    examining more than `_MAX_CANDIDATES` of them or `_MAX_CANDIDATE_CHARS` in total refuses."""
     pending = [(value, True, True)]
+    seen = set(pending)
+    examined = chars = 0
     while pending:
         candidate, may_unquote, may_unescape = pending.pop()
+        examined += 1
+        chars += len(candidate)
+        if examined > _MAX_CANDIDATES or chars > _MAX_CANDIDATE_CHARS:
+            return True
         if _KMS_KEY_NAME.search(candidate) or any(
             match[1] != _SIM_QUEUE_PROJECT for match in _PUBSUB_NAME.finditer(candidate)
         ):
             return True
+        derived = []
         if may_unquote and "%" in candidate:
-            pending.append((unquote(candidate), False, may_unescape))
+            derived.append((unquote(candidate), False, may_unescape))
         if may_unescape and "\\" in candidate:
-            pending.append((_json_unescape(candidate), may_unquote, False))
+            derived.append((_json_unescape(candidate), may_unquote, False))
         try:
             document = json.loads(candidate)
         except json.JSONDecodeError:
-            continue
+            pass
         except (ValueError, RecursionError):
             return True
-        pending.extend((text, True, True) for text in _json_strings(document))
+        else:
+            derived.extend((text, True, True) for text in _json_strings(document))
+        for item in derived:
+            if item not in seen:
+                seen.add(item)
+                pending.append(item)
     return False
 
 

@@ -7,10 +7,11 @@ import shutil
 import socket
 import stat
 import tempfile
+import time
 import urllib.request
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import pytest
 
@@ -681,6 +682,10 @@ BYPASSES = {
     # The same two branches, escaped once more so one-pass escape decoding cannot reach the name.
     "json-in-escaped-key": r'{"{\"projects\\/prod-proj\\/topics\\/b\":1}": 1}',
     "double-escaped-percent-member": r'["projects\\u00252Fprod-proj\\u00252Ftopics\\u00252Fb"]',
+    # Criterion 1a: escapes outside JSON, and both orders of percent- and escape-decoding.
+    "escaped-slashes-in-text": r"projects\/prod-proj\/topics\/b",
+    "percent-then-escape": "projects%5C%2Fprod-proj%5C%2Ftopics%5C%2Fb",
+    "escape-then-percent": r"projects\u00252Fprod-proj\u00252Ftopics\u00252Fb",
     # Review round 1 item 3: JSON escapes inside a value that is not JSON as a whole.
     "escapes-after-bom": "\ufeff" + r'["projects\/prod-proj\/topics\/b"]',
     "escapes-before-text": r'["projects\/prod-proj\/topics\/b"] x',
@@ -811,3 +816,77 @@ def test_cloudsdk_config_without_adc_wins_over_home_with_adc(short_dir: Path) ->
     config = make_config(short_dir)
     with Simulator(config, environ=environ, clock=fixed_clock):
         assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+# Criterion 1b: dedupe and a per-value budget bound the decoding work, failing closed.
+def _nested_decoding_attack(target: int) -> str:
+    """The Security Reviewer's round-2 input: level 0 is `["\\/","x"]` and level k+1 is
+    `["\\/","<level k percent-encoded>"]`. Returns the largest level of at most `target` chars."""
+    level = r'["\\/","x"]'
+    while len(wrapped := r'["\\/","' + quote(level, safe="") + '"]') <= target:
+        level = wrapped
+    return level
+
+
+@pytest.mark.parametrize(("target", "refused"), [(2048, False), (65536, True)], ids=["2KB", "64KB"])
+@pytest.mark.usefixtures("fakes")
+def test_nested_decoding_attack_is_decided_within_two_seconds(
+    short_dir: Path, target: int, refused: bool
+) -> None:
+    attack = _nested_decoding_attack(target)
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, attack)))
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
+    start = time.monotonic()
+    try:
+        simulator.start()
+    except SimConfigError as error:
+        outcome: SimConfigErrorCode | None = error.code
+    else:
+        outcome = None
+    elapsed = time.monotonic() - start
+    simulator.stop()
+
+    assert elapsed < 2.0
+    assert outcome is (SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT if refused else None)
+
+
+BUDGET_REFUSALS = {
+    "1025-distinct-strings": json.dumps([f"s{index}" for index in range(1025)]),
+    "over-1-mib-of-candidates": json.dumps(["a" * 600_000]),
+}
+
+
+@pytest.mark.parametrize("value", BUDGET_REFUSALS.values(), ids=BUDGET_REFUSALS.keys())
+@pytest.mark.usefixtures("fakes")
+def test_value_over_the_decoding_budget_is_refused(short_dir: Path, value: str) -> None:
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, value)))
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
+    assert_nothing_created(config)
+
+
+BUDGET_ALLOWED = {
+    "1023-distinct-strings": json.dumps([f"s{index}" for index in range(1023)]),
+    "1000-copies": json.dumps(["s"] * 1000),
+    "2000-copies": json.dumps(["s"] * 2000),
+}
+
+
+@pytest.mark.parametrize("value", BUDGET_ALLOWED.values(), ids=BUDGET_ALLOWED.keys())
+@pytest.mark.usefixtures("fakes")
+def test_value_within_the_decoding_budget_is_allowed(short_dir: Path, value: str) -> None:
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, value)))
+    with Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock):
+        assert post_token(config.socket_path, AUDIENCE, [NONCE])[0] == 200
+
+
+@pytest.mark.usefixtures("fakes")
+def test_candidate_budget_is_max_candidates(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(simulator_module, "_MAX_CANDIDATES", 1)
+    config = make_config(short_dir, launch=_launch(args=(*LAUNCH.args, '["s"]')))
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(short_dir)).start()
+    assert caught.value.code is SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT
