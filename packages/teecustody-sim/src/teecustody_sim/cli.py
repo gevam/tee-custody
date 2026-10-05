@@ -338,8 +338,11 @@ def _vectors(options: argparse.Namespace) -> int:
     outputs = (options.out / _SUITE_PATH, options.out / _CORPUS_PATH)
     if not options.force and any(os.path.lexists(path) for path in outputs):
         raise ValueError(_OUTPUT_EXISTS)
-    suite = generate_suite(options.out)
-    corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
+    try:
+        suite = generate_suite(options.out)
+        corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
+    except OSError:
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
     sys.stdout.write(f"{suite}\n{corpus}\n")
     return 0
 

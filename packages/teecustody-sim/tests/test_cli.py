@@ -852,6 +852,43 @@ def test_vectors_with_force_regenerates_both_existing_outputs(cli: Cli, tmp_path
     assert set(_tree(tmp_path)) == {suite, corpus}
 
 
+def _unwritable_parent(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    parent = root / "read-only"
+    parent.mkdir(mode=0o500)
+    if os.geteuid() == 0:  # root ignores directory modes: the OS error is injected instead
+        monkeypatch.setattr(cli_module, "generate_suite", Exploding(PermissionError(13, "denied")))
+    return parent / "out"
+
+
+def _suite_permission_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli_module, "generate_suite", Exploding(PermissionError(13, "denied")))
+    return root / "out"
+
+
+def _corpus_os_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli_module, "generate_corpus", Exploding(OSError(28, "no space")))
+    return root / "out"
+
+
+@pytest.mark.parametrize(
+    "make_out", [_unwritable_parent, _suite_permission_error, _corpus_os_error]
+)
+def test_vectors_reports_an_os_error_while_writing_as_invalid_path(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_out: Callable[[Path, pytest.MonkeyPatch], Path],
+) -> None:
+    out = make_out(tmp_path, monkeypatch)
+    try:
+        code, stdout, err = cli("vectors", "--out", str(out))
+    finally:
+        for path in tmp_path.iterdir():
+            path.chmod(0o700)
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+
+
 @pytest.fixture
 def recorded_profile(monkeypatch: pytest.MonkeyPatch) -> RecordingProfileBuilder:
     builder = RecordingProfileBuilder()
