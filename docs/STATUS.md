@@ -1,36 +1,20 @@
 # Status — tee-custody
 
-Updated: 2026-10-01 (INC-1 Wave 1 closing / Wave 2) by Orchestrator
+Updated: 2026-10-05 (INC-1 fix wave before G7) by Orchestrator
 
 ## Where we are
-Stage: INC-1 waves 1–2 implementation and review
-Last gate passed: G4 (Wave 1, D-021)   Next gate: G5
+Stage: INC-1 Wave 4 (G6 Low-defect fixes, D-031)
+Last gate passed: G4 (Wave 1)   Next gate: G5/G6 re-check after Wave 4, then G7, G8
 Increments merged: none
 
 ## Current increment — INC-1 (Attestation foundation)
 | Task | Wave | Tier | State | Branch | Notes |
 |---|---|---|---|---|---|
-| T-01, T-02, T-03, V-01 | 0 | STRONG | merged | — | Wave 0 complete |
-| T-04 Python CBOR codec | 1 | STRONG | merged (8283c0a) | | depth ceiling 64 |
-| T-05 Allow-listed logger | 1 | MID | merged (edc0ade) | | round 3 per D-024 |
-| T-06 Workload attestation lifecycle | 1 | STRONG | merged (d6d545d) | | scoped round 3 |
-| T-07 Sim keys + token minting | 1 | STRONG | merged (f8cbe99) | | |
-| T-08 Sim issuer + launcher | 1 | STRONG | merged (05b65c1) | | §15.5 criterion 4a |
-| T-09 TS CBOR codec | 1 | STRONG | merged (100ab4d) | | |
-| T-10 Token + profile parsing | 1 | STRONG | merged (3af4c0e) | | |
-| T-11 §6.1–6.2 | 1 | STRONG | merged (6b628f3) | | |
-| T-12 §6.3–6.7 | 1 | STRONG | merged (8ed8f2c) | | |
-| T-13 §6.8 | 1 | STRONG | merged (0596b77) | | D-016 |
-| T-14 CI, scanners, semgrep | 1 | STRONG | review fixes round 1 | inc-1/T-14-ci-policy | CR 2 High, SR 4 Medium |
-| T-15 verifyAttestation + SR-12 | 2 | STRONG | merging | inc-1/T-15-ts-verify | both approved |
-| T-16 Sim CLI + runtime | 2 | STRONG | in-progress | inc-1/T-16-sim-cli | |
-| T-17 Dev profile + vector generator | 2 | STRONG | review fixes round 1 | inc-1/T-17-sim-vectors | + D-022/§G amendments |
-| T-19 §15.5 hardening + flaky test | 2 | STRONG | in-progress | inc-1/T-19-sim-hardening | follow-up to T-08 |
-| T-20 §G rows 29–37 | 2 | STRONG | in-progress | inc-1/T-20-sim-missing-claim-cases | **human approval** (spec/vectors test file), D-025 |
-| T-18 vectors generation | 3 | FAST | not started | — | **human approval** (spec/vectors) |
+| Waves 0–3: T-01..T-20 + V-01 | 0–3 | — | all merged (main 84ba17a) | — | T-18 vectors human-approved (D-030) |
+| Wave 4: fixes for D-01..D-04 + vectors-overwrite guard | 4 | TBD | contracts being written | — | D-031 (human: fix all now) |
 
-QA: acceptance tests on main; 3 QA defects fixed (2 merged, 1 on inc-1/qa-acceptance e24a84c pending merge)
-Reviews: Wave 1 merged except T-14. Engineer cap 8 (D-023).
+QA: Phase 2 done — all INC-1 requirements pass; defects Critical 0 / High 0 / Medium 0 / Low 4 (D-01..D-04); docs/qa/INC-1.md
+Reviews: every INC-1 branch approved by Code + Security Reviewer before merge.
 
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
@@ -51,6 +35,7 @@ Reviews: Wave 1 merged except T-14. Engineer cap 8 (D-023).
 - D-018: G4 per wave; Wave 0 passed.
 - D-019: SR-9 release-age rule scoped to shipped/build deps (human).
 - D-020: human approved T-03 spec/wire content. D-021: G4 passed for Wave 1.
+- D-026/D-030: human approved T-20 and T-18 spec/vectors. D-027: T-20 re-applied after mistaken revert. D-028: semgrep in lint_command. D-029: T-19 scoped round 3; T-16 merged by Orchestrator (human). D-031: fix all G6 Lows in INC-1.
 - D-023: max_engineers 8. D-024: T-05 scoped round 3. D-025: T-20 added (§G missing-claim rows; INC-1 18 → 20 tasks, +11%).
 - D-022: signer-key dedup at profile generation (T-17; INC-5 tool via B-05). Shared CBOR depth ceiling 64 (T-04/T-09). BACKLOG B-06 (Fetcher URL/adapter controls) required for INC-2.
 
