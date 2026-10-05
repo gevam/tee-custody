@@ -819,6 +819,51 @@ def test_vectors_refuses_to_write_through_symlinks_or_onto_non_directories(
     assert not any((tmp_path / "elsewhere").glob("*"))
 
 
+def _out_under_an_unsearchable_parent(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    parent = root / "unsearchable"
+    parent.mkdir(mode=0o600)
+    if os.geteuid() == 0:  # root ignores directory modes: the OS error is injected instead
+        real_lstat = os.lstat
+
+        def lstat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if Path(path).is_relative_to(parent) and Path(path) != parent:
+                raise PermissionError(13, "denied")
+            return real_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(cli_module.os, "lstat", lstat)
+    return parent / "out"
+
+
+def _out_name_too_long(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return root / ("n" * 300)
+
+
+def _out_under_a_regular_file(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    (root / "a-file").write_text("not a directory")
+    return root / "a-file" / "x"
+
+
+@pytest.mark.parametrize(
+    "make_out", [_out_under_an_unsearchable_parent, _out_name_too_long, _out_under_a_regular_file]
+)
+def test_vectors_reports_an_output_path_it_cannot_inspect_as_invalid_path(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_generators: list[tuple[str, Any, Any]],
+    make_out: Callable[[Path, pytest.MonkeyPatch], Path],
+) -> None:
+    out = make_out(tmp_path, monkeypatch)
+    try:
+        code, stdout, err = cli("vectors", "--out", str(out))
+    finally:
+        for path in tmp_path.iterdir():
+            path.chmod(0o700)
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+    assert recorded_generators == []
+
+
 def test_vectors_writes_into_an_existing_real_output_tree(
     cli: Cli, tmp_path: Path, recorded_generators: list[tuple[str, Any, Any]]
 ) -> None:

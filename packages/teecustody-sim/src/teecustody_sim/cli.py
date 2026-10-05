@@ -332,6 +332,8 @@ def _check_vectors_out(out: Path) -> None:
             mode = os.lstat(path).st_mode
         except FileNotFoundError:
             continue
+        except OSError:  # e.g. an unsearchable parent, a name too long, a file as a parent
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
         if not kind(mode):
             raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
 
