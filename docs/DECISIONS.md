@@ -569,3 +569,23 @@ Participants: Tech Lead
 **Revisit when:** —
 
 **Follow-ups:** —
+
+## D-029 — T-19 scoped round 3; T-16 merged by Orchestrator with human authorisation (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Tech Lead (T-19 round limit); Human (T-16 merge execution)
+Participants: Orchestrator, Code Reviewer, Security Reviewer, Release Engineer
+
+**Options considered**
+T-19: 1. Scoped round 3 — candidate dedupe + per-value budget (1,024 candidates, 1 MiB) failing closed, attack input < 2 s, pin two escaped-name cases, fix slow-drip flake (accept ConnectionResetError) as criterion 6; T-19.md amended to record one-pass JSON-escape decoding. 2. Other.
+T-16: the Release Engineer's `git merge --no-ff` was blocked by the permission system; human chose to have the Orchestrator merge.
+
+**Decision:** T-19 Option 1. T-16 merged by the Orchestrator (dcd6e0b; 1406 Py / 877 TS green; lint_command incl. semgrep exit 0).
+
+**Reasoning:** Security Medium (exponential decode cost hangs Simulator.start()) is in scope of T-19's own detector; the flake lives in a T-19-owned file.
+
+**Dissent:** none
+
+**Revisit when:** A later Release Engineer merge is blocked — ask the human again (per their instruction).
+
+**Follow-ups:** Retro: the permission classifier intermittently blocks Release Engineer merges; consider a project permission rule for `git merge --no-ff inc-1/*` (human decision).
