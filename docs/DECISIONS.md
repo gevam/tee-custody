@@ -589,3 +589,23 @@ T-16: the Release Engineer's `git merge --no-ff` was blocked by the permission s
 **Revisit when:** A later Release Engineer merge is blocked — ask the human again (per their instruction).
 
 **Follow-ups:** Retro: the permission classifier intermittently blocks Release Engineer merges; consider a project permission rule for `git merge --no-ff inc-1/*` (human decision).
+
+## D-030 — Human approves T-18 generated vectors (INC-1, 2026-10-05)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Code Reviewer, Security Reviewer
+
+**Options considered**
+1. Approve spec/vectors/attestation/suite.cbor (37 cases) and spec/vectors/wire/differential-corpus.json (512 cases, seed 1) for commit.
+2. Request changes.
+
+**Decision:** Option 1.
+
+**Reasoning:** Human decision (always_human: spec/vectors). Both reviewers APPROVE: canonical CBOR per approved CDDL, §G rows 1–37 exact, each negative fails its single declared check (debug_bad_signature two by design), §13.9 holds, development anchors only, no private material, corpus byte-identical on regeneration; Python 212 and TS contract suites pass. Orchestrator verified independently.
+
+**Dissent:** none
+
+**Revisit when:** Any regeneration of spec/vectors.
+
+**Follow-ups:** Merge T-18.
