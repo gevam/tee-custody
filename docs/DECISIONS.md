@@ -784,3 +784,22 @@ Participants: Architect
 **Revisit when:** —
 
 **Follow-ups:** Security Architect pre-G4 review of INC-2-API.md, ADR 0011 and CDDL; human batch (CDDL + proto, security.paths).
+
+## D-040 — INC-2 pre-G4 security review: route R-1..R-8 to Architect (INC-2, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Security Architect, Architect
+
+**Options considered**
+1. Return R-1..R-8 to the Architect before the human sees the CDDL; keep R-8 (idle-session eviction before rejecting on a full session table) in INC-2. 2. Proceed with known gaps; defer R-8 to INC-3.
+
+**Decision:** Option 1.
+
+**Reasoning:** Security Architect: R-5 High (session nonce/seq never reused: assigned inside encrypt, never caller-supplied, never rolled back), R-1/R-4/R-7/R-8 Medium, R-2/R-3/R-6 Low. Several change the CDDL (R-1 timestamp cap 2^53−1, R-2/R-3 schema rules), so human approval waits for the revision. R-8 is SR-4 DoS protection and cheap inside INC-2's own session table. ADR 0011 Accepted with conditions C1–C7 (pyhpke on the workload per spec §11; pins+hashes amendment signed off before lock-file merge; RFC 9180 vectors incl. export, fail on empty filter). Q3: filter expired pre-keys individually, after all signatures verify. New residuals T-26..T-28 Low/informational (no human acceptance needed).
+
+**Dissent:** none
+
+**Revisit when:** Architect returns the revision; Security Architect re-check.
+
+**Follow-ups:** Human batch: CDDL + proto, security.paths (Q5 recommendation from Security Architect).

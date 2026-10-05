@@ -157,6 +157,14 @@ These requirements capture the structural controls needed by the threat model. A
     - The profile tool derives each `key_id` as SHA-256 of the signer's SPKI DER at build time. Its test uses a known SPKI and expected hex, and it never accepts a caller-supplied `key_id`.
     - The client never calls `verifySignature` for image signatures.
     - The simulator issuer lists only `key_id`s whose signatures it verified.
+  - Fetcher and branding (INC-2 carry-overs B-06, B-13; INC-2-API §14):
+    - For each of these, the injected `fetch` is never called: a non-canonical URL (`URL.href` ≠ input), userinfo, a fragment, or non-loopback `http:` → `INVALID_ARGUMENT`.
+    - Same-origin and cross-origin 3xx, `opaqueredirect`, `redirected`, or a mismatched `response.url` → `HTTP_ERROR`.
+    - Oversize `Content-Length`, and a chunked body crossing the limit mid-stream (stream cancelled) → `INVALID_RESPONSE`.
+    - A 1024-bit RS256 JWK → `INVALID_ARGUMENT` from `verifySignature`.
+    - `credentials: "omit"` is asserted on every Fetcher and Transport request.
+    - `verifyBundle` and `ChannelClient.open` reject a structurally identical but unbranded `VerifiedAttestation` or `VerifiedBundle`.
+  - Bundles (spec §5.2; Q3 ruling): any one pre-key signature failure, including one on an already-expired entry, discards the whole bundle. Expired entries are only filtered out, and only after every signature has verified.
 
 **SR-2 [INC-1 onward] Centralized authorization and tenant isolation.** A single boundary policy shall authorize the authenticated principal, operation, resource owner, epoch, and pending recovery state before dispatch or backend access. Adapters shall enforce tenant-scoped resource keys as defense in depth. Host application authorization remains host-owned and shall not be implied by successful library authentication.
 - Given an authenticated client or service principal, when it requests an operation or resource outside its tenant, role, epoch, or pending recovery, then the central policy rejects it before handler invocation or secret access.
@@ -176,10 +184,24 @@ These requirements capture the structural controls needed by the threat model. A
     - The shared vectors include the integer boundaries 2^53−1, 2^53, 2^64−1, −2^64 (valid) and 2^64, −2^64−1 (invalid).
     - The Python and TypeScript codecs agree on every case in the ≥ 500-case differential corpus.
     - Before any INC-2 task decodes untrusted queue or gateway input, a scheduled CI job runs ≥ 100,000 mutation-fuzz cases of `decodeCanonical`, seeded from the valid vectors and the corpus. It asserts that decoding only returns a value or throws `WireError`, that accepted inputs re-encode byte-identically, and that the time per input stays bounded.
+  - Channel structures (INC-2; pre-G4 findings R-1, R-2, R-3, R-7):
+    - Vectors reject a time field (`published_at`, `not_after`, `timestamp`) above 2^53−1 as `MALFORMED`/`INVALID` in both languages.
+    - Vectors reject `prekeys` ids that are not strictly ascending.
+    - An authenticated `open_result` with `ok: true` and a nil `session_id` (or `ok: false` with a non-nil one) → `INVALID_RESPONSE`.
+    - Every Python pattern check rejects the valid value plus a trailing `"\n"` (e.g. `"<32hex>\n"` as an id, route or digest). A semgrep rule bans `re.match`/`re.search` on patterns ending in `$` in `packages/**` and `examples/**`.
+    - Gateway: `{instance}`/`{client}` containing `%0A`, uppercase hex or 31/33 characters → 400 `INVALID_ARGUMENT` with no queue call.
+    - `FetchTransport` rejects gateway JSON with unknown keys, duplicate keys, non-canonical base64url, or an id/cursor outside its pattern → `INVALID_RESPONSE`.
+    - Fuzz `decode_request`, `decodeResponse` and `verifyBundle`, seeded from the channel vectors.
 
 **SR-4 [INC-1 onward] Abuse and resource controls.** Public and service ingress shall enforce centralized rate, concurrency, payload-size, polling, and expensive-operation budgets with bounded queues and retries. Limits shall not weaken protocol verification or silently drop custody state transitions.
 - Given a caller exceeds an ingress or operation budget, when further requests arrive, then excess work is rejected or delayed using a bounded policy before it exhausts shared service capacity.
 - Test description: deterministic load tests exceed each configured route, queue-pull, token-verification, and recovery-operation budget; assert bounded resource use, rejection semantics, no state corruption, and continued service for in-budget callers.
+  - INC-2 (B-08; T-17, T-25, T-26):
+    - With a failing launcher, 1,000 `tick()` calls within `attestation_retry_min_s` make exactly one launcher call. The backoff doubles up to `attestation_retry_max_s`, and success resets it.
+    - Gateway per-source, global and concurrency limits return `429 RATE_LIMITED` with `Retry-After` before any queue call.
+    - A full session table evicts the least-recently-active session idle ≥ `session_evict_min_idle_s` and only otherwise returns `LIMIT_EXCEEDED` (R-8). From INC-3, an enrol flood at the configured budget does not stop an in-budget client from opening a session.
+    - A full replay cache returns `LIMIT_EXCEEDED` without evicting a live entry.
+    - A flood of rejected opens addressed to one victim route does not stop that victim's next `open`, given an in-budget flood rate.
 
 **SR-5 [INC-1 onward] Data protection at rest and in transit.** Protected records, shares, keys, and browser vault values shall use the storage protections already specified by the normative architecture. Every networked production adapter shall use authenticated encrypted transport and validate the expected service identity; plaintext fallback and unapproved redirects are rejected.
 - Given data is written to a storage adapter or sent over a production network adapter, when persistence or transport occurs, then only the specified encrypted/sealed representation is persisted and transport is authenticated and encrypted without downgrade or cross-origin redirect.
@@ -206,6 +228,9 @@ These requirements capture the structural controls needed by the threat model. A
 **SR-9 [INC-1 onward] Dependency admission.** Runtime and build dependencies shall satisfy the OSI license, 18-month release, configured allow-list/forbidden-package, exact crypto version/hash, and scanner requirements in `framework.yaml`. Crypto dependency additions or replacements require the specified ADR and Security Architect sign-off before lock-file approval.
 - Given a dependency graph includes an unapproved, forbidden, stale, unlicensed, or incorrectly pinned package, when CI evaluates it, then the build fails before packaging or release.
 - Test description: CI fixtures introduce one violation of each dependency rule and assert the dependency-policy job fails; verify configured dependency, secret, static, and image scanners run and publish reviewable results.
+  - ADR 0011 C3:
+    - A fixture adding `@hpke/dhkem-x25519` (or any `@noble/*`, `tweetnacl` or other JS curve/cipher package) to the runtime closure of `@teecustody/core` or `@teecustody/web` fails the job.
+    - So does a range (non-exact) version on `@hpke/core`/`@hpke/common`/`pyhpke`, and a `pyhpke` runtime dependency other than `cryptography`.
 
 **SR-10 [INC-5] Release artifact authenticity.** Workload image and client release signing shall use controlled signing identities, protected key custody, separation from ordinary build execution, and independent signature verification. Reproducible builds shall be tied to the verified source and dependency inputs.
 - Given an image or package is built from approved inputs, when it is released, then its signature verifies under the approved release identity; an unsigned, altered, or incorrectly signed artifact cannot be deployed or published.
@@ -249,6 +274,26 @@ A pre-key burn rate above a configured threshold SHOULD also alert (T-17).
 **SR-11 [INC-1 onward] Non-disclosing errors.** Untrusted callers shall receive only stable public error categories and sanitized messages. Provider exceptions, tokens, payloads, credentials, and secret-bearing internal causes shall not cross the boundary or be written to logs.
 - Given a request triggers parser, authentication, authorization, crypto, or backend failure, when its error is returned or logged, then only the documented category and allow-listed fields are observable.
 - Test description: inject sentinel secrets and provider exception text into each error class; assert responses and captured logs contain neither the sentinel nor internal causes and match the stable error schema.
+
+**SR-14 [INC-2 onward] Channel protocol integrity (spec §4, §5; T-23, T-24; ADR 0011).** Python and TypeScript implement spec §5 with these structural controls:
+- HPKE is delegated to the ADR 0011 library, in Base mode, and is proven by RFC 9180 known-answer tests.
+- Every derived byte string uses the fixed-width layout of INC-2-API §2 and is width-checked before use.
+- Every AES-GCM nonce is unique per key, because `seq` is allocated only inside the sealing call.
+- The sender-chosen AAD `client_id` is never an identity: for `enroll` it is a reply route held only by the channel, and for `open_session` it is a claim that the opener must confirm.
+- Given any session, when frames are sealed in either direction (including after transport or publish failures and host retries), then no `(key, nonce)` pair is ever used twice. `open_result` is the only use of t2c nonce 0.
+- Given an `enroll` whose AAD `client_id` equals an existing client's id, when it is processed, then the opener receives no claimed id, the existing client's session is not replaced, and logs and audit name only the minted principal.
+- Given an `open_session` where the opener returns a principal different from the AAD claim, when the channel processes the result, then no session is created and the response is an `INTERNAL` rejection.
+- Test description:
+  - HPKE KATs. Use the committed CFRG `test-vectors.json` with its SHA-256 recorded. Filter to mode 0 / 0x0020 / 0x0001 / 0x0002 and to A.1, and assert each set is non-empty. Check `enc`, every encryption and every export: Python receiver side, TS sender and receiver sides. An all-zero or low-order `enc` → `OPEN_FAILED` / `AUTHENTICATION_FAILED`.
+  - Semgrep/ESLint confine HPKE imports to `channel/hpke.py`, `crypto/webcrypto.ts` and `teecustody_sim/**`. They also ban PSK, sender-key and ephemeral-injection arguments outside tests and the simulator.
+  - Layouts: unit tests show each builder rejects every width or range violation (`instance_id` ≠ 32 lowercase hex, `prekey_id` > 2^32−1, `pub` ≠ 32 B, `not_after` > 2^53−1, digest not matching `sha256:` + 64 lowercase hex, `seq` ∉ [0, 2^53−1]). Channel vectors cross-check Python against TS.
+  - Nonce uniqueness, a property test in each language:
+    - Drive a `Session` through N seals with randomly injected transport/publish failures and host retries.
+    - Record every `(direction, seq)` used. Assert there are no duplicates and the counter never decreases.
+    - Assert no public or internal sealing API takes a `seq` argument (an API-surface test).
+  - Principal binding: the enroll-with-victim-route case and the mismatched-principal case above, using `StaticShareOpener` and a mismatching opener double.
+  - Replay window (R-6). A message is accepted with `timestamp = now + skew − 1`. Its identical replay at `now + 2·skew − 2` is rejected as `REQUEST_REPLAYED` when the pre-key check is bypassed in a unit test of `ReplayCache`.
+  - `IdentityKey.sign` is called only from `channel/prekeys.py` (semgrep).
 
 ## Defaults
 
