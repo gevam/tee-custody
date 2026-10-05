@@ -650,3 +650,23 @@ Participants: Tech Lead
 **Revisit when:** —
 
 **Follow-ups:** Tech Lead applies API.md §C text (BIND_FAILED, OUTPUT_EXISTS, `vectors --force`). QA writes failing acceptance tests for D-01..D-04 + guard (G4 for Wave 4).
+
+## D-033 — G4 passes for INC-1 Wave 4 (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead, QA Engineer
+
+**Options considered**
+1. Pass G4 for Wave 4 (T-21, T-23, T-24) and start engineers.
+2. Hold.
+
+**Decision:** Option 1.
+
+**Reasoning:** Verified on main 86bfda4: owned-file sets of T-21/T-23/T-24 are disjoint; inputs exist (all INC-1 Waves 0–3 merged; API.md §C Wave-4 text 975c559; D-032 exceptions); acceptance tests tests/acceptance/test_WAVE4_sim_defects.py (9 failed, 1 error) and D02.profile-canonical.test.ts (8 failed) exist and fail on trunk for the intended reasons; required suites otherwise green.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** —
