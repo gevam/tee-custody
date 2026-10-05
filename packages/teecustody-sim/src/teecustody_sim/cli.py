@@ -5,9 +5,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import stat
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -53,12 +55,14 @@ _CORPUS_SEED: Final = 1
 _CORPUS_COUNT: Final = 512
 _SUITE_PATH: Final = Path("attestation", "suite.cbor")  # API.md §C `vectors`
 _CORPUS_PATH: Final = Path("wire", "differential-corpus.json")
+_STAGING_PREFIX: Final = ".vectors-"
 _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
 _LAUNCHER_DIR_NAME: Final = "launcher"
 _DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
 _ERROR_CODE: Final = re.compile(r"[A-Z][A-Z0-9_]*", re.ASCII)
 _INTERNAL: Final = "INTERNAL"
+_OUTPUT_EXISTS: Final = "OUTPUT_EXISTS"
 _SIGNAL_STATUS_BASE: Final = 128
 _STOP_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM)
 
@@ -83,7 +87,7 @@ def _text(value: str) -> str:
 
 def _env(value: str) -> tuple[str, str]:
     name, separator, env_value = _text(value).partition("=")
-    if not separator:
+    if not (separator and name):
         raise argparse.ArgumentTypeError(_USAGE_ERROR)
     return name, env_value
 
@@ -297,7 +301,10 @@ def _up(options: argparse.Namespace) -> int:
     )
     runtime = ContainerRuntime(options.runtime)
     digest = runtime.image_digest(options.image)
-    launcher_dir = _launcher_dir(state_dir)
+    try:
+        launcher_dir = _launcher_dir(state_dir)
+    except OSError:
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
     config = SimulatorConfig(
         state_dir=launcher_dir.parent,
         socket_path=launcher_dir / LAUNCHER_SOCKET_NAME,
@@ -328,15 +335,38 @@ def _check_vectors_out(out: Path) -> None:
             mode = os.lstat(path).st_mode
         except FileNotFoundError:
             continue
+        except OSError:  # e.g. an unsearchable parent, a name too long, a file as a parent
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
         if not kind(mode):
             raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
 
 
+def _write_vectors(out: Path) -> None:
+    """Both outputs are generated in a staging directory inside `out`, then renamed into place:
+    a failed generation leaves any existing outputs untouched."""
+    out.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=out))
+    try:
+        generate_suite(staging)
+        generate_corpus(staging, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
+        for relative in (_SUITE_PATH, _CORPUS_PATH):
+            (out / relative.parent).mkdir(exist_ok=True)
+        for relative in (_SUITE_PATH, _CORPUS_PATH):
+            os.replace(staging / relative, out / relative)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def _vectors(options: argparse.Namespace) -> int:
     _check_vectors_out(options.out)
-    suite = generate_suite(options.out)
-    corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
-    sys.stdout.write(f"{suite}\n{corpus}\n")
+    outputs = (options.out / _SUITE_PATH, options.out / _CORPUS_PATH)
+    if not options.force and any(os.path.lexists(path) for path in outputs):
+        raise ValueError(_OUTPUT_EXISTS)
+    try:
+        _write_vectors(options.out)
+    except OSError:
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
+    sys.stdout.write("".join(f"{path}\n" for path in outputs))
     return 0
 
 
@@ -384,7 +414,9 @@ def _parser() -> argparse.ArgumentParser:
     up.add_argument("--image", type=_text, required=True)
     up.add_argument("--runtime", choices=("docker", "podman"), default="docker")
     _command(commands, "profile", _profile).add_argument("--out", type=Path, required=True)
-    _command(commands, "vectors", _vectors).add_argument("--out", type=Path, required=True)
+    vectors = _command(commands, "vectors", _vectors)
+    vectors.add_argument("--out", type=Path, required=True)
+    vectors.add_argument("--force", action="store_true")
     return parser
 
 

@@ -304,6 +304,12 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert_no_key_material(out_file.read_text())
 
 
+GENERATED_OUTPUTS = {
+    "suite": Path("attestation", "suite.cbor"),
+    "corpus": Path("wire", "differential-corpus.json"),
+}
+
+
 class RecordingGenerator:
     """Stands in for T-17 `generate_suite` / `generate_corpus`."""
 
@@ -311,9 +317,12 @@ class RecordingGenerator:
         self._name = name
         self._calls = calls
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Path:
-        self._calls.append((self._name, args, kwargs))
-        return Path("/generated") / self._name
+    def __call__(self, out_dir: Path, **kwargs: Any) -> Path:
+        self._calls.append((self._name, (out_dir,), kwargs))
+        path = out_dir / GENERATED_OUTPUTS[self._name]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self._name.encode())
+        return path
 
 
 def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
@@ -328,11 +337,19 @@ def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
     code, out, err = cli("vectors", "--out", str(out_dir))
 
     assert (code, err) == (0, "")
+    [staging] = {args[0] for _, args, _ in calls}
+    assert staging.parent == out_dir
     assert calls == [
-        ("suite", (out_dir,), {}),
-        ("corpus", (out_dir,), {"seed": 1, "count": 512}),
+        ("suite", (staging,), {}),
+        ("corpus", (staging,), {"seed": 1, "count": 512}),
     ]
-    assert out == "/generated/suite\n/generated/corpus\n"
+    suite, corpus = (
+        out_dir / "attestation" / "suite.cbor",
+        out_dir / "wire" / "differential-corpus.json",
+    )
+    assert out == f"{suite}\n{corpus}\n"
+    assert (suite.read_bytes(), corpus.read_bytes()) == (b"suite", b"corpus")
+    assert sorted(out_dir.rglob("*")) == sorted({suite, corpus, suite.parent, corpus.parent})
     assert not (tmp_path / ".teecustody-sim").exists()
 
 
@@ -434,6 +451,7 @@ def test_up_with_a_bad_inspect_output_exits_2_before_serving_or_running(
     "flags",
     [
         ("--env", "NOEQUALS"),
+        ("--env", "=x"),
         ("--env", "BAD=\udcff"),
         ("--arg", "\udcff"),
         ("--image", "\udcff"),
@@ -455,6 +473,18 @@ def test_up_rejects_invalid_arguments_with_a_single_code_line(
 
     assert (code, out, err) == (2, "", "INVALID_ARGUMENT\n")
     assert fake_runner.calls == []
+    assert not (short_dir / "state").exists()
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_accepts_an_env_entry_with_an_empty_value(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner
+) -> None:
+    code, _, err = cli("up", "--state-dir", str(short_dir / "state"), "--image", IMAGE,
+                       "--audience", AUDIENCE, "--env", "EMPTY=", "--issuer-port", "0")  # fmt: skip
+
+    assert (code, err) == (5, "")
+    assert fake_runner.seen_inside["claims"]["submods"]["container"]["env"] == {"EMPTY": ""}
 
 
 @pytest.mark.usefixtures("clean_environ")
@@ -486,6 +516,32 @@ def test_up_refuses_a_launcher_dir_that_is_a_symlink(
 
     assert (code, out, err) == (2, "", "INVALID_PATH\n")
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o700
+    assert [call[1] for call in fake_runner.calls] == ["image"]
+
+
+def _state_dir_under_a_file(root: Path) -> Path:
+    (root / "a-file").write_text("not a directory")
+    return root / "a-file" / "state"
+
+
+def _state_dir_is_a_file(root: Path) -> Path:
+    (root / "state").write_text("not a directory")
+    return root / "state"
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize("make_state", [_state_dir_under_a_file, _state_dir_is_a_file])
+def test_up_reports_a_state_dir_that_cannot_be_created_as_invalid_path(
+    cli: Cli,
+    short_dir: Path,
+    fake_runner: FakeContainerRunner,
+    make_state: Callable[[Path], Path],
+) -> None:
+    state = make_state(short_dir)
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
     assert [call[1] for call in fake_runner.calls] == ["image"]
 
 
@@ -634,6 +690,9 @@ def test_serve_refuses_to_start_next_to_production_credentials(
     "flags",
     [
         ("--env", "NOEQUALS"),
+        ("--env", "=x"),
+        ("--env", "="),
+        ("--env", "=a=b"),
         ("--issuer-host", "\udcff"),
         ("--image-digest", "\udcff"),
         ("--allow-non-loopback=yes",),
@@ -759,20 +818,67 @@ def _output_is_a_directory(root: Path) -> Path:
         _output_is_a_directory,
     ],
 )
+@pytest.mark.parametrize("force", [(), ("--force",)])
 def test_vectors_refuses_to_write_through_symlinks_or_onto_non_directories(
     cli: Cli,
     tmp_path: Path,
     recorded_generators: list[tuple[str, Any, Any]],
     make_out: Callable[[Path], Path],
+    force: tuple[str, ...],
 ) -> None:
     out = make_out(tmp_path)
 
-    code, stdout, err = cli("vectors", "--out", str(out))
+    code, stdout, err = cli("vectors", "--out", str(out), *force)
 
     assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
     assert recorded_generators == []
     assert not (tmp_path / "victim").exists()
     assert not any((tmp_path / "elsewhere").glob("*"))
+
+
+def _out_under_an_unsearchable_parent(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    parent = root / "unsearchable"
+    parent.mkdir(mode=0o600)
+    if os.geteuid() == 0:  # root ignores directory modes: the OS error is injected instead
+        real_lstat = os.lstat
+
+        def lstat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if Path(path).is_relative_to(parent) and Path(path) != parent:
+                raise PermissionError(13, "denied")
+            return real_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(cli_module.os, "lstat", lstat)
+    return parent / "out"
+
+
+def _out_name_too_long(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return root / ("n" * 300)
+
+
+def _out_under_a_regular_file(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    (root / "a-file").write_text("not a directory")
+    return root / "a-file" / "x"
+
+
+@pytest.mark.parametrize(
+    "make_out", [_out_under_an_unsearchable_parent, _out_name_too_long, _out_under_a_regular_file]
+)
+def test_vectors_reports_an_output_path_it_cannot_inspect_as_invalid_path(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_generators: list[tuple[str, Any, Any]],
+    make_out: Callable[[Path, pytest.MonkeyPatch], Path],
+) -> None:
+    out = make_out(tmp_path, monkeypatch)
+    try:
+        code, stdout, err = cli("vectors", "--out", str(out))
+    finally:
+        for path in tmp_path.iterdir():
+            path.chmod(0o700)
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+    assert recorded_generators == []
 
 
 def test_vectors_writes_into_an_existing_real_output_tree(
@@ -783,10 +889,115 @@ def test_vectors_writes_into_an_existing_real_output_tree(
     (out / "attestation" / "suite.cbor").write_bytes(b"old")
     (out / "wire").mkdir()
 
-    code, _, err = cli("vectors", "--out", str(out))
+    code, _, err = cli("vectors", "--out", str(out), "--force")
 
     assert (code, err) == (0, "")
     assert [name for name, _, _ in recorded_generators] == ["suite", "corpus"]
+
+
+def _tree(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def _existing_suite(out: Path) -> None:
+    (out / "attestation").mkdir(parents=True)
+    (out / "attestation" / "suite.cbor").write_bytes(b"approved suite")
+
+
+def _existing_corpus(out: Path) -> None:
+    (out / "wire").mkdir(parents=True)
+    (out / "wire" / "differential-corpus.json").write_bytes(b"approved corpus")
+
+
+@pytest.mark.parametrize("make_existing", [_existing_suite, _existing_corpus])
+def test_vectors_refuses_to_overwrite_an_existing_output_without_force(
+    cli: Cli,
+    tmp_path: Path,
+    recorded_generators: list[tuple[str, Any, Any]],
+    make_existing: Callable[[Path], None],
+) -> None:
+    out = tmp_path / "out"
+    make_existing(out)
+    before = _tree(tmp_path)
+
+    code, stdout, err = cli("vectors", "--out", str(out))
+
+    assert (code, stdout, err) == (2, "", "OUTPUT_EXISTS\n")
+    assert recorded_generators == []
+    assert _tree(tmp_path) == before
+    assert sorted(tmp_path.rglob("*")) == sorted({out, *before, *(p.parent for p in before)})
+
+
+def test_vectors_with_force_regenerates_both_existing_outputs(cli: Cli, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _existing_suite(out)
+    _existing_corpus(out)
+    suite, corpus = out / "attestation" / "suite.cbor", out / "wire" / "differential-corpus.json"
+
+    code, stdout, err = cli("vectors", "--out", str(out), "--force")
+
+    assert (code, stdout, err) == (0, f"{suite}\n{corpus}\n", "")
+    assert suite.read_bytes() != b"approved suite"
+    assert corpus.read_bytes() != b"approved corpus"
+    assert set(_tree(tmp_path)) == {suite, corpus}
+
+
+def _unwritable_parent(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    parent = root / "read-only"
+    parent.mkdir(mode=0o500)
+    if os.geteuid() == 0:  # root ignores directory modes: the OS error is injected instead
+        monkeypatch.setattr(cli_module, "generate_suite", Exploding(PermissionError(13, "denied")))
+    return parent / "out"
+
+
+def _suite_permission_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli_module, "generate_suite", Exploding(PermissionError(13, "denied")))
+    return root / "out"
+
+
+def _corpus_os_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli_module, "generate_corpus", Exploding(OSError(28, "no space")))
+    return root / "out"
+
+
+@pytest.mark.parametrize(
+    "make_out", [_unwritable_parent, _suite_permission_error, _corpus_os_error]
+)
+def test_vectors_reports_an_os_error_while_writing_as_invalid_path(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_out: Callable[[Path, pytest.MonkeyPatch], Path],
+) -> None:
+    out = make_out(tmp_path, monkeypatch)
+    try:
+        code, stdout, err = cli("vectors", "--out", str(out))
+    finally:
+        for path in tmp_path.iterdir():
+            path.chmod(0o700)
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(OSError(28, "no space"), "INVALID_PATH\n"), (RuntimeError(), "INTERNAL\n")],
+)
+def test_vectors_leaves_existing_outputs_untouched_when_the_second_write_fails(
+    cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
+) -> None:
+    out = tmp_path / "out"
+    _existing_suite(out)
+    _existing_corpus(out)
+    before = _tree(tmp_path)
+    monkeypatch.setattr(cli_module, "generate_corpus", Exploding(error))
+
+    code, stdout, err = cli("vectors", "--out", str(out), "--force")
+
+    assert (stdout, err) == ("", expected)
+    assert code != 0
+    assert _tree(tmp_path) == before
+    assert sorted(out.rglob("*")) == sorted({*before, *(p.parent for p in before)})
 
 
 @pytest.fixture
