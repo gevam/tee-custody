@@ -1,4 +1,6 @@
 // T-10: parseTrustProfile (API.md §D, §E; spec §15.4, §10.2; ADR 0009 rule 9; D-016). Security path.
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { parseTrustProfile } from "../../src/attestation/profile.js";
@@ -7,6 +9,7 @@ import {
     isBrandedTrustProfile,
     type TrustProfileErrorCode,
 } from "../../src/attestation/types.js";
+import { decodeCanonical } from "../../src/wire/cbor.js";
 
 type ProfileJson = Record<string, unknown>;
 
@@ -745,5 +748,55 @@ describe("parseTrustProfile requires a canonical development issuer origin (T-24
         "https://tee-sim.localhost.",
     ])("rejects %s", (issuer) => {
         expectRejected({ issuer }, "issuer");
+    });
+});
+
+const SUITE_URL = new URL("../../../../spec/vectors/attestation/suite.cbor", import.meta.url);
+const SUITE_LIMITS = { maxBytes: 1_048_576, maxDepth: 8, maxItems: 16_384 };
+
+function suiteProfileJson(): ProfileJson {
+    const root = decodeCanonical(new Uint8Array(readFileSync(SUITE_URL)), SUITE_LIMITS);
+    if (!(root instanceof Map)) {
+        throw new Error("expected the vector suite to be a CBOR map");
+    }
+    const json: unknown = root.get("profile_json");
+    if (typeof json !== "string") {
+        throw new Error("expected profile_json to be a text string");
+    }
+    return JSON.parse(json) as ProfileJson;
+}
+
+describe("parseTrustProfile accepts canonical anchors (T-24 criteria 3 and 4)", () => {
+    it.each(["https://tee-sim.localhost", "https://issuer.unit.test"])(
+        "accepts issuer %s",
+        (issuer) => {
+            expect(parseTrustProfile({ ...developmentJson(), issuer }).issuer).toBe(issuer);
+        },
+    );
+
+    it.each([
+        `http://127.0.0.1:8791${WELL_KNOWN}`,
+        `http://[::1]:8791${WELL_KNOWN}`,
+        `http://localhost:8791${WELL_KNOWN}`,
+    ])("accepts discovery_url %s and returns the input string", (url) => {
+        const profile = parseTrustProfile({ ...developmentJson(), discovery_url: url });
+        expect(profile.discovery_url).toBe(url);
+        expect(profile.discovery_url).toBe(new URL(url).href);
+    });
+
+    it("accepts the vector suite's development profile_json unchanged", () => {
+        const json = suiteProfileJson();
+        const profile = parseTrustProfile(json);
+        expect(profile.profile_kind).toBe("development");
+        expect({ ...profile }).toEqual(json);
+    });
+
+    it("accepts the production profile with Google anchors unchanged", () => {
+        const profile = parseTrustProfile(productionJson());
+        expect([profile.issuer, profile.discovery_url, profile.jwks_origin]).toEqual([
+            GOOGLE_ISSUER,
+            `${GOOGLE_ISSUER}${WELL_KNOWN}`,
+            "https://www.googleapis.com",
+        ]);
     });
 });
