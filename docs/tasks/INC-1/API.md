@@ -216,6 +216,14 @@ class SimConfigErrorCode(StrEnum):
     INVALID_PATH = "INVALID_PATH"
     INVALID_PORT = "INVALID_PORT"
     STATE_NOT_INITIALISED = "STATE_NOT_INITIALISED"
+    BIND_FAILED = "BIND_FAILED"                # [2026-10-05, D-031/D-032, T-21] last member
+    # [2026-10-05, T-21] Simulator.start() codes, besides the existing ones:
+    #  INVALID_LAUNCH_CONFIG also covers a launch.env name that is empty or contains "=" or "\0", and a value
+    #    that contains "\0".
+    #  INVALID_PATH also covers any existing entry at socket_path (file, directory, symlink, or a stale or live
+    #    socket), and any OSError while creating keys, the launcher socket, the token file or sim-state.json.
+    #  BIND_FAILED: the issuer could not bind issuer_host:issuer_port (address not local, port in use, or not
+    #    permitted).
 class SimConfigError(Exception):               # str(err) == err.code.value
     def __init__(self, code: SimConfigErrorCode) -> None: ...
     code: SimConfigErrorCode
@@ -332,6 +340,13 @@ unencrypted): `issuer.pem`, `signer-1.pem` … `signer-N.pem`, `unknown-signer.p
 `--state-dir PATH` (default `.teecustody-sim`). Exit codes: 0 success; 2 usage or validation error;
 1 runtime failure. Errors print exactly one line to stderr: the error code (e.g. `STATE_NOT_INITIALISED`).
 No subcommand ever prints key material.
+**[2026-10-05, D-031/D-032, T-21/T-23]** Validation codes (exit 2) added:
+- `--env K=V` with an empty `K` gives `INVALID_ARGUMENT`, the same code as a missing `=`. This applies to
+  `serve` and `up`.
+- `vectors` gives `OUTPUT_EXISTS` (see below).
+- `serve` and `up` pass through the new and extended `Simulator.start()` codes: `BIND_FAILED`, and
+  `INVALID_PATH`/`INVALID_LAUNCH_CONFIG` as extended above.
+- An `OSError` while creating `up`'s launcher directory is `INVALID_PATH`.
 
 | Command | Contract |
 |---|---|
@@ -339,7 +354,7 @@ No subcommand ever prints key material.
 | `up --image REF --audience AUD [--runtime docker\|podman] [--arg A]... [--env K=V]... [--issuer-port N] [--signers-required N]` | Resolves the image digest, serves as above with socket `STATE/launcher/teeserver.sock`, runs the container with that directory mounted at `/run/container_launcher`, `--network none`, only the given `--env`; exit code = container exit code. |
 | `token --audience AUD [--nonce N]... [--alter PATH=VALUE \| --drop PATH \| --case ID]` | Prints one token and `\n`. Uses the keys and `launch` from the state dir. `--alter`/`--drop`/`--case` are mutually exclusive. |
 | `profile --out FILE` | Writes the development trust profile (§E) built from the state dir. |
-| `vectors --out DIR` | Writes `DIR/attestation/suite.cbor` using freshly generated ephemeral keys (never the state dir) and `DIR/wire/differential-corpus.json` (seed 1, 512 cases); prints the two paths, one per line, in that order. |
+| `vectors --out DIR [--force]` | Writes `DIR/attestation/suite.cbor` using freshly generated ephemeral keys (never the state dir) and `DIR/wire/differential-corpus.json` (seed 1, 512 cases); prints the two paths, one per line, in that order. **[2026-10-05, T-23]** If either file exists and `--force` is absent: `OUTPUT_EXISTS`, exit 2, and nothing is written. The type checks (symlink or non-regular entry → `INVALID_PATH`) come first, with or without `--force`. Any `OSError` while creating or writing the output is `INVALID_PATH`, exit 2. |
 
 ---
 
