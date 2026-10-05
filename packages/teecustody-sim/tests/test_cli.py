@@ -799,10 +799,43 @@ def test_vectors_writes_into_an_existing_real_output_tree(
     (out / "attestation" / "suite.cbor").write_bytes(b"old")
     (out / "wire").mkdir()
 
-    code, _, err = cli("vectors", "--out", str(out))
+    code, _, err = cli("vectors", "--out", str(out), "--force")
 
     assert (code, err) == (0, "")
     assert [name for name, _, _ in recorded_generators] == ["suite", "corpus"]
+
+
+def _tree(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def _existing_suite(out: Path) -> None:
+    (out / "attestation").mkdir(parents=True)
+    (out / "attestation" / "suite.cbor").write_bytes(b"approved suite")
+
+
+def _existing_corpus(out: Path) -> None:
+    (out / "wire").mkdir(parents=True)
+    (out / "wire" / "differential-corpus.json").write_bytes(b"approved corpus")
+
+
+@pytest.mark.parametrize("make_existing", [_existing_suite, _existing_corpus])
+def test_vectors_refuses_to_overwrite_an_existing_output_without_force(
+    cli: Cli,
+    tmp_path: Path,
+    recorded_generators: list[tuple[str, Any, Any]],
+    make_existing: Callable[[Path], None],
+) -> None:
+    out = tmp_path / "out"
+    make_existing(out)
+    before = _tree(tmp_path)
+
+    code, stdout, err = cli("vectors", "--out", str(out))
+
+    assert (code, stdout, err) == (2, "", "OUTPUT_EXISTS\n")
+    assert recorded_generators == []
+    assert _tree(tmp_path) == before
+    assert sorted(tmp_path.rglob("*")) == sorted({out, *before, *(p.parent for p in before)})
 
 
 @pytest.fixture

@@ -59,6 +59,7 @@ _LAUNCHER_DIR_NAME: Final = "launcher"
 _DECIMAL: Final = re.compile(r"[0-9]{1,5}", re.ASCII)
 _ERROR_CODE: Final = re.compile(r"[A-Z][A-Z0-9_]*", re.ASCII)
 _INTERNAL: Final = "INTERNAL"
+_OUTPUT_EXISTS: Final = "OUTPUT_EXISTS"
 _SIGNAL_STATUS_BASE: Final = 128
 _STOP_SIGNALS: Final = (signal.SIGINT, signal.SIGTERM)
 
@@ -334,6 +335,9 @@ def _check_vectors_out(out: Path) -> None:
 
 def _vectors(options: argparse.Namespace) -> int:
     _check_vectors_out(options.out)
+    outputs = (options.out / _SUITE_PATH, options.out / _CORPUS_PATH)
+    if not options.force and any(os.path.lexists(path) for path in outputs):
+        raise ValueError(_OUTPUT_EXISTS)
     suite = generate_suite(options.out)
     corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
     sys.stdout.write(f"{suite}\n{corpus}\n")
@@ -384,7 +388,9 @@ def _parser() -> argparse.ArgumentParser:
     up.add_argument("--image", type=_text, required=True)
     up.add_argument("--runtime", choices=("docker", "podman"), default="docker")
     _command(commands, "profile", _profile).add_argument("--out", type=Path, required=True)
-    _command(commands, "vectors", _vectors).add_argument("--out", type=Path, required=True)
+    vectors = _command(commands, "vectors", _vectors)
+    vectors.add_argument("--out", type=Path, required=True)
+    vectors.add_argument("--force", action="store_true")
     return parser
 
 
