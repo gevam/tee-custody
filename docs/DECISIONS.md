@@ -765,3 +765,22 @@ Accept any subset of docs/retro/INC-1.md recommendations 1–5; add or not a pro
 **Revisit when:** INC-2 retro — re-evaluate #4 (retro confidence note).
 
 **Follow-ups:** INC-2 work breakdown must include BACKLOG B-06, B-08, B-13.
+
+## D-039 — INC-2 pre-G4: additive changes to INC-1 final files; CI placement of browser tests (INC-2, 2026-10-05)
+
+Type: scope
+Chair / decider: Orchestrator
+Participants: Architect
+
+**Options considered**
+1. Accept the five additive changes to INC-1 "final" files listed in docs/INC-2-API.md §13 (`IdentityKey.sign`, runtime brand registry in attestation/types.ts, new exports in index.ts and channel/__init__.py, third output file from `teecustody-sim vectors`) — additions only, no existing signature change — each to be owned by exactly one INC-2 task. 2. Require new modules instead.
+
+**Decision:** Option 1. Q4 (browser tests in CI): the headless-browser (Playwright) suites run in the existing simulator CI test job with pinned browser builds and no credentials; framework.yaml test_command gains them only if they are deterministic and fast enough, otherwise a separate required CI job — Tech Lead to specify in INC-2 contracts.
+
+**Reasoning:** Additive changes keep the INC-1 frozen API stable (existing signatures unchanged; Wave-0-stub rule from D-038 applies). No constraint-deviation involved. Q1/Q2 (proto, CDDL) and Q5 (security.paths) go to the human after Security Architect review; Q3 to the Security Architect.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Security Architect pre-G4 review of INC-2-API.md, ADR 0011 and CDDL; human batch (CDDL + proto, security.paths).
