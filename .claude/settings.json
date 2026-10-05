@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git merge --no-ff inc-*)",
+      "Bash(git -C * merge --no-ff inc-*)",
+      "Bash(git rebase main)",
+      "Bash(git -C * rebase main)"
+    ]
+  }
+}
