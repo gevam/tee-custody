@@ -281,7 +281,10 @@ class Simulator:
             jwks=keys.issuer_jwks(),
             limits=config.limits,
         )
-        self._issuer.start()
+        try:
+            self._issuer.start()
+        except OSError:
+            raise SimConfigError(SimConfigErrorCode.BIND_FAILED) from None
         minter = TokenMinter(
             keys,
             config.launch,

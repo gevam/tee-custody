@@ -519,6 +519,34 @@ def test_a_failed_start_stops_whatever_it_started(
     assert not (config.state_dir / "sim-state.json").exists()
 
 
+def _assert_bind_failed(config: SimulatorConfig, root: Path) -> None:
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(root), clock=fixed_clock).start()
+    assert caught.value.code is SimConfigErrorCode.BIND_FAILED
+    assert str(caught.value) == "BIND_FAILED"
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+    assert not os.path.lexists(config.socket_path)
+    assert not config.token_file_path.exists()
+    assert not (config.state_dir / "sim-state.json").exists()
+
+
+@pytest.mark.usefixtures("fakes")
+def test_issuer_host_that_is_not_local_is_bind_failed(short_dir: Path) -> None:
+    # TEST-NET-1 (RFC 5737) is never assigned to a local interface: EADDRNOTAVAIL.
+    config = make_config(short_dir, issuer_host="192.0.2.1", allow_non_loopback=True)
+    _assert_bind_failed(config, short_dir)
+
+
+@pytest.mark.usefixtures("fakes")
+def test_issuer_port_in_use_is_bind_failed(short_dir: Path) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        config = make_config(short_dir, issuer_port=holder.getsockname()[1])
+        _assert_bind_failed(config, short_dir)
+
+
 @pytest.mark.usefixtures("fakes")
 def test_token_file_symlink_is_never_followed(short_dir: Path) -> None:
     config = make_config(short_dir)
