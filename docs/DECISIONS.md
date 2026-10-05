@@ -727,3 +727,22 @@ Participants: Security Reviewer
 **Revisit when:** —
 
 **Follow-ups:** G8 (tag inc-1) on human decision; retrospective.
+
+## D-037 — G8: INC-1 tagged locally (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Human (tag scope); Orchestrator (gate)
+Participants: —
+
+**Options considered**
+1. Tag `inc-1` locally only. 2. Tag and push to origin. 3. Hold.
+
+**Decision:** Option 1 — annotated tag `inc-1` on 957ed82; not pushed.
+
+**Reasoning:** G5 (D-034), G6 (D-035), G7 (D-036) passed; trunk green and deployable per ARCHITECTURE (simulator-first; no image in INC-1). Human chose no external side effect yet; CI has therefore never run on GitHub (§13.11 stays GAP).
+
+**Dissent:** none
+
+**Revisit when:** Human decides to push.
+
+**Follow-ups:** Retrospective (3.9); INC-2 work breakdown must include BACKLOG B-06, B-08, B-13 (required) and B-05 tracked for INC-5.
