@@ -434,6 +434,7 @@ def test_up_with_a_bad_inspect_output_exits_2_before_serving_or_running(
     "flags",
     [
         ("--env", "NOEQUALS"),
+        ("--env", "=x"),
         ("--env", "BAD=\udcff"),
         ("--arg", "\udcff"),
         ("--image", "\udcff"),
@@ -455,6 +456,18 @@ def test_up_rejects_invalid_arguments_with_a_single_code_line(
 
     assert (code, out, err) == (2, "", "INVALID_ARGUMENT\n")
     assert fake_runner.calls == []
+    assert not (short_dir / "state").exists()
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_up_accepts_an_env_entry_with_an_empty_value(
+    cli: Cli, short_dir: Path, fake_runner: FakeContainerRunner
+) -> None:
+    code, _, err = cli("up", "--state-dir", str(short_dir / "state"), "--image", IMAGE,
+                       "--audience", AUDIENCE, "--env", "EMPTY=", "--issuer-port", "0")  # fmt: skip
+
+    assert (code, err) == (5, "")
+    assert fake_runner.seen_inside["claims"]["submods"]["container"]["env"] == {"EMPTY": ""}
 
 
 @pytest.mark.usefixtures("clean_environ")
@@ -634,6 +647,9 @@ def test_serve_refuses_to_start_next_to_production_credentials(
     "flags",
     [
         ("--env", "NOEQUALS"),
+        ("--env", "=x"),
+        ("--env", "="),
+        ("--env", "=a=b"),
         ("--issuer-host", "\udcff"),
         ("--image-digest", "\udcff"),
         ("--allow-non-loopback=yes",),

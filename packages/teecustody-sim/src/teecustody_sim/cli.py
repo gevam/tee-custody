@@ -83,7 +83,7 @@ def _text(value: str) -> str:
 
 def _env(value: str) -> tuple[str, str]:
     name, separator, env_value = _text(value).partition("=")
-    if not separator:
+    if not (separator and name):
         raise argparse.ArgumentTypeError(_USAGE_ERROR)
     return name, env_value
 
