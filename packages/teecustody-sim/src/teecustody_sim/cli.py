@@ -298,7 +298,10 @@ def _up(options: argparse.Namespace) -> int:
     )
     runtime = ContainerRuntime(options.runtime)
     digest = runtime.image_digest(options.image)
-    launcher_dir = _launcher_dir(state_dir)
+    try:
+        launcher_dir = _launcher_dir(state_dir)
+    except OSError:
+        raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
     config = SimulatorConfig(
         state_dir=launcher_dir.parent,
         socket_path=launcher_dir / LAUNCHER_SOCKET_NAME,

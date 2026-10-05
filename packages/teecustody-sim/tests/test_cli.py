@@ -502,6 +502,32 @@ def test_up_refuses_a_launcher_dir_that_is_a_symlink(
     assert [call[1] for call in fake_runner.calls] == ["image"]
 
 
+def _state_dir_under_a_file(root: Path) -> Path:
+    (root / "a-file").write_text("not a directory")
+    return root / "a-file" / "state"
+
+
+def _state_dir_is_a_file(root: Path) -> Path:
+    (root / "state").write_text("not a directory")
+    return root / "state"
+
+
+@pytest.mark.usefixtures("clean_environ")
+@pytest.mark.parametrize("make_state", [_state_dir_under_a_file, _state_dir_is_a_file])
+def test_up_reports_a_state_dir_that_cannot_be_created_as_invalid_path(
+    cli: Cli,
+    short_dir: Path,
+    fake_runner: FakeContainerRunner,
+    make_state: Callable[[Path], Path],
+) -> None:
+    state = make_state(short_dir)
+
+    code, out, err = cli("up", "--state-dir", str(state), "--image", IMAGE, "--audience", AUDIENCE)
+
+    assert (code, out, err) == (2, "", "INVALID_PATH\n")
+    assert [call[1] for call in fake_runner.calls] == ["image"]
+
+
 class RecordingSignals:
     """Stands in for `signal.signal`: real handlers cannot be set outside the main thread."""
 
