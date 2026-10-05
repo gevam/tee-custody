@@ -469,13 +469,16 @@ def test_slow_drip_body_is_cut_off_by_one_request_deadline(
             sock.sendall(_post_head(4000) + b'{"audience": "')
             answered = False
             while not answered and time.monotonic() - start < 4.0:
+                # The server cutting the connection is an empty read, a reset or a broken pipe.
                 try:
                     sock.recv(65536)
+                    answered = True
+                except ConnectionResetError:
                     answered = True
                 except TimeoutError:
                     try:
                         sock.sendall(b"a")
-                    except BrokenPipeError:
+                    except (BrokenPipeError, ConnectionResetError):
                         answered = True
             elapsed = time.monotonic() - start
     finally:
