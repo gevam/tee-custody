@@ -6,6 +6,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Final
@@ -172,6 +173,11 @@ def _production_configuration_present(environ: Mapping[str, str], launch: Launch
     return os.path.lexists(_adc_path(environ))
 
 
+def _is_carriable_env(name: str, value: str) -> bool:
+    """An environment entry the container runtime can pass on as `NAME=VALUE` (D-04)."""
+    return bool(name) and "=" not in name and "\0" not in name and "\0" not in value
+
+
 def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
     """Every spec §15.5 / API.md §C startup rule, checked before any file or socket exists."""
     if not 1 <= config.signers_required <= MAX_SIGNERS:
@@ -184,12 +190,14 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
         not launch.image_reference
         or not _DIGEST.fullmatch(launch.image_digest)
         or len(set(env_names)) != len(env_names)
+        or not all(_is_carriable_env(name, value) for name, value in launch.env)
         or not config.audience
     ):
         raise SimConfigError(SimConfigErrorCode.INVALID_LAUNCH_CONFIG)
     if (
         len(os.fsencode(config.socket_path)) > _MAX_SOCKET_PATH_BYTES
         or not config.socket_path.parent.is_dir()
+        or os.path.lexists(config.socket_path)
         or not config.token_file_path.parent.is_dir()
     ):
         raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
@@ -197,6 +205,15 @@ def _validate(config: SimulatorConfig, environ: Mapping[str, str]) -> None:
         raise SimConfigError(SimConfigErrorCode.INVALID_PORT)
     if _production_configuration_present(environ, config.launch):
         raise SimConfigError(SimConfigErrorCode.PRODUCTION_CREDENTIALS_PRESENT)
+
+
+@contextmanager
+def _os_error_as(code: SimConfigErrorCode) -> Iterator[None]:
+    """One start-up step: any `OSError` becomes `code` alone, with no OS detail attached."""
+    try:
+        yield
+    except OSError:
+        raise SimConfigError(code) from None
 
 
 def _write_file(path: Path, text: str, mode: int) -> None:
@@ -265,7 +282,8 @@ class Simulator:
             raise
 
     def _serve(self, config: SimulatorConfig) -> None:
-        keys = SimKeys.load_or_create(config.state_dir, config.signers_required)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            keys = SimKeys.load_or_create(config.state_dir, config.signers_required)
         self._keys = keys
         self._issuer = IssuerServer(
             config.issuer_host,
@@ -274,7 +292,8 @@ class Simulator:
             jwks=keys.issuer_jwks(),
             limits=config.limits,
         )
-        self._issuer.start()
+        with _os_error_as(SimConfigErrorCode.BIND_FAILED):
+            self._issuer.start()
         minter = TokenMinter(
             keys,
             config.launch,
@@ -286,11 +305,14 @@ class Simulator:
             mint=lambda audience, nonces: minter.mint(audience, nonces, int(self._clock())),
             limits=config.limits,
         )
-        self._launcher.start()
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            self._launcher.start()
         default_token = minter.mint(DEFAULT_TOKEN_AUDIENCE, [], int(self._clock()))
-        _write_file(config.token_file_path, default_token, _TOKEN_FILE_MODE)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            _write_file(config.token_file_path, default_token, _TOKEN_FILE_MODE)
         state = _state_document(config, self._issuer.origin)
-        _write_file(config.state_dir / _STATE_FILE_NAME, json.dumps(state), _STATE_FILE_MODE)
+        with _os_error_as(SimConfigErrorCode.INVALID_PATH):
+            _write_file(config.state_dir / _STATE_FILE_NAME, json.dumps(state), _STATE_FILE_MODE)
 
     def stop(self) -> None:
         if self._launcher is not None:

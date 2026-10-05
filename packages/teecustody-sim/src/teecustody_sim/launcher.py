@@ -96,6 +96,12 @@ def _make_connectable_by_anyone(socket_path: Path) -> None:
 
 
 class _LauncherUnixServer(_BoundedServer, socketserver.UnixStreamServer):
+    # Unix sockets keep data already received when the peer closes, so a client reads this in
+    # full even if its unread request makes the close a reset (a TCP reset could discard it).
+    busy_reply = (
+        b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 19\r\n"
+        b"Connection: close\r\n\r\nSERVICE_UNAVAILABLE"
+    )
     mint: _Mint
 
 

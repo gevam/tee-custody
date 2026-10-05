@@ -1,5 +1,6 @@
 """Loopback OIDC issuer: discovery document and JWKS."""
 
+import contextlib
 import io
 import json
 import socket
@@ -67,6 +68,8 @@ class _BoundedServer(socketserver.BaseServer):
     `_REQUEST_DEADLINE_S` plus the handler's own work.
     """
 
+    request_queue_size = 128  # a burst waits to be accepted instead of failing at connect()
+    busy_reply: bytes | None = None  # sent, never read for, beyond both slot kinds
     limits: SimLimits
     _threads: tuple[threading.Thread, ...] = ()  # also read by server_close after a failed bind
 
@@ -85,6 +88,7 @@ class _BoundedServer(socketserver.BaseServer):
         elif self._overflow.acquire(blocking=False):
             slot, handler = self._overflow, self._overflow_handler
         else:
+            self._send_busy_reply(request)
             self.shutdown_request(request)
             return
         thread = threading.Thread(
@@ -92,6 +96,13 @@ class _BoundedServer(socketserver.BaseServer):
         )
         self._threads = (*(alive for alive in self._threads if alive.is_alive()), thread)
         thread.start()
+
+    def _send_busy_reply(self, request: _Request) -> None:
+        """Best effort: never blocks, reads nothing and costs no thread."""
+        if self.busy_reply is None:
+            return
+        with contextlib.suppress(OSError):
+            cast(socket.socket, request).send(self.busy_reply, socket.MSG_DONTWAIT)
 
     def _serve_one(
         self,

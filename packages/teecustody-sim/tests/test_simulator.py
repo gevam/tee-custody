@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import logging
+import os
 import shutil
 import socket
 import stat
@@ -192,6 +193,22 @@ REJECTED: dict[str, tuple[dict[str, object], SimConfigErrorCode]] = {
         SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
     ),
     "empty-audience": ({"audience": ""}, SimConfigErrorCode.INVALID_LAUNCH_CONFIG),
+    "env-name-empty": (
+        {"launch": _launch(env=(("", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-name-with-equals": (
+        {"launch": _launch(env=(("A=B", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-name-with-nul": (
+        {"launch": _launch(env=(("A\0", "x"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
+    "env-value-with-nul": (
+        {"launch": _launch(env=(("A", "x\0"),))},
+        SimConfigErrorCode.INVALID_LAUNCH_CONFIG,
+    ),
     "port-negative": ({"issuer_port": -1}, SimConfigErrorCode.INVALID_PORT),
     "port-too-large": ({"issuer_port": 65536}, SimConfigErrorCode.INVALID_PORT),
 }
@@ -231,6 +248,75 @@ def test_missing_parent_directory_is_invalid_path(short_dir: Path, missing: str)
         Simulator(config, environ=clean_environ(short_dir)).start()
     assert caught.value.code is SimConfigErrorCode.INVALID_PATH
     assert_nothing_created(config)
+
+
+def _bound_unix_socket(path: Path, *, listening: bool) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    if listening:
+        sock.listen()
+    return sock
+
+
+def _entry_snapshot(path: Path) -> tuple[int, int, object]:
+    info = path.lstat()
+    content: object = None
+    if path.is_symlink():
+        content = os.readlink(path)
+    elif path.is_dir():
+        content = sorted(child.name for child in path.iterdir())
+    elif path.is_file():
+        content = path.read_bytes()
+    return info.st_ino, info.st_mode, content
+
+
+def _occupy(socket_path: Path, kind: str, held: list[socket.socket]) -> None:
+    other = socket_path.parent / "other.sock"
+    if kind == "regular-file":
+        socket_path.write_bytes(b"not a socket")
+    elif kind == "directory":
+        socket_path.mkdir()
+        (socket_path / "inside").write_bytes(b"kept")
+    elif kind == "dangling-symlink":
+        socket_path.symlink_to(socket_path.parent / "absent")
+    elif kind == "symlink-to-socket":
+        held.append(_bound_unix_socket(other, listening=True))
+        socket_path.symlink_to(other)
+    elif kind == "stale-socket":
+        _bound_unix_socket(socket_path, listening=False).close()
+    else:
+        held.append(_bound_unix_socket(socket_path, listening=True))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "regular-file",
+        "directory",
+        "dangling-symlink",
+        "symlink-to-socket",
+        "stale-socket",
+        "live-socket",
+    ],
+)
+@pytest.mark.usefixtures("fakes")
+def test_any_existing_entry_at_socket_path_is_invalid_path(short_dir: Path, kind: str) -> None:
+    config = make_config(short_dir)
+    held: list[socket.socket] = []
+    try:
+        _occupy(config.socket_path, kind, held)
+        before = _entry_snapshot(config.socket_path)
+        with pytest.raises(SimConfigError) as caught:
+            Simulator(config, environ=clean_environ(short_dir)).start()
+        assert caught.value.code is SimConfigErrorCode.INVALID_PATH
+        assert str(caught.value) == "INVALID_PATH"
+        assert _entry_snapshot(config.socket_path) == before
+        assert not config.token_file_path.exists()
+        assert not config.state_dir.exists()
+        assert FakeKeys.loaded == []
+    finally:
+        for sock in held:
+            sock.close()
 
 
 @pytest.mark.parametrize(
@@ -411,21 +497,127 @@ def test_socket_path_of_exactly_100_bytes_is_accepted(short_dir: Path) -> None:
 
 
 @pytest.mark.usefixtures("fakes")
-def test_a_failed_start_stops_whatever_it_started(short_dir: Path) -> None:
+def test_a_failed_start_stops_whatever_it_started(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_start(self: object) -> None:
+        raise RuntimeError("launcher failed")
+
+    monkeypatch.setattr(simulator_module.LauncherServer, "start", failing_start)
     config = make_config(short_dir)
-    config.socket_path.write_text("not a socket")
     simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
 
-    with pytest.raises(OSError, match="Address already in use"):
+    with pytest.raises(RuntimeError, match="launcher failed"):
         simulator.start()
 
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection(
             ("127.0.0.1", urlsplit(simulator.issuer_origin).port or 0), timeout=5.0
         )
-    assert config.socket_path.read_text() == "not a socket"
+    assert not config.socket_path.exists()
     assert not config.token_file_path.exists()
     assert not (config.state_dir / "sim-state.json").exists()
+
+
+def _assert_bind_failed(config: SimulatorConfig, root: Path) -> None:
+    with pytest.raises(SimConfigError) as caught:
+        Simulator(config, environ=clean_environ(root), clock=fixed_clock).start()
+    assert caught.value.code is SimConfigErrorCode.BIND_FAILED
+    assert str(caught.value) == "BIND_FAILED"
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+    assert not os.path.lexists(config.socket_path)
+    assert not config.token_file_path.exists()
+    assert not (config.state_dir / "sim-state.json").exists()
+
+
+@pytest.mark.usefixtures("fakes")
+def test_issuer_host_that_is_not_local_is_bind_failed(short_dir: Path) -> None:
+    # TEST-NET-1 (RFC 5737) is never assigned to a local interface: EADDRNOTAVAIL.
+    config = make_config(short_dir, issuer_host="192.0.2.1", allow_non_loopback=True)
+    _assert_bind_failed(config, short_dir)
+
+
+@pytest.mark.usefixtures("fakes")
+def test_issuer_port_in_use_is_bind_failed(short_dir: Path) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        config = make_config(short_dir, issuer_port=holder.getsockname()[1])
+        _assert_bind_failed(config, short_dir)
+
+
+STEP_SITES = ["keys", "launcher", "token-file", "state-file"]
+
+
+def _fail_at(
+    monkeypatch: pytest.MonkeyPatch, site: str, error: Exception, config: SimulatorConfig
+) -> None:
+    def fail(*args: object) -> None:
+        raise error
+
+    if site == "keys":
+        monkeypatch.setattr(simulator_module.SimKeys, "load_or_create", fail)
+    elif site == "launcher":
+        monkeypatch.setattr(simulator_module.LauncherServer, "start", fail)
+    else:
+        state_file = config.state_dir / "sim-state.json"
+        failing = config.token_file_path if site == "token-file" else state_file
+        real_write = simulator_module._write_file
+
+        def write(path: Path, text: str, mode: int) -> None:
+            if path == failing:
+                raise error
+            real_write(path, text, mode)
+
+        monkeypatch.setattr(simulator_module, "_write_file", write)
+
+
+def _assert_stopped(simulator: Simulator, config: SimulatorConfig, site: str) -> None:
+    if site == "keys":
+        with pytest.raises(SimConfigError):
+            simulator.issuer_origin  # noqa: B018 - the issuer was never created
+    else:
+        port = urlsplit(simulator.issuer_origin).port or 0
+        with pytest.raises(ConnectionRefusedError):
+            socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    assert not os.path.lexists(config.socket_path)
+
+
+@pytest.mark.parametrize("site", STEP_SITES)
+@pytest.mark.usefixtures("fakes")
+def test_os_error_at_a_start_step_is_invalid_path(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    config = make_config(short_dir)
+    _fail_at(monkeypatch, site, PermissionError(13, "synthetic denial", "/secret/detail"), config)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
+
+    with pytest.raises(SimConfigError) as caught:
+        simulator.start()
+
+    assert caught.value.code is SimConfigErrorCode.INVALID_PATH
+    assert str(caught.value) == "INVALID_PATH"
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+    _assert_stopped(simulator, config, site)
+
+
+@pytest.mark.parametrize("site", STEP_SITES)
+@pytest.mark.usefixtures("fakes")
+def test_non_os_error_at_a_start_step_propagates_unchanged(
+    short_dir: Path, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    config = make_config(short_dir)
+    error = RuntimeError("synthetic failure")
+    _fail_at(monkeypatch, site, error, config)
+    simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
+
+    with pytest.raises(RuntimeError) as caught:
+        simulator.start()
+
+    assert caught.value is error
+    _assert_stopped(simulator, config, site)
 
 
 @pytest.mark.usefixtures("fakes")
@@ -436,9 +628,10 @@ def test_token_file_symlink_is_never_followed(short_dir: Path) -> None:
     config.token_file_path.symlink_to(target)
     simulator = Simulator(config, environ=clean_environ(short_dir), clock=fixed_clock)
 
-    with pytest.raises(OSError, match="Too many levels of symbolic links"):
+    with pytest.raises(SimConfigError) as caught:
         simulator.start()
 
+    assert caught.value.code is SimConfigErrorCode.INVALID_PATH
     assert target.read_text() == "untouched"
     assert not config.socket_path.exists()
 

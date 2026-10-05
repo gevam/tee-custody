@@ -164,6 +164,7 @@ def test_sim_config_error_codes_equal_api() -> None:
         "INVALID_PATH",
         "INVALID_PORT",
         "STATE_NOT_INITIALISED",
+        "BIND_FAILED",
     ]
     enum: type[StrEnum] = SimConfigErrorCode
     assert [(member.name, member.value) for member in enum] == [(v, v) for v in values]
