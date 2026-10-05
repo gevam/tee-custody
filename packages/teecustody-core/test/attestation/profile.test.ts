@@ -448,7 +448,7 @@ describe("parseTrustProfile rejects each rule violation with its code and field 
         [
             "dev discovery on localhost",
             developmentJson,
-            { discovery_url: "http://localhost:8791/d" },
+            { discovery_url: "http://localhost:8791/.well-known/openid-configuration" },
         ],
         ["dev JWKS on [::1]", developmentJson, { jwks_origin: "http://[::1]:8791" }],
         [
@@ -709,5 +709,32 @@ describe("parseTrustProfile enforces the signer entry shape", () => {
     ] as const)("rejects %s", (_name, mutation, code, field) => {
         const error = profileError(apply(developmentJson, mutation));
         expect([error.code, error.field]).toEqual([code, field]);
+    });
+});
+
+// T-24 (D-02, B-02, B-03; SR-1, SR-3): development anchors are accepted only in canonical form.
+const WELL_KNOWN = "/.well-known/openid-configuration";
+
+function expectRejected(override: ProfileJson, field: string): void {
+    const error = profileError({ ...developmentJson(), ...override });
+    expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
+    expect(error.message).toBe(`${field}: INVALID_PROFILE`);
+}
+
+describe("parseTrustProfile requires a canonical development discovery_url (T-24 criterion 1)", () => {
+    it.each([
+        `http://0x7f.1${WELL_KNOWN}`,
+        `http://127.1${WELL_KNOWN}`,
+        `http://2130706433${WELL_KNOWN}`,
+        `http://127.0.0.1:80${WELL_KNOWN}`,
+        `HTTP://127.0.0.1${WELL_KNOWN}`,
+        "http://127.0.0.1/x",
+        `http://127.0.0.1${WELL_KNOWN}?a=1`,
+        `http://127.0.0.1${WELL_KNOWN}#f`,
+        `http://u@127.0.0.1${WELL_KNOWN}`,
+        `http://[0:0:0:0:0:0:0:1]${WELL_KNOWN}`,
+        `http://LOCALHOST${WELL_KNOWN}`,
+    ])("rejects %s", (url) => {
+        expectRejected({ discovery_url: url }, "discovery_url");
     });
 });

@@ -11,7 +11,8 @@ import {
 } from "./types.js";
 
 const GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com";
-const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}/.well-known/openid-configuration`;
+const DISCOVERY_PATH = "/.well-known/openid-configuration";
+const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}${DISCOVERY_PATH}`;
 const GOOGLE_JWKS_ORIGIN = "https://www.googleapis.com";
 // FACTS F-09 as amended: confidential hardware only (no GCP_SHIELDED_VM, no unprefixed INTEL_TDX).
 const PRODUCTION_HWMODELS: ReadonlySet<string> = new Set([
@@ -200,10 +201,11 @@ function readDiscoveryUrl(value: unknown, kind: ProfileKind): string {
         }
         return value;
     }
-    if (!isLoopback(readUrl(value, "discovery_url"))) {
+    const url = readUrl(value, "discovery_url");
+    if (url.href !== value || !isLoopback(url) || url.pathname !== DISCOVERY_PATH) {
         throw fail("discovery_url");
     }
-    return value as string;
+    return value;
 }
 
 function readJwksOrigin(value: unknown, kind: ProfileKind): string {
