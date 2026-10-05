@@ -42,6 +42,11 @@ The sequence and scope below preserve the approved INC-1 through INC-5 baseline 
 | V-2.1 | **Retired (ADR 0010).** Core and Web use the project-owned canonical CBOR codec delivered in INC-1, and no package depends on `cbor-x`. | — | — |
 | V-2.2 | Each target browser honors CSP `script-src` hash sources for external scripts that carry a matching SRI `integrity` attribute | In the headless-browser matrix, a page whose CSP lists only the script's `sha384` hash loads it, and loads nothing else | Record the browser as unsupported, failing closed, in the support matrix next to WebAuthn PRF (PROJECT.md R2). Never add `'self'` or host sources to `script-src`. If this excludes a browser the human expects to support, escalate. |
 
+**Required carry-overs from INC-1 (BACKLOG, D-036/D-038):**
+- B-06: Core passes the canonical `URL.href` (never a raw profile or discovery string) to the Fetcher. The INC-2 Fetcher adapters (web, Node) enforce an RSA modulus of at least 2048 bits, refuse cross-origin redirects and bound response bodies while streaming. Each control has an SR-1 test.
+- B-08: the workload run-loop enforces a minimum retry interval after a failed attestation refresh (SR-4), so repeated `refresh_if_due` calls cannot hammer the launcher.
+- B-13: code that consumes `VerifiedAttestation` (bundle verification, session open) checks its brand at runtime, not only through the TypeScript type.
+
 **Contracts introduced:** signed pre-key bundle and session open; HPKE session-key export boundary; authenticated frame/sequence/replay contract; Queue port and Reference Gateway/Web Transport contracts; WebAuthn PRF and encrypted IndexedDB vault adapter contracts; `AuditSink`/`AuditKey`/`AuditRecord` and the aggregation/cap rules.
 
 ## INC-3: Enrollment, custody, records, and production adapters
