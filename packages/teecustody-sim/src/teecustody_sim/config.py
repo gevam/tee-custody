@@ -49,6 +49,7 @@ class SimConfigErrorCode(StrEnum):
     INVALID_PATH = "INVALID_PATH"
     INVALID_PORT = "INVALID_PORT"
     STATE_NOT_INITIALISED = "STATE_NOT_INITIALISED"
+    BIND_FAILED = "BIND_FAILED"
 
 
 class SimConfigError(Exception):
