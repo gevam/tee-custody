@@ -5,9 +5,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import stat
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -53,6 +55,7 @@ _CORPUS_SEED: Final = 1
 _CORPUS_COUNT: Final = 512
 _SUITE_PATH: Final = Path("attestation", "suite.cbor")  # API.md §C `vectors`
 _CORPUS_PATH: Final = Path("wire", "differential-corpus.json")
+_STAGING_PREFIX: Final = ".vectors-"
 _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
 _LAUNCHER_DIR_NAME: Final = "launcher"
@@ -338,17 +341,32 @@ def _check_vectors_out(out: Path) -> None:
             raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
 
 
+def _write_vectors(out: Path) -> None:
+    """Both outputs are generated in a staging directory inside `out`, then renamed into place:
+    a failed generation leaves any existing outputs untouched."""
+    out.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=out))
+    try:
+        generate_suite(staging)
+        generate_corpus(staging, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
+        for relative in (_SUITE_PATH, _CORPUS_PATH):
+            (out / relative.parent).mkdir(exist_ok=True)
+        for relative in (_SUITE_PATH, _CORPUS_PATH):
+            os.replace(staging / relative, out / relative)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def _vectors(options: argparse.Namespace) -> int:
     _check_vectors_out(options.out)
     outputs = (options.out / _SUITE_PATH, options.out / _CORPUS_PATH)
     if not options.force and any(os.path.lexists(path) for path in outputs):
         raise ValueError(_OUTPUT_EXISTS)
     try:
-        suite = generate_suite(options.out)
-        corpus = generate_corpus(options.out, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
+        _write_vectors(options.out)
     except OSError:
         raise SimConfigError(SimConfigErrorCode.INVALID_PATH) from None
-    sys.stdout.write(f"{suite}\n{corpus}\n")
+    sys.stdout.write("".join(f"{path}\n" for path in outputs))
     return 0
 
 

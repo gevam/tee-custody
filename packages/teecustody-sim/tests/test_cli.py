@@ -304,6 +304,12 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert_no_key_material(out_file.read_text())
 
 
+GENERATED_OUTPUTS = {
+    "suite": Path("attestation", "suite.cbor"),
+    "corpus": Path("wire", "differential-corpus.json"),
+}
+
+
 class RecordingGenerator:
     """Stands in for T-17 `generate_suite` / `generate_corpus`."""
 
@@ -311,9 +317,12 @@ class RecordingGenerator:
         self._name = name
         self._calls = calls
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Path:
-        self._calls.append((self._name, args, kwargs))
-        return Path("/generated") / self._name
+    def __call__(self, out_dir: Path, **kwargs: Any) -> Path:
+        self._calls.append((self._name, (out_dir,), kwargs))
+        path = out_dir / GENERATED_OUTPUTS[self._name]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self._name.encode())
+        return path
 
 
 def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
@@ -328,11 +337,19 @@ def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
     code, out, err = cli("vectors", "--out", str(out_dir))
 
     assert (code, err) == (0, "")
+    [staging] = {args[0] for _, args, _ in calls}
+    assert staging.parent == out_dir
     assert calls == [
-        ("suite", (out_dir,), {}),
-        ("corpus", (out_dir,), {"seed": 1, "count": 512}),
+        ("suite", (staging,), {}),
+        ("corpus", (staging,), {"seed": 1, "count": 512}),
     ]
-    assert out == "/generated/suite\n/generated/corpus\n"
+    suite, corpus = (
+        out_dir / "attestation" / "suite.cbor",
+        out_dir / "wire" / "differential-corpus.json",
+    )
+    assert out == f"{suite}\n{corpus}\n"
+    assert (suite.read_bytes(), corpus.read_bytes()) == (b"suite", b"corpus")
+    assert sorted(out_dir.rglob("*")) == sorted({suite, corpus, suite.parent, corpus.parent})
     assert not (tmp_path / ".teecustody-sim").exists()
 
 
@@ -960,6 +977,27 @@ def test_vectors_reports_an_os_error_while_writing_as_invalid_path(
             path.chmod(0o700)
 
     assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(OSError(28, "no space"), "INVALID_PATH\n"), (RuntimeError(), "INTERNAL\n")],
+)
+def test_vectors_leaves_existing_outputs_untouched_when_the_second_write_fails(
+    cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
+) -> None:
+    out = tmp_path / "out"
+    _existing_suite(out)
+    _existing_corpus(out)
+    before = _tree(tmp_path)
+    monkeypatch.setattr(cli_module, "generate_corpus", Exploding(error))
+
+    code, stdout, err = cli("vectors", "--out", str(out), "--force")
+
+    assert (stdout, err) == ("", expected)
+    assert code != 0
+    assert _tree(tmp_path) == before
+    assert sorted(out.rglob("*")) == sorted({*before, *(p.parent for p in before)})
 
 
 @pytest.fixture
