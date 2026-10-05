@@ -1,6 +1,7 @@
 """T-08 criteria 2-3: the simulated launcher token socket (spec §15.2 item 1; FACTS F-02, F-03)."""
 
 import concurrent.futures
+import contextlib
 import http.client
 import json
 import shutil
@@ -514,6 +515,139 @@ def test_connection_flood_is_capped_and_the_launcher_recovers(
             sock.close()
         server.stop()
     assert (status, body) == (200, TOKEN.encode())
+
+
+BURST_CLIENTS = 100
+BUSY_RESPONSE = (
+    b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 19\r\n"
+    b"Connection: close\r\n\r\nSERVICE_UNAVAILABLE"
+)
+
+
+class EventMint:
+    """Every call blocks until `release` is set."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+
+    def __call__(self, audience: str, nonces: Sequence[str]) -> str:
+        self.entered.release()
+        assert self.release.wait(timeout=30.0)
+        return TOKEN
+
+
+def _complete_response(data: bytes) -> tuple[int, bytes] | None:
+    """(status, body) for a whole HTTP/1.x response whose body matches Content-Length, else None."""
+    head, separator, body = data.partition(b"\r\n\r\n")
+    status_line, *header_lines = head.split(b"\r\n")
+    version, _, rest = status_line.partition(b" ")
+    headers = dict(line.lower().partition(b":")[::2] for line in header_lines)
+    if not separator or not version.startswith(b"HTTP/1."):
+        return None
+    if headers.get(b"content-length", b"").strip() != str(len(body)).encode():
+        return None
+    return int(rest[:3]), body
+
+
+def _burst_client(socket_path: Path, payload: bytes) -> tuple[str, bytes]:
+    """Connect, send the request, read to EOF. A reset after the peer's data ends the read."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(10.0)
+        try:
+            sock.connect(str(socket_path))
+        except OSError as error:
+            return "connect:" + type(error).__name__, b""
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            sock.sendall(payload)
+        received = b""
+        try:
+            while chunk := sock.recv(65536):
+                received += chunk
+        except ConnectionResetError:
+            pass
+        except OSError as error:
+            return "recv:" + type(error).__name__, received
+    return "read", received
+
+
+def test_burst_of_100_gets_8_tokens_and_92_explicit_503s(short_dir: Path) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    mint = EventMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits())
+    server.start()
+    payload = _post_head(len(token_request())) + token_request()
+    outcomes: list[tuple[str, bytes]] = []
+    busy = threading.Condition()
+
+    def client() -> None:
+        outcome = _burst_client(socket_path, payload)
+        with busy:
+            outcomes.append(outcome)
+            busy.notify_all()
+
+    def busy_count() -> int:
+        busy_response = (503, b"SERVICE_UNAVAILABLE")
+        return sum(_complete_response(data) == busy_response for _, data in outcomes)
+
+    threads = [threading.Thread(target=client) for _ in range(BURST_CLIENTS)]
+    try:
+        for thread in threads:
+            thread.start()
+        with busy:
+            reached = busy.wait_for(
+                lambda: busy_count() == BURST_CLIENTS - 8 or len(outcomes) == BURST_CLIENTS,
+                timeout=30.0,
+            )
+        mint.release.set()
+        for thread in threads:
+            thread.join(timeout=30.0)
+    finally:
+        mint.release.set()
+        server.stop()
+
+    assert reached
+    assert [kind for kind, _ in outcomes if kind != "read"] == []
+    responses = [_complete_response(data) for _, data in outcomes]
+    assert None not in responses
+    assert sorted(responses, key=repr) == sorted(
+        [(200, TOKEN.encode())] * 8 + [(503, b"SERVICE_UNAVAILABLE")] * (BURST_CLIENTS - 8),
+        key=repr,
+    )
+
+
+def _wait_for_threads(count: int) -> None:
+    deadline = time.monotonic() + 10.0
+    while threading.active_count() != count:
+        assert time.monotonic() < deadline, threading.active_count()
+        time.sleep(0.01)
+
+
+def test_beyond_slot_and_overflow_the_reply_is_the_fixed_503_without_a_thread(
+    short_dir: Path,
+) -> None:
+    socket_path = short_dir / "teeserver.sock"
+    mint = EventMint()
+    server = LauncherServer(socket_path, mint=mint, limits=SimLimits(max_concurrent_requests=1))
+    server.start()
+    baseline = threading.active_count()
+    with _unix_connect(socket_path) as slot_holder, _unix_connect(socket_path) as overflow_holder:
+        try:
+            slot_holder.sendall(_post_head(len(token_request())) + token_request())
+            assert mint.entered.acquire(timeout=10.0)
+            overflow_holder.send(b"POST")
+            _wait_for_threads(baseline + 2)
+
+            payload = _post_head(len(token_request())) + token_request()
+            kind, data = _burst_client(socket_path, payload)
+            threads_after = threading.active_count()
+        finally:
+            mint.release.set()
+            overflow_holder.close()
+            server.stop()
+
+    assert (kind, data) == ("read", BUSY_RESPONSE)
+    assert threads_after == baseline + 2
 
 
 def test_client_gone_before_the_reply_logs_a_fixed_code_and_nothing_on_stderr(
