@@ -8,8 +8,11 @@ import io
 import json
 import logging
 
+import pytest
+
 from acc_support import AUDIENCE, RunningSim
-from teecustody.attest import AttestationLifecycle, ConfidentialSpaceLauncher
+from teecustody.attest import AttestationLifecycle, ConfidentialSpaceLauncher, RefreshOutcome
+from teecustody.attest.ports import LauncherError
 from teecustody.channel import IdentityKey
 from teecustody.obs import ALLOWED_FIELDS, configure_logging, get_logger
 
@@ -84,11 +87,17 @@ def test_NFR03_attestation_lifecycle_logs_contain_no_token_nonce_or_key(
         clock=running_sim.clock,
         logger=get_logger("acceptance.nfr03"),
     )
-    # When it starts and later fails a refresh
+    # When it starts, then fails a refresh while the token is still valid (kept), then fails
+    # again at expiry (API.md / T-06: at/after expires_at the error is logged and re-raised)
     token = lifecycle.start()
     running_sim.sim.stop()
+    running_sim.clock.now = token.expires_at - 1
+    assert lifecycle.refresh_if_due() is RefreshOutcome.FAILED_KEPT_CURRENT
     running_sim.clock.now = token.expires_at
-    lifecycle.refresh_if_due()
+    with pytest.raises(LauncherError):
+        lifecycle.refresh_if_due()
+    assert "ATTESTATION_REFRESH_FAILED" in stream.getvalue()
+    assert "ATTESTATION_TOKEN_EXPIRED" in stream.getvalue()
     # Then no log line contains the token, a token segment, the nonce or the public key
     out = stream.getvalue()
     for secret in (
