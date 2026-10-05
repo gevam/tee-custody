@@ -1,20 +1,22 @@
 # Status — tee-custody
 
-Updated: 2026-10-05 (INC-1 fix wave before G7) by Orchestrator
+Updated: 2026-10-05 at G8 (INC-1) by Orchestrator
 
 ## Where we are
-Stage: INC-1 Wave 4 (G6 Low-defect fixes, D-031)
-Last gate passed: G4 (Wave 1)   Next gate: G5/G6 re-check after Wave 4, then G7, G8
-Increments merged: none
+Stage: INC-1 retrospective
+Last gate passed: G8 (INC-1, D-037)   Next gate: G4 (INC-2)
+Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 
-## Current increment — INC-1 (Attestation foundation)
-| Task | Wave | Tier | State | Branch | Notes |
-|---|---|---|---|---|---|
-| Waves 0–3: T-01..T-20 + V-01 | 0–3 | — | all merged (main 84ba17a) | — | T-18 vectors human-approved (D-030) |
-| Wave 4: fixes for D-01..D-04 + vectors-overwrite guard | 4 | TBD | contracts being written | — | D-031 (human: fix all now) |
-
-QA: Phase 2 done — all INC-1 requirements pass; defects Critical 0 / High 0 / Medium 0 / Low 4 (D-01..D-04); docs/qa/INC-1.md
-Reviews: every INC-1 branch approved by Code + Security Reviewer before merge.
+## INC-1 — Attestation foundation (done)
+| Item | State |
+|---|---|
+| Tasks | 24 merged (T-01..T-24 + V-01; T-19/T-20 added mid-increment, T-21/T-23/T-24 fix wave per D-031) |
+| Tests on main | Python 1806, Core TS 901, tests pkg 323, spec/vectors 212 — all green |
+| Coverage | 100% line+branch on teecustody, teecustody_sim, @teecustody/core |
+| QA | all INC-1 acceptance criteria pass; D-01..D-04 found and closed; 0 open defects |
+| Security | every branch Code+Security APPROVE; G7 increment pass, no finding ≥ Medium |
+| Human-approved spec content | spec/wire (D-020), T-20 rows (D-026), vectors (D-030), README line (D-032) |
+| Traceability | §6.2–§6.9, §13.2, §13.9 covered; §6.1, I1, I13, §13.1, §13.10 partial; rest GAP for later increments |
 
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
@@ -24,29 +26,23 @@ Reviews: every INC-1 branch approved by Code + Security Reviewer before merge.
 ## Open questions for the human
 | Id | Question | Blocking? | Options | Recommendation |
 |---|---|---|---|---|
-| INC-4 VSS | Approve the concrete Feldman VSS / Ristretto255 proposal if it needs a deviation or crypto dependency change | No, before INC-4 | Review then | Decide at Security Architect review |
-| semgrep in lint_command | Append semgrep to framework.yaml lint_command when T-14 merges (R-11) | No | — | Orchestrator applies at T-14 merge |
-| framework gap | `sdlc/roles/_security-constraints.md` referenced by framework.yaml but missing; Orchestrator passes the spec explicitly | No | Add fragment / ignore | Add when convenient |
+| Push | Push main + `inc-1` to origin? (first CI run; §13.11 evidence) | No | Push / keep local | Push when convenient |
+| Merge permissions | Release Engineer merges are intermittently blocked by the permission classifier | No | Add a project rule for `git merge --no-ff inc-*/…` / keep asking | Your call |
+| INC-4 VSS | Feldman VSS / Ristretto255 proposal if it needs a deviation or crypto dep change | No, before INC-4 | Review then | Decide at Security Architect review |
+| framework gap | `sdlc/roles/_security-constraints.md` referenced but missing | No | Add / ignore | Add when convenient |
 
 ## Decisions this increment
-- D-014: standing authority for traceability coverage columns. D-015: test/coverage commands cover tests/ and teecustody_sim.
-- D-016: constraint-deviation (human) — §6.8 via Google-verified key_ids (T-22, Low residual).
-- D-017: CI-1..CI-10 rulings; ADR 0009 (own RS256 JWS framing) and ADR 0010 (own TS CBOR codec, replaces cbor-x) — both Accepted by Security Architect.
-- D-018: G4 per wave; Wave 0 passed.
-- D-019: SR-9 release-age rule scoped to shipped/build deps (human).
-- D-020: human approved T-03 spec/wire content. D-021: G4 passed for Wave 1.
-- D-026/D-030: human approved T-20 and T-18 spec/vectors. D-027: T-20 re-applied after mistaken revert. D-028: semgrep in lint_command. D-029: T-19 scoped round 3; T-16 merged by Orchestrator (human). D-031: fix all G6 Lows in INC-1.
-- D-023: max_engineers 8. D-024: T-05 scoped round 3. D-025: T-20 added (§G missing-claim rows; INC-1 18 → 20 tasks, +11%).
-- D-022: signer-key dedup at profile generation (T-17; INC-5 tool via B-05). Shared CBOR depth ceiling 64 (T-04/T-09). BACKLOG B-06 (Fetcher URL/adapter controls) required for INC-2.
+D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
 
-## Debt
-Open entries: 0   Expired-unscheduled: 0
+## Debt / backlog
+DEBT.md open: 0. BACKLOG.md: B-01..B-23; required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
 
 ## Spend
-| Role | Tokens this increment | Tokens total | Budget |
-|---|---:|---:|---|
-| Tech Lead | ~580k | ~580k | Unlimited |
-| Architect | ~450k | ~645k | Unlimited |
-| Security Architect | ~260k | ~460k | Unlimited |
-| Engineers (V-01) | ~105k | ~105k | Unlimited |
-| Total (this session, approx.) | ~1.4M | ~1.8M | Unlimited |
+| Role | Tokens INC-1 (approx.) |
+|---|---:|
+| Engineers (STRONG/MID/FAST) | ~5.5M |
+| Code + Security Reviewers | ~5.0M |
+| Tech Lead / Architect / Security Architect | ~1.5M |
+| QA / Release Engineer | ~1.2M |
+| Total (approx., from agent usage reports) | ~13M |
+Budget: unlimited.
