@@ -670,3 +670,22 @@ Participants: Tech Lead, QA Engineer
 **Revisit when:** —
 
 **Follow-ups:** —
+
+## D-034 — G5 passes for INC-1 (INC-1, 2026-10-05)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: —
+
+**Options considered**
+1. Pass G5. 2. Hold.
+
+**Decision:** Option 1.
+
+**Reasoning:** Verified on main f052061 with framework.yaml commands: test_command exit 0 (Python 1806, core TS 901, tests package 323, spec/vectors 212); lint_command exit 0 (incl. semgrep); coverage_command exit 0 — Python teecustody + teecustody_sim 100% line and branch (2018 stmts, 458 branches), @teecustody/core 100% statements/branches/functions/lines. All INC-1 tasks (T-01..T-24, V-01) merged with Code + Security APPROVE. Approved spec/vectors files byte-identical to D-030.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** G6 confirmation by QA; G7 increment-level security pass.
