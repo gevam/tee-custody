@@ -10,8 +10,10 @@ import {
     type TrustProfileErrorCode,
 } from "./types.js";
 
-const GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com";
-const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}/.well-known/openid-configuration`;
+const GOOGLE_ISSUER_HOST = "confidentialcomputing.googleapis.com";
+const GOOGLE_ISSUER = `https://${GOOGLE_ISSUER_HOST}`;
+const DISCOVERY_PATH = "/.well-known/openid-configuration";
+const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}${DISCOVERY_PATH}`;
 const GOOGLE_JWKS_ORIGIN = "https://www.googleapis.com";
 // FACTS F-09 as amended: confidential hardware only (no GCP_SHIELDED_VM, no unprefixed INTEL_TDX).
 const PRODUCTION_HWMODELS: ReadonlySet<string> = new Set([
@@ -183,10 +185,15 @@ function readIssuer(value: unknown, kind: ProfileKind): string {
         return value;
     }
     const url = readUrl(value, "issuer");
-    if (url.protocol !== "https:" || url.origin === GOOGLE_ISSUER) {
+    if (
+        url.protocol !== "https:" ||
+        url.origin !== value ||
+        url.hostname.endsWith(".") ||
+        url.hostname === GOOGLE_ISSUER_HOST
+    ) {
         throw fail("issuer");
     }
-    return value as string;
+    return value;
 }
 
 function isLoopback(url: URL): boolean {
@@ -200,10 +207,11 @@ function readDiscoveryUrl(value: unknown, kind: ProfileKind): string {
         }
         return value;
     }
-    if (!isLoopback(readUrl(value, "discovery_url"))) {
+    const url = readUrl(value, "discovery_url");
+    if (url.href !== value || !isLoopback(url) || url.pathname !== DISCOVERY_PATH) {
         throw fail("discovery_url");
     }
-    return value as string;
+    return value;
 }
 
 function readJwksOrigin(value: unknown, kind: ProfileKind): string {

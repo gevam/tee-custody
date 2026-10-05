@@ -1,4 +1,6 @@
 // T-10: parseTrustProfile (API.md §D, §E; spec §15.4, §10.2; ADR 0009 rule 9; D-016). Security path.
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { parseTrustProfile } from "../../src/attestation/profile.js";
@@ -7,6 +9,7 @@ import {
     isBrandedTrustProfile,
     type TrustProfileErrorCode,
 } from "../../src/attestation/types.js";
+import { decodeCanonical } from "../../src/wire/cbor.js";
 
 type ProfileJson = Record<string, unknown>;
 
@@ -441,14 +444,9 @@ describe("parseTrustProfile rejects each rule violation with its code and field 
 
     it.each([
         [
-            "dev issuer with a path (ruling 3)",
-            developmentJson,
-            { issuer: "https://issuer.unit.test/tenant" },
-        ],
-        [
             "dev discovery on localhost",
             developmentJson,
-            { discovery_url: "http://localhost:8791/d" },
+            { discovery_url: "http://localhost:8791/.well-known/openid-configuration" },
         ],
         ["dev JWKS on [::1]", developmentJson, { jwks_origin: "http://[::1]:8791" }],
         [
@@ -709,5 +707,96 @@ describe("parseTrustProfile enforces the signer entry shape", () => {
     ] as const)("rejects %s", (_name, mutation, code, field) => {
         const error = profileError(apply(developmentJson, mutation));
         expect([error.code, error.field]).toEqual([code, field]);
+    });
+});
+
+// T-24 (D-02, B-02, B-03; SR-1, SR-3): development anchors are accepted only in canonical form.
+const WELL_KNOWN = "/.well-known/openid-configuration";
+
+function expectRejected(override: ProfileJson, field: string): void {
+    const error = profileError({ ...developmentJson(), ...override });
+    expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
+    expect(error.message).toBe(`${field}: INVALID_PROFILE`);
+}
+
+describe("parseTrustProfile requires a canonical development discovery_url (T-24 criterion 1)", () => {
+    it.each([
+        `http://0x7f.1${WELL_KNOWN}`,
+        `http://127.1${WELL_KNOWN}`,
+        `http://2130706433${WELL_KNOWN}`,
+        `http://127.0.0.1:80${WELL_KNOWN}`,
+        `HTTP://127.0.0.1${WELL_KNOWN}`,
+        "http://127.0.0.1/x",
+        `http://127.0.0.1${WELL_KNOWN}?a=1`,
+        `http://127.0.0.1${WELL_KNOWN}#f`,
+        `http://u@127.0.0.1${WELL_KNOWN}`,
+        `http://[0:0:0:0:0:0:0:1]${WELL_KNOWN}`,
+        `http://LOCALHOST${WELL_KNOWN}`,
+    ])("rejects %s", (url) => {
+        expectRejected({ discovery_url: url }, "discovery_url");
+    });
+});
+
+describe("parseTrustProfile requires a canonical development issuer origin (T-24 criterion 2)", () => {
+    it.each([
+        "https://confidentialcomputing.googleapis.com.",
+        "https://tee-sim.localhost/",
+        "https://tee-sim.localhost/p",
+        "https://TEE-SIM.localhost",
+        "https://tee-sim.localhost:443",
+        "https://u@tee-sim.localhost",
+        "https://tee-sim.localhost.",
+    ])("rejects %s", (issuer) => {
+        expectRejected({ issuer }, "issuer");
+    });
+});
+
+const SUITE_URL = new URL("../../../../spec/vectors/attestation/suite.cbor", import.meta.url);
+const SUITE_LIMITS = { maxBytes: 1_048_576, maxDepth: 8, maxItems: 16_384 };
+
+function suiteProfileJson(): ProfileJson {
+    const root = decodeCanonical(new Uint8Array(readFileSync(SUITE_URL)), SUITE_LIMITS);
+    if (!(root instanceof Map)) {
+        throw new Error("expected the vector suite to be a CBOR map");
+    }
+    const json: unknown = root.get("profile_json");
+    if (typeof json !== "string") {
+        throw new Error("expected profile_json to be a text string");
+    }
+    return JSON.parse(json) as ProfileJson;
+}
+
+describe("parseTrustProfile accepts canonical anchors (T-24 criteria 3 and 4)", () => {
+    it.each(["https://tee-sim.localhost", "https://issuer.unit.test"])(
+        "accepts issuer %s",
+        (issuer) => {
+            expect(parseTrustProfile({ ...developmentJson(), issuer }).issuer).toBe(issuer);
+        },
+    );
+
+    it.each([
+        `http://127.0.0.1:8791${WELL_KNOWN}`,
+        `http://[::1]:8791${WELL_KNOWN}`,
+        `http://localhost:8791${WELL_KNOWN}`,
+    ])("accepts discovery_url %s and returns the input string", (url) => {
+        const profile = parseTrustProfile({ ...developmentJson(), discovery_url: url });
+        expect(profile.discovery_url).toBe(url);
+        expect(profile.discovery_url).toBe(new URL(url).href);
+    });
+
+    it("accepts the vector suite's development profile_json unchanged", () => {
+        const json = suiteProfileJson();
+        const profile = parseTrustProfile(json);
+        expect(profile.profile_kind).toBe("development");
+        expect({ ...profile }).toEqual(json);
+    });
+
+    it("accepts the production profile with Google anchors unchanged", () => {
+        const profile = parseTrustProfile(productionJson());
+        expect([profile.issuer, profile.discovery_url, profile.jwks_origin]).toEqual([
+            GOOGLE_ISSUER,
+            `${GOOGLE_ISSUER}${WELL_KNOWN}`,
+            "https://www.googleapis.com",
+        ]);
     });
 });
