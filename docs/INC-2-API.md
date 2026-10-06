@@ -629,7 +629,7 @@ Example: `opener.open(OpenRequest(claimed_client_id=c, request_id=r, instance_id
 class ReplayCache:
     def __init__(self, *, skew_s: int, max_entries: int, clock: Callable[[], float]) -> None: ...
     def seen(self, aad_client_id: str, request_id: bytes) -> bool: ...
-        # first purges every entry whose expires_at <= now
+        # first purges every entry whose expires_at < now (strict: at now == timestamp + skew the entry is still present)
     def record(self, aad_client_id: str, request_id: bytes, timestamp: int) -> None: ...
         # after a successful Open only; expires_at = timestamp + skew_s (R-6; D2-18), so the entry lives exactly
         # as long as the message could still pass the |now - timestamp| <= skew check.
@@ -1561,7 +1561,8 @@ No constraint-deviation is required by this document.
   - With `MismatchingOpener`: no session is created, the result is `INTERNAL`, and `closed(OPEN_ABORTED)` is called.
   - TS: two consecutive `enroll`s use different, CSPRNG-derived routes (spy on `randomBytes`).
 - **Replay window (R-6; SR-14):** `ReplayCache` unit test. A message with `timestamp = now + skew − 1` is recorded.
-  An identical `seen` at `now + 2·skew − 2` returns `True`, and at `timestamp + skew` the entry is gone.
+  An identical `seen` at `now + 2·skew − 2` returns `True`. At exactly `timestamp + skew` the entry is still present
+  (`seen` → `True`). At `timestamp + skew + 1` it is purged.
 - **Time and schema bounds (R-1, R-2, R-3; SR-3):** the §3.2 vectors `*_over_max`,
   `prekey_ids_unsorted_or_duplicate`, `open_ok_nil_session` and `open_error_with_session` pass in both languages.
   The TS decoder yields `bigint` for 2^53 and the schema rejects it.

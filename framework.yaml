@@ -148,6 +148,15 @@ security:
     - packages/teecustody-web/src/vault/**
     - packages/teecustody-web/src/profile/**
     - spec/wire/**
+    - packages/teecustody-py/src/teecustody/audit/**      # D-041 (INC-2)
+    - packages/teecustody-py/src/teecustody/runtime/**
+    - packages/teecustody-py/src/teecustody/queue/**
+    - packages/teecustody-py/src/teecustody/config.py
+    - packages/teecustody-web/src/crypto/**
+    - packages/teecustody-web/src/fetch/**
+    - packages/teecustody-web/src/transport/**
+    - examples/notes-app/gateway/**
+    - tools/scan-bundle.mjs
 
 budget:
   total_tokens: 0              # 0 = no cap; otherwise Orchestrator escalates before exceeding

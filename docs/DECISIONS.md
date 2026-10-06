@@ -803,3 +803,22 @@ Participants: Security Architect, Architect
 **Revisit when:** Architect returns the revision; Security Architect re-check.
 
 **Follow-ups:** Human batch: CDDL + proto, security.paths (Q5 recommendation from Security Architect).
+
+## D-041 — Human: INC-2 wire format approved, proto kept, security.paths widened (INC-2, 2026-10-06)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Architect, Security Architect
+
+**Options considered**
+Q2 approve / change the INC-2 CDDL (docs/INC-2-API.md §3: channel.cddl, channel-vectors.cddl); Q1 keep / bump `proto`; Q5 add Security Architect's recommended paths to security.paths (all / all but gateway).
+
+**Decision:** CDDL approved as specified (final spec/wire files still return to the human at merge); `proto = "tee-chan-v1"` kept (spec §5.3 verbatim); all recommended paths added to framework.yaml security.paths.
+
+**Reasoning:** Human decisions after Security Architect APPROVE of the revised design (R-1..R-8 closed; R-6 clerical fix applied: purge when expires_at < now).
+
+**Dissent:** none
+
+**Revisit when:** Any later spec/wire change.
+
+**Follow-ups:** Tech Lead INC-2 work breakdown (G4) from docs/INC-2-API.md, honouring D-038 rules.
