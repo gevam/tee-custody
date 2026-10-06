@@ -1,10 +1,10 @@
 # Status — tee-custody
 
-Updated: 2026-10-05 at G8 (INC-1) by Orchestrator
+Updated: 2026-10-06 at G4 (INC-2 Wave 0) by Orchestrator
 
 ## Where we are
-Stage: INC-1 retrospective
-Last gate passed: G8 (INC-1, D-037)   Next gate: G4 (INC-2)
+Stage: INC-2 wave 0 implementation
+Last gate passed: G4 (INC-2 Wave 0, D-042)   Next gate: G4 (Wave 1), G5
 Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 
 ## INC-1 — Attestation foundation (done)
@@ -18,10 +18,13 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 | Human-approved spec content | spec/wire (D-020), T-20 rows (D-026), vectors (D-030), README line (D-032) |
 | Traceability | §6.2–§6.9, §13.2, §13.9 covered; §6.1, I1, I13, §13.1, §13.10 partial; rest GAP for later increments |
 
+## INC-2 — Encrypted channel and browser client
+34 items (T-01..T-32, V-01, V-02) in 6 waves (docs/tasks/INC-2/WAVES.md). Wave 0 (8) running: T-01..T-06, V-01, V-02. Human-gated: T-03 (channel CDDL/harness), T-30 (channel vectors). Design: docs/INC-2-API.md (CDDL approved D-041).
+
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
 |---|---|---|---|---|
-| — | | | | |
+| CI-2-1 | T-21, T-32 (browser attestation path) | Security Architect → human | 2026-10-06 | Google discovery endpoint sends no CORS (JWKS does); options: pin exact jwks_uri / relay discovery + exact-uri pin / TOKEN_TYPE=PKI |
 
 ## Open questions for the human
 | Id | Question | Blocking? | Options | Recommendation |
