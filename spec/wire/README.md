@@ -11,6 +11,8 @@ amendment), ADR 0010, SR-3, NFR-7. Every change to this directory is human-gated
 |---|---|
 | `README.md` | Canonical CBOR rules and the protocol identifier (this file) |
 | `attestation-vectors.cddl` | CDDL of the INC-1 attestation vector suite, `spec/vectors/attestation/suite.cbor` |
+| `channel.cddl` | CDDL of the INC-2 channel messages: pre-key bundle, request and response envelopes, their `aad` and plaintexts |
+| `channel-vectors.cddl` | CDDL of the INC-2 channel vector suite, `spec/vectors/channel/suite.cbor` |
 
 Protocol-message CDDL (bundle, envelopes, share records) is added in the increment that first uses it,
 under the same gate.
