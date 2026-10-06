@@ -5,12 +5,19 @@ import * as core from "../src/index.js";
 import type {
     AttestationCheckId,
     AttestationErrorCode,
+    BundleDeps,
+    BundleErrorCode,
+    BundleLimits,
     Bytes,
     CanonicalEnvelope,
     CanonicalValue,
     CapabilityErrorCode,
+    ChannelClientConfig,
+    ChannelErrorCode,
+    ChannelLimits,
     ClientId,
     ClientShare,
+    Clock,
     Crypto,
     DecodeLimits,
     ExpectedAttestation,
@@ -21,11 +28,14 @@ import type {
     InstanceId,
     JsonObject,
     JsonValue,
+    OpenOutcome,
+    OpenPayload,
     ParsedToken,
     ProfileKind,
     PublicKeyInput,
     PublishedBundle,
     PublishedResponse,
+    RemoteErrorCode,
     RequestId,
     ResponseCursor,
     ResponsePage,
@@ -42,6 +52,8 @@ import type {
     TrustProfile,
     TrustProfileErrorCode,
     VerifiedAttestation,
+    VerifiedBundle,
+    VerifiedPreKey,
     VerifierDeps,
     VerifierLimits,
     WireErrorCode,
@@ -49,7 +61,11 @@ import type {
 
 const PUBLIC_VALUES = [
     "AttestationError",
+    "BundleError",
     "CapabilityError",
+    "ChannelClient",
+    "ChannelError",
+    "DEFAULT_CHANNEL_LIMITS",
     "EncodingError",
     "PROTO",
     "TrustProfileError",
@@ -76,9 +92,13 @@ const PUBLIC_VALUES = [
     "launchConfigHash",
     "parseToken",
     "parseTrustProfile",
+    "prekeySigningMessage",
+    "selectPreKey",
+    "Session",
     "utf8DecodeStrict",
     "utf8Encode",
     "verifyAttestation",
+    "verifyBundle",
 ];
 
 describe("index.ts public surface", () => {
@@ -94,6 +114,19 @@ describe("index.ts public surface", () => {
         ]) {
             expect(Object.hasOwn(core, name)).toBe(false);
         }
+    });
+
+    it.each([
+        "isVerifiedAttestation",
+        "isVerifiedBundle",
+        "createVerifiedBundle",
+        "openT2cFrame",
+        "readOpenResult",
+        "readFrameResult",
+        "decodeResponse",
+        "hpkeInfo",
+    ])("does not export the internal channel name %s (API-TL §3)", (name) => {
+        expect(Object.hasOwn(core, name)).toBe(false);
     });
 });
 
@@ -437,5 +470,174 @@ describe("API.md §D type pins", () => {
                 deps: VerifierDeps,
             ) => Promise<VerifiedAttestation>
         >();
+    });
+});
+
+describe("INC-2-API §7 type pins", () => {
+    it("pins bundle/types.ts, bundle/verify.ts and bundle/select.ts (§7.2)", () => {
+        expectTypeOf<VerifiedPreKey>().toEqualTypeOf<{
+            readonly id: number;
+            readonly publicKey: Uint8Array;
+            readonly notAfterMs: number;
+        }>();
+        expectTypeOf<StringKeyed<VerifiedBundle>>().toEqualTypeOf<{
+            readonly instanceId: string;
+            readonly identityPublicKey: Uint8Array;
+            readonly attestation: VerifiedAttestation;
+            readonly prekeys: readonly VerifiedPreKey[];
+            readonly verifiedAtMs: number;
+        }>();
+        expectTypeOf<BrandKey<VerifiedBundle>>().toExtend<symbol>();
+        expectTypeOf<VerifiedBundle[BrandKey<VerifiedBundle>]>().toEqualTypeOf<true>();
+        expectTypeOf<StringKeyed<VerifiedBundle>>().not.toExtend<VerifiedBundle>();
+        expectTypeOf<BundleErrorCode>().toEqualTypeOf<
+            | "MALFORMED"
+            | "ATTESTATION_FAILED"
+            | "INSTANCE_MISMATCH"
+            | "PREKEY_SIGNATURE_INVALID"
+            | "NO_USABLE_PREKEY"
+            | "UNSUPPORTED"
+        >();
+        expectTypeOf(core.BundleError).constructorParameters.toEqualTypeOf<
+            [BundleErrorCode, (AttestationCheckId | undefined)?]
+        >();
+        expectTypeOf<core.BundleError>().toExtend<Error>();
+        expectTypeOf<Pick<core.BundleError, "code" | "attestationCheck">>().toEqualTypeOf<{
+            readonly code: BundleErrorCode;
+            readonly attestationCheck?: AttestationCheckId | undefined;
+        }>();
+        expectTypeOf<BundleLimits>().toEqualTypeOf<{
+            readonly decode: DecodeLimits;
+            readonly maxPrekeys: number;
+        }>();
+        expectTypeOf<BundleDeps>().toEqualTypeOf<{
+            readonly crypto: Pick<Crypto, "sha256" | "verifySignature" | "verifyEd25519">;
+            readonly fetcher: Fetcher;
+            readonly now: () => number;
+            readonly verifierLimits: VerifierLimits;
+            readonly bundleLimits: BundleLimits;
+        }>();
+        expectTypeOf(core.verifyBundle).toEqualTypeOf<
+            (
+                published: PublishedBundle,
+                profile: TrustProfile,
+                events: SecurityEventSink,
+                deps: BundleDeps,
+            ) => Promise<VerifiedBundle>
+        >();
+        expectTypeOf(core.prekeySigningMessage).toEqualTypeOf<
+            (
+                crypto: Pick<Crypto, "sha256">,
+                instanceId: string,
+                id: number,
+                pub: Uint8Array,
+                notAfter: number,
+                imageDigest: string,
+            ) => Promise<Uint8Array>
+        >();
+        expectTypeOf(core.selectPreKey).toEqualTypeOf<
+            (
+                bundle: VerifiedBundle,
+                used: ReadonlySet<number>,
+                nowMs: number,
+                crypto: Pick<Crypto, "randomBytes">,
+            ) => VerifiedPreKey | undefined
+        >();
+    });
+
+    it("pins channel/types.ts, client.ts and session.ts (§7.4)", () => {
+        expectTypeOf<Clock>().toEqualTypeOf<{
+            now(): number;
+            sleep(ms: number): Promise<void>;
+        }>();
+        expectTypeOf<ChannelLimits>().toEqualTypeOf<{
+            readonly maxBundles: number;
+            readonly bundle: BundleLimits;
+            readonly verifier: VerifierLimits;
+            readonly envelopeDecode: DecodeLimits;
+            readonly aadDecode: DecodeLimits;
+            readonly payloadDecode: DecodeLimits;
+            readonly maxPayloadBytes: number;
+            readonly responseTimeoutMs: number;
+            readonly pollIntervalMs: number;
+            readonly maxInFlight: number;
+            readonly bundleMaxAgeMs: number;
+        }>();
+        expectTypeOf(core.DEFAULT_CHANNEL_LIMITS).toEqualTypeOf<ChannelLimits>();
+        expectTypeOf<ChannelClientConfig>().toEqualTypeOf<{
+            readonly trustProfile: TrustProfile;
+            readonly transport: Transport;
+            readonly crypto: Crypto;
+            readonly fetcher: Fetcher;
+            readonly securityEvents: SecurityEventSink;
+            readonly clock: Clock;
+            readonly limits?: ChannelLimits;
+        }>();
+        expectTypeOf<OpenPayload>().toEqualTypeOf<
+            | {
+                  readonly op: "open_session";
+                  readonly clientId: string;
+                  readonly cs: Uint8Array;
+                  readonly keyId: Uint8Array;
+                  readonly epoch: number;
+              }
+            | { readonly op: "enroll" }
+        >();
+        expectTypeOf<OpenOutcome>().toEqualTypeOf<{
+            readonly session: core.Session;
+            readonly payload: CanonicalValue;
+        }>();
+        expectTypeOf(core.ChannelClient).constructorParameters.toEqualTypeOf<
+            [ChannelClientConfig]
+        >();
+        expectTypeOf<core.ChannelClient>().toEqualTypeOf<{
+            fetchVerifiedBundles(): Promise<readonly VerifiedBundle[]>;
+            open(payload: OpenPayload, bundle?: VerifiedBundle): Promise<OpenOutcome>;
+        }>();
+        expectTypeOf<core.Session>().toEqualTypeOf<{
+            readonly sessionId: Uint8Array;
+            readonly instanceId: string;
+            readonly clientId: string;
+            readonly closed: boolean;
+            request(op: string, payload: CanonicalValue): Promise<CanonicalValue>;
+            close(): Promise<void>;
+        }>();
+    });
+
+    it("pins channel/errors.ts (§7.5)", () => {
+        expectTypeOf<ChannelErrorCode>().toEqualTypeOf<
+            | "NO_VERIFIED_BUNDLE"
+            | "UNVERIFIED_BUNDLE"
+            | "NO_USABLE_PREKEY"
+            | "TRANSPORT"
+            | "TIMEOUT"
+            | "INVALID_RESPONSE"
+            | "REMOTE_ERROR"
+            | "SESSION_CLOSED"
+            | "SEQUENCE_EXHAUSTED"
+            | "INVALID_ARGUMENT"
+            | "CRYPTO_UNAVAILABLE"
+        >();
+        expectTypeOf<RemoteErrorCode>().toEqualTypeOf<
+            | "INVALID_FRAME"
+            | "AUTHENTICATION_FAILED"
+            | "REPLAYED_OR_OUT_OF_ORDER"
+            | "UNKNOWN_CLIENT"
+            | "UNKNOWN_OPERATION"
+            | "NOT_AUTHORIZED"
+            | "LIMIT_EXCEEDED"
+            | "RECORD_NOT_FOUND"
+            | "BACKEND_UNAVAILABLE"
+            | "INTERNAL"
+            | "UNKNOWN"
+        >();
+        expectTypeOf(core.ChannelError).constructorParameters.toEqualTypeOf<
+            [ChannelErrorCode, (CapabilityErrorCode | RemoteErrorCode | undefined)?]
+        >();
+        expectTypeOf<core.ChannelError>().toExtend<Error>();
+        expectTypeOf<Pick<core.ChannelError, "code" | "detail">>().toEqualTypeOf<{
+            readonly code: ChannelErrorCode;
+            readonly detail?: CapabilityErrorCode | RemoteErrorCode | undefined;
+        }>();
     });
 });
