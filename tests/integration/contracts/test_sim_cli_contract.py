@@ -1,4 +1,8 @@
-"""Contract: teecustody-sim CLI token, profile and vectors (PROJECT.md §4.2; API.md §C, §E, §G)."""
+"""Contract: teecustody-sim CLI token, profile and vectors (PROJECT.md §4.2; API.md §C, §E, §G).
+
+Amended INC-2 Wave 0 (Tech Lead): `vectors` also writes `channel/suite.cbor` and prints three paths
+(INC-2-API §5.3, A-4). The vectors test is expected red until T-25 merges.
+"""
 
 from __future__ import annotations
 
@@ -144,8 +148,17 @@ def test_vectors_writes_a_canonical_suite(
 
     suite_path = short_dir / "attestation" / "suite.cbor"
     corpus_path = short_dir / "wire" / "differential-corpus.json"
+    channel_path = short_dir / "channel" / "suite.cbor"  # INC-2 A-4 (T-25)
     assert code == 0
-    assert captured.out.splitlines() == [str(suite_path), str(corpus_path)]
+    assert captured.out.splitlines() == [str(suite_path), str(corpus_path), str(channel_path)]
+    channel = decode(
+        channel_path.read_bytes(),
+        DecodeLimits(max_bytes=4_194_304, max_depth=8, max_items=65_536),
+    )
+    assert isinstance(channel, dict)
+    assert channel["suite"] == "teecustody-channel-vectors"
+    assert channel["proto"] == PROTO
+    assert b"PRIVATE KEY" not in channel_path.read_bytes()
     corpus = json.loads(corpus_path.read_text())
     assert corpus["format"] == "teecustody-cbor-differential-corpus"
     assert len(corpus["cases"]) >= 500
