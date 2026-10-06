@@ -108,3 +108,60 @@ def test_secret_error_carries_only_its_code() -> None:
         assert err.code is code
         assert str(err) == code.value
         assert err.args == (code.value,)
+
+
+# --- criterion 4: explicit wipe ---------------------------------------------------------------
+
+
+class _RecordingBuffer(bytearray):
+    """Test-only stand-in for the private buffer: snapshots its bytes when it is emptied."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.at_clear: list[bytes] = []
+
+    def clear(self) -> None:
+        self.at_clear.append(bytes(self))
+        super().clear()
+
+    def __delitem__(self, index: int | slice) -> None:
+        self.at_clear.append(bytes(self))
+        super().__delitem__(index)
+
+
+def test_wipe_zeroes_every_byte_before_emptying_the_buffer() -> None:
+    s = Secret(KEY)
+    buffer = _RecordingBuffer(KEY)
+    s._buf = buffer  # test-only reference to the private buffer
+
+    s.wipe()
+
+    assert buffer.at_clear == [bytes(32)]
+    assert len(buffer) == 0
+    assert len(s) == 0
+    assert s.wiped
+
+
+def test_wiped_secret_refuses_reveal_and_equals_and_rewipe_is_a_noop() -> None:
+    s = Secret(KEY)
+    other = Secret(KEY)
+    s.wipe()
+
+    for operation in (s.reveal, lambda: s.equals(KEY), lambda: other.equals(s)):
+        with pytest.raises(SecretError) as excinfo:
+            operation()
+        assert _code(excinfo) is SecretErrorCode.WIPED
+
+    s.wipe()
+    assert s.wiped
+    assert repr(s) == REDACTED
+
+
+def test_context_manager_wipes_on_exit_including_on_error() -> None:
+    with Secret(KEY) as s:
+        assert s.reveal() == KEY
+    assert s.wiped
+
+    with pytest.raises(RuntimeError), Secret(KEY) as t:
+        raise RuntimeError("boom")
+    assert t.wiped

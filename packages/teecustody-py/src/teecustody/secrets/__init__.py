@@ -35,15 +35,33 @@ class Secret:
         return len(self._buf)
 
     def reveal(self) -> bytes:
+        self._require_unwiped()
         return bytes(self._buf)
 
     def equals(self, other: "Secret | bytes") -> bool:
-        theirs = other._buf if isinstance(other, Secret) else other
-        return hmac.compare_digest(self._buf, theirs)
+        self._require_unwiped()
+        if isinstance(other, Secret):
+            other._require_unwiped()
+            return hmac.compare_digest(self._buf, other._buf)
+        return hmac.compare_digest(self._buf, other)
+
+    def wipe(self) -> None:
+        self._buf[:] = bytes(len(self._buf))
+        self._buf.clear()
 
     @property
     def wiped(self) -> bool:
-        return False
+        return len(self._buf) == 0
+
+    def __enter__(self) -> "Secret":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.wipe()
+
+    def _require_unwiped(self) -> None:
+        if self.wiped:
+            raise SecretError(SecretErrorCode.WIPED)
 
     def __repr__(self) -> str:
         return _REDACTED
