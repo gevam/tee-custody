@@ -1,0 +1,6 @@
+# notes-gateway lint policy; everything else comes from the workspace root.
+extend = "../../../pyproject.toml"
+
+[lint.flake8-bugbear]
+# GatewayLimits is a frozen dataclass: a safe shared default (INC-2-API §6 create_app).
+extend-immutable-calls = ["notes_gateway.GatewayLimits", "notes_gateway.limits.GatewayLimits"]
