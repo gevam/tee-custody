@@ -1,10 +1,12 @@
 """Secret bytes in a private buffer: redacted everywhere, wiped explicitly (spec §11; NFR-3)."""
 
 import hmac
+import os
 from enum import StrEnum
 from typing import NoReturn, SupportsIndex
 
 _REDACTED = "Secret(<redacted>)"
+_MAX_LENGTH = 65536
 
 
 class SecretErrorCode(StrEnum):
@@ -29,7 +31,17 @@ class Secret:
     __slots__ = ("_buf",)
 
     def __init__(self, data: bytes | bytearray | memoryview) -> None:
+        with memoryview(data) as view:
+            length = view.nbytes
+        if not 1 <= length <= _MAX_LENGTH:
+            raise SecretError(SecretErrorCode.INVALID_LENGTH)
         self._buf = bytearray(data)
+
+    @classmethod
+    def random(cls, length: int) -> "Secret":
+        if not 1 <= length <= _MAX_LENGTH:
+            raise SecretError(SecretErrorCode.INVALID_LENGTH)
+        return cls(os.urandom(length))
 
     def __len__(self) -> int:
         return len(self._buf)

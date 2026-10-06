@@ -165,3 +165,39 @@ def test_context_manager_wipes_on_exit_including_on_error() -> None:
     with pytest.raises(RuntimeError), Secret(KEY) as t:
         raise RuntimeError("boom")
     assert t.wiped
+
+
+# --- criterion 5: length bounds and random ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b"", bytearray(), memoryview(b""), b"\x00" * 65537],
+    ids=["bytes-0", "bytearray-0", "memoryview-0", "bytes-65537"],
+)
+def test_length_outside_bounds_is_rejected(data: bytes | bytearray | memoryview) -> None:
+    with pytest.raises(SecretError) as excinfo:
+        Secret(data)
+    assert _code(excinfo) is SecretErrorCode.INVALID_LENGTH
+
+
+@pytest.mark.parametrize("length", [1, 65536])
+def test_length_bounds_are_inclusive(length: int) -> None:
+    assert len(Secret(b"\x01" * length)) == length
+    assert len(Secret.random(length)) == length
+
+
+@pytest.mark.parametrize("length", [0, -1, 65537])
+def test_random_length_outside_bounds_is_rejected(length: int) -> None:
+    with pytest.raises(SecretError) as excinfo:
+        Secret.random(length)
+    assert _code(excinfo) is SecretErrorCode.INVALID_LENGTH
+
+
+def test_random_secrets_differ() -> None:
+    first = Secret.random(32)
+    second = Secret.random(32)
+
+    assert isinstance(first, Secret)
+    assert len(first) == 32
+    assert not first.equals(second)
