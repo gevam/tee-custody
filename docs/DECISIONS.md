@@ -822,3 +822,22 @@ Q2 approve / change the INC-2 CDDL (docs/INC-2-API.md §3: channel.cddl, channel
 **Revisit when:** Any later spec/wire change.
 
 **Follow-ups:** Tech Lead INC-2 work breakdown (G4) from docs/INC-2-API.md, honouring D-038 rules.
+
+## D-042 — G4 passes for INC-2 Wave 0 (INC-2, 2026-10-06)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead
+
+**Options considered**
+1. Pass G4 for Wave 0 (T-01..T-06, V-01, V-02); hold T-21/T-32 on CI-2-1. 2. Hold all.
+
+**Decision:** Option 1.
+
+**Reasoning:** Verified: Wave-0 owned files (53) pairwise disjoint; inputs exist (inc-1 on main; INC-2-API approved D-041; ADR 0011 Accepted w/ conditions); contract test stubs committed (c2bc2e0); acceptance tests for Wave 1+ authored by QA after Wave 0 merges (D-018 convention). CI-2-1 (browser cannot read Google discovery: no CORS on confidentialcomputing.googleapis.com; JWKS endpoint has CORS — verified by Orchestrator 2026-10-06) blocks only T-21 and T-32; Security Architect analysing options before a human decision.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** Apply framework.yaml command changes when T-01 merges (WAVES Orchestrator action 1).
