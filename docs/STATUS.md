@@ -30,7 +30,6 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 | Id | Question | Blocking? | Options | Recommendation |
 |---|---|---|---|---|
 | Push | Push main + `inc-1` to origin? (first CI run; §13.11 evidence) | No | Push / keep local | Push when convenient |
-| Merge permissions | Release Engineer merges are intermittently blocked by the permission classifier | No | Add a project rule for `git merge --no-ff inc-*/…` / keep asking | Your call |
 | INC-4 VSS | Feldman VSS / Ristretto255 proposal if it needs a deviation or crypto dep change | No, before INC-4 | Review then | Decide at Security Architect review |
 | framework gap | `sdlc/roles/_security-constraints.md` referenced but missing | No | Add / ignore | Add when convenient |
 
