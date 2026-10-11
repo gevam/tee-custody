@@ -641,3 +641,36 @@ describe("INC-2-API §7 type pins", () => {
         }>();
     });
 });
+
+describe("DEFAULT_CHANNEL_LIMITS (INC-2-API §7.4)", () => {
+    it("equals the §7.4 values", () => {
+        expect(core.DEFAULT_CHANNEL_LIMITS).toStrictEqual({
+            maxBundles: 16,
+            bundle: { decode: { maxBytes: 65_536, maxDepth: 4, maxItems: 4096 }, maxPrekeys: 256 },
+            verifier: { maxTokenBytes: 16_384, maxDiscoveryBytes: 65_536, maxJwksBytes: 65_536 },
+            envelopeDecode: { maxBytes: 65_536, maxDepth: 2, maxItems: 16 },
+            aadDecode: { maxBytes: 512, maxDepth: 2, maxItems: 16 },
+            payloadDecode: { maxBytes: 32_768, maxDepth: 16, maxItems: 4096 },
+            maxPayloadBytes: 32_768,
+            responseTimeoutMs: 30_000,
+            pollIntervalMs: 500,
+            maxInFlight: 8,
+            bundleMaxAgeMs: 60_000,
+        });
+    });
+
+    it("is frozen at every level", () => {
+        const limits = core.DEFAULT_CHANNEL_LIMITS;
+        for (const value of [
+            limits,
+            limits.bundle,
+            limits.bundle.decode,
+            limits.verifier,
+            limits.envelopeDecode,
+            limits.aadDecode,
+            limits.payloadDecode,
+        ]) {
+            expect(Object.isFrozen(value)).toBe(true);
+        }
+    });
+});

@@ -32,19 +32,27 @@ export interface ChannelLimits {
     readonly bundleMaxAgeMs: number;
 }
 
-export const DEFAULT_CHANNEL_LIMITS: ChannelLimits = {
+// frozen at every level
+export const DEFAULT_CHANNEL_LIMITS: ChannelLimits = Object.freeze({
     maxBundles: 16,
-    bundle: { decode: { maxBytes: 65_536, maxDepth: 4, maxItems: 4096 }, maxPrekeys: 256 },
-    verifier: { maxTokenBytes: 16_384, maxDiscoveryBytes: 65_536, maxJwksBytes: 65_536 },
-    envelopeDecode: { maxBytes: 65_536, maxDepth: 2, maxItems: 16 },
-    aadDecode: { maxBytes: 512, maxDepth: 2, maxItems: 16 },
-    payloadDecode: { maxBytes: 32_768, maxDepth: 16, maxItems: 4096 },
+    bundle: Object.freeze({
+        decode: Object.freeze({ maxBytes: 65_536, maxDepth: 4, maxItems: 4096 }),
+        maxPrekeys: 256,
+    }),
+    verifier: Object.freeze({
+        maxTokenBytes: 16_384,
+        maxDiscoveryBytes: 65_536,
+        maxJwksBytes: 65_536,
+    }),
+    envelopeDecode: Object.freeze({ maxBytes: 65_536, maxDepth: 2, maxItems: 16 }),
+    aadDecode: Object.freeze({ maxBytes: 512, maxDepth: 2, maxItems: 16 }),
+    payloadDecode: Object.freeze({ maxBytes: 32_768, maxDepth: 16, maxItems: 4096 }),
     maxPayloadBytes: 32_768,
     responseTimeoutMs: 30_000,
     pollIntervalMs: 500,
     maxInFlight: 8,
     bundleMaxAgeMs: 60_000,
-};
+});
 
 export interface ChannelClientConfig {
     readonly trustProfile: TrustProfile;
