@@ -8,6 +8,8 @@ import importlib.metadata
 import inspect
 import os
 import re
+import subprocess
+import sys
 import time
 import types
 from collections.abc import Callable, Sequence
@@ -101,3 +103,41 @@ def test_distribution_requires_exactly_pinned_fastapi_teecustody_uvicorn() -> No
     assert all(re.fullmatch(r"[a-z]+==\d+(\.\d+)*", req) for req in requires)
     assert "teecustody==0.1.0" in requires
     assert not any("teecustody-sim" in req or "teecustody_sim" in req for req in requires)
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_GATEWAY = "examples/notes-app/gateway"
+
+
+def _ruff_check(source: str, stdin_filename: str) -> subprocess.CompletedProcess[str]:
+    argv = [sys.executable, "-m", "ruff", "check", "--no-cache"]
+    return subprocess.run(  # noqa: S603 -- fixed argv, no shell
+        [*argv, "--stdin-filename", stdin_filename, "-"],
+        input=source,
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        check=False,
+    )
+
+
+def _importing(module: str) -> str:
+    return f"import {module}\n\nPROBE = {module}\n"
+
+
+@pytest.mark.parametrize("module", ["teecustody_sim", "cbor2"])
+def test_ruff_bans_simulator_and_cbor_imports_in_gateway_source(module: str) -> None:
+    result = _ruff_check(_importing(module), f"{_GATEWAY}/src/notes_gateway/app.py")
+    assert result.returncode != 0
+    assert "TID251" in result.stdout
+
+
+def test_ruff_allows_simulator_import_in_dev_module() -> None:
+    result = _ruff_check(_importing("teecustody_sim"), f"{_GATEWAY}/src/notes_gateway/dev.py")
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("module", ["teecustody_sim", "cbor2"])
+def test_ruff_allows_banned_imports_in_gateway_tests(module: str) -> None:
+    result = _ruff_check(_importing(module), f"{_GATEWAY}/tests/test_probe.py")
+    assert result.returncode == 0, result.stdout
