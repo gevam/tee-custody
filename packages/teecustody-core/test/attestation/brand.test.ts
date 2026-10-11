@@ -1,10 +1,7 @@
 // Runtime brand for VerifiedAttestation (INC-2-API §7.1; B-13; SR-1).
 import { describe, expect, it } from "vitest";
 
-import {
-    createVerifiedAttestation,
-    isVerifiedAttestation,
-} from "../../src/attestation/types.js";
+import { createVerifiedAttestation, isVerifiedAttestation } from "../../src/attestation/types.js";
 
 function fields() {
     return {
