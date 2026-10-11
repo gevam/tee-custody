@@ -57,7 +57,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-regex: tee-sim\.localhost|SIMULATED
 
   - id: tc-no-verification-skip
@@ -65,7 +65,10 @@ rules:
     severity: ERROR
     languages: [regex]
     paths:
-      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-py/src/**"]
+      include:
+        - "/packages/teecustody-core/src/**"
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-web/src/**"
     pattern-regex: (?i)(skip|disable|bypass|no)_?verif|insecure
 
   - id: tc-no-sim-import-in-library
@@ -73,7 +76,10 @@ rules:
     severity: ERROR
     languages: [regex]
     paths:
-      include: ["/packages/teecustody-py/**/*.py", "/packages/teecustody-core/**/*.ts"]
+      include:
+        - "/packages/teecustody-py/**/*.py"
+        - "/packages/teecustody-core/**/*.ts"
+        - "/packages/teecustody-web/src/**"
     pattern-either:
       # Python: every `import`/`from` form, including aliases and comma lists.
       - pattern-regex: >-
@@ -232,7 +238,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern: Function
       - pattern: eval
@@ -257,7 +263,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern: import(...)
       - pattern-regex: \bimport\s*\(
@@ -271,7 +277,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern-regex: eslint-disable
       - pattern-regex: "@ts-ignore|@ts-nocheck|@ts-expect-error"

@@ -87,6 +87,70 @@ jobs:
           print("probe paths without a finding:", missing or "none")
           sys.exit(1 if missing else 0)
           ' "$RUNNER_TEMP/probe.json"
+      - name: semgrep path-scope probe
+        # `semgrep --test` ignores `paths:`. Each case stages a rule's positive fixture (CI workspace
+        # only, never committed) and checks the rule fires inside its scope and stays silent outside
+        # it (T-05: INC-2 rules, Core rules extended to Web, test paths and teecustody_sim exempt).
+        run: |
+          python3 - <<'PY'
+          import json, shutil, subprocess, sys
+          from pathlib import Path
+
+          PY_SRC = "packages/teecustody-py/src/teecustody/_semgrep_probe"
+          SIM_SRC = "packages/teecustody-sim/src/teecustody_sim/_semgrep_probe"
+          CORE_SRC = "packages/teecustody-core/src/_semgrep_probe"
+          WEB_SRC = "packages/teecustody-web/src/_semgrep_probe"
+          GATEWAY_SRC = "examples/notes-app/gateway/src/_semgrep_probe"
+          # (rule, fixture extension, staged directory, must fire)
+          CASES = [
+              ("tc-ts-no-function-constructor", "ts", WEB_SRC, True),
+              ("tc-ts-no-dynamic-import", "ts", WEB_SRC, True),
+              ("tc-ts-no-lint-suppression", "ts", WEB_SRC, True),
+              ("tc-no-sim-anchor-in-core", "ts", WEB_SRC, True),
+              ("tc-no-verification-skip", "ts", WEB_SRC, True),
+              ("tc-no-sim-import-in-library", "ts", WEB_SRC, True),
+              ("tc-py-hpke-import-confined", "py", PY_SRC, True),
+              ("tc-py-hpke-import-confined", "py", SIM_SRC, False),
+              ("tc-py-hpke-import-confined", "py", "tests/_semgrep_probe", False),
+              ("tc-ts-hpke-import-confined", "ts", CORE_SRC, True),
+              ("tc-ts-hpke-import-confined", "ts", WEB_SRC, True),
+              ("tc-ts-hpke-import-confined", "ts", "packages/teecustody-web/test/_semgrep_probe", False),
+              ("tc-py-no-hpke-seams", "py", PY_SRC, True),
+              ("tc-py-no-hpke-seams", "py", GATEWAY_SRC, True),
+              ("tc-py-no-hpke-seams", "py", SIM_SRC, False),
+              ("tc-ts-no-hpke-seams", "ts", CORE_SRC, True),
+              ("tc-ts-no-hpke-seams", "ts", WEB_SRC, True),
+              ("tc-py-no-kdf-composition", "py", PY_SRC, True),
+              ("tc-py-no-kdf-composition", "py", GATEWAY_SRC, True),
+              ("tc-ts-no-kdf-composition", "ts", CORE_SRC, True),
+              ("tc-ts-no-kdf-composition", "ts", WEB_SRC, True),
+              ("tc-py-identity-sign-confined", "py", PY_SRC, True),
+              ("tc-py-identity-sign-confined", "py", SIM_SRC, False),
+              ("tc-py-pattern-fullmatch", "py", SIM_SRC, True),
+              ("tc-py-pattern-fullmatch", "py", GATEWAY_SRC, True),
+              ("tc-py-no-test-doubles", "py", PY_SRC, True),
+              ("tc-py-no-test-doubles", "py", GATEWAY_SRC, True),
+          ]
+          staged = {}
+          for rule, ext, directory, _ in CASES:
+              target = Path(directory) / f"{rule.replace('-', '_')}.{ext}"
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(f".semgrep/tests/tc.{rule}.pos.{ext}", target)
+              staged[rule, directory] = str(target)
+          subprocess.run(["git", "add", "-f", *staged.values()], check=True)
+          scan = subprocess.run(
+              ["uvx", "semgrep==1.178.0", "--config", ".semgrep.yml", "--metrics=off", "--json"],
+              capture_output=True, text=True,
+          )
+          found = {(r["check_id"].rsplit(".", 1)[-1], r["path"]) for r in json.loads(scan.stdout)["results"]}
+          wrong = [
+              f"{rule} in {directory}: expected {'a finding' if fires else 'none'}"
+              for rule, _, directory, fires in CASES
+              if ((rule, staged[rule, directory]) in found) != fires
+          ]
+          print("\n".join(wrong) or "path scope as specified")
+          sys.exit(1 if wrong else 0)
+          PY
       - name: semgrep rule fixtures
         run: uvx semgrep==1.178.0 --test .semgrep/
 
