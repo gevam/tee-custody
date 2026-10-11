@@ -1,0 +1,27 @@
+{
+    "name": "@teecustody/web",
+    "version": "0.0.0",
+    "description": "Browser adapters for tee-custody: WebCrypto, fetch transport and WebAuthn-PRF share vault",
+    "type": "module",
+    "exports": {
+        ".": "./dist/index.js"
+    },
+    "types": "./dist/index.d.ts",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "test": "vitest run",
+        "coverage": "vitest run --coverage",
+        "lint": "eslint . && prettier --check .",
+        "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+        "test:browser": "playwright test --pass-with-no-tests"
+    },
+    "dependencies": {
+        "@teecustody/core": "workspace:*"
+    },
+    "devDependencies": {
+        "@playwright/test": "1.63.0",
+        "fake-indexeddb": "6.2.5"
+    }
+}
