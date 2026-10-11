@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import importlib.metadata
 import inspect
 import os
+import re
 import time
 import types
 from collections.abc import Callable, Sequence
@@ -90,3 +92,12 @@ def test_gateway_limits_is_frozen() -> None:
     limits = GatewayLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_page = 1  # type: ignore[misc]
+
+
+def test_distribution_requires_exactly_pinned_fastapi_teecustody_uvicorn() -> None:
+    requires = sorted(importlib.metadata.requires("notes-gateway") or [])
+    names = [re.split(r"[=<>!~ ;\[]", req, maxsplit=1)[0] for req in requires]
+    assert names == ["fastapi", "teecustody", "uvicorn"]
+    assert all(re.fullmatch(r"[a-z]+==\d+(\.\d+)*", req) for req in requires)
+    assert "teecustody==0.1.0" in requires
+    assert not any("teecustody-sim" in req or "teecustody_sim" in req for req in requires)
