@@ -51,6 +51,7 @@ strict = true
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 filterwarnings = ["error"]
+pythonpath = ["."]
 
 [tool.coverage.run]
 branch = true

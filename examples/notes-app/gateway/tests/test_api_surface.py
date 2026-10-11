@@ -5,12 +5,14 @@ from __future__ import annotations
 import ast
 import dataclasses
 import importlib.metadata
+import importlib.util
 import inspect
 import os
 import re
 import subprocess
 import sys
 import time
+import tomllib
 import types
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -141,3 +143,10 @@ def test_ruff_allows_simulator_import_in_dev_module() -> None:
 def test_ruff_allows_banned_imports_in_gateway_tests(module: str) -> None:
     result = _ruff_check(_importing(module), f"{_GATEWAY}/tests/test_probe.py")
     assert result.returncode == 0, result.stdout
+
+
+def test_pytest_puts_repo_root_on_path_so_tests_support_imports() -> None:
+    root = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert root["tool"]["pytest"]["ini_options"]["pythonpath"] == ["."]
+    assert importlib.util.find_spec("tests.support") is not None
+    assert importlib.util.find_spec("tests.support.channel_doubles") is not None
