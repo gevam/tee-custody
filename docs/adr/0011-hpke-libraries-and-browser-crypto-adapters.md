@@ -139,3 +139,142 @@ SR-9's 18-month rule re-evaluates on every lock change.
   - C7: §12 V-2.4.
 - **C6:** the pin amendment is appended here by the adopting task and needs the scoped Security Architect sign-off
   before the lock-file merge. It is not written yet; no versions are pinned.
+
+### 2026-10-11 — Security Architect: C6 scoped sign-off; rulings on V-01's C3 and C7 CONTRACT_ISSUEs
+
+*Merge note: written on `main` while V-01's "C6 pin amendment (V-01)" section is still on `inc-2/V-01-hpke-verify`.
+The two sections are append/append. When V-01 merges, keep V-01's section first and this one second, both unchanged.*
+
+**What was reviewed.** V-01's amendment at `inc-2/V-01-hpke-verify` 0d47e45. The CFRG fixture at 25059c8
+(`tests/fixtures/rfc9180/README.md`, SHA-256 `61fc662f…3ede6`, CFRG commit `5f503c56…`). The scope is the evidence against
+C1–C5 (C6) and the two CONTRACT_ISSUEs. The library decision is not reopened.
+
+**1. `pyhpke` 0.6.5: SIGNED (C6). T-08 may proceed.**
+- C1: `pyhpke` is the spec §11 default. `cryptography` 50.0.2 HPKE has no exporter, so the deviation path is closed.
+- C2: every primitive goes to `cryptography` 50.0.2 / OpenSSL, with source lines given. That covers X25519 derive and key
+  import, HMAC-SHA256 and AES-256-GCM. The only Python-level code is the permitted RFC 9180 composition (`kdf.py:58–60`).
+- C3: `Requires-Dist` ⊆ {`cryptography`}, which resolves to the pinned 50.0.2. The wheel and sdist sha256 were recomputed
+  and equal PyPI. MIT. Released 2026-07-16, within 18 months. PEP 740 provenance; the wheel is byte-identical to tag `v0.6.5`.
+- C4: both filtered sets are non-empty (1 case each, 257 encryptions, 3 exports). The receiver passes, and the sender
+  passes too. Five low-order `enc` values are rejected. The mutation check fails as required.
+- C5: `eks` is used only in scratch.
+- **Binding on T-08:**
+  - Pin exactly `pyhpke==0.6.5` with the wheel and sdist sha256 recorded by V-01. Any other version or hash is CONTRACT_ISSUE.
+  - Low-order `enc` raises `ValueError` from `cryptography`, not `pyhpke`'s `OpenError`. `open_base` must therefore turn
+    every exception from the library calls into `HpkeError(OPEN_FAILED)` `from None`. A handler that catches only
+    `OpenError` fails T-08 criterion 3.
+  - T-08 needs the fixture, so V-01 (evidence and fixture only, no lock change) should merge to `main` first.
+
+**2. `@hpke/core` 1.9.0 / `@hpke/common` 1.10.1: NOT SIGNED.**
+Accepted evidence:
+- C2 on the executed path: X25519, HMAC/HKDF and AES-GCM all run on native WebCrypto.
+- C3 closure = {`@hpke/core`, `@hpke/common`}.
+- C4 passes on both the sender and receiver sides.
+- §9.2 regexes: 0 hits.
+
+Open items:
+- (a) C7: the `import("crypto")` fallback. See the ruling below.
+- (b) C3: the vendored pure-JS curve and hash code. See the ruling below.
+- (c) C6 evidence gap [Medium]. V-01 records the `@hpke/core` **1.9.0** SLSA provenance under tag **`hpke-js@1.8.0`**.
+  Before signing, the next amendment must show that the attestation subject digest equals the tarball sha512, and must
+  explain the tag/version mismatch.
+
+**Ruling on C7 (unresolved `crypto` dynamic import).**
+Where the import sits:
+- `@hpke/common/esm/src/algorithm.js` reaches `await import("crypto")` only when `globalThis.crypto` is undefined.
+  The next amendment quotes the exact guard and its line numbers.
+- Every supported browser and Node ≥ 22 defines `globalThis.crypto`.
+- In a browser, the bare specifier cannot resolve without an import map, and a hash-only `script-src` blocks an
+  import map that is not hashed.
+
+Why it still matters:
+- The runtime path is not the risk.
+- (1) A future dependency could hide a live Node import the same way: esbuild suppresses unresolved imports inside
+  `try/catch`, so the build stays green.
+- (2) A host bundler that errors on `crypto` invites the host to add a pure-JS Node-crypto polyfill (T-28).
+
+Options:
+- (i) **Recommended:** a scoped external allow-list plus a structural precondition (C7a below). This is an ADR amendment by
+  the Security Architect, not a `constraint-deviation`. Spec §10.2/§10.3 and SR-13 are unaffected: the import is literal,
+  there is no `eval`, and the CSP does not change. It takes effect only if the human admits the package under H-HPKE
+  option A or B.
+- (ii) Build-time stub or alias for `crypto`: rejected. It is a shim, which C7 forbids. It also changes only our scan
+  build, because hosts resolve `@hpke/common` in their own build.
+- (iii) Another version: rejected. 1.7.3, 1.8.1 and 1.10.1 all contain the fallback.
+- (iv) A `pnpm patch` that removes the branch: rejected. It modifies a crypto library outside its signed provenance, and
+  the patch never reaches host installs.
+- (v) Another HPKE library: no candidate is on the allow-list. Spec §10.2 names `@hpke/core`, so a switch is a
+  `constraint-deviation` plus a crypto-dependency change, and the human decides both. Hand-rolled HPKE is excluded
+  (non-negotiable).
+- (vi) Ask upstream (hpke-js) to drop the Node ≤ 18 fallback, since Node 18 is EOL. Do this in parallel; it is not a gate.
+
+**C7a** replaces C7's "without unresolved Node built-ins" clause for this one site only. Everything else in C7 stands.
+1. The scan reads the esbuild metafile. Any import with `external: true` exits 2, except one entry:
+   - importer ending `node_modules/@hpke/common/esm/src/algorithm.js`, `path: "crypto"`, `kind: "dynamic-import"`;
+   - it must match exactly once, and an unused entry also exits 2;
+   - the entry is a constant in `tools/scan-bundle.mjs` that cites this amendment.
+
+   The §9.2 rule "no allow-list for `@hpke/*`" is unchanged.
+2. **[Medium, applies whatever the human decides] T-27 gap.** A new fixture `try { await import("fs") } catch {}` must
+   exit 2. T-27 criterion 5 (a top-level `node:fs` import) does not prove C7, because esbuild accepts a guarded import
+   silently.
+3. `createWebCrypto()` checks `globalThis.crypto?.subtle` before any `@hpke/*` call; if it is missing →
+   `UNSUPPORTED`. Test: with `globalThis.crypto` undefined, every HPKE call rejects `UNSUPPORTED` and no `@hpke/core`
+   API is invoked.
+4. Host README: never polyfill or alias Node `crypto` into a browser build. If a bundler errors on it, map it to
+   empty/`false`.
+
+**Ruling on C3 (vendored noble code in `@hpke/common` ≥ 1.8.0).**
+Why it conflicts:
+- By C2's own reading (primitives = curve arithmetic and hash compression), `@hpke/common` 1.10.1 is a package that
+  implements X25519 in pure JS. The `framework.yaml` forbidden rule therefore applies by its text.
+- C3 admits `@hpke/common` by name but also bars "any other JS curve package". C3 contradicts itself.
+
+What ships:
+- Native-only `DhkemX25519HkdfSha256`; `curve/**` contributes 0 bytes.
+- Two dead fragments: the `_HMAC` class (2698 B) and the SHA-3 constants (622 B).
+- No compression function and no X25519/HKDF/GCM code.
+
+That satisfies spec §10.2 ("do not ship a hand-written X25519, HKDF or GCM"), so this is **not a
+`constraint-deviation`**. But admitting a package that the forbidden list covers by text is a `framework.yaml` decision,
+so **only the human can decide (H-HPKE)**. If the human admits it, these C3a controls bind:
+1. **Bundle-input manifest (T-27).** From the metafile, the scan fails in three cases:
+   - any `@hpke/common/esm/src/curve/**` input has `bytesInOutput` > 0;
+   - any `@hpke/*` input outside a pinned list (recorded in the next C6 amendment) contributes bytes;
+   - the two hash fragments grow.
+
+   A version change resets the list and needs a new C6 sign-off. The SR-9 `@noble/*` bar cannot see vendored code, so
+   this manifest is the control.
+2. **Import confinement (T-05 rule).**
+   - `webcrypto.ts` imports only `CipherSuite`, `DhkemX25519HkdfSha256`, `HkdfSha256`, `Aes256Gcm` (and error classes)
+     from `@hpke/core`.
+   - No file in `packages/**` imports `@hpke/common`.
+3. **Native-path proof (T-17).**
+   - Spy on `globalThis.crypto.subtle.deriveBits`: every encap/decap in the round trip and the KATs calls it with
+     `name: "X25519"`.
+   - With global X25519 removed, HPKE calls reject `UNSUPPORTED` and produce no output.
+   - The X25519 probe must test `globalThis.crypto.subtle`, which `@hpke/*` uses, not only `options.subtle`. [Low]
+
+Option B (pin the pre-vendoring `@hpke/common` 1.7.3) is not recommended. It still needs C7a, its 18-month window closes
+on 2026-12-01, and it needs a fresh C6 amendment for both packages.
+
+**Wording proposed for the human (H-HPKE option A; the human edits `framework.yaml`).** Append to
+`security.dependency_policy`:
+
+> `@hpke/common` is admitted only as the runtime dependency of `@hpke/core`, at the exact version signed in ADR 0011's C6
+> amendment. Its vendored pure-JS curve and hash modules are admitted as unreachable code under ADR 0011 C3a. The SR-13
+> bundle scan proves they contribute no curve or hash-compression code to the shipped bundle. Every version change needs
+> a new C6 sign-off.
+
+Mark the pure-JS entry in `forbidden_dependencies` "(except as admitted in security.dependency_policy)". After the
+decision, the Security Architect adds the C3a and C7a test lines to SR-9 and SR-13.
+
+**What can start.**
+- T-08: proceeds now.
+- T-17: criteria 1–3 and 6 do not touch `@hpke/*` and may proceed. The `@hpke/core` manifest/lock change and criteria
+  4, 5, 7 and 8 wait for H-HPKE, the follow-up C6 amendment (items 2(c), the C7 guard quote and the C3a input list) and
+  this sign-off. On option A they gain C7a.3 and C3a.3.
+- T-27: may start once the Tech Lead adds C7a.1–2 and C3a.1 to its contract. Its criterion 6 waits for T-17.
+
+Findings: 0 Critical, 0 High, 3 Medium (2(c) provenance, C7a.2 scan gap, the C3 policy conflict), 2 Low (C7 fallback,
+probe/global `subtle` mismatch). Security Architect.
