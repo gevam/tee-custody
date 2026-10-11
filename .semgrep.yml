@@ -325,11 +325,8 @@ rules:
     paths:
       include: ["/packages/teecustody-py/src/**"]
       exclude: ["/packages/teecustody-py/src/teecustody/channel/hpke.py"]
-    pattern-either:
-      - pattern: import pyhpke
-      - pattern: import pyhpke.$M
-      - pattern: from pyhpke import $X
-      - pattern: from pyhpke.$M import $X
+    # Semgrep's import pattern also matches submodule, alias, list and `from` forms (see fixtures).
+    pattern: import pyhpke
 
   - id: tc-ts-hpke-import-confined
     message: >-
@@ -432,13 +429,10 @@ rules:
           - pattern-either:
               - pattern: $P.match(...)
               - pattern: $P.search(...)
-          - pattern-either:
-              - pattern-inside: |
-                  $P = re.compile($PAT, ...)
-                  ...
-              - pattern-inside: |
-                  $P: $T = re.compile($PAT, ...)
-                  ...
+          # Also matches annotated assignments (`_P: Final = re.compile(...)`, see fixtures).
+          - pattern-inside: |
+              $P = re.compile($PAT, ...)
+              ...
           - metavariable-regex:
               metavariable: $PAT
               regex: (?s)^[rRbBuU]*("|').*(?<!\\)\$\1+$
@@ -455,9 +449,7 @@ rules:
       # Every `import`/`from` form of the top-level `tests` package, including aliases and lists.
       - pattern-regex: >-
           (?m)^[ \t]*(?:from[ \t]+tests\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*tests\b)
+      # Matches the class with or without bases (see fixtures).
       - pattern: |
           class StaticShareOpener(...):
-              ...
-      - pattern: |
-          class StaticShareOpener:
               ...
