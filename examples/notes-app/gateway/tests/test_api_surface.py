@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import os
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import fastapi
+import pytest
 
 import notes_gateway
 from notes_gateway import GatewayLimits, create_app
@@ -60,3 +62,31 @@ def test_dev_module_runs_main_as_its_exit_status() -> None:
     tree = ast.parse(Path(inspect.getfile(dev)).read_text(encoding="utf-8"))
     last = ast.unparse(tree.body[-1])
     assert last == "if __name__ == '__main__':\n    raise SystemExit(main())"
+
+
+_SPEC_LIMITS: tuple[tuple[str, object], ...] = (
+    ("max_request_bytes", 65536),
+    ("max_bundles", 16),
+    ("max_page", 32),
+    ("per_source_rate", 20.0),
+    ("per_source_burst", 40),
+    ("global_rate", 500.0),
+    ("global_burst", 1000),
+    ("max_concurrency", 64),
+    ("max_sources_tracked", 10_000),
+    ("cors_origins", ()),
+)
+
+
+def test_gateway_limits_fields_and_defaults_equal_api_section_6() -> None:
+    limits = GatewayLimits()
+    actual = tuple((f.name, getattr(limits, f.name)) for f in dataclasses.fields(limits))
+    assert actual == _SPEC_LIMITS
+    for name, value in _SPEC_LIMITS:
+        assert type(getattr(limits, name)) is type(value)
+
+
+def test_gateway_limits_is_frozen() -> None:
+    limits = GatewayLimits()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        limits.max_page = 1  # type: ignore[misc]
