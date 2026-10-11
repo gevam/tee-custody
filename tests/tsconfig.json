@@ -5,7 +5,8 @@
         "types": ["node"],
         "noEmit": true,
         "paths": {
-            "@teecustody/core": ["../packages/teecustody-core/src/index.ts"]
+            "@teecustody/core": ["../packages/teecustody-core/src/index.ts"],
+            "@teecustody/web": ["../packages/teecustody-web/src/index.ts"]
         }
     },
     "include": ["**/*.ts"]

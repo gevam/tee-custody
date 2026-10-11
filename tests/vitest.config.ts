@@ -8,9 +8,12 @@ export default defineConfig({
             "@teecustody/core": fileURLToPath(
                 new URL("../packages/teecustody-core/src/index.ts", import.meta.url),
             ),
+            "@teecustody/web": fileURLToPath(
+                new URL("../packages/teecustody-web/src/index.ts", import.meta.url),
+            ),
         },
     },
     test: {
-        include: ["integration/**/*.test.ts", "acceptance/**/*.test.ts"],
+        include: ["integration/**/*.test.ts", "acceptance/**/*.test.ts", "e2e/**/*.test.ts"],
     },
 });
