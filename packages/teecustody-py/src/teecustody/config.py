@@ -1,0 +1,64 @@
+"""Channel parameters and boundary limits (INC-2-API §4.4; spec §14 defaults).
+
+Fields and defaults are frozen. Validation (`__post_init__`) belongs to T-09.
+"""
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Final
+
+from teecustody.wire.types import DecodeLimits
+
+# Frozen DecodeLimits values used as the BoundaryLimits defaults (INC-2-API §4.4).
+_ENVELOPE_DECODE: Final = DecodeLimits(max_bytes=65536, max_depth=2, max_items=16)
+_AAD_DECODE: Final = DecodeLimits(max_bytes=512, max_depth=2, max_items=16)
+_OPEN_PAYLOAD_DECODE: Final = DecodeLimits(max_bytes=1024, max_depth=2, max_items=16)
+_PAYLOAD_DECODE: Final = DecodeLimits(max_bytes=32768, max_depth=16, max_items=4096)
+
+
+class ConfigErrorCode(StrEnum):
+    INVALID_PARAMS = "INVALID_PARAMS"
+    INVALID_LIMITS = "INVALID_LIMITS"
+
+
+class ConfigError(Exception):
+    """Carries only a code and the offending field name; `str(err)` is `"<code>:<field>"`."""
+
+    code: ConfigErrorCode
+    field: str
+
+    def __init__(self, code: ConfigErrorCode, field: str) -> None:
+        super().__init__(f"{code.value}:{field}")
+        self.code = code
+        self.field = field
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChannelParams:
+    prekey_ttl_s: int = 3600  # 60..3600 (bounded by token lifetime, FACTS F-10)
+    prekey_batch: int = 100  # 1..256 (wire max per bundle)
+    prekey_low_water: int = 20  # 0 <= low_water < batch
+    request_skew_s: int = 300  # 1..3600
+    idle_timeout_s: int = 900  # 1..86400
+    refresh_margin_s: int = 300  # 1..3599; passed to AttestationLifecycle
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoundaryLimits:
+    max_token_bytes: int = 16384
+    max_request_bytes: int = 65536  # raw envelope bytes, checked before decode
+    envelope_decode: DecodeLimits = _ENVELOPE_DECODE
+    aad_decode: DecodeLimits = _AAD_DECODE
+    open_payload_decode: DecodeLimits = _OPEN_PAYLOAD_DECODE
+    payload_decode: DecodeLimits = _PAYLOAD_DECODE
+    pull_max_messages: int = 32
+    pull_wait_s: float = 1.0  # 0 < x <= 30
+    max_sessions: int = 1024
+    session_evict_min_idle_s: int = 60  # R-8; 1 <= x <= ChannelParams.idle_timeout_s (RunLoop)
+    replay_cache_max_entries: int = 100_000
+    audit_aggregate_interval_s: int = 60  # AUDIT_AGGREGATE_INTERVAL
+    audit_alert_cap: int = 100  # AUDIT_ALERT_CAP
+    prekey_burn_alert_threshold: int = 500  # PREKEY_BURN_ALERT_THRESHOLD, per interval
+    attestation_retry_min_s: int = 30  # B-08
+    attestation_retry_max_s: int = 300  # B-08; >= retry_min
+    bundle_republish_min_interval_s: int = 5

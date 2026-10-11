@@ -94,7 +94,17 @@ def test_public_name_is_importable_from_package_root(package: str, name: str) ->
 def test_package_root_exports_only_version() -> None:
     module = importlib.import_module("teecustody")
     public = {name for name in vars(module) if not name.startswith("_")}
-    assert public <= {"attest", "channel", "wire", "obs"}
+    assert public <= {
+        "attest",
+        "channel",
+        "wire",
+        "obs",
+        "secrets",
+        "config",
+        "queue",
+        "audit",
+        "runtime",
+    }
     assert module.__version__ == "0.1.0"
 
 
