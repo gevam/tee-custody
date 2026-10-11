@@ -841,3 +841,38 @@ Participants: Tech Lead
 **Revisit when:** —
 
 **Follow-ups:** Apply framework.yaml command changes when T-01 merges (WAVES Orchestrator action 1).
+
+## D-043 — Constraint-deviation: spec §6.1 JWKS location pinned in the trust profile (CI-2-1) (INC-2, 2026-10-11)
+
+Type: constraint-deviation
+Chair / decider: Human
+Participants: Orchestrator, Security Architect
+
+**Constraint:** docs/security/tee-security-architecture.md §6.1. At runtime the client fetches the discovery document over TLS from the exact issuer origin and takes `jwks_uri` from it.
+
+**Options considered**
+A. Pin the exact `jwks_uri` in the compiled trust profile for every client, with no runtime discovery fetch. The `teecustody-profile` build verifies the discovery binding at build time, and a scheduled real-GCP CI job re-checks it.
+B. Relay discovery through the gateway, plus an exact-URI pin.
+C. `TOKEN_TYPE=PKI`.
+
+**Decision:** Option A, chosen by the human after the Security Architect recommended it (THREAT_MODEL review log, 2026-10-06).
+
+**Reasoning:**
+- Browsers cannot read Google's discovery document. It sends no `Access-Control-Allow-Origin`, while the JWKS endpoint does (verified 2026-10-06).
+- A build-time pin closes T-29 (JWKS path substitution on the shared googleapis origin), which INC-1's origin-only check leaves open whenever discovery is not fetched directly from Google.
+- Spec §10.2 already places the JWKS location in the compiled profile.
+- B adds an untrusted ingress and is still a deviation. C needs X.509 path validation in the browser, which conflicts with ADR 0009.
+
+**Scope of deviation:** the discovery step moves from client runtime to profile build time. One code path covers Node and browser (I13). Discovery is never relayed or proxied.
+
+**Residual risk accepted:** T-29 post-deviation (Low). A Google JWKS URI or CORS change makes clients fail closed until a profile release; the scheduled binding check detects it.
+
+**Dissent:** none
+
+**Revisit when:** Google adds CORS to discovery, changes the JWKS URI, or the spec is revised.
+
+**Follow-ups:**
+- The Architect amends INC-2-API with design deltas (1)–(5) from the Security Architect's CI-2-1 entry.
+- The Tech Lead amends or adds INC-2 tasks, including changes to INC-1 code in profile.ts/signature.ts, and unblocks T-21/T-32.
+- The Security Architect re-checks the deltas and sets T-29 to mitigated by design.
+- Trust profile and spec/vectors changes return to the human at merge (always_human).
