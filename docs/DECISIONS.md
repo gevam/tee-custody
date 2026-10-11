@@ -876,3 +876,22 @@ C. `TOKEN_TYPE=PKI`.
 - The Tech Lead amends or adds INC-2 tasks, including changes to INC-1 code in profile.ts/signature.ts, and unblocks T-21/T-32.
 - The Security Architect re-checks the deltas and sets T-29 to mitigated by design.
 - Trust profile and spec/vectors changes return to the human at merge (always_human).
+
+## D-044 — T-06 satisfied on trunk (INC-2, 2026-10-11)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: —
+
+**Options considered**
+1. Merge inc-2/T-06-backlog through review. 2. Close T-06 as satisfied, because its rows are already on trunk.
+
+**Decision:** Option 2.
+
+**Reasoning:** Before the restart, B-24..B-27 also appeared as uncommitted lines in main's working tree, and they were committed with D-043 (4c823a3). The Orchestrator checked them: they are byte-identical to the verbatim rows in the T-06 contract. `git diff main inc-2/T-06-backlog -- docs/BACKLOG.md` is empty. The content is a verbatim FAST documentation spec with no code, so review adds nothing. The branch is retained, not merged. For the retro: an agent wrote outside its worktree. The likely cause is absolute paths into the main checkout.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:** The retro checks the worktree-isolation instructions in the engineer prompt.
