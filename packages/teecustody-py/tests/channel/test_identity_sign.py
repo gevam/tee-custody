@@ -30,6 +30,15 @@ def test_signature_does_not_verify_under_another_key_or_message() -> None:
         other.verify(signature, b"x" * 32)
 
 
+def test_signature_covers_the_exact_digest_bytes() -> None:
+    key = IdentityKey.generate()
+    digest = bytes(range(32))
+
+    signature = key.sign(digest)
+
+    Ed25519PublicKey.from_public_bytes(key.public_bytes()).verify(signature, digest)
+
+
 @pytest.mark.parametrize("length", [0, 31, 33, 64])
 def test_message_that_is_not_32_bytes_is_refused(length: int) -> None:
     with pytest.raises(ValueError, match=r"\AMESSAGE_LENGTH\Z") as excinfo:
