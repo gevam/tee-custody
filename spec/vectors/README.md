@@ -13,6 +13,7 @@ canonical CBOR rules and `proto` in `spec/wire/README.md`, the suite schema in
 | `wire/canonical-cbor.json` | Codec conformance cases for canonical CBOR rules 1–5 | hand-authored |
 | `wire/differential-corpus.json` | Seeded mutations with the Python codec's outcome (ADR 0010) | `teecustody-sim vectors` |
 | `attestation/suite.cbor` | INC-1 attestation vector suite, canonical CBOR per `spec/wire/attestation-vectors.cddl` | `teecustody-sim vectors` |
+| `channel/suite.cbor` | INC-2 channel vector suite, canonical CBOR per `spec/wire/channel-vectors.cddl` | `teecustody-sim vectors` |
 | `conftest.py`, `test_*.py` | Python conformance harness | hand-authored |
 
 ## Regeneration
@@ -50,6 +51,48 @@ One canonical-CBOR map conforming to `spec/wire/attestation-vectors.cddl`, decod
 `docs/tasks/INC-1/API.md` §G in order; `profile_json` and `production_profile_json` follow API.md §E. The
 suite holds public keys only.
 
+### `channel/suite.cbor`
+
+One canonical-CBOR map conforming to `spec/wire/channel-vectors.cddl`, decoded with limits
+(`CHANNEL_SUITE_LIMITS`) `max_bytes` 4 194 304, `max_depth` 8, `max_items` 65 536. Byte layouts are those of
+`spec/wire/README.md` "Channel byte layouts"; schema rules those of "Channel schema rules". The suite holds
+public keys, the development trust profile and synthetic per-run keys only (`recipient_private_key`, session
+keys); it never holds a workload or user key.
+
+- `verify_at_ms` (= `generated_at` × 1000) is "now" for every bundle and expiry check.
+- `bundle-case.instance_id` is the published instance id (`PublishedBundle.instanceId`).
+- `expect == "reject"` iff `error_code != "none"`, in `bundles`, `opens` and `frames`; in `results`,
+  `expect` is `accept`, `ignore` or `reject`, and `reject` iff `error_code == "INVALID_RESPONSE"`.
+- `bundle-case.usable_prekey_ids` is sorted ascending and empty iff `expect == "reject"`.
+- `open-case.plaintext`, `sk_c2t`, `sk_t2c` and `frame-case.plaintext` are non-nil iff `expect == "accept"`.
+- `result-case.plaintext` is the decrypted canonical plaintext iff the AEAD verifies (every `accept` case and
+  every `reject`/`INVALID_RESPONSE` case), nil for `ignore`. `request_id` is non-nil iff the envelope is an
+  `open_result`, `session_id` iff it is a `frame_result`; `last_seq` is −1 for an `open_result`.
+- `layout-case.inputs` keys, exactly: `prekey_preimage` → `instance_id`, `prekey_id`, `pub`, `not_after`,
+  `image_digest`; `hpke_info` → `ik_pub`, `prekey_id`; `session_nonce` → `seq`. `bytes` is the builder's
+  exact output iff `accept` (the 156-byte preimage, not its hash, for `prekey_preimage`), nil iff `reject`.
+
+Named cases (`docs/INC-2-API.md` §3.2). Each array holds exactly these ids, each once; order is not
+significant.
+
+| Array | Case ids |
+|---|---|
+| `bundles` | `valid`, `prekey_sig_corrupted`, `prekey_sig_other_digest`, `prekey_sig_other_instance`, `instance_mismatch`, `ik_nonce_mismatch`, `all_prekeys_expired`, `some_prekeys_expired` (accept), `expired_prekey_sig_corrupted` (`PREKEY_SIGNATURE_INVALID`, Q3), `prekey_ids_unsorted_or_duplicate` (`MALFORMED`, R-2), `published_at_over_max` and `not_after_over_max` (2^53, `MALFORMED`, R-1), `unknown_key`, `noncanonical`, `token_dbgstat_enabled` |
+| `opens` | `valid_open_session`, `valid_enroll`, `aad_modified`, `info_other_prekey`, `ct_truncated`, `enc_wrong_length`, `timestamp_over_max` (2^53, `INVALID_ENVELOPE`, R-1) |
+| `frames` | `<direction>_<name>` for direction `c2t` and `t2c` and name `valid`, `seq_equal_last`, `seq_below_last`, `seq_above_max`, `aad_op_modified`, `aad_session_modified`, `wrong_key`, `ct_bitflip` (16 ids, e.g. `c2t_valid`, `t2c_seq_equal_last`); `seq_above_max` carries `error_code` `INVALID_ENVELOPE` (2^53 fails the schema before any seq check) |
+| `results` | `open_ok`, `open_rejected`, `open_ok_nil_session` and `open_error_with_session` (`INVALID_RESPONSE`, R-3), `open_other_request_id` and `open_ct_bitflip` (ignore), `frame_ok`, `frame_re_mismatch` and `frame_seq_not_above_last` (ignore) |
+| `layouts` | `<kind>_accept` for each kind, and `<kind>_<field>_range` for each input field of that kind (one reject per `spec/wire/README.md` width/range rule): `prekey_preimage_accept`, `prekey_preimage_instance_id_range`, `prekey_preimage_prekey_id_range`, `prekey_preimage_pub_range`, `prekey_preimage_not_after_range`, `prekey_preimage_image_digest_range`, `hpke_info_accept`, `hpke_info_ik_pub_range`, `hpke_info_prekey_id_range`, `session_nonce_accept`, `session_nonce_seq_range` |
+
+Per-language split (API-TL TL-9):
+
+| Array | Python (`test_channel_suite.py`) | TypeScript (`tests/integration/contracts/channel-vectors.contract.test.ts`) |
+|---|---|---|
+| `bundles` | schema: `MALFORMED` cases fail `decode_bundle`, all others decode | all, through `verifyBundle` |
+| `opens` | all | `expect == "accept"` or `error_code == "OPEN_FAILED"`, through `createWebCrypto().setupHpkeReceiver` |
+| `frames` | `direction == "c2t"` | `direction == "t2c"` |
+| `results` | schema, via the `plaintext` field | all |
+| `layouts` | all | kinds `prekey_preimage` and `hpke_info` |
+
 ## Running
 
 ```
@@ -61,6 +104,7 @@ uv run pytest -q spec/vectors
 | `test_canonical_cbor.py` | `teecustody.wire` against `wire/canonical-cbor.json` |
 | `test_attestation_suite.py` | `attestation/suite.cbor` against the CDDL, the §G catalog and the §E profile shape |
 | `test_differential_corpus.py` | the corpus shape and `teecustody.wire` against every recorded outcome |
+| `test_channel_suite.py` | the approved `spec/wire` channel CDDL hashes and byte-layout text; `channel/suite.cbor` against the CDDL, the named cases and the Python column of TL-9; a seeded mutation fuzz (seed 1, 2 000 mutations per request/response envelope, each decode < 50 ms, only `EnvelopeError`) |
 
-Besides pytest, the harness imports only `teecustody.wire` and the standard library; it never imports
-the simulator.
+Besides pytest, the harness imports only `teecustody` (`wire` for the INC-1 files; `wire`, `channel`,
+`config` and `secrets` for the channel suite) and the standard library; it never imports the simulator.
