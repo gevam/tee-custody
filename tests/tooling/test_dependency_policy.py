@@ -721,3 +721,59 @@ def test_unnamed_npm_manifest_has_no_library_closure(
     _write(clean_tree, WEB_MANIFEST, '{"private": true}')
     assert _violations(tool, clean_tree, capsys) == []
     assert tool.WEB_PACKAGE not in tool.load_repo(clean_tree).library_closures
+
+
+# CI wiring (T-05; WAVES.md "Orchestrator actions" item 1, API-TL TL-7). PyYAML is not a dependency,
+# so the workflow is read line by line.
+CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+CI_COMMANDS = [
+    "uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway"
+    " tests && pnpm -r test && uv run pytest -q spec/vectors",
+    "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict"
+    " packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src"
+    " && pnpm -r lint && pnpm -r typecheck"
+    " && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off",
+    "uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway"
+    " --cov-report=term-missing packages/teecustody-py packages/teecustody-sim"
+    " examples/notes-app/gateway && pnpm -r coverage",
+]
+
+
+def _ci_job(name: str) -> list[str]:
+    """The lines of one job under `jobs:` (two-space key), without the key line."""
+    lines = CI_WORKFLOW.read_text().splitlines()
+    start = lines.index(f"  {name}:") + 1
+    end = next((i for i in range(start, len(lines)) if re.match(r"^  \S", lines[i])), len(lines))
+    return lines[start:end]
+
+
+@pytest.mark.parametrize(
+    ("job", "command"), list(zip(["test", "lint", "coverage"], CI_COMMANDS, strict=True))
+)
+def test_ci_runs_the_framework_commands_verbatim(job: str, command: str) -> None:
+    assert f"        run: {command}" in _ci_job(job)
+
+
+def test_ci_has_a_browser_job_without_secrets() -> None:
+    job = _ci_job("browser")
+    steps = [line.strip() for line in job]
+    assert "if: github.event_name == 'push' || github.event_name == 'pull_request'" in steps
+    assert "timeout-minutes: 30" in steps
+    for run in [
+        "uv sync --locked",
+        "pnpm install --frozen-lockfile",
+        "pnpm --filter @teecustody/web exec playwright install --with-deps chromium firefox webkit",
+        "pnpm --filter @teecustody/web run test:browser",
+    ]:
+        assert f"- run: {run}" in steps or f"run: {run}" in steps, run
+    for action in ["actions/checkout@", "astral-sh/setup-uv@", "pnpm/action-setup@"]:
+        assert any(action in step for step in steps), action
+    assert 'node-version: "22"' in steps
+    assert not any("secrets." in line for line in job)
+
+    # checkout, setup-uv, pnpm and node steps (with their pins) are identical to the `test` job's.
+    def setup(lines: list[str]) -> list[str]:
+        start = lines.index("    steps:")
+        return lines[start : lines.index("          cache: pnpm", start) + 1]
+
+    assert setup(job) == setup(_ci_job("test"))

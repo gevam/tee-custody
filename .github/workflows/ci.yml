@@ -1,5 +1,6 @@
 # CI for tee-custody (T-14; SR-9, NFR-11). Runs against the simulator only: no cloud credentials and
-# no repository secrets. test/lint/coverage run framework.yaml's commands verbatim.
+# no repository secrets. test/lint/coverage run framework.yaml's commands verbatim (the INC-2 strings in
+# docs/tasks/INC-2/WAVES.md "Orchestrator actions"); `browser` runs the Playwright suites (TL-7).
 # Every third-party action is pinned by full commit SHA; scanners run from exact pins via uvx.
 # Trivy is deferred to INC-5: it scans the workload image and INC-1 builds no image (WAVES.md R-9).
 name: ci
@@ -41,7 +42,7 @@ jobs:
       - run: uv sync --locked
       - run: pnpm install --frozen-lockfile
       - name: test_command
-        run: uv run pytest -q packages/teecustody-py packages/teecustody-sim tests && pnpm -r test && uv run pytest -q spec/vectors
+        run: uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway tests && pnpm -r test && uv run pytest -q spec/vectors
       - name: repository-level tests
         run: uv run pytest -q tests
 
@@ -65,9 +66,8 @@ jobs:
       - run: uv sync --locked
       - run: pnpm install --frozen-lockfile
       - name: lint_command
-        run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src && pnpm -r lint && pnpm -r typecheck
-      - name: semgrep static policy (bypass-resistant layer behind ruff and ESLint)
-        run: uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
+        # Includes semgrep, the bypass-resistant layer behind ruff and ESLint (D-028, D-038).
+        run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
       - name: semgrep ignore-list probe
         # .semgrepignore must not hide src/**/{tests,test,vendor,build}; the probe copies are staged
         # in this CI workspace only (semgrep scans tracked files) and never committed.
@@ -174,7 +174,32 @@ jobs:
       - run: uv sync --locked
       - run: pnpm install --frozen-lockfile
       - name: coverage_command
-        run: uv run pytest --cov=teecustody --cov=teecustody_sim --cov-report=term-missing packages/teecustody-py packages/teecustody-sim && pnpm -r coverage
+        run: uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway --cov-report=term-missing packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway && pnpm -r coverage
+
+  browser:
+    # API-TL TL-7 (D-039 Q4): Playwright suites for @teecustody/web (CSP harness, PRF vault) run here,
+    # not in test_command, because browser binaries are not clean-checkout runnable. It reads no
+    # repository secret.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.17"
+          python-version: "3.12"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: uv sync --locked
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @teecustody/web exec playwright install --with-deps chromium firefox webkit
+      - run: pnpm --filter @teecustody/web run test:browser
 
   security:
     # Also nightly, so newly published advisories and leaked-secret rules reach unchanged code.
