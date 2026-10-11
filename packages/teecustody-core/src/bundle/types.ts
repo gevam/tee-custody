@@ -55,3 +55,32 @@ export interface BundleDeps {
     readonly verifierLimits: VerifierLimits;
     readonly bundleLimits: BundleLimits;
 }
+
+// internal (not exported from index.ts): the runtime brand registry for VerifiedBundle (B-13)
+
+const verifiedBundles = new WeakSet();
+
+// deep-freezes (pre-key list, entries, copied key bytes) and registers
+export function createVerifiedBundle(
+    f: Omit<VerifiedBundle, typeof verifiedBundle>,
+): VerifiedBundle {
+    const bundle = Object.freeze({
+        ...f,
+        identityPublicKey: f.identityPublicKey.slice(),
+        prekeys: Object.freeze(
+            f.prekeys.map((p) =>
+                Object.freeze({
+                    id: p.id,
+                    publicKey: p.publicKey.slice(),
+                    notAfterMs: p.notAfterMs,
+                }),
+            ),
+        ),
+    }) as VerifiedBundle;
+    verifiedBundles.add(bundle);
+    return bundle;
+}
+
+export function isVerifiedBundle(v: unknown): v is VerifiedBundle {
+    return typeof v === "object" && v !== null && verifiedBundles.has(v);
+}
