@@ -197,7 +197,10 @@ def test_npm_range_on_approved_crypto_is_unpinned(
 ) -> None:
     text = (clean_tree / CORE_MANIFEST).read_text().replace('"1.9.0"', '"^1.9.0"')
     _write(clean_tree, CORE_MANIFEST, text)
-    assert _violations(tool, clean_tree, capsys) == ["VIOLATION crypto-unpinned @hpke/core"]
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION crypto-unpinned @hpke/core",
+        "VIOLATION crypto-unpinned-range @hpke/core",
+    ]
 
 
 def test_npm_lock_entry_without_integrity_is_unpinned(
@@ -572,3 +575,149 @@ def test_every_override_names_an_allowed_licence_and_pinned_evidence(tool: Modul
         assert re.fullmatch(
             r"https://github\.com/[^/]+/[^/]+/blob/[0-9a-f]{40}/LICENSE", override.evidence
         )
+
+
+# INC-2 (T-05): HPKE dependency closure, exact HPKE pins, web runtime closure (ADR 0011 C3, SR-9).
+
+INC2_CASES = [
+    ("web-runtime-closure", ["VIOLATION web-runtime-closure rogue-shim"]),
+    (
+        "hpke-closure",
+        [
+            "VIOLATION crypto-unapproved @hpke/dhkem-x25519",
+            "VIOLATION hpke-closure @hpke/dhkem-x25519",
+        ],
+    ),
+    (
+        "crypto-unpinned-range-hpke-core",
+        ["VIOLATION crypto-unpinned @hpke/core", "VIOLATION crypto-unpinned-range @hpke/core"],
+    ),
+    (
+        "crypto-unpinned-range-pyhpke",
+        ["VIOLATION crypto-unpinned pyhpke", "VIOLATION crypto-unpinned-range pyhpke"],
+    ),
+    ("pyhpke-runtime-deps", ["VIOLATION pyhpke-runtime-deps typing-extensions"]),
+]
+
+
+@pytest.mark.parametrize(("case", "expected"), INC2_CASES)
+def test_inc2_rule_reports_its_violation_and_fails(
+    tool: ModuleType,
+    clean_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+    expected: list[str],
+) -> None:
+    _apply_overlay(clean_tree, case)
+    assert _violations(tool, clean_tree, capsys) == expected
+
+
+GATEWAY_MANIFEST = "examples/notes-app/gateway/pyproject.toml"
+WEB_MANIFEST = "packages/teecustody-web/package.json"
+
+
+def test_gateway_manifest_is_discovered(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        clean_tree,
+        GATEWAY_MANIFEST,
+        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\ndependencies = ["pyaes==1.6.1"]\n',
+    )
+    assert _violations(tool, clean_tree, capsys) == ["VIOLATION forbidden pyaes"]
+
+
+def test_web_manifest_is_discovered(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        clean_tree,
+        WEB_MANIFEST,
+        '{"name": "@teecustody/web", "dependencies": {"@hpke/common": "~1.9.0"}}',
+    )
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION crypto-unpinned @hpke/common",
+        "VIOLATION crypto-unpinned-range @hpke/common",
+    ]
+
+
+@pytest.mark.parametrize(
+    "name", ["@hpke/dhkem-x448", "@hpke/chacha20poly1305", "@noble/hashes", "tweetnacl"]
+)
+def test_banned_package_in_core_runtime_closure_fails_hpke_closure(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    lock = _add_npm_package(
+        (clean_tree / "pnpm-lock.yaml").read_text(), name, "1.0.0", "'@hpke/core@1.9.0'"
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys) == [
+        f"VIOLATION crypto-unapproved {name}",
+        f"VIOLATION hpke-closure {name}",
+    ]
+
+
+def test_banned_package_in_library_runtime_closure_fails_hpke_closure(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "tweetnacl", "1.0.0", "cbor2")
+    _write(clean_tree, "uv.lock", lock)
+    assert _violations(tool, clean_tree, capsys) == [
+        "VIOLATION crypto-unapproved tweetnacl",
+        "VIOLATION hpke-closure tweetnacl",
+    ]
+
+
+def test_banned_package_reached_only_from_dev_tooling_is_not_an_hpke_closure_violation(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_npm_package(
+        (clean_tree / "pnpm-lock.yaml").read_text(), "tweetnacl", "1.0.0", "typescript@5.9.3"
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys) == ["VIOLATION crypto-unapproved tweetnacl"]
+
+
+def test_web_runtime_closure_includes_the_linked_core_closure(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _apply_overlay(clean_tree, "web-runtime-closure")
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    lock = lock.replace("      rogue-shim: 1.0.0\n", "", 1)
+    lock = lock.replace(
+        "  packages/teecustody-core:\n    dependencies:\n",
+        "  packages/teecustody-core:\n    dependencies:\n"
+        "      rogue-shim:\n        specifier: 1.0.0\n        version: 1.0.0\n",
+        1,
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys) == ["VIOLATION web-runtime-closure rogue-shim"]
+
+
+def test_dev_only_workspace_link_does_not_extend_the_web_runtime_closure(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _apply_overlay(clean_tree, "web-runtime-closure")
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    lock = lock.replace("      rogue-shim: 1.0.0\n", "", 1)
+    lock = lock.replace(
+        "  packages/teecustody-core:\n    dependencies:\n",
+        "  packages/teecustody-core:\n    dependencies:\n"
+        "      rogue-shim:\n        specifier: 1.0.0\n        version: 1.0.0\n",
+        1,
+    )
+    lock = lock.replace(
+        "      '@teecustody/core':\n        specifier: workspace:*\n",
+        "    devDependencies:\n      '@teecustody/core':\n        specifier: workspace:*\n",
+        1,
+    )
+    _write(clean_tree, "pnpm-lock.yaml", lock)
+    assert _violations(tool, clean_tree, capsys) == []
+
+
+def test_unnamed_npm_manifest_has_no_library_closure(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(clean_tree, WEB_MANIFEST, '{"private": true}')
+    assert _violations(tool, clean_tree, capsys) == []
+    assert tool.WEB_PACKAGE not in tool.load_repo(clean_tree).library_closures

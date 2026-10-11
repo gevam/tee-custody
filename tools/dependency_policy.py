@@ -8,6 +8,7 @@ import argparse
 import calendar
 import datetime as dt
 import json
+import posixpath
 import re
 import sys
 import tomllib
@@ -26,6 +27,8 @@ FORBIDDEN = frozenset(
 SIM_PACKAGE = "teecustody-sim"
 LIBRARY_PACKAGE = "teecustody"
 CORE_PACKAGE = "@teecustody/core"
+WEB_PACKAGE = "@teecustody/web"
+PYHPKE = "pyhpke"
 CBOR_X = "cbor-x"
 # framework.yaml forbidden_dependencies items that are conditional rather than lock-wide bans.
 FORBIDDEN_CONDITIONAL = {SIM_PACKAGE: "sim-in-library"}
@@ -75,8 +78,19 @@ KNOWN_CRYPTO = frozenset(
 )
 # @hpke/* other than the approved @hpke/core are pure-JS KEM/AEAD add-ons (e.g. @hpke/dhkem-x25519).
 KNOWN_CRYPTO_PREFIXES = ("@noble/", "@stablelib/", "@hpke/")
-APPROVED_CRYPTO = frozenset({"cryptography", "pyhpke", "tink", "cbor2", "@hpke/core", "cbor-x"})
+APPROVED_CRYPTO = frozenset(
+    {"cryptography", "pyhpke", "tink", "cbor2", "@hpke/core", "@hpke/common", "cbor-x"},
+)
 CORE_RUNTIME_ALLOWED = frozenset({"@hpke/core"})
+# ADR 0011 C3: the web runtime closure is Core plus the @hpke/core distribution, nothing else.
+WEB_RUNTIME_ALLOWED = frozenset({CORE_PACKAGE, "@hpke/core", "@hpke/common"})
+# ADR 0011 C3: pure-JS KEM/AEAD and curve packages never reach a library runtime closure.
+HPKE_CLOSURE_BANNED = frozenset(
+    {"@hpke/dhkem-x25519", "@hpke/dhkem-x448", "@hpke/chacha20poly1305", "tweetnacl"},
+)
+HPKE_CLOSURE_BANNED_PREFIXES = ("@noble/",)
+EXACT_PIN_REQUIRED = frozenset({"@hpke/core", "@hpke/common", PYHPKE})
+PYHPKE_RUNTIME_ALLOWED = frozenset({"cryptography"})
 
 LICENCES = frozenset(
     {
@@ -131,8 +145,12 @@ RULE_ORDER = (
     "forbidden",
     "crypto-unapproved",
     "crypto-unpinned",
+    "crypto-unpinned-range",
     "sim-in-library",
     "core-runtime-deps",
+    "web-runtime-closure",
+    "hpke-closure",
+    "pyhpke-runtime-deps",
     "cbor-x-unused",
     "licence",
     "stale",
@@ -192,6 +210,9 @@ class LockData:
     graph: dict[str, set[str]] = field(default_factory=dict)
     runtime_graph: dict[str, set[str]] = field(default_factory=dict)
     runtime_roots: set[str] = field(default_factory=set)
+    # Per pnpm importer path: runtime name@version roots, and runtime `link:` importer paths.
+    importer_roots: dict[str, set[str]] = field(default_factory=dict)
+    importer_links: dict[str, set[str]] = field(default_factory=dict)
     members: set[str] = field(default_factory=set)
     errors: set[Violation] = field(default_factory=set)
 
@@ -203,7 +224,9 @@ class Repo:
     locked: tuple[Locked, ...]
     direct: tuple[Dependency, ...]
     uv_graph: dict[str, set[str]]
+    uv_runtime_graph: dict[str, set[str]]
     runtime: frozenset[Node]
+    library_closures: dict[str, frozenset[str]]  # library package -> names in its runtime closure
     npm_manifests: tuple[dict[str, Any], ...]
     workspace: frozenset[str]
     lock_errors: frozenset[Violation]
@@ -285,7 +308,7 @@ class _PnpmParser:
         self.entry: str | None = None
         self.group: str | None = None
         self.dep: str | None = None
-        self.importer_deps: list[tuple[str, str, str]] = []  # (group, name, version)
+        self.importer_deps: list[tuple[str, str, str, str]] = []  # (importer, group, name, version)
         self.hashed: dict[str, bool] = {}
 
     def parse(self, text: str) -> LockData:
@@ -332,9 +355,16 @@ class _PnpmParser:
         elif dep and self.group and dep.group("version") is None:
             self.dep = dep.group("name")
         elif value and self.group and self.dep:
-            if value.group("field") == "version" and not value.group("value").startswith("link:"):
-                version = _base_version(value.group("value"))
-                self.importer_deps.append((self.group, self.dep, version))
+            if value.group("field") != "version":
+                return
+            if value.group("value").startswith("link:"):
+                if self.group != "devDependencies":
+                    target = posixpath.join(self.entry, value.group("value")[len("link:") :])
+                    links = self.lock.importer_links.setdefault(self.entry, set())
+                    links.add(posixpath.normpath(target))
+                return
+            version = _base_version(value.group("value"))
+            self.importer_deps.append((self.entry, self.group, self.dep, version))
         else:
             raise ValueError(f"unexpected importer line: {line!r}")
 
@@ -381,11 +411,12 @@ def _parse_pnpm_lock(path: Path) -> LockData:
         failed.errors.add(("lock-unparseable", PNPM_LOCK))
         return failed
     keys = set(parser.hashed)
-    for group, name, version in parser.importer_deps:
+    for importer, group, name, version in parser.importer_deps:
         if f"{name}@{version}" not in keys:
             lock.errors.add(("lock-inconsistent", name))
         elif group != "devDependencies":
             lock.runtime_roots.add(f"{name}@{version}")
+            lock.importer_roots.setdefault(importer, set()).add(f"{name}@{version}")
     return lock
 
 
@@ -451,10 +482,31 @@ def _runtime_nodes(
     return frozenset(node for node in nodes if node[1] not in workspace)
 
 
+def _npm_library_closures(
+    root: Path, manifests: dict[Path, dict[str, Any]], pnpm: LockData
+) -> dict[str, frozenset[str]]:
+    """Runtime closure, by name, of every npm workspace package; workspace links are followed."""
+    closures: dict[str, frozenset[str]] = {}
+    for path, manifest in manifests.items():
+        if "name" not in manifest:
+            continue
+        importer = path.parent.relative_to(root).as_posix()
+        importers = {importer} | _closure(pnpm.importer_links, [importer])
+        roots = {node for i in importers for node in pnpm.importer_roots.get(i, set())}
+        nodes = roots | _closure(pnpm.graph, roots)
+        closures[str(manifest["name"])] = frozenset(_split_pnpm_key(n)[0] for n in nodes)
+    return closures
+
+
 def load_repo(root: Path) -> Repo:
-    pyprojects = [root / "pyproject.toml", *sorted(root.glob("packages/*/pyproject.toml"))]
+    pyprojects = [
+        root / "pyproject.toml",
+        *sorted(root.glob("packages/*/pyproject.toml")),
+        root / "examples" / "notes-app" / "gateway" / "pyproject.toml",
+    ]
     package_jsons = [root / "package.json", *sorted(root.glob("packages/*/package.json"))]
-    npm_manifests = tuple(_read_json(path) for path in package_jsons if path.is_file())
+    manifests = {path: _read_json(path) for path in package_jsons if path.is_file()}
+    npm_manifests = tuple(manifests.values())
     direct = _python_direct(pyprojects) + _npm_direct(npm_manifests)
     uv = _parse_uv_lock(root / UV_LOCK) if (root / UV_LOCK).is_file() else LockData()
     pnpm = _parse_pnpm_lock(root / PNPM_LOCK) if (root / PNPM_LOCK).is_file() else LockData()
@@ -475,7 +527,12 @@ def load_repo(root: Path) -> Repo:
         locked=tuple(uv.locked + pnpm.locked),
         direct=tuple(direct),
         uv_graph=uv.graph,
+        uv_runtime_graph=uv.runtime_graph,
         runtime=_runtime_nodes(uv, pnpm, direct, workspace),
+        library_closures={
+            LIBRARY_PACKAGE: frozenset(_closure(uv.runtime_graph, [LIBRARY_PACKAGE])),
+            **_npm_library_closures(root, manifests, pnpm),
+        },
         npm_manifests=npm_manifests,
         workspace=frozenset(workspace),
         lock_errors=frozenset(errors),
@@ -524,6 +581,12 @@ def check_crypto_unpinned(repo: Repo) -> Iterable[Violation]:
             yield "crypto-unpinned", dependency.name
 
 
+def check_crypto_unpinned_range(repo: Repo) -> Iterable[Violation]:
+    for dependency in repo.direct:
+        if dependency.name in EXACT_PIN_REQUIRED and not _is_exact(dependency):
+            yield "crypto-unpinned-range", dependency.name
+
+
 def check_sim_in_library(repo: Repo) -> Iterable[Violation]:
     if SIM_PACKAGE in _closure(repo.uv_graph, [LIBRARY_PACKAGE]):
         yield "sim-in-library", SIM_PACKAGE
@@ -542,6 +605,24 @@ def check_core_runtime_deps(repo: Repo) -> Iterable[Violation]:
             for name in manifest.get(group, {}):
                 if name not in CORE_RUNTIME_ALLOWED:
                     yield "core-runtime-deps", name
+
+
+def check_web_runtime_closure(repo: Repo) -> Iterable[Violation]:
+    for name in repo.library_closures.get(WEB_PACKAGE, frozenset()):
+        if name not in WEB_RUNTIME_ALLOWED:
+            yield "web-runtime-closure", name
+
+
+def check_hpke_closure(repo: Repo) -> Iterable[Violation]:
+    for library in (LIBRARY_PACKAGE, CORE_PACKAGE, WEB_PACKAGE):
+        for name in repo.library_closures.get(library, frozenset()):
+            if name in HPKE_CLOSURE_BANNED or name.startswith(HPKE_CLOSURE_BANNED_PREFIXES):
+                yield "hpke-closure", name
+
+
+def check_pyhpke_runtime_deps(repo: Repo) -> Iterable[Violation]:
+    for name in repo.uv_runtime_graph.get(PYHPKE, set()) - PYHPKE_RUNTIME_ALLOWED:
+        yield "pyhpke-runtime-deps", name
 
 
 def check_cbor_x_unused(repo: Repo) -> Iterable[Violation]:
@@ -757,8 +838,12 @@ def evaluate(root: Path, offline: bool, fetch_json: FetchJson, today: dt.date) -
         check_forbidden,
         check_crypto_unapproved,
         check_crypto_unpinned,
+        check_crypto_unpinned_range,
         check_sim_in_library,
         check_core_runtime_deps,
+        check_web_runtime_closure,
+        check_hpke_closure,
+        check_pyhpke_runtime_deps,
         check_cbor_x_unused,
     ):
         found.update(check(repo))
