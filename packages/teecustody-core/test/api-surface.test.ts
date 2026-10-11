@@ -147,6 +147,8 @@ describe("wire/types.ts", () => {
 // Any added parameter, option, property, or changed return type fails type-checking.
 type StringKeyed<T> = { [K in keyof T as K extends string ? K : never]: T[K] };
 type BrandKey<T> = Exclude<keyof T, string>;
+// The frozen surface of a class: its public members, so the owner may add #private state (API-TL §1).
+type PublicMembers<T> = Pick<T, keyof T>;
 
 describe("API.md §D type pins", () => {
     it("pins the capability contracts", () => {
@@ -590,11 +592,11 @@ describe("INC-2-API §7 type pins", () => {
         expectTypeOf(core.ChannelClient).constructorParameters.toEqualTypeOf<
             [ChannelClientConfig]
         >();
-        expectTypeOf<core.ChannelClient>().toEqualTypeOf<{
+        expectTypeOf<PublicMembers<core.ChannelClient>>().toEqualTypeOf<{
             fetchVerifiedBundles(): Promise<readonly VerifiedBundle[]>;
             open(payload: OpenPayload, bundle?: VerifiedBundle): Promise<OpenOutcome>;
         }>();
-        expectTypeOf<core.Session>().toEqualTypeOf<{
+        expectTypeOf<PublicMembers<core.Session>>().toEqualTypeOf<{
             readonly sessionId: Uint8Array;
             readonly instanceId: string;
             readonly clientId: string;
