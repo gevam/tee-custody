@@ -1,6 +1,7 @@
 // Frozen Core API surface (API.md §D): exact public names, final wire types.
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import { FrameReject, type FrameRejectCode } from "../src/channel/errors.js";
 import * as core from "../src/index.js";
 import type {
     AttestationCheckId,
@@ -674,5 +675,39 @@ describe("DEFAULT_CHANNEL_LIMITS (INC-2-API §7.4)", () => {
         ]) {
             expect(Object.isFrozen(value)).toBe(true);
         }
+    });
+});
+
+describe("channel and bundle error classes (INC-2-API §7.2, §7.5; API-TL §3)", () => {
+    it("BundleError carries its code as message and an optional attestation check", () => {
+        const plain = new core.BundleError("MALFORMED");
+        expect(plain).toBeInstanceOf(Error);
+        expect(plain.message).toBe("MALFORMED");
+        expect(plain.code).toBe("MALFORMED");
+        expect(plain.attestationCheck).toBeUndefined();
+        const failed = new core.BundleError("ATTESTATION_FAILED", "nonce");
+        expect(failed.message).toBe("ATTESTATION_FAILED");
+        expect(failed.attestationCheck).toBe("nonce");
+    });
+
+    it("ChannelError carries its code as message and an optional detail", () => {
+        const plain = new core.ChannelError("TIMEOUT");
+        expect(plain).toBeInstanceOf(Error);
+        expect(plain.message).toBe("TIMEOUT");
+        expect(plain.code).toBe("TIMEOUT");
+        expect(plain.detail).toBeUndefined();
+        const remote = new core.ChannelError("REMOTE_ERROR", "UNKNOWN_CLIENT");
+        expect(remote.message).toBe("REMOTE_ERROR");
+        expect(remote.detail).toBe("UNKNOWN_CLIENT");
+    });
+
+    it("FrameReject (internal) carries its code as message", () => {
+        const reject = new FrameReject("SEQ_REJECTED");
+        expect(reject).toBeInstanceOf(Error);
+        expect(reject.message).toBe("SEQ_REJECTED");
+        expect(reject.code).toBe("SEQ_REJECTED");
+        expectTypeOf<FrameRejectCode>().toEqualTypeOf<
+            "INVALID_ENVELOPE" | "SEQ_REJECTED" | "AUTH_FAILED"
+        >();
     });
 });

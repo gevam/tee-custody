@@ -16,6 +16,8 @@ export default defineConfig({
                 functions: 80,
                 statements: 80,
                 "src/attestation/**": FULL,
+                "src/bundle/**": FULL,
+                "src/channel/**": FULL,
                 "src/wire/**": FULL,
             },
         },
