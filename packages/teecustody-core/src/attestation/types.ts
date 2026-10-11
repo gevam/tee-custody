@@ -135,12 +135,20 @@ export function isBrandedTrustProfile(p: unknown): p is TrustProfile {
     return typeof p === "object" && p !== null && brandedProfiles.has(p);
 }
 
-// frozen
+const verifiedAttestations = new WeakSet();
+
+// frozen, registers in a module WeakSet (B-13)
 export function createVerifiedAttestation(
     f: Omit<VerifiedAttestation, typeof verified>,
 ): VerifiedAttestation {
-    return Object.freeze({
+    const attestation = Object.freeze({
         ...f,
         signerKeyIds: Object.freeze([...f.signerKeyIds]),
     }) as VerifiedAttestation;
+    verifiedAttestations.add(attestation);
+    return attestation;
+}
+
+export function isVerifiedAttestation(v: unknown): v is VerifiedAttestation {
+    return typeof v === "object" && v !== null && verifiedAttestations.has(v);
 }
