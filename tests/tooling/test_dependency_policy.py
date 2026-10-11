@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -777,3 +778,16 @@ def test_ci_has_a_browser_job_without_secrets() -> None:
         return lines[start : lines.index("          cache: pnpm", start) + 1]
 
     assert setup(job) == setup(_ci_job("test"))
+
+
+def test_gitleaks_allowlist_holds_exactly_the_synthetic_vector_files() -> None:
+    config = tomllib.loads((REPO / ".gitleaks.toml").read_text())
+    assert config == {
+        "extend": {"useDefault": True},
+        "allowlist": {
+            "paths": [
+                r"^spec/vectors/channel/suite\.cbor$",
+                r"^tests/fixtures/rfc9180/test-vectors\.json$",
+            ],
+        },
+    }
