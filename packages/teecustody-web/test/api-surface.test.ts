@@ -15,6 +15,10 @@ import type {
     ShareVault,
     Transport,
 } from "@teecustody/core";
+import { fileURLToPath } from "node:url";
+
+import { ESLint } from "eslint";
+import tseslint from "typescript-eslint";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import * as web from "../src/index.js";
@@ -113,5 +117,79 @@ describe("INC-2-API §8 type pins", () => {
 
     it("pins systemClock (§8.5)", () => {
         expectTypeOf(web.systemClock).toEqualTypeOf<Clock>();
+    });
+});
+
+describe("ESLint policy for packages/teecustody-web/src (NFR-6, SR-13, SR-14 C5)", () => {
+    const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    // The policy rules are syntactic; type-aware rules are disabled so a virtual file can be linted.
+    const eslint = new ESLint({
+        cwd: repoRoot,
+        overrideConfig: tseslint.configs.disableTypeChecked,
+    });
+    const WEB_SRC = "packages/teecustody-web/src/transport/x.ts";
+    const WEBCRYPTO = "packages/teecustody-web/src/crypto/webcrypto.ts";
+    const CORE_SRC = "packages/teecustody-core/src/channel/x.ts";
+    const WEB_TEST = "packages/teecustody-web/test/x.test.ts";
+
+    async function ruleIds(code: string, filePath: string): Promise<(string | null)[]> {
+        const [result] = await eslint.lintText(code, { filePath });
+        return (result?.messages ?? []).filter((m) => m.severity === 2).map((m) => m.ruleId);
+    }
+
+    it.each([
+        ["const x = 1;\nvoid { ekm: x };", "no-restricted-syntax"],
+        ["const x = 1;\nvoid { psk: x };", "no-restricted-syntax"],
+        ["const x = 1;\nvoid { pskId: x };", "no-restricted-syntax"],
+        ["const x = 1;\nvoid { senderKey: x };", "no-restricted-syntax"],
+        ["const x = 1;\nvoid { senderPublicKey: x };", "no-restricted-syntax"],
+        ["const ekm = 1;\nvoid ekm;", "no-restricted-syntax"],
+        [
+            "export function f(senderKey: number): number {\n    return senderKey;\n}",
+            "no-restricted-syntax",
+        ],
+        ['import "@hpke/core";', "no-restricted-imports"],
+        ['import "@hpke/dhkem-x25519";', "no-restricted-imports"],
+        ['void import("@hpke/core");', "no-restricted-syntax"],
+        ['import "node:fs";', "no-restricted-imports"],
+        ['import "fs";', "no-restricted-imports"],
+        ['void import("node:fs");', "no-restricted-syntax"],
+        ['import "cbor-x";', "no-restricted-imports"],
+        ["const name = String(1);\nvoid import(name);", "no-restricted-syntax"],
+        ['eval("1");', "no-eval"],
+        ['new Function("");', "no-new-func"],
+        ['setTimeout("run()", 1);', "no-implied-eval"],
+    ])("rejects %s in web src", async (code, rule) => {
+        expect(await ruleIds(code, WEB_SRC)).toContain(rule);
+    });
+
+    it("allows @hpke/core only in src/crypto/webcrypto.ts, where C5 and Node bans still hold", async () => {
+        expect(await ruleIds('import "@hpke/core";', WEBCRYPTO)).toEqual([]);
+        expect(await ruleIds("const x = 1;\nvoid { ekm: x };", WEBCRYPTO)).toContain(
+            "no-restricted-syntax",
+        );
+        expect(await ruleIds('import "node:fs";', WEBCRYPTO)).toContain("no-restricted-imports");
+        expect(await ruleIds('import "cbor-x";', WEBCRYPTO)).toContain("no-restricted-imports");
+    });
+
+    it.each([
+        ["const x = 1;\nvoid { ekm: x };", "no-restricted-syntax"],
+        ["const pskId = 1;\nvoid pskId;", "no-restricted-syntax"],
+        ['import "node:fs";', "no-restricted-imports"],
+        ["const name = String(1);\nvoid import(name);", "no-restricted-syntax"],
+    ])("rejects %s in core src", async (code, rule) => {
+        expect(await ruleIds(code, CORE_SRC)).toContain(rule);
+    });
+
+    it("accepts ordinary web source", async () => {
+        const code =
+            'import { CapabilityError } from "@teecustody/core";\nvoid { key: CapabilityError };';
+        expect(await ruleIds(code, WEB_SRC)).toEqual([]);
+    });
+
+    it("allows HPKE seams, @hpke and Node imports in tests", async () => {
+        const code =
+            'import "@hpke/core";\nimport "node:fs";\nconst x = 1;\nvoid { ekm: x, psk: x };';
+        expect(await ruleIds(code, WEB_TEST)).toEqual([]);
     });
 });
