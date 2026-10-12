@@ -1,6 +1,9 @@
 {
     "name": "@teecustody/web",
     "version": "0.0.0",
+    "dependencies": {
+        "@hpke/core": "1.9.0"
+    },
     "devDependencies": {
         "cbor-x": "1.6.0"
     }

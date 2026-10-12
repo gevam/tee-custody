@@ -81,7 +81,7 @@ KNOWN_CRYPTO_PREFIXES = ("@noble/", "@stablelib/", "@hpke/")
 APPROVED_CRYPTO = frozenset(
     {"cryptography", "pyhpke", "tink", "cbor2", "@hpke/core", "@hpke/common", "cbor-x"},
 )
-CORE_RUNTIME_ALLOWED = frozenset({"@hpke/core"})
+CORE_RUNTIME_ALLOWED: frozenset[str] = frozenset()  # Core has no runtime dependencies (C3, A2)
 # ADR 0011 C3: the web runtime closure is Core plus the @hpke/core distribution, nothing else.
 WEB_RUNTIME_ALLOWED = frozenset({CORE_PACKAGE, "@hpke/core", "@hpke/common"})
 # ADR 0011 C3: pure-JS KEM/AEAD and curve packages never reach a library runtime closure.

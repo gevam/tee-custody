@@ -190,14 +190,14 @@ def _violations(
     return lines
 
 
-CORE_MANIFEST = "packages/teecustody-core/package.json"
+WEB_MANIFEST = "packages/teecustody-web/package.json"
 
 
 def test_npm_range_on_approved_crypto_is_unpinned(
     tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    text = (clean_tree / CORE_MANIFEST).read_text().replace('"1.9.0"', '"^1.9.0"')
-    _write(clean_tree, CORE_MANIFEST, text)
+    text = (clean_tree / WEB_MANIFEST).read_text().replace('"1.9.0"', '"^1.9.0"')
+    _write(clean_tree, WEB_MANIFEST, text)
     assert _violations(tool, clean_tree, capsys) == [
         "VIOLATION crypto-unpinned @hpke/core",
         "VIOLATION crypto-unpinned-range @hpke/core",
@@ -262,9 +262,9 @@ def test_simulator_reached_transitively_from_the_library_is_rejected(
 def test_core_peer_dependencies_count_as_runtime(
     tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    manifest = json.loads((clean_tree / CORE_MANIFEST).read_text())
+    manifest = json.loads((clean_tree / "packages/teecustody-core/package.json").read_text())
     manifest["peerDependencies"] = {"zod": "3.0.0"}
-    _write(clean_tree, CORE_MANIFEST, json.dumps(manifest))
+    _write(clean_tree, "packages/teecustody-core/package.json", json.dumps(manifest))
     assert _violations(tool, clean_tree, capsys) == ["VIOLATION core-runtime-deps zod"]
 
 
@@ -505,6 +505,8 @@ def test_transitive_runtime_npm_dependency_is_age_checked(
     lock = _add_npm_package(
         (clean_tree / "pnpm-lock.yaml").read_text(), "old-js", "1.0.0", "'@hpke/core@1.9.0'"
     )
+    # A host-app importer, not a library: old-js is runtime but outside the web allow-list (A2).
+    lock = lock.replace("  packages/teecustody-web:\n", "  examples/notes-app/web:\n", 1)
     _write(clean_tree, "pnpm-lock.yaml", lock)
     assert _violations(tool, clean_tree, capsys, offline=False) == ["VIOLATION stale old-js"]
 
@@ -586,6 +588,7 @@ INC2_CASES = [
         "hpke-closure",
         [
             "VIOLATION crypto-unapproved @hpke/dhkem-x25519",
+            "VIOLATION web-runtime-closure @hpke/dhkem-x25519",
             "VIOLATION hpke-closure @hpke/dhkem-x25519",
         ],
     ),
@@ -614,7 +617,6 @@ def test_inc2_rule_reports_its_violation_and_fails(
 
 
 GATEWAY_MANIFEST = "examples/notes-app/gateway/pyproject.toml"
-WEB_MANIFEST = "packages/teecustody-web/package.json"
 
 
 def test_gateway_manifest_is_discovered(
@@ -645,7 +647,7 @@ def test_web_manifest_is_discovered(
 @pytest.mark.parametrize(
     "name", ["@hpke/dhkem-x448", "@hpke/chacha20poly1305", "@noble/hashes", "tweetnacl"]
 )
-def test_banned_package_in_core_runtime_closure_fails_hpke_closure(
+def test_banned_package_in_web_runtime_closure_fails_hpke_closure(
     tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str], name: str
 ) -> None:
     lock = _add_npm_package(
@@ -654,6 +656,7 @@ def test_banned_package_in_core_runtime_closure_fails_hpke_closure(
     _write(clean_tree, "pnpm-lock.yaml", lock)
     assert _violations(tool, clean_tree, capsys) == [
         f"VIOLATION crypto-unapproved {name}",
+        f"VIOLATION web-runtime-closure {name}",
         f"VIOLATION hpke-closure {name}",
     ]
 
@@ -686,7 +689,7 @@ def test_web_runtime_closure_includes_the_linked_core_closure(
     lock = (clean_tree / "pnpm-lock.yaml").read_text()
     lock = lock.replace("      rogue-shim: 1.0.0\n", "", 1)
     lock = lock.replace(
-        "  packages/teecustody-core:\n    dependencies:\n",
+        "  packages/teecustody-core: {}\n",
         "  packages/teecustody-core:\n    dependencies:\n"
         "      rogue-shim:\n        specifier: 1.0.0\n        version: 1.0.0\n",
         1,
@@ -702,7 +705,7 @@ def test_dev_only_workspace_link_does_not_extend_the_web_runtime_closure(
     lock = (clean_tree / "pnpm-lock.yaml").read_text()
     lock = lock.replace("      rogue-shim: 1.0.0\n", "", 1)
     lock = lock.replace(
-        "  packages/teecustody-core:\n    dependencies:\n",
+        "  packages/teecustody-core: {}\n",
         "  packages/teecustody-core:\n    dependencies:\n"
         "      rogue-shim:\n        specifier: 1.0.0\n        version: 1.0.0\n",
         1,
@@ -791,3 +794,14 @@ def test_gitleaks_allowlist_holds_exactly_the_synthetic_vector_files() -> None:
             ],
         },
     }
+
+
+def test_core_has_no_runtime_dependencies_not_even_hpke(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        clean_tree,
+        "packages/teecustody-core/package.json",
+        '{"name": "@teecustody/core", "dependencies": {"@hpke/core": "1.9.0"}}',
+    )
+    assert _violations(tool, clean_tree, capsys) == ["VIOLATION core-runtime-deps @hpke/core"]

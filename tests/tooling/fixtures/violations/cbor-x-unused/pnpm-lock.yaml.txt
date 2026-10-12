@@ -12,7 +12,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/teecustody-core:
+  packages/teecustody-web:
     dependencies:
       '@hpke/core':
         specifier: 1.9.0
