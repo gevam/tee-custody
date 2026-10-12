@@ -1,6 +1,6 @@
 # Status — tee-custody
 
-Updated: 2026-10-11 (INC-2 Wave 0, resumed after restart) by Orchestrator
+Updated: 2026-10-12 (INC-2 Wave 0, resumed after second restart) by Orchestrator
 
 ## Where we are
 Stage: INC-2 wave 0 implementation
@@ -19,13 +19,13 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 | Traceability | §6.2–§6.9, §13.2, §13.9 covered; §6.1, I1, I13, §13.1, §13.10 partial; rest GAP for later increments |
 
 ## INC-2 — Encrypted channel and browser client
-34 items (T-01..T-32, V-01, V-02) in 6 waves (docs/tasks/INC-2/WAVES.md). Wave 0: T-01..T-05, V-02 resumed (engineers re-spawned 2026-10-11); T-06 content on trunk (4c823a3, D-044); V-01 done, evidence awaiting Security Architect C6 sign-off. Human-gated: T-03 (channel CDDL/harness), T-30 (channel vectors). Design: docs/INC-2-API.md (CDDL approved D-041).
+34 items (T-01..T-32, V-01, V-02) in 6 waves (docs/tasks/INC-2/WAVES.md). Wave 0: T-01..T-05, V-02 resumed (engineers re-spawned 2026-10-11); T-06 content on trunk (4c823a3, D-044); V-01 done; pyhpke C6 signed (T-08 may proceed after V-01 merges). T-03 DONE, in review. Human-gated: T-03 (channel CDDL/harness), T-30 (channel vectors). Design: docs/INC-2-API.md (CDDL approved D-041).
 
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
 |---|---|---|---|---|
 | CI-2-1 | T-21, T-25, T-31, T-32 (browser attestation path) | Architect → Tech Lead | 2026-10-06 | Human chose Option A (D-043: pin exact jwks_uri, no runtime discovery); Architect amending INC-2-API, then Tech Lead amends tasks |
-| V-01-C7 | T-17, T-27 (@hpke/core adoption) | Security Architect → human? | 2026-10-11 | @hpke/core browser bundle keeps `import("crypto")` (C7 fail); @hpke/common vendors pure-JS noble code (C3 vs framework.yaml forbidden_dependencies); SA ruling in progress |
+| V-01-C7 | T-17 crit. 4/5/7/8, T-27 | Tech Lead, Security Architect | 2026-10-11 | Human admitted @hpke/* under ADR 0011 C3a/C7a (D-045); Tech Lead adds C3a/C7a criteria to T-17/T-27; @hpke/core provenance gap (Medium) to be explained before the pin |
 
 ## Open questions for the human
 | Id | Question | Blocking? | Options | Recommendation |
@@ -35,10 +35,10 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 | framework gap | `sdlc/roles/_security-constraints.md` referenced but missing | No | Add / ignore | Add when convenient |
 
 ## Decisions this increment
-INC-2: D-039..D-044 — notable: D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
+INC-2: D-039..D-045 — notable: D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri), D-045 (@hpke/* admitted, framework.yaml exception). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
 
 ## Debt / backlog
-DEBT.md open: 0. BACKLOG.md: B-01..B-23; required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
+DEBT.md open: 0. BACKLOG.md: B-01..B-28 (B-24..B-27 Required for INC-3); required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
 
 ## Spend
 | Role | Tokens INC-1 (approx.) |
