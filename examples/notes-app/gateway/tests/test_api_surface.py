@@ -150,3 +150,20 @@ def test_pytest_puts_repo_root_on_path_so_tests_support_imports() -> None:
     assert root["tool"]["pytest"]["ini_options"]["pythonpath"] == ["."]
     assert importlib.util.find_spec("tests.support") is not None
     assert importlib.util.find_spec("tests.support.channel_doubles") is not None
+
+
+def test_dev_group_pins_httpx2_for_test_client_and_not_httpx() -> None:
+    root = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = root["dependency-groups"]["dev"]
+    assert "httpx2==2.13.1" in dev
+    assert not any(re.match(r"httpx(?![0-9])", req) for req in dev)
+
+
+def test_test_client_imports_without_deprecation_warning() -> None:
+    result = subprocess.run(
+        [sys.executable, "-W", "error", "-c", "from starlette.testclient import TestClient"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
