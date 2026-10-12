@@ -925,3 +925,31 @@ Spec §10.2 is still met. The literal framework rule forbade the package, so adm
 3. pyhpke 0.6.5 is signed. T-08 proceeds after V-01 merges, with the exact wheel/sdist hash pin and `open_base` mapping every exception to `OPEN_FAILED`.
 4. Release: V-01's ADR section goes before the Security Architect's section in ADR 0011 (append conflict).
 5. BACKLOG B-28: ask upstream to drop the Node ≤18 fallback and split out the vendored noble code.
+
+## D-046 — Wave-0 contract amendments: httpx2, pnpm allowBuilds, semgrep rule narrowing, T-05 fixture ownership (INC-2, 2026-10-12)
+
+Type: contract-amendment
+Chair / decider: Tech Lead (PROCESS.md §6, local amendments)
+Participants: Orchestrator, Software Engineers T-01, T-02, T-05
+
+**Options considered**
+For httpx: switch to httpx2, add a targeted warning filter, or pin older starlette/fastapi. For the others, only the rulings below.
+
+**Decision:**
+1. **T-01:** the dev dependency becomes `httpx2==2.13.1`. The Orchestrator verified the starlette 1.7.0 deprecation warning and httpx2 2.13.1 on PyPI (BSD-3-Clause, released 2026-09-23, github.com/pydantic/httpx2).
+2. **T-02:** T-02 owns the root `pnpm-workspace.yaml` and adds `allowBuilds: {esbuild: false}`.
+3. **T-05:** `tc-no-verification-skip` uses the regex `(?i)(?:skip|disable|bypass)_?verif|(?-i:(?!\bNO_VERIFIED_BUNDLE\b))no_?verif|insecure`. This exempts only the exact frozen code `NO_VERIFIED_BUNDLE`. All prior matches are preserved; the Tech Lead verified this with semgrep 1.178.0 `--test`.
+4. **T-05:** T-05 owns the clean dependency-policy fixture, the 4 violation overlays and 1 test constant, so `CORE_RUNTIME_ALLOWED` can be emptied.
+
+**Reasoning:**
+- A warning filter would hide a real deprecation.
+- Pinning an older stack would change the gateway runtime for a test-only problem.
+- The narrowed rule exempts one exact identifier and does not weaken NFR-5/I13 detection.
+
+**Dissent:** none
+
+**Revisit when:** —
+
+**Follow-ups:**
+- Architect: change the INC-2-API §11 `httpx` row to `httpx2`.
+- Tech Lead, in the D-043 pass: place the `INSECURE_TLS_ENVIRONMENT` error code so that it does not trip `tc-no-verification-skip`, or exempt it as exactly as `NO_VERIFIED_BUNDLE` is.
