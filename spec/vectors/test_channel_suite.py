@@ -222,7 +222,7 @@ FRAME_OUTCOMES = {
     "seq_equal_last": SEQ_REJECTED,
     "seq_below_last": SEQ_REJECTED,
     "seq_above_max": ("reject", "INVALID_ENVELOPE"),  # 2^53 fails the schema first (R-1)
-    "aad_op_modified": ("reject", ANY_REJECT_CODE),
+    "aad_op_modified": AUTH_FAILED,  # schema-valid op: proves the AEAD binds the aad
     "aad_session_modified": AUTH_FAILED,  # any 16-byte session_id passes the schema
     "wrong_key": AUTH_FAILED,
     "ct_bitflip": AUTH_FAILED,
@@ -250,7 +250,7 @@ OUTCOMES: dict[str, dict[str, tuple[str, str]]] = {
     "opens": {
         "valid_open_session": ACCEPT,
         "valid_enroll": ACCEPT,
-        "aad_modified": ("reject", ANY_REJECT_CODE),
+        "aad_modified": ("reject", "OPEN_FAILED"),  # schema-valid client_id: HPKE binds the aad
         "info_other_prekey": ("reject", "OPEN_FAILED"),
         "ct_truncated": ("reject", ANY_REJECT_CODE),
         "enc_wrong_length": ("reject", "INVALID_ENVELOPE"),
