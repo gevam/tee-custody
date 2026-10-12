@@ -210,6 +210,10 @@ x-frame-options: SAMEORIGIN
 x-content-type-options: nosniff
 alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
 ```
+Re-check 2026-10-12T08:47:41Z (same commands): same result. Discovery GET and OPTIONS: no `access-control-*`,
+`vary: Accept-Encoding`. JWKS GET and OPTIONS: `access-control-allow-origin` echoed, the same `vary` and
+`access-control-*` values as above. `jwks_uri` unchanged.
+
 Notes: the discovery document is served as `content-type: text/html`, not JSON. Its `last-modified` is
 2023-08-03. The JWKS sends no `access-control-allow-credentials` header on GET or on OPTIONS.
 
