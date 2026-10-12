@@ -72,16 +72,18 @@ keys); it never holds a workload or user key.
   `image_digest`; `hpke_info` → `ik_pub`, `prekey_id`; `session_nonce` → `seq`. `bytes` is the builder's
   exact output iff `accept` (the 156-byte preimage, not its hash, for `prekey_preimage`), nil iff `reject`.
 
-Named cases (`docs/INC-2-API.md` §3.2). Each array holds exactly these ids, each once; order is not
-significant.
+Named cases (`docs/INC-2-API.md` §3.2) and their outcomes (`expect`, `error_code`; codes from §3.2, the
+§7.2 bundle check order, §4.5/§4.6 and API-TL `open_frame`/`openT2cFrame`). Each array holds exactly these
+ids, each once; order is not significant. "any" = `reject` with any code of that array's CDDL: no contract
+fixes whether the schema or the AEAD rejects that mutation.
 
-| Array | Case ids |
+| Array | Case id → outcome |
 |---|---|
-| `bundles` | `valid`, `prekey_sig_corrupted`, `prekey_sig_other_digest`, `prekey_sig_other_instance`, `instance_mismatch`, `ik_nonce_mismatch`, `all_prekeys_expired`, `some_prekeys_expired` (accept), `expired_prekey_sig_corrupted` (`PREKEY_SIGNATURE_INVALID`, Q3), `prekey_ids_unsorted_or_duplicate` (`MALFORMED`, R-2), `published_at_over_max` and `not_after_over_max` (2^53, `MALFORMED`, R-1), `unknown_key`, `noncanonical`, `token_dbgstat_enabled` |
-| `opens` | `valid_open_session`, `valid_enroll`, `aad_modified`, `info_other_prekey`, `ct_truncated`, `enc_wrong_length`, `timestamp_over_max` (2^53, `INVALID_ENVELOPE`, R-1) |
-| `frames` | `<direction>_<name>` for direction `c2t` and `t2c` and name `valid`, `seq_equal_last`, `seq_below_last`, `seq_above_max`, `aad_op_modified`, `aad_session_modified`, `wrong_key`, `ct_bitflip` (16 ids, e.g. `c2t_valid`, `t2c_seq_equal_last`); `seq_above_max` carries `error_code` `INVALID_ENVELOPE` (2^53 fails the schema before any seq check) |
-| `results` | `open_ok`, `open_rejected`, `open_ok_nil_session` and `open_error_with_session` (`INVALID_RESPONSE`, R-3), `open_other_request_id` and `open_ct_bitflip` (ignore), `frame_ok`, `frame_re_mismatch` and `frame_seq_not_above_last` (ignore) |
-| `layouts` | `<kind>_accept` for each kind, and `<kind>_<field>_range` for each input field of that kind (one reject per `spec/wire/README.md` width/range rule): `prekey_preimage_accept`, `prekey_preimage_instance_id_range`, `prekey_preimage_prekey_id_range`, `prekey_preimage_pub_range`, `prekey_preimage_not_after_range`, `prekey_preimage_image_digest_range`, `hpke_info_accept`, `hpke_info_ik_pub_range`, `hpke_info_prekey_id_range`, `session_nonce_accept`, `session_nonce_seq_range` |
+| `bundles` | `valid`, `some_prekeys_expired` → accept; `prekey_sig_corrupted`, `prekey_sig_other_digest`, `prekey_sig_other_instance`, `expired_prekey_sig_corrupted` (Q3) → `PREKEY_SIGNATURE_INVALID`; `instance_mismatch` → `INSTANCE_MISMATCH`; `ik_nonce_mismatch`, `token_dbgstat_enabled` → `ATTESTATION_FAILED`; `all_prekeys_expired` → `NO_USABLE_PREKEY`; `prekey_ids_unsorted_or_duplicate` (R-2), `published_at_over_max` and `not_after_over_max` (2^53, R-1), `unknown_key`, `noncanonical` → `MALFORMED` |
+| `opens` | `valid_open_session`, `valid_enroll` → accept; `info_other_prekey` → `OPEN_FAILED`; `enc_wrong_length`, `timestamp_over_max` (2^53, R-1) → `INVALID_ENVELOPE`; `aad_modified`, `ct_truncated` → reject, any |
+| `frames` | `<direction>_<name>` for direction `c2t` and `t2c` (16 ids, e.g. `c2t_valid`, `t2c_seq_equal_last`): `valid` → accept; `seq_equal_last`, `seq_below_last` → `SEQ_REJECTED`; `seq_above_max` → `INVALID_ENVELOPE` (2^53 fails the schema before any seq check); `aad_session_modified`, `wrong_key`, `ct_bitflip` → `AUTH_FAILED`; `aad_op_modified` → reject, any |
+| `results` | `open_ok`, `open_rejected`, `frame_ok` → accept; `open_ok_nil_session`, `open_error_with_session` (R-3) → `INVALID_RESPONSE`; `open_other_request_id`, `open_ct_bitflip`, `frame_re_mismatch`, `frame_seq_not_above_last` → ignore |
+| `layouts` | `<kind>_accept` → accept, for each kind; `<kind>_<field>_range` → reject, for each input field of that kind (one per `spec/wire/README.md` width/range rule): `prekey_preimage_accept`, `prekey_preimage_instance_id_range`, `prekey_preimage_prekey_id_range`, `prekey_preimage_pub_range`, `prekey_preimage_not_after_range`, `prekey_preimage_image_digest_range`, `hpke_info_accept`, `hpke_info_ik_pub_range`, `hpke_info_prekey_id_range`, `session_nonce_accept`, `session_nonce_seq_range` |
 
 Per-language split (API-TL TL-9):
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -201,42 +202,85 @@ LAYOUT_INPUTS = {
     "session_nonce": ("seq",),
 }
 LAYOUT_LENGTHS = {"prekey_preimage": 156, "hpke_info": 47, "session_nonce": 12}
+# channel.cddl `error-code`, a whole-string match.
+ERROR_CODE_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 LAYOUT_CASES = tuple(
     case_id
     for kind, fields in LAYOUT_INPUTS.items()
     for case_id in (f"{kind}_accept", *(f"{kind}_{field}_range" for field in fields))
 )
-# Outcomes §3.2 states by name (R-1, R-2, R-3, Q3): (expect, error_code).
-STATED_OUTCOMES = {
+# The outcome of every named case: (expect, error_code). `ANY_REJECT_CODE` = reject with any code
+# the array's CDDL allows. It is used only where neither INC-2-API nor API-TL fixes the code: the
+# generator's choice of mutated byte decides whether the schema or the AEAD rejects the case.
+ANY_REJECT_CODE = "*"
+ACCEPT = ("accept", "none")
+IGNORE = ("ignore", "none")
+SEQ_REJECTED = ("reject", "SEQ_REJECTED")  # API-TL open_frame / openT2cFrame: before decrypting
+AUTH_FAILED = ("reject", "AUTH_FAILED")  # API-TL open_frame / openT2cFrame: AEAD failure
+FRAME_OUTCOMES = {
+    "valid": ACCEPT,
+    "seq_equal_last": SEQ_REJECTED,
+    "seq_below_last": SEQ_REJECTED,
+    "seq_above_max": ("reject", "INVALID_ENVELOPE"),  # 2^53 fails the schema first (R-1)
+    "aad_op_modified": ("reject", ANY_REJECT_CODE),
+    "aad_session_modified": AUTH_FAILED,  # any 16-byte session_id passes the schema
+    "wrong_key": AUTH_FAILED,
+    "ct_bitflip": AUTH_FAILED,
+}
+OUTCOMES: dict[str, dict[str, tuple[str, str]]] = {
+    # INC-2-API §7.2 check order (§3.2 names R-2, R-1, Q3 explicitly).
     "bundles": {
-        "valid": ("accept", "none"),
-        "some_prekeys_expired": ("accept", "none"),
+        "valid": ACCEPT,
+        "prekey_sig_corrupted": ("reject", "PREKEY_SIGNATURE_INVALID"),
+        "prekey_sig_other_digest": ("reject", "PREKEY_SIGNATURE_INVALID"),
+        "prekey_sig_other_instance": ("reject", "PREKEY_SIGNATURE_INVALID"),
+        "instance_mismatch": ("reject", "INSTANCE_MISMATCH"),
+        "ik_nonce_mismatch": ("reject", "ATTESTATION_FAILED"),
+        "all_prekeys_expired": ("reject", "NO_USABLE_PREKEY"),
+        "some_prekeys_expired": ACCEPT,
         "expired_prekey_sig_corrupted": ("reject", "PREKEY_SIGNATURE_INVALID"),
         "prekey_ids_unsorted_or_duplicate": ("reject", "MALFORMED"),
         "published_at_over_max": ("reject", "MALFORMED"),
         "not_after_over_max": ("reject", "MALFORMED"),
+        "unknown_key": ("reject", "MALFORMED"),
+        "noncanonical": ("reject", "MALFORMED"),
+        "token_dbgstat_enabled": ("reject", "ATTESTATION_FAILED"),
     },
+    # INC-2-API §4.5 (schema → INVALID_ENVELOPE) and §4.6 (any HPKE failure → OPEN_FAILED).
     "opens": {
-        "valid_open_session": ("accept", "none"),
-        "valid_enroll": ("accept", "none"),
+        "valid_open_session": ACCEPT,
+        "valid_enroll": ACCEPT,
+        "aad_modified": ("reject", ANY_REJECT_CODE),
+        "info_other_prekey": ("reject", "OPEN_FAILED"),
+        "ct_truncated": ("reject", ANY_REJECT_CODE),
+        "enc_wrong_length": ("reject", "INVALID_ENVELOPE"),
         "timestamp_over_max": ("reject", "INVALID_ENVELOPE"),
     },
     "frames": {
-        "c2t_valid": ("accept", "none"),
-        "t2c_valid": ("accept", "none"),
-        "c2t_seq_above_max": ("reject", "INVALID_ENVELOPE"),
-        "t2c_seq_above_max": ("reject", "INVALID_ENVELOPE"),
+        f"{direction}_{name}": outcome
+        for direction in ("c2t", "t2c")
+        for name, outcome in FRAME_OUTCOMES.items()
     },
+    # INC-2-API §3.2 and §7.5: INVALID_RESPONSE only after the AEAD passed; garbage is ignored.
     "results": {
-        "open_ok": ("accept", "none"),
+        "open_ok": ACCEPT,
+        "open_rejected": ACCEPT,
         "open_ok_nil_session": ("reject", "INVALID_RESPONSE"),
         "open_error_with_session": ("reject", "INVALID_RESPONSE"),
-        "open_other_request_id": ("ignore", "none"),
-        "open_ct_bitflip": ("ignore", "none"),
-        "frame_ok": ("accept", "none"),
-        "frame_re_mismatch": ("ignore", "none"),
-        "frame_seq_not_above_last": ("ignore", "none"),
+        "open_other_request_id": IGNORE,
+        "open_ct_bitflip": IGNORE,
+        "frame_ok": ACCEPT,
+        "frame_re_mismatch": IGNORE,
+        "frame_seq_not_above_last": IGNORE,
     },
+}
+# `expect` values each array's CDDL allows (spec/wire/channel-vectors.cddl).
+EXPECT_VALUES = {
+    "bundles": frozenset({"accept", "reject"}),
+    "opens": frozenset({"accept", "reject"}),
+    "frames": frozenset({"accept", "reject"}),
+    "results": frozenset({"accept", "ignore", "reject"}),
+    "layouts": frozenset({"accept", "reject"}),
 }
 BUNDLE_DECODE_LIMITS = DecodeLimits(max_bytes=65_536, max_depth=4, max_items=4_096)
 FUZZ_SEED = 1
@@ -259,6 +303,7 @@ def _cases(suite: dict[str, Any], array: str) -> list[dict[str, Any]]:
     for case in cases:
         assert isinstance(case, dict)
         assert frozenset(case) == CASE_KEYS[array], case.get("id")
+        assert case["expect"] in EXPECT_VALUES[array], case["id"]
         if array != "layouts":
             rejected = case["expect"] == "reject"
             assert (case["error_code"] != "none") == rejected, case["id"]
@@ -271,8 +316,10 @@ def _assert_named(suite: dict[str, Any], array: str, names: tuple[str, ...]) -> 
     assert sorted(ids) == sorted(names)
     assert len(set(ids)) == len(ids)
     by_id = {case["id"]: case for case in suite[array]}
-    for case_id, outcome in STATED_OUTCOMES.get(array, {}).items():
-        assert (by_id[case_id]["expect"], by_id[case_id]["error_code"]) == outcome, case_id
+    for case_id, (expect, error_code) in OUTCOMES.get(array, {}).items():
+        assert by_id[case_id]["expect"] == expect, case_id
+        if error_code != ANY_REJECT_CODE:
+            assert by_id[case_id]["error_code"] == error_code, case_id
 
 
 def test_suite_identity_and_keys(channel_suite: dict[str, Any]) -> None:
@@ -305,6 +352,9 @@ def test_frame_cases_are_the_named_cases_in_each_direction(channel_suite: dict[s
 
 def test_result_cases_are_the_named_cases(channel_suite: dict[str, Any]) -> None:
     _assert_named(channel_suite, "results", RESULT_CASES)
+    for case in channel_suite["results"]:
+        if case["request_id"] is not None:
+            assert require_int(case["last_seq"]) == -1, case["id"]
 
 
 def test_layout_cases_are_the_named_cases(channel_suite: dict[str, Any]) -> None:
@@ -420,6 +470,7 @@ def _frame_result_outcome(plaintext: bytes, case: dict[str, Any], limits: Decode
         assert body["ok"] is False, case["id"]
         assert frozenset(body) == {"re", "ok", "error"}, case["id"]
         assert isinstance(body["error"], str), case["id"]
+        assert ERROR_CODE_PATTERN.fullmatch(body["error"]), case["id"]
     return "none"
 
 
@@ -475,6 +526,32 @@ def _layout_builder(kind: str) -> Callable[..., bytes]:
         "session_nonce": _nonce,
     }
     return builders[kind]
+
+
+def _layout_bytes(kind: str, inputs: dict[str, Any]) -> bytes:
+    """The spec/wire/README.md "Channel byte layouts" formulas, computed here from `inputs`."""
+    if kind == "prekey_preimage":
+        return b"".join(
+            (
+                b"prekey-v1",
+                inputs["instance_id"].encode("ascii"),
+                require_int(inputs["prekey_id"]).to_bytes(4, "big"),
+                inputs["pub"],
+                require_int(inputs["not_after"]).to_bytes(8, "big"),
+                inputs["image_digest"].encode("ascii"),
+            )
+        )
+    if kind == "hpke_info":
+        prekey_id = require_int(inputs["prekey_id"]).to_bytes(4, "big")
+        return b"tee-chan-v1" + hashlib.sha256(inputs["ik_pub"]).digest() + prekey_id
+    assert kind == "session_nonce"
+    return b"\x00" * 4 + require_int(inputs["seq"]).to_bytes(8, "big")
+
+
+def test_layout_bytes_follow_the_byte_layouts(channel_suite: dict[str, Any]) -> None:
+    for case in _cases(channel_suite, "layouts"):
+        if case["expect"] == "accept":
+            assert case["bytes"] == _layout_bytes(case["kind"], case["inputs"]), case["id"]
 
 
 def test_layouts_match_the_builders(channel_suite: dict[str, Any]) -> None:
