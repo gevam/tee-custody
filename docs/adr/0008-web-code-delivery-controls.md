@@ -49,3 +49,4 @@ Neither is a cryptographic dependency. Both are admitted under SR-9 (OSI licence
 ## Amendments
 - 2026-09-30: The `cbor-x` consequence above is superseded by ADR 0010. Core and Web use a project-owned canonical CBOR codec, and no package depends on `cbor-x`. INC-2 verification V-2.1 is retired. The bundle scan still applies to every other bundled dependency.
 - 2026-09-30: `connect-src` must include the origin of the trust profile's discovery URL as well as its JWKS origin. In production these differ: `confidentialcomputing.googleapis.com` and `www.googleapis.com` (FACTS F-07).
+- 2026-10-11 (D-043, ADR 0012): this replaces the previous amendment. Clients no longer fetch discovery. `connect-src` names `new URL(profile.jwks_uri).origin` (production: `https://www.googleapis.com`) and never a discovery origin. `teecustody-profile` also gains `check-discovery`, the build-time discovery binding check (INC-2-API §16.5).

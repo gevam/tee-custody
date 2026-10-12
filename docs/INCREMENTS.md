@@ -34,6 +34,7 @@ The sequence and scope below preserve the approved INC-1 through INC-5 baseline 
 
 - SR-6 / SR-12 (workload, simulator): `AuditSink` port with `InMemoryAuditSink`; pre-principal failures (`Open` failure, unknown/consumed pre-key, stale, replay, bad frame) produce bounded `AGGREGATE` records carrying `count` (D-012); `PREKEY_BURN_HIGH` alert (SHOULD).
 - SR-13 (libraries): lint bans and the shipped-output bundle scan for `@teecustody/core`/`web`; a headless-browser harness runs vault and transport under the strict CSP with zero violations (ADR 0008).
+- D-043 / ADR 0012 (CI-2-1, T-29; SR-1, SR-13): trust profile v2 pins the exact `jwks_uri`, and no client fetches discovery at runtime. Core fetches only the pinned URI. The simulator emulates Google's CORS behaviour (JWKS yes, discovery no) and serves an attacker JWKS path. `teecustody-profile check-discovery` runs the build-time binding check, and a scheduled `discovery-binding` CI job re-checks it. Acceptance: the INC-2-API §16.9 tests pass, including the browser test that verifies attestation while discovery is CORS-blocked.
 
 **Verification tasks and risks (Wave 0, before any dependent task starts; results recorded in the task report with sources and versions, spec §0 line 13):**
 
@@ -43,11 +44,11 @@ The sequence and scope below preserve the approved INC-1 through INC-5 baseline 
 | V-2.2 | Each target browser honors CSP `script-src` hash sources for external scripts that carry a matching SRI `integrity` attribute | In the headless-browser matrix, a page whose CSP lists only the script's `sha384` hash loads it, and loads nothing else | Record the browser as unsupported, failing closed, in the support matrix next to WebAuthn PRF (PROJECT.md R2). Never add `'self'` or host sources to `script-src`. If this excludes a browser the human expects to support, escalate. |
 
 **Required carry-overs from INC-1 (BACKLOG, D-036/D-038):**
-- B-06: Core passes the canonical `URL.href` (never a raw profile or discovery string) to the Fetcher. The INC-2 Fetcher adapters (web, Node) enforce an RSA modulus of at least 2048 bits, refuse cross-origin redirects and bound response bodies while streaming. Each control has an SR-1 test.
+- B-06: Core passes the canonical `URL.href` (never a raw profile or discovery string) to the Fetcher. Since D-043, this is the pinned `jwks_uri`, which `parseTrustProfile` has already proven canonical. The INC-2 Fetcher adapters (web, Node) enforce an RSA modulus of at least 2048 bits, refuse cross-origin redirects and bound response bodies while streaming. Each control has an SR-1 test.
 - B-08: the workload run-loop enforces a minimum retry interval after a failed attestation refresh (SR-4), so repeated `refresh_if_due` calls cannot hammer the launcher.
 - B-13: code that consumes `VerifiedAttestation` (bundle verification, session open) checks its brand at runtime, not only through the TypeScript type.
 
-**Contracts introduced:** signed pre-key bundle and session open; HPKE session-key export boundary; authenticated frame/sequence/replay contract; Queue port and Reference Gateway/Web Transport contracts; WebAuthn PRF and encrypted IndexedDB vault adapter contracts; `AuditSink`/`AuditKey`/`AuditRecord` and the aggregation/cap rules.
+**Contracts introduced:** signed pre-key bundle and session open; HPKE session-key export boundary; authenticated frame/sequence/replay contract; Queue port and Reference Gateway/Web Transport contracts; WebAuthn PRF and encrypted IndexedDB vault adapter contracts; `AuditSink`/`AuditKey`/`AuditRecord` and the aggregation/cap rules; trust profile v2 and `teecustody-profile check-discovery` (INC-2-API §16).
 
 ## INC-3: Enrollment, custody, records, and production adapters
 

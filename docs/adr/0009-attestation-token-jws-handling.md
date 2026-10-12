@@ -47,7 +47,7 @@ Normative rules (T-07, T-10, T-11 contracts must match):
    3. `typ` is optional, because F-06 only saw it in a docs sample. If present and not `"JWT"` → `MALFORMED`.
    4. `kid` absent, not a string, empty, or longer than 256 characters → `UNTRUSTED_SIGNER`.
    5. Zero-length signature → `UNTRUSTED_SIGNER`.
-3. **Key retrieval.**
+3. **Key retrieval.** *(Superseded 2026-10-11 by ADR 0012 / D-043: Core fetches exactly the profile's pinned `jwks_uri` and never fetches discovery. The text below records the INC-1 behaviour; the "no JWKS cache" and "any failure → `UNTRUSTED_SIGNER`" rules still apply.)*
    - Fetch the profile's `discovery_url` through the injected `Fetcher`. Its `issuer` must equal the profile's `issuer`. The origin of `jwks_uri` must equal the profile's `jwks_origin`, which in production is exactly `https://www.googleapis.com` (F-07).
    - That origin also serves the JWKS of every Google service account, so the origin match is defence in depth only. The authenticity of the specific `jwks_uri` comes from the TLS-fetched Google discovery document. The origin check is not relaxed to reach that document.
    - Fetch `jwks_uri`. Size limits come from `VerifierLimits`.
@@ -112,3 +112,7 @@ This ADR covers only the token JWS, which is unaffected by F-12. `Crypto.verifyS
   - The header member set must be confirmed on the first real token.
   - The production JWKS origin is pinned to `https://www.googleapis.com`.
   - Simulator discovery and JWKS now match the verified shapes.
+- 2026-10-11 (D-043, ADR 0012):
+  - Rule 3 is superseded: there is no runtime discovery fetch; Core fetches only the pinned `jwks_uri`.
+  - Rule 9 now covers only the JWKS URL. Development profiles carry a loopback `jwks_uri` (`http:` allowed) whose path is exactly `/jwks`.
+  - The "JWKS matrix" tests remain. The discovery tests are replaced by the SR-1 list in INC-2-API §16.9.

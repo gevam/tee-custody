@@ -1,6 +1,10 @@
 # INC-2 contracts: encrypted channel and browser client
 
-Owner: Architect. Status: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
+Owner: Architect. Status: **revision 3** (2026-10-11): revision 2 (approved, D-041) plus **§16, the D-043 amendment**.
+§16 pins `jwks_uri` in trust profile v2 and removes runtime discovery (constraint-deviation of spec §6.1, ADR 0012). It
+supersedes any text in this document or in `docs/tasks/INC-1/API.md` §C–§G that mentions `discovery_url`, `jwks_origin`
+or a client-side discovery fetch. Sections 5.3, 8.2, 9.3, 9.4, 13, 14 and 15 carry the cross-references.
+Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
 (THREAT_MODEL review log 2026-10-05; SR-14). The Tech Lead transcribes §3–§8 into Wave-0 stubs and Task
 Contracts verbatim. Precision model: `docs/tasks/INC-1/API.md`.
@@ -43,6 +47,7 @@ Contents
 13. Amendments to INC-1 frozen files and to ARCHITECTURE (for the Orchestrator)
 14. Required tests by contract
 15. Open questions
+16. D-043 amendment: pinned `jwks_uri`, no runtime discovery (CI-2-1; ADR 0012)
 
 Conventions. Python: 3.12, `mypy --strict`, frozen slotted dataclasses, `StrEnum` codes, every exception
 carries only a code and `str(err) == err.code.value`. TypeScript: strict, no `any`, errors carry only a code and
@@ -951,7 +956,8 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path: ..
 ```
 It uses freshly generated keys from `os.urandom` and a fresh simulator issuer, never the state dir. Sealing uses
 `pyhpke` directly. Ephemeral-key injection (`eks`) is permitted here and in tests only (ADR 0011 C5). The output
-covers the named cases of §3.2. Synthetic keys in the suite are covered by a gitleaks allow-list scoped to
+covers the named cases of §3.2. **D-043 (§16.4):** `profile_json` is a v2 development profile, and the `http` map holds
+exactly one entry: the profile's `jwks_uri` mapped to the issuer JWKS. It never holds a discovery URL. Synthetic keys in the suite are covered by a gitleaks allow-list scoped to
 `spec/vectors/channel/suite.cbor`. `teecustody-sim vectors --out DIR [--force]` additionally writes `DIR/channel/suite.cbor` and
 prints three paths in the order attestation, corpus, channel. `OUTPUT_EXISTS` covers all three files.
 
@@ -1265,7 +1271,7 @@ Example: `const crypto = createWebCrypto(); const ok = await crypto.verifyEd2551
 ```ts
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 export interface FetchFetcherOptions {
-    readonly maxBodyBytes: number;        // positive safe integer; >= VerifierLimits.maxDiscoveryBytes and maxJwksBytes
+    readonly maxBodyBytes: number;        // positive safe integer; >= VerifierLimits.maxJwksBytes (D-043: no discovery fetch)
     readonly timeoutMs: number;           // positive safe integer
     readonly fetch?: FetchFn;             // default globalThis.fetch
 }
@@ -1286,7 +1292,11 @@ export class FetchFetcher implements Fetcher {
    cancel as soon as the running total exceeds `maxBodyBytes` → `INVALID_RESPONSE`.
 6. Resolve `{ status, body }`.
 
-Example: `new FetchFetcher({ maxBodyBytes: 65536, timeoutMs: 10000 }).get(profile.discovery_url)`.
+**CORS-simple requests (D-043, §16.8).** The `RequestInit` passed to `fetch` has exactly the members in step 2 and no
+`headers` member. The request is therefore a CORS "simple" GET that never triggers a preflight against Google's
+JWKS. A test asserts that the `init` the injected `fetch` receives has exactly those keys.
+
+Example: `new FetchFetcher({ maxBodyBytes: 65536, timeoutMs: 10000 }).get(profile.jwks_uri)`.
 
 ### 8.3 FetchTransport (Transport; FR-5; §6)
 
@@ -1383,19 +1393,30 @@ Bundles each entry with esbuild (`bundle: true, format: "esm", platform: "browse
 legalComments: "none"`), so bundled dependencies (`@hpke/core` and its dependencies) are scanned. It fails on
 `/\beval\s*\(/`, `/\bnew\s+Function\b/`, `/(?<![.\w$])Function\s*\(/`, `/\bimport\s*\(\s*(?!["'`])/`, and
 `/\bset(?:Timeout|Interval)\s*\(\s*["'`]/`. Output: one line per hit, `<pattern-id>\t<entry>\t<byte offset>`, no
-source text. Exit codes: 0 clean, 1 hits, 2 usage/build error. Both packages' `lint` scripts call it. Unit test:
+source text. Exit codes: 0 clean, 1 hits, 2 usage/build error. Both packages' `lint` scripts call it.
+D-045 extends the scan, under ADR 0011 C7a and C3a (T-27 owns the exact rules):
+- The esbuild metafile may contain exactly one `external` import, the `@hpke/common` `import("crypto")` site. Any other external import, or that entry going unused, exits 2.
+- A bundle-input manifest proves that no vendored `@hpke/common` curve code contributes bytes.
+
+D-043 does not change these rules (§16.5). The CSP is unchanged by D-045. Unit test:
 a fixture file per pattern must fail, and a clean fixture must pass.
 
 ### 9.3 CSP harness (Playwright; `packages/teecustody-web/test/browser/`)
 - `serve.mjs`: `node:http` static server on 127.0.0.1:0. It serves `index.html` (one
   `<script src="/harness.js" integrity="sha384-…" crossorigin="anonymous">`, nothing inline) and `harness.js`
   (esbuild bundle of `test/browser/harness/index.ts`), with header
-  `Content-Security-Policy: default-src 'none'; script-src 'sha384-<harness.js>'; connect-src <gateway origin> <issuer origin>; img-src 'none'; style-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`
-  (enforce mode, no `'self'`, no unsafe keywords).
+  `Content-Security-Policy: default-src 'none'; script-src 'sha384-<harness.js>'; connect-src <gateway origin> <jwks origin>; img-src 'none'; style-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`
+  (enforce mode, no `'self'`, no unsafe keywords). `<jwks origin>` is `new URL(profile.jwks_uri).origin` (D-043, §16.7). It is
+  never a discovery origin. Under the simulator it equals the issuer's HTTP origin.
 - `harness/index.ts` registers a `securitypolicyviolation` listener first, then runs: `createWebCrypto` (HPKE
   seal, Ed25519 verify), `FetchFetcher` against the simulator issuer, `FetchTransport` + `ChannelClient` against the
-  e2e harness (open → `test.echo` → close), and `PrfShareVault` set/get/clear. It exposes
-  `window.__result = { violations: number, steps: Record<string, "ok" | CapabilityErrorCode | ChannelErrorCode> }`.
+  e2e harness (open → `test.echo` → close), and `PrfShareVault` set/get/clear. D-043 adds three steps (§16.9 items B1–B3):
+  - `discovery_cors`: a page `fetch` of the simulator discovery URL must reject because of CORS, recorded as
+    `"blocked"`, while `attestation` is `"ok"`.
+  - `attacker`: `verifyAttestation` of `fixture.attacker_token` gives `UNTRUSTED_SIGNER`, recorded as `"rejected"`,
+    while a page `fetch` of `fixture.attacker_jwks_url` succeeds.
+  - `pin_canonical`: the Google `jwks_uri` constant survives `new URL(...).href` unchanged. It exposes
+  `window.__result = { violations: number, steps: Record<string, "ok" | "blocked" | "rejected" | CapabilityErrorCode | ChannelErrorCode | AttestationErrorCode> }`.
 - `csp.spec.ts`: Chromium with a CDP virtual authenticator (`hasPrf: true`, `hasUserVerification: true`,
   `isUserVerified: true`) — every step `ok`, `violations === 0`. Firefox and WebKit — crypto, fetcher, transport
   and channel steps `ok` or a recorded fail-closed `UNSUPPORTED`/`CRYPTO_UNAVAILABLE` (V-2.2, V-2.4), vault
@@ -1407,7 +1428,12 @@ a fixture file per pattern must fail, and a clean fixture must pass.
 One Python process: `Simulator` (`teecustody-sim serve` equivalent, loopback), `RunLoop` in a thread with
 `ConfidentialSpaceLauncher(socket_path=<sim socket>)`, `InMemoryQueue`, `InMemoryAuditSink`,
 `StaticShareOpener({FIXTURE_CLIENT_ID: FIXTURE_CS})`, `EchoHandler`, and the gateway under uvicorn on 127.0.0.1:0.
-It prints one stdout line `gateway=<origin> issuer=<origin> profile=<path>` once ready, and stops on SIGTERM. The
+It prints one stdout line `gateway=<origin> issuer=<origin> profile=<path>` once ready, and stops on SIGTERM.
+**D-043 (§16.3, §16.9):**
+- The profile is `build_trust_profile(jwks_uri=simulator.jwks_uri, ...)`, a v2 profile.
+- `fixture.json` gains `"discovery_url"` (`simulator.discovery_url`), `"attacker_jwks_url"` (`simulator.attacker_jwks_uri`) and `"attacker_token"`. The attacker token is minted with `TokenMinter(simulator.keys, launch, ttl_s=…, token_max_age_s=…).mint(audience, [<64-hex nonce>], now, NamedCase("jwks_other_path"))`. It is not a secret.
+
+The
 workload component has no listener; only the gateway listens (D-003). `FIXTURE_CS` is generated per run and
 written only to the harness's temporary directory for the browser test to `vault.set`; it is never committed.
 
@@ -1496,13 +1522,26 @@ committed under the test tree with its source URL and SHA-256 in an adjacent REA
 | A-4 | `teecustody_sim/cli.py` `vectors`, `vectors.py` | also write `channel/suite.cbor`; print three paths (§5.3) |
 | A-5 | `teecustody/channel/__init__.py` | re-export new channel names |
 
+**D-043 amendments (revision 3; human-approved constraint-deviation, ADR 0012).** These are **not** additive. They change
+one exported TypeScript type and one exported Python signature. No exported function signature in Core changes.
+Each change is owned by one post-Wave-0 task (§16.10):
+
+| # | File | Change |
+|---|---|---|
+| A-6 | Core `attestation/types.ts` | `TrustProfile` v2 (`profile_version: 2`, `jwks_uri`; no `discovery_url`/`jwks_origin`); `VerifierLimits.maxDiscoveryBytes` optional and deprecated (§16.1, §16.2) |
+| A-7 | Core `attestation/profile.ts`, `attestation/checks/signature.ts`, `attestation/verify.ts` | v2 parse rules; fetch the pinned `jwks_uri` only; validate the deprecated limit only if present (§16.2) |
+| A-8 | sim `profile.py`, `issuer.py`, `keys.py`, `token.py`, `cases.py`, `simulator.py`, `cli.py`, `vectors.py` | `build_trust_profile(*, jwks_uri, …)`; JWKS CORS and preflight; attacker key and route; rows 38–39; state v2; vectors `http` map (§16.3, §16.4) |
+| A-9 | `tests/support/token-factory.ts` (shared test support) | v2 profile; JWKS-only `http` map plus the attacker path; `MintOptions.signer` (§16.2) |
+
 ARCHITECTURE text to align after approval (Architect edits): Queue port split and `publish_bundle(..., expires_at)`,
 `withdraw_bundle`, `list_bundles(max_bundles)` (D2-12); gateway `429 RATE_LIMITED` and no `UNKNOWN_CLIENT` (D2-13);
 `TeeClient` moves to INC-3 (D2-9); in-memory adapters in `teecustody_sim` (D2-11); Fetcher refuses all redirects and
 may reject `INVALID_RESPONSE` for oversize bodies (D2-14); `SessionOpener`/`FrameHandler` ports (D2-10); reply route
 vs. claimed principal (D2-7, R-4); nonce discipline (D2-16); `session_evict_min_idle_s` (D2-19).
 
-No constraint-deviation is required by this document.
+Revision 2 required no constraint-deviation. Revision 3 (§16) implements D-043, the human-approved
+constraint-deviation of spec §6.1. ARCHITECTURE's D-043 text was aligned on 2026-10-11. The other alignment items
+listed above are still pending (WAVES Orchestrator action 6).
 
 ---
 
@@ -1579,6 +1618,8 @@ No constraint-deviation is required by this document.
   only unexpired ids selectable; a key with `notAfterMs ≤ now + 5000` is never selected.
 - **Gateway CORS:** with no `cors_origins`, no CORS header is sent. With an allow-list, only exact matches are
   echoed, and `Access-Control-Allow-Credentials` is never present.
+- **D-043 / T-29 (SR-1, SR-13):** the full list is in §16.9. It replaces the INC-1 SR-1 discovery tests (REQUIREMENTS
+  SR-1 "Token JWS" bullets 1, 2, and the discovery halves of 3–4).
 
 ---
 
@@ -1594,3 +1635,526 @@ No constraint-deviation is required by this document.
 | Q8 | Queue ordering under pipelining (security note (b)). With unordered delivery and `maxInFlight` 8, the spec's backwards-`seq` rejection causes spurious timeouts, which in INC-3 invites host retries of non-idempotent custody operations | No (INC-3) | INC-3: a per-session ordering key in `PubSubQueue`, or serialise built-in custody operations |
 | Q6 | Cross-process simulator queue for INC-3's containerised notes-app (the INC-2 harness runs gateway and workload in one process) | No (INC-3) | INC-3 Architect item |
 | Q7 | `StaticShareOpener` must never be selectable by INC-3's `Config.from_env`; INC-3 must add a test proving it | No (INC-3) | Carry to INC-3 contracts |
+| Q9 | Security Architect re-check of §16 (D-043 follow-up). Choices made in §16 for confirmation: (a) the production `jwks_uri` is a Core constant, so a Google URI change needs a Core patch release, not only a profile rebuild (stricter than D-043's "profile release"); (b) the development `jwks_uri` path is pinned to `/jwks`; (c) the simulator always serves `/attacker/jwks`; (d) `maxDiscoveryBytes` stays as an ignored optional field until v1.0.0 (DEBT); (e) `parseTrustProfile` checks the version before the key set | Yes, before the §16 tasks start | Confirm (a)–(e) |
+| Q10 | REQUIREMENTS SR-1 "Token JWS" bullets and the SR-13 `connect-src` bullet still describe runtime discovery, and the §6.1 row of `docs/security/traceability.md` needs D-043 and §16.9 | Yes, before the §16 tasks reach G7 | Security Architect drafts the SR text from §16.9; the human approves the traceability change (`docs/security/**`) |
+| Q11 | Human, at merge: the `spec/vectors` content changes in §16.4 (v2 profiles, `http` map, rows 38–39) and the inert production-shaped fixture profile in §16.6 | Yes, at merge (`always_human`) | Approve; neither changes `spec/wire` or `proto` |
+
+---
+
+## 16. D-043 amendment: pinned `jwks_uri`, no runtime discovery (CI-2-1; ADR 0012)
+
+**Sources.**
+- D-043: human constraint-deviation of spec §6.1, Option A.
+- THREAT_MODEL T-29 and review log 2026-10-06 (CI-2-1), design deltas (1)–(5) and the SR-1 test list.
+- ADR 0012.
+
+**Precedence.** Where they conflict, this section overrides `docs/tasks/INC-1/API.md` §C–§G and ADR 0009 rule 3.
+
+**Unchanged.**
+- The CDDL and `proto` (§16.4).
+- Every §6 check other than key retrieval.
+- Every error code.
+- Every exported Core function signature.
+
+### 16.1 Trust profile v2 (delta 1)
+
+**JSON** (`trust-profile.json`, `teecustody-sim profile`, vector `profile_json`). It has exactly these 13 keys, and an unknown key at any level is rejected:
+
+```json
+{"profile_version": 2, "profile_kind": "development", "token_type": "OIDC",
+ "issuer": "https://tee-sim.localhost",
+ "jwks_uri": "http://127.0.0.1:8791/jwks",
+ "expected_audience": "https://example.test/tee", "token_max_age_s": 3600,
+ "allowed_hwmodels": ["SIMULATED"], "allowed_digests": ["sha256:<64 lowercase hex>"],
+ "signer_keys": [{"key_id": "<64 lowercase hex = SHA-256 of signer SPKI DER>", "algorithm": "RSASSA_PSS_SHA256"}],
+ "signers_required": 2, "expected_args_hash": "<64 lowercase hex>", "expected_env_hash": "<64 lowercase hex>"}
+```
+
+A production profile differs in exactly these keys:
+- `"profile_kind": "production"`;
+- `"issuer": "https://confidentialcomputing.googleapis.com"`;
+- `"jwks_uri": "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"`;
+- `allowed_hwmodels` drawn from the F-09 values.
+
+**Removed fields.**
+- `discovery_url` becomes an input to the build tool only (§16.5).
+- `jwks_origin` is never stored and never compared by Core. A consumer that needs it (CSP) derives `new URL(jwks_uri).origin`.
+
+**TypeScript type (A-6, `attestation/types.ts`).**
+
+```ts
+export interface TrustProfile {                      // only parseTrustProfile creates one
+    readonly [parsedProfile]: true;
+    readonly profile_version: 2; readonly profile_kind: ProfileKind; readonly token_type: "OIDC";
+    readonly issuer: string; readonly jwks_uri: string;
+    readonly expected_audience: string; readonly token_max_age_s: number;
+    readonly allowed_hwmodels: readonly string[]; readonly allowed_digests: readonly string[];
+    readonly signer_keys: readonly SignerKey[]; readonly signers_required: number;
+    readonly expected_args_hash: string; readonly expected_env_hash: string;
+}
+export interface VerifierLimits {
+    readonly maxTokenBytes: number;
+    readonly maxJwksBytes: number;
+    /** @deprecated D-043: ignored (no discovery fetch). If present, must be a positive safe integer. Removed before v1.0.0. */
+    readonly maxDiscoveryBytes?: number;
+}
+```
+
+**`parseTrustProfile(input: unknown): TrustProfile`.** The signature is unchanged. Every failure is `TrustProfileError(code, field)` with message `${field}: ${code}`. The steps run in this order:
+1. `input` is not a plain object → `INVALID_PROFILE` at field `""`.
+2. The own member `profile_version` is absent or `!== 2` → `INVALID_PROFILE` at field `profile_version`. This runs **before** the key-set check, so every v1 profile fails here and never at an unknown-key field.
+3. The key set must be exactly the 13 keys. An unknown key or a missing key → `INVALID_PROFILE` at that key, as in INC-1.
+4. `profile_kind`, `token_type` and `issuer` follow the unchanged INC-1 rules.
+5. `jwks_uri`. Every failure is `INVALID_PROFILE` at field `jwks_uri`.
+   - It must be a string of length 1..2048.
+   - **Production:** `value === GOOGLE_JWKS_URI`, compared as exact strings with no parsing.
+   - **Development:** all of the following must hold:
+     - the value contains no `?` and no `#`;
+     - `new URL(value)` does not throw;
+     - `url.href === value`;
+     - `url.username` and `url.password` are both `""`;
+     - `url.protocol` is `http:` or `https:`;
+     - `url.hostname` is one of `127.0.0.1`, `localhost`, `[::1]`;
+     - `url.pathname === "/jwks"`.
+6. The remaining fields follow the unchanged INC-1 rules.
+
+**Core constants** (module-private in `profile.ts`; `index.ts` is unchanged and exports nothing new):
+
+```ts
+const GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com";                                   // F-07
+const GOOGLE_JWKS_URI =
+    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"; // F-07
+```
+
+`GOOGLE_DISCOVERY_URL`, `DISCOVERY_PATH` and `GOOGLE_JWKS_ORIGIN` are deleted from Core. The engineer re-confirms FACTS F-07 against its source URL and records the URL and access date in the Task Report.
+
+**Errors.** `TrustProfileErrorCode` is unchanged: `INVALID_PROFILE` | `UNSUPPORTED_TOKEN_TYPE` | `UNSUPPORTED_ALGORITHM`.
+
+**Example.**
+
+```ts
+const profile = parseTrustProfile(JSON.parse(text)); // an INC-1 v1 profile → TrustProfileError("INVALID_PROFILE", "profile_version")
+```
+
+### 16.2 Core verifier (delta 2; A-6, A-7, A-9)
+
+The signatures are unchanged:
+
+```ts
+export function checkSignature(t: ParsedToken, p: TrustProfile, deps: VerifierDeps): Promise<void>;
+export function verifyAttestation(token: string, profile: TrustProfile, expected: ExpectedAttestation,
+    events: SecurityEventSink, deps: VerifierDeps): Promise<VerifiedAttestation>;
+```
+
+**`checkSignature`**, in order. Every failure is `AttestationError(code, "signature")`.
+1. Run the ADR 0009 rule 2 header checks, unchanged. They run before any fetch.
+2. Call `deps.fetcher.get(p.jwks_uri)` exactly once, with exactly that string. Each of the following → `UNTRUSTED_SIGNER`:
+   - the call rejects;
+   - `status !== 200`;
+   - the body is longer than `deps.limits.maxJwksBytes`;
+   - the body is not strict UTF-8;
+   - the body is not JSON, or is not a JSON object.
+3. Select the key by ADR 0009 rule 4, unchanged → `UNTRUSTED_SIGNER` on failure.
+4. Verify by ADR 0009 rule 5, unchanged → `UNTRUSTED_SIGNER` on failure.
+
+**Deleted:**
+- the discovery fetch;
+- the discovery `issuer` comparison;
+- `jwksUriOf` and its origin comparison.
+
+`checkIssuer` (§6.2: token `iss === profile.issuer`) is unchanged. It is now the only runtime issuer binding.
+
+**`verify.ts`.**
+- Entry validation of `maxTokenBytes` and `maxJwksBytes` is unchanged.
+- `maxDiscoveryBytes` is validated only when it is `!== undefined`: it must be a positive safe integer, else `MALFORMED` at check `signature`. It is never otherwise read.
+
+**Errors.** `AttestationErrorCode` and `AttestationCheckId` are unchanged. There are no new codes.
+
+**Static rule** (runs in `lint_command`). The semgrep rule `tc-core-no-oidc-discovery` fails on the text `openid-configuration` anywhere in `packages/teecustody-core/src/**`. It has positive and negative fixtures under `.semgrep/tests/`.
+
+**Shared test support (A-9, `tests/support/token-factory.ts`).**
+- `profileJson` is v2, with `jwks_uri: JWKS_URL`.
+- `http` is exactly two entries: `JWKS_URL` → the issuer JWKS, and `ATTACKER_JWKS_URL` → the attacker JWKS.
+- The file also exports `ATTACKER_JWKS_URL = JWKS_ORIGIN + "/attacker/jwks"`. It still exports `JWKS_ORIGIN` and `DISCOVERY_URL`, but `DISCOVERY_URL` is used only by negative tests and never appears in `http`.
+- New option `MintOptions.signer?: "issuer" | "attacker"`, default `"issuer"`.
+  - `"attacker"` signs with a second RSA-2048 key.
+  - That key's JWKS is served only at `ATTACKER_JWKS_URL`, which lists it twice: under `kid` `"attacker-kid"` and under `KID`.
+- Test rule: the tests of T-16, T-26 and every later task obtain profiles **only** through `buildFixture`, never from hand-written JSON.
+
+**Example.**
+
+```ts
+const va = await verifyAttestation(token, profile, { identityNonce }, events,
+    { crypto, fetcher, now: Date.now, limits: { maxTokenBytes: 16384, maxJwksBytes: 65536 } });
+// fetcher.get was called exactly once, with profile.jwks_uri
+```
+
+### 16.3 Simulator (delta 4; `packages/teecustody-sim`, A-8)
+
+```python
+# issuer.py
+ATTACKER_JWKS_PATH: Final = "/attacker/jwks"
+class IssuerServer:
+    def __init__(self, host: str, port: int, *, issuer: str, jwks: Mapping[str, JsonValue],
+                 limits: SimLimits, attacker_jwks: Mapping[str, JsonValue] | None = None) -> None: ...
+    # start / stop / origin are unchanged. attacker_jwks passes through the same _public_jwks
+    # filter as jwks (ValueError("INVALID_JWKS")).
+```
+
+**Routes.** Paths match the request target exactly, so a query string gives 404 as today.
+
+| Request | Status | Headers besides `Content-Type` / `Content-Length` | Body |
+|---|---|---|---|
+| `GET /.well-known/openid-configuration` | 200 | **none**: no `Access-Control-*` header (Google parity, CI-2-1) | unchanged (`jwks_uri` = origin + `/jwks`) |
+| `GET /jwks` | 200 | `Access-Control-Allow-Origin: *` | issuer JWKS (unchanged) |
+| `GET /attacker/jwks` | 200 when `attacker_jwks` is set; otherwise 404 | `Access-Control-Allow-Origin: *` | attacker JWKS |
+| `OPTIONS /jwks`; `OPTIONS /attacker/jwks` when set | 204 | `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET`, `Content-Length: 0`; no `Content-Type` | empty |
+| `OPTIONS` on any other path | 405 with `Allow: GET` (unchanged) | — | — |
+| every 404, 405, 431 and over-capacity 503 | unchanged | no `Access-Control-*` header | unchanged |
+
+- Never sent: `Access-Control-Allow-Credentials`, `-Allow-Headers`, `-Max-Age`, `-Expose-Headers`, `Vary`.
+- `*` is the value V-02 is expected to record (V-2.7) for Google's JWKS response. If V-02 records any other value, stop with a CONTRACT_ISSUE. Do not invent an origin echo.
+
+```python
+# keys.py
+class SimKeys:
+    attacker_issuer_kid: str            # same derivation as issuer_kid, over the attacker key
+    def attacker_jwks(self) -> dict[str, JsonValue]: ...
+        # {"keys": [{"kty": "RSA", "alg": "RS256", "use": "sig", "kid": attacker_issuer_kid, "n": n, "e": e},
+        #           {"kty": "RSA", "alg": "RS256", "use": "sig", "kid": issuer_kid,          "n": n, "e": e}]}
+        # n, e = the attacker key's public numbers in both entries
+    def sign_jws_attacker(self, signing_input: bytes) -> bytes: ...   # RSASSA-PKCS1-v1_5 / SHA-256, attacker key
+```
+
+- `SimKeys.generate` also creates the attacker key (RSA-2048, e = 65537).
+- `load_or_create` adds `keys/attacker-issuer.pem`: PKCS#8 PEM, mode 0600, created if absent.
+- The attacker private key is never served, printed, logged or written to vectors. `repr` stays redacted.
+
+**Negative cases** (`cases.py`). Two rows are appended; `NEGATIVE_CASES` becomes rows 2..39, 38 entries:
+
+| # | id | Produced from the `valid` token by | check | error_code | altered | debug_event |
+|---|---|---|---|---|---|---|
+| 38 | `jwks_other_path` | header `{"alg":"RS256","kid":<attacker_issuer_kid>,"typ":"JWT"}`; payload byte-identical to `valid`; signed with `sign_jws_attacker` | signature | UNTRUSTED_SIGNER | — | false |
+| 39 | `jwks_other_path_same_kid` | header identical to `valid` (`kid` = `issuer_kid`); payload identical; signed with `sign_jws_attacker` | signature | UNTRUSTED_SIGNER | — | false |
+
+`token.py`: `_case_edits` returns `()` for both rows, and `mint` selects the header and signing function shown above. `teecustody-sim token --case jwks_other_path` and `--case jwks_other_path_same_kid` work, using the state directory's attacker key.
+
+```python
+# simulator.py
+class Simulator:
+    @property
+    def jwks_uri(self) -> str: ...           # issuer_origin + "/jwks"
+    @property
+    def attacker_jwks_uri(self) -> str: ...  # issuer_origin + ATTACKER_JWKS_PATH
+    # discovery_url is unchanged. start() passes attacker_jwks=keys.attacker_jwks() to IssuerServer.
+```
+
+**`sim-state.json` v2.**
+- Keys: `{"state_version": 2, "audience", "issuer", "jwks_uri", "signers_required", "token_ttl_s", "launch"}`. There is no `discovery_url` and no `jwks_origin`.
+- `cli.py` reads only version 2. A v1 state file → `STATE_NOT_INITIALISED`, with the existing code and exit status.
+- `serve` and `up` rewrite the state file on every start.
+- The `serve` ready line is unchanged.
+
+```python
+# profile.py
+def build_trust_profile(*, jwks_uri: str, expected_audience: str, launch: LaunchConfig,
+                        signers: Sequence[SignerKeyMaterial], signers_required: int,
+                        token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S) -> dict[str, JsonValue]: ...
+```
+
+- It emits the §16.1 development shape.
+- Before anything else it raises `ValueError("INVALID_JWKS_URI")` unless `jwks_uri` is exactly `http://<host>:<port>/jwks`, where:
+  - `<host>` is one of `127.0.0.1`, `localhost`, `[::1]`;
+  - `<port>` is a decimal integer in 1..65535, with no leading zero, and is not 80.
+
+  These conditions make Core's `href === value` rule hold.
+- All other errors are unchanged.
+- The CLI `profile` command passes `state.jwks_uri`.
+
+Example: `build_trust_profile(jwks_uri=sim.jwks_uri, expected_audience=aud, launch=launch, signers=sim.keys.signers, signers_required=2)`.
+
+### 16.4 Vectors (human-gated: `spec/vectors/**`)
+
+Neither CDDL file changes and `proto` stays `tee-chan-v1`. A trust profile is a build artifact, not a wire structure: the CDDL types it as `tstr`, and `http` as a map.
+
+**Attestation suite** (`spec/vectors/attestation/suite.cbor`, from `vectors.py`):
+
+| Field | Now (v1) | After §16 |
+|---|---|---|
+| `profile_json` | v1 development profile | v2 development profile, `jwks_uri` `http://127.0.0.1:8791/jwks` |
+| `production_profile_json` | v1 production fixture | v2: Google issuer, `jwks_uri` = `GOOGLE_JWKS_URI`; signer, digest and hash fixture values made as before |
+| `http` | 4 entries: dev discovery, dev JWKS, Google discovery, Google JWKS fixture | **exactly 3**: `http://127.0.0.1:8791/jwks` → issuer JWKS; `http://127.0.0.1:8791/attacker/jwks` → `keys.attacker_jwks()`; `GOOGLE_JWKS_URI` → fixture JWKS. **No discovery URL.** |
+| `cases` | 37 | 39 (rows 38 and 39 appended) |
+
+- The test Fetcher rejects unknown URLs with `HTTP_ERROR`. A verifier that fetches discovery therefore fails `valid`, so the suite itself checks conformance.
+- The §13.9 outcomes are unchanged: `UNTRUSTED_SIGNER` at `signature` and `CLAIM_MISMATCH` at `issuer`.
+
+**Files changed** (human-gated):
+- `suite.cbor`: regenerated.
+- `spec/vectors/test_attestation_suite.py`:
+  - `PROFILE_KEYS` becomes the 13 v2 keys, and `profile_version == 2` is asserted for both profiles;
+  - `CATALOG` gains rows 38 and 39;
+  - new test: the `http` keys are exactly the three URLs above, and none ends in `/.well-known/openid-configuration`;
+  - new test: the development profile's `jwks_uri` is an `http` key;
+  - new test: the payloads of rows 38 and 39 equal `valid`'s; row 39's header equals `valid`'s; row 38's `kid` differs.
+- `spec/vectors/README.md`: the catalog rows and the `http`-map rule.
+- `tests/integration/contracts/attestation-vectors.contract.test.ts`: `CASE_COUNT` = 39.
+
+**Channel suite** (§3.2, T-25 / T-30):
+- `profile_json` is v2.
+- `http` is exactly `{jwks_uri → issuer JWKS}`.
+- The approved `channel-vectors.cddl` comment "API.md §E shape" is read as §16.1. The CDDL text and its approved hash are unchanged.
+
+### 16.5 Build-time discovery binding (delta 3)
+
+**Library function** in `packages/teecustody-web/src/profile/discovery-binding.ts`. It is on a security path, is not exported from `src/index.ts`, and has no DOM or Node imports.
+
+```ts
+import type { Fetcher, TrustProfile } from "@teecustody/core";
+export const GOOGLE_DISCOVERY_URL =
+    "https://confidentialcomputing.googleapis.com/.well-known/openid-configuration";   // F-07
+export type DiscoveryBindingErrorCode = "INVALID_ARGUMENT" | "DISCOVERY_UNAVAILABLE" | "DISCOVERY_INVALID"
+    | "ISSUER_MISMATCH" | "JWKS_URI_MISMATCH" | "JWKS_UNAVAILABLE" | "JWKS_INVALID";
+export class DiscoveryBindingError extends Error {        // message === code; nothing else
+    constructor(readonly code: DiscoveryBindingErrorCode)
+}
+export interface DiscoveryBindingInput { readonly profile: TrustProfile; readonly discoveryUrl: string }
+export interface DiscoveryBindingDeps { readonly fetcher: Fetcher; readonly maxDocumentBytes: number }
+export interface DiscoveryBindingReport {
+    readonly issuer: string; readonly jwksUri: string; readonly usableKeyCount: number;
+}
+export function checkDiscoveryBinding(input: DiscoveryBindingInput,
+    deps: DiscoveryBindingDeps): Promise<DiscoveryBindingReport>;
+```
+
+Steps, in order:
+1. **Arguments.** Each of the following must hold, else `INVALID_ARGUMENT`:
+   - `maxDocumentBytes` is a positive safe integer.
+   - Production profile: `discoveryUrl === GOOGLE_DISCOVERY_URL`.
+   - Development profile: `discoveryUrl` has no `?` and no `#`; `new URL(d).href === d`; it has no userinfo; its protocol is `http:` or `https:`; its hostname is a loopback host; its pathname is `/.well-known/openid-configuration`; and its origin equals `new URL(profile.jwks_uri).origin`.
+2. **Fetch discovery** with `fetcher.get(discoveryUrl)`.
+   - The call rejects, or `status !== 200` → `DISCOVERY_UNAVAILABLE`.
+   - The body is larger than the maximum, is not strict UTF-8 (`utf8DecodeStrict`), is not JSON, or is not a JSON object (`isJsonObject`) → `DISCOVERY_INVALID`.
+3. **Issuer.** The own member `issuer` `!== profile.issuer` → `ISSUER_MISMATCH`. Exact string comparison, no normalisation.
+4. **JWKS URI.** The own member `jwks_uri` is not a string, or `!== profile.jwks_uri` → `JWKS_URI_MISMATCH`. Exact string comparison: a trailing slash, a case difference or a percent-encoding difference is a mismatch.
+5. **Fetch the JWKS** with `fetcher.get(profile.jwks_uri)`.
+   - The call rejects, or `status !== 200` → `JWKS_UNAVAILABLE`.
+   - The size, UTF-8, JSON or object check fails, or `keys` is not an array → `JWKS_INVALID`.
+6. **Count usable keys.** An entry of `keys` is usable when it is a JSON object with:
+   - `kty` `"RSA"`;
+   - `kid` a string of length 1..256;
+   - `use` absent or `"sig"`;
+   - `alg` absent or `"RS256"`;
+   - `n` and `e` both strings.
+
+   This is ADR 0009's rule 4 filter applied to any `kid`. Zero usable keys → `JWKS_INVALID`.
+7. Return `{ issuer, jwksUri: profile.jwks_uri, usableKeyCount }`.
+
+The function makes exactly two fetches, discovery first. It never retries and never caches. An error carries only its code (SR-11).
+
+Example: `await checkDiscoveryBinding({ profile, discoveryUrl: GOOGLE_DISCOVERY_URL }, { fetcher: new FetchFetcher({ maxBodyBytes: 65536, timeoutMs: 10000 }), maxDocumentBytes: 65536 })`.
+
+**CLI** `teecustody-profile check-discovery`.
+- Lives in `packages/teecustody-web/src/profile/cli.ts` and runs on Node ≥ 22 only.
+- Exposed as the `bin` `teecustody-profile` in `@teecustody/web/package.json`, pointing at the build output of `cli.ts` under T-02's package layout.
+- Never imported by `src/index.ts`, so it is outside the browser bundle and the §9.2 scan entry.
+- **Bundle-scan consistency (D-045, ADR 0011 C7a.1).**
+  - The scan allows exactly one `external` import. The `node:fs`, `node:http` and `node:https` imports in `cli.ts` would each add a forbidden external if `cli.ts` were reachable from the scan entry. They must never be.
+  - `discovery-binding.ts` has no Node imports, so it is safe in either graph.
+  - The build-tool task adds no scan entry for `src/profile/**`.
+  - Test: the metafile of the `src/index.ts` scan build has no input under `src/profile/`.
+- INC-3 adds `manifest`, `csp` and `check-html` to the same bin.
+
+```
+teecustody-profile check-discovery --profile <path> [--discovery-url <url>] [--probe-cors <origin>] [--timeout-ms <n>]
+```
+
+| Step | Rule | Failure (stderr: exactly one line, the code) | Exit |
+|---|---|---|---|
+| environment | `NODE_TLS_REJECT_UNAUTHORIZED` is `0` | `INSECURE_TLS_ENVIRONMENT` (before any network) | 2 |
+| arguments | an unknown or repeated option; `--profile` missing; `--timeout-ms` not an integer 1..60000 (default 10000) | `INVALID_ARGUMENT` | 2 |
+| profile | read at most 65536 bytes, strict UTF-8, `JSON.parse`, `parseTrustProfile` | `INVALID_PROFILE` | 2 |
+| discovery URL | production: if absent, `GOOGLE_DISCOVERY_URL` is used; if present it must equal that value. Development: required | `INVALID_ARGUMENT` | 2 |
+| `--probe-cors` | `new URL(o).origin === o`, and the scheme is `https:`, or `http:` on a loopback host | `INVALID_ARGUMENT` | 2 |
+| binding | `checkDiscoveryBinding` with `FetchFetcher({ maxBodyBytes: 65536, timeoutMs })` and `maxDocumentBytes` 65536 | its `DiscoveryBindingErrorCode` (`INVALID_ARGUMENT` exits 2) | 1 |
+| CORS probe (only with `--probe-cors`) | One GET of `profile.jwks_uri` and one of the discovery URL, through `node:https` / `node:http` `request`. Each sends exactly one request header, `Origin: <origin>`, follows no redirect, discards the body after at most 65536 bytes, and uses the same timeout. The JWKS response must have status 200 and `Access-Control-Allow-Origin` equal to `*` or to the origin. The discovery probe is informational only | `CORS_MISSING` | 1 |
+
+**Success output.** Exit 0 and exactly one stdout line: `ok issuer=<issuer> jwks_uri=<jwks_uri> keys=<n>`. With `--probe-cors` the line continues with ` jwks_acao=<v> discovery_acao=<v>`, where `<v>` is:
+- the header value, if it matches `[!-~]{1,256}`;
+- `absent`, if the header is missing;
+- `invalid`, otherwise.
+
+No document body is ever printed.
+
+**Network behaviour.**
+- Two GETs, or four with `--probe-cors`. No retries, no credentials or cookies, and the tool configures no proxy.
+- An offline production build fails with `DISCOVERY_UNAVAILABLE`.
+- There is no skip, offline or allow-mismatch option (I13; `framework.yaml` non-negotiable).
+
+Example: `teecustody-profile check-discovery --profile trust-profile.json` prints
+`ok issuer=https://confidentialcomputing.googleapis.com jwks_uri=https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com keys=2`.
+
+### 16.6 Scheduled real-GCP binding check (delta 3; NFR-11)
+
+`.github/workflows/ci.yml` gains a job `discovery-binding`:
+- **Trigger.** `if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It never runs on push or PR, because it needs network access to Google.
+- **Runner.** `ubuntu-24.04`, `timeout-minutes: 10`. It uses the workflow-level `permissions: contents: read`, no secrets and no cloud credentials. Actions are pinned by SHA exactly as in the existing jobs.
+- **Steps.** `pnpm install --frozen-lockfile`, the build step T-02's layout needs, then:
+  `pnpm --filter @teecustody/web exec teecustody-profile check-discovery --profile test/fixtures/binding-check-production-profile.json --probe-cors https://ci.teecustody.invalid`.
+- **Fixture** `packages/teecustody-web/test/fixtures/binding-check-production-profile.json`. A v2 production profile whose anchors are inert placeholders:
+  - audience `https://binding-check.teecustody.invalid/tee`;
+  - `allowed_hwmodels` `["GCP_AMD_SEV"]`;
+  - `allowed_digests` `["sha256:" + 64 × "0"]`;
+  - `signer_keys` `[{"key_id": 64 × "0", "algorithm": "RSASSA_PSS_SHA256"}]`, `signers_required` 1;
+  - both hashes 64 × `"0"`.
+
+  Only `issuer` and `jwks_uri` are exercised. The fixture is human-gated (§15 Q11).
+- **On failure.** The job fails and GitHub notifies the repository owner. Triage follows ADR 0012: a Google URI or CORS change means a Core patch release plus a profile rebuild. A `discovery_acao` value other than `absent` is D-043's revisit trigger, and the Orchestrator raises it.
+- **Pre-release.** The job is also run (`workflow_dispatch`) before every release, as an item on the INC-5 checklist.
+- **Test.** A unit test parses `ci.yml` and asserts that:
+  - the job exists;
+  - its `if` is exactly the expression above;
+  - it references no `secrets.`;
+  - its run line is the command above.
+
+### 16.7 SR-13 `connect-src` (delta 5)
+
+- `connect-src` lists `new URL(profile.jwks_uri).origin`, the gateway origin and, from INC-3, the security-event origin. It never lists a discovery origin. In production the JWKS origin is `https://www.googleapis.com`.
+- The CSP harness in §9.3 is amended to match.
+- D-045 (ADR 0011 C7a/C3a) does not change the CSP: the `@hpke/common` `import("crypto")` site is a literal import that never runs in a browser, and it needs no `connect-src` or `script-src` entry.
+- INC-3's `teecustody-profile csp` derives the JWKS origin from the parsed v2 profile. Unit test: the `connect-src` emitted for the §16.6 fixture contains `https://www.googleapis.com` and does not contain `confidentialcomputing.googleapis.com`.
+
+### 16.8 Fetcher invariants (restated)
+
+- `FetchFetcher` puts no `headers` member in `RequestInit` (§8.2), follows no redirects (D2-14), and requires `maxBodyBytes ≥ maxJwksBytes`.
+- A host-supplied `Fetcher` used in a browser must not add request headers: an added header makes the JWKS request non-simple and triggers a CORS preflight against Google. This goes in the README as an INC-5 item.
+
+### 16.9 Required tests (SR-1, SR-13; T-29)
+
+**Core, unit** (A-7; security path, 100% branch coverage):
+- **C1.** With a spy Fetcher, for `valid` and for every case that reaches key retrieval, `get` is called exactly once, with an argument `=== profile.jwks_uri`. No call argument ever contains `openid-configuration`. A header-rule failure still makes zero calls.
+- **C2 (T-29).** Tokens signed by the attacker key (`MintOptions.signer: "attacker"`, once with header `kid` `"attacker-kid"` and once with `KID`) → `signature` / `UNTRUSTED_SIGNER`, even though `ATTACKER_JWKS_URL` (same origin, other path) serves a matching key.
+  - **Positive control:** the same tokens, with a Fetcher that maps `profile.jwks_uri` to the attacker JWKS, pass `checkSignature`. This proves that only the pinned URL decides.
+- **C3.** `parseTrustProfile` → `INVALID_PROFILE` at `jwks_uri` for each of these values.
+  - Production:
+    - a path variant `…/jwk/other@confidentialspace-sign.iam.gserviceaccount.com`;
+    - a trailing `/`;
+    - `?`, `?x=1`, `#`, `#x`;
+    - host `WWW.googleapis.com`;
+    - path segment `/Service_accounts/`;
+    - scheme `http:`;
+    - an explicit `:443`;
+    - userinfo;
+    - `%40` in place of `@`;
+    - leading or trailing whitespace;
+    - empty string, a non-string, or more than 2048 characters.
+  - Development:
+    - a non-loopback host;
+    - paths `/jwks/`, `/JWKS`, `/attacker/jwks`, `//jwks`;
+    - `http://127.0.0.1:80/jwks` and `https://127.0.0.1:443/jwks`;
+    - `http://127.1:8791/jwks` (`href` differs);
+    - a query, a fragment, or userinfo.
+- **C4.**
+  - The exact INC-1 §E v1 JSON → field `profile_version`.
+  - v2 plus `discovery_url` → field `discovery_url`.
+  - v2 plus `jwks_origin` → field `jwks_origin`.
+  - v2 without `jwks_uri` → field `jwks_uri`.
+- **C5.** `new URL(GOOGLE_JWKS_URI).href === GOOGLE_JWKS_URI` in Node 22. The browser harness asserts the same in Chromium, Firefox and WebKit as step `pin_canonical`.
+- **C6.**
+  - JWKS failures → `UNTRUSTED_SIGNER`: any redirect, a non-200 status, an oversize body, non-JSON, or no `keys`.
+  - `maxDiscoveryBytes` absent → accepted; `0` → `MALFORMED` at `signature`.
+- **C7.** `tc-core-no-oidc-discovery` passes its positive and negative fixtures.
+
+**Vectors** (both languages):
+- Rows 38 and 39 reject at `signature`.
+- `valid` accepts, with a Fetcher that holds no discovery URL.
+- The Python harness checks everything listed in §16.4.
+
+**Simulator** (A-8):
+- **S1.**
+  - `GET /jwks` and `GET /attacker/jwks` with `Origin: http://127.0.0.1:5555` → 200 with `Access-Control-Allow-Origin: *`.
+  - `OPTIONS` with `Access-Control-Request-Method: GET` → 204 with exactly the two headers.
+  - `GET` discovery → 200 with no `Access-Control-*` header.
+  - 404, 405, 431 and 503 → no `Access-Control-*` header.
+  - `Access-Control-Allow-Credentials` never appears.
+- **S2.** The `teecustody-sim profile` output has `profile_version` 2, `jwks_uri == simulator.jwks_uri`, and no `discovery_url` or `jwks_origin` key. Core `parseTrustProfile` accepts it, checked by a Node contract test that reads the CLI output.
+- **S3 (positive control).** The row 38 and row 39 tokens verify (`cryptography`, RS256) under the attacker-JWKS entry named by their header `kid`. They fail under `/jwks`.
+- **S4.** `build_trust_profile` → `INVALID_JWKS_URI` for: port 80, a port with a leading zero, a path other than `/jwks`, a non-loopback host, `https:`, and a trailing slash.
+- **S5.** A v1 `sim-state.json` → `teecustody-sim profile` exits with `STATE_NOT_INITIALISED`.
+
+**Node end-to-end** (T-31; live simulator; `FetchFetcher`):
+- **N1.** A recording Fetcher wraps `FetchFetcher` during `ChannelClient.open`. Every URL it records equals `profile.jwks_uri`.
+- **N2.** `verifyAttestation(fixture.attacker_token, …)` → `signature` / `UNTRUSTED_SIGNER`, while `FetchFetcher.get(fixture.attacker_jwks_url)` → 200.
+- **N3.** `teecustody-profile check-discovery --profile <harness profile> --discovery-url <fixture.discovery_url> --probe-cors http://127.0.0.1:1` → exit 0, with `jwks_acao=* discovery_acao=absent`.
+
+**Browser** (T-32):
+- **B1.** Step `discovery_cors` is `"blocked"`: a page `fetch` of the discovery URL rejects with `TypeError`. The origin is in `connect-src`, so this is a CORS block, not a CSP violation. The `attestation` and channel steps are `"ok"`. Verification therefore works while discovery is CORS-blocked.
+- **B2.** Step `attacker` is `"rejected"`, while a page `fetch` of `attacker_jwks_url` succeeds.
+- **B3.** Step `pin_canonical` is `"ok"` (C5).
+
+**Build tool:**
+- **D1.** Fixture-Fetcher unit tests cover every `DiscoveryBindingErrorCode`, including exact-string mismatches: a discovery `jwks_uri` with a trailing slash, an upper-case host or `%40`, and an `issuer` with a trailing slash. They also check fetch order (discovery, then JWKS) and count (2). A production profile with a non-Google discovery URL → `INVALID_ARGUMENT` before any fetch.
+- **D2.** CLI: the exit code and single output line for each row of the §16.5 table. `NODE_TLS_REJECT_UNAUTHORIZED=0` → exit 2 before any network. The CORS probe is tested against a local `node:http` server, with and without the header.
+- **D3.** The `ci.yml` assertions in §16.6.
+- **D4.** The `src/index.ts` scan metafile contains no input under `src/profile/` and still has exactly the one C7a.1 external entry (D-045).
+
+### 16.10 Impact for the Tech Lead
+
+**Wave-0 freeze.** No change is required to any file owned by T-01..T-06, V-01 or V-02. Every §16 change lands only after the Wave-0 owner of the touched file has merged:
+
+| File(s) | Wave-0 owner | §16 change lands in |
+|---|---|---|
+| Core `attestation/types.ts` | T-02 | Core task, Wave ≥ 1 |
+| `.semgrep.yml`, `.semgrep/tests/*` | T-05 | Core task, Wave ≥ 1 |
+| `.github/workflows/ci.yml` | T-05 | build-tool task |
+| `spec/vectors/README.md` | T-03 | vectors task |
+| `packages/teecustody-web/package.json` | T-02 (W0), T-17 (W1), T-27 (W2) | build-tool task, Wave ≥ 3 |
+| sim `tests/test_api_surface.py` | T-04 (W0), **T-08 (W1)** | **conflict**, see "Waves and conflicts" below |
+
+V-02 needs no file change. V-2.7 must still record the exact `Access-Control-Allow-Origin` value on Google's JWKS response, because T-21 copies it. "No CORS on discovery" is now the expected result, not a CONTRACT_ISSUE (D-043). This is an Orchestrator note to V-02.
+
+**Tasks.** This is a recommendation; the Tech Lead owns IDs and waves.
+
+- **Core task (new; STRONG; security path).**
+  - Source: A-6, A-7.
+  - Test support: A-9 (`tests/support/token-factory.ts`).
+  - Core tests: `test/attestation/{profile,types,verify}.test.ts`; `test/attestation/checks/{signature,issuer,claims,image,launch-config}.test.ts`, wherever they build or assert v1 profiles; `test/api-surface.test.ts`, if it asserts `VerifierLimits` or profile keys.
+  - Contract tests: `tests/integration/contracts/trust-profile.contract.test.ts` and `attestation-verifier.contract.test.ts`.
+  - Static rule: the `tc-core-no-oidc-discovery` semgrep rule and its fixtures.
+- **T-21 (rewritten; no longer conditional; STRONG; `packages/teecustody-sim/**`).** It starts once V-02 has recorded V-2.7.
+  - Source: all of A-8 (`issuer.py`, `keys.py`, `token.py`, `cases.py`, `simulator.py`, `profile.py`, `cli.py`, `vectors.py`).
+  - Sim tests: `test_issuer.py`, `test_simulator.py`, `test_profile.py`, `test_cli.py`, `test_vectors.py`, `test_api_surface.py`, a new `test_issuer_cors.py`, and the keys and token tests.
+  - Contract tests: `tests/integration/contracts/test_sim_cli_contract.py` and `test_sim_oidc_contract.py`.
+- **Vectors task (new; FAST; human-gated).** The §16.4 file list: `suite.cbor`, `test_attestation_suite.py`, `spec/vectors/README.md`, `attestation-vectors.contract.test.ts`.
+- **Build-tool task (new; STRONG; `packages/teecustody-web/src/profile/**`).**
+  - Covers §16.5 and §16.6.
+  - Depends on the Core task and T-18; Wave 3 is the earliest wave with `package.json` free.
+- **QA (acceptance owner).** These acceptance files assert v1 profiles, discovery or `maxDiscoveryBytes` and must change in the same merge unit as the tasks above:
+  - `tests/acceptance/SR01.token-jws-and-discovery.test.ts`;
+  - `SR01.trust-profile.test.ts`;
+  - `FR02.attestation-checks.test.ts`;
+  - `FR03.simulator-end-to-end.test.ts`;
+  - `D02.profile-canonical.test.ts`;
+  - `EXPLORE.hostile-inputs.test.ts`;
+  - `support.ts`;
+  - `test_FR03_simulator.py`;
+  - `test_FR03_cli.py`.
+
+  To confirm the list, grep for `discovery_url|jwks_origin|profile_version|maxDiscoveryBytes`.
+
+**Merge unit (trunk must stay green).** Core v2 rejects the committed v1 `suite.cbor` and every v1 profile the simulator emits. The Core task, T-21, the vectors task and the QA updates must therefore merge as **one unit**: the vectors branch is built on the other two, and the full suite runs on the combined state. The build-tool task merges afterwards on its own.
+
+**Waves and conflicts.**
+- **sim `tests/test_api_surface.py`.** T-08 (Wave 1) also edits this file, to add requirement pins. Recommendation: amend T-08, which has not started, to put its pin assertions in a new `tests/test_requirement_pins.py`. That frees `test_api_surface.py` for T-21 in Wave 1. The alternative is to move T-21 and the Core task to Wave 2, which pushes T-25 and everything after it back one wave.
+- **`cli.py` and `vectors.py`.** T-25 (Wave 2) also owns these. Add the dependency T-25 → T-21.
+
+**Contract amendments to existing INC-2 tasks:**
+
+| Task | Amendment |
+|---|---|
+| T-16, T-26 | Get profiles only from `buildFixture`. |
+| T-18 | `maxBodyBytes ≥ maxJwksBytes`; no `headers` in `RequestInit`, with a test (§8.2). |
+| T-25 | Depends on T-21. Channel suite: v2 profile from `build_trust_profile(jwks_uri=…)`; `http` is the JWKS entry only. |
+| T-30 | The generated suite carries the v2 profile; the human sees it. |
+| T-31 | Depends on the Core task, T-21 and the build-tool task. v2 harness profile; the new `fixture.json` keys (§9.4); tests N1–N3. |
+| T-32 | `connect-src` per §16.7; steps B1–B3. |
