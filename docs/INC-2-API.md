@@ -4,6 +4,10 @@ Owner: Architect. Status: **revision 3** (2026-10-11): revision 2 (approved, D-0
 §16 pins `jwks_uri` in trust profile v2 and removes runtime discovery (constraint-deviation of spec §6.1, ADR 0012). It
 supersedes any text in this document or in `docs/tasks/INC-1/API.md` §C–§G that mentions `discovery_url`, `jwks_origin`
 or a client-side discovery fetch. Sections 5.3, 8.2, 9.3, 9.4, 13, 14 and 15 carry the cross-references.
+Revision 3 addendum (2026-10-12, V-02 findings):
+- §9.3: harness CSP uses `img-src 'self'` with a same-origin favicon (Firefox), and Firefox vault expectations are added.
+- §8.4: PRF capability hints are never trusted.
+
 Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
 (THREAT_MODEL review log 2026-10-05; SR-14). The Tech Lead transcribes §3–§8 into Wave-0 stubs and Task
@@ -1370,6 +1374,28 @@ logs or any request (spec §10.1). Multi-device (spec §10.4) is not supported i
 the local record gives `get` → `undefined`, and the host uses recovery (INC-4). Example:
 `await vault.set(clientId, cs); const cs2 = await vault.get(clientId);`.
 
+**PRF capability hints are never trusted (ruling 2026-10-12, V-02 Firefox finding).** Firefox reports
+`PublicKeyCredential.getClientCapabilities()["extension:prf"] === true` even when no authenticator can produce
+PRF output.
+- `PrfShareVault` never calls or reads `getClientCapabilities()`, `isUserVerifyingPlatformAuthenticatorAvailable()`,
+  or any other capability hint.
+- PRF support is established only by the ceremony results above:
+  - `prf.enabled === true` at `create`;
+  - a 32-byte `prf.results.first` from `create` or `get`.
+
+  Anything else → `UNSUPPORTED` with nothing written. A ceremony that waits until `timeoutMs` → `AbortError` /
+  `NotAllowedError` → `USER_PRESENCE_REQUIRED`, also with nothing written.
+- A host may call `getClientCapabilities()` itself to decide whether to *offer* the vault (a UX hint). The README
+  says so. It is never a reason to skip the result checks.
+
+Tests (T-20):
+- (a) A credentials double whose `getClientCapabilities` returns `{"extension:prf": true}` and whose `create` returns
+  `prf.enabled: false` → `UNSUPPORTED`, store empty.
+- (b) The same with `prf.enabled: true` but no `results` from `create` or `get` → `UNSUPPORTED`, store empty.
+- (c) `results.first` of length ≠ 32 → `UNSUPPORTED`.
+- (d) The source of `src/vault/**` contains no `getClientCapabilities` or `isUserVerifyingPlatformAuthenticatorAvailable`
+  (text check in the T-20 unit tests).
+
 ### 8.5 Clock
 
 ```ts
@@ -1398,15 +1424,29 @@ D-045 extends the scan, under ADR 0011 C7a and C3a (T-27 owns the exact rules):
 - The esbuild metafile may contain exactly one `external` import, the `@hpke/common` `import("crypto")` site. Any other external import, or that entry going unused, exits 2.
 - A bundle-input manifest proves that no vendored `@hpke/common` curve code contributes bytes.
 
-D-043 does not change these rules (§16.5). The CSP is unchanged by D-045. Unit test:
-a fixture file per pattern must fail, and a clean fixture must pass.
+D-043 does not change these rules (§16.5). The CSP is unchanged by D-045.
+
+Unit test: a fixture file per pattern must fail, and a clean fixture must pass.
 
 ### 9.3 CSP harness (Playwright; `packages/teecustody-web/test/browser/`)
 - `serve.mjs`: `node:http` static server on 127.0.0.1:0. It serves `index.html` (one
-  `<script src="/harness.js" integrity="sha384-…" crossorigin="anonymous">`, nothing inline) and `harness.js`
-  (esbuild bundle of `test/browser/harness/index.ts`), with header
-  `Content-Security-Policy: default-src 'none'; script-src 'sha384-<harness.js>'; connect-src <gateway origin> <jwks origin>; img-src 'none'; style-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`
-  (enforce mode, no `'self'`, no unsafe keywords). `<jwks origin>` is `new URL(profile.jwks_uri).origin` (D-043, §16.7). It is
+  `<script src="/harness.js" integrity="sha384-…" crossorigin="anonymous">`, nothing inline, no `<link rel="icon">`),
+  `harness.js` (esbuild bundle of `test/browser/harness/index.ts`) and `GET /favicon.ico` (fixed `204 No Content`,
+  no body), with header
+  `Content-Security-Policy: default-src 'none'; script-src 'sha384-<harness.js>'; connect-src <gateway origin> <jwks origin>; img-src 'self'; style-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'`
+  (enforce mode, no `'self'` or unsafe keyword **in `script-src`**).
+  **Ruling 2026-10-12 (V-02 Firefox favicon finding).** Firefox requests `/favicon.ico` automatically, even when a
+  `data:` icon is declared. Under `img-src 'none'` that request raises a violation, so `violations === 0` fails in
+  Firefox.
+  - The fix is to align the harness with the production CSP: ARCHITECTURE "Web code delivery" gives the notes-app
+    and host header `img-src 'self'`. The harness also serves a same-origin favicon. This loosens nothing relative to
+    production; the harness was stricter than production on `img-src` only.
+  - `script-src`, `connect-src`, `default-src`, `base-uri`, `form-action`, `frame-ancestors` and `object-src` are
+    unchanged.
+  - No violation filter is allowed. Every `securitypolicyviolation` event counts in every browser, and the
+    `violations === 0` assertion is unchanged.
+  - `csp.spec.ts` additionally asserts that the served CSP header string is exactly the one above.
+  - SR-13's library controls (script-src hashing, no eval, no inline script) do not depend on `img-src`. `<jwks origin>` is `new URL(profile.jwks_uri).origin` (D-043, §16.7). It is
   never a discovery origin. Under the simulator it equals the issuer's HTTP origin.
 - `harness/index.ts` registers a `securitypolicyviolation` listener first, then runs: `createWebCrypto` (HPKE
   seal, Ed25519 verify), `FetchFetcher` against the simulator issuer, `FetchTransport` + `ChannelClient` against the
@@ -1419,8 +1459,13 @@ a fixture file per pattern must fail, and a clean fixture must pass.
   `window.__result = { violations: number, steps: Record<string, "ok" | "blocked" | "rejected" | CapabilityErrorCode | ChannelErrorCode | AttestationErrorCode> }`.
 - `csp.spec.ts`: Chromium with a CDP virtual authenticator (`hasPrf: true`, `hasUserVerification: true`,
   `isUserVerified: true`) — every step `ok`, `violations === 0`. Firefox and WebKit — crypto, fetcher, transport
-  and channel steps `ok` or a recorded fail-closed `UNSUPPORTED`/`CRYPTO_UNAVAILABLE` (V-2.2, V-2.4), vault
-  `UNSUPPORTED` unless PRF is available, `violations === 0`. A positive-control page with one inline script must
+  and channel steps `ok` or a recorded fail-closed `UNSUPPORTED`/`CRYPTO_UNAVAILABLE` (V-2.2, V-2.4), `violations === 0`.
+  Vault expectations outside Chromium, unless PRF is available:
+  - WebKit (no `navigator.credentials`): `UNSUPPORTED`.
+  - Firefox: `UNSUPPORTED`, or `USER_PRESENCE_REQUIRED` when the ceremony waits for a real authenticator until
+    `timeoutMs` (V-02; the harness sets `timeoutMs` to 3000 for this browser).
+
+  In every case the `shares` store must be empty afterwards. A positive-control page with one inline script must
   report ≥ 1 violation. A PRF-less virtual authenticator (`hasPrf: false`) must give `vault.set` → `UNSUPPORTED`
   and an empty `shares` store.
 
