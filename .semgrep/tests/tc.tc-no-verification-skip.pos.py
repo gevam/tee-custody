@@ -10,3 +10,10 @@ def verify(token, disableVerification=False):
 
 # ruleid: tc-no-verification-skip
 INSECURE_MODE = False
+
+
+# ruleid: tc-no-verification-skip
+NO_VERIFY = True
+# A1: the frozen channel error code is not a switch.
+# ok: tc-no-verification-skip
+NO_VERIFIED_BUNDLE = "NO_VERIFIED_BUNDLE"

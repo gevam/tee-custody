@@ -69,7 +69,9 @@ rules:
         - "/packages/teecustody-core/src/**"
         - "/packages/teecustody-py/src/**"
         - "/packages/teecustody-web/src/**"
-    pattern-regex: (?i)(skip|disable|bypass|no)_?verif|insecure
+    # A1 (T-05, D-046): the standalone upper-case NO_VERIFIED_BUNDLE error code (INC-2-API §7.5) is
+    # the only exemption; every other spelling still fires (see fixtures).
+    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!\bNO_VERIFIED_BUNDLE\b))no_?verif|insecure
 
   - id: tc-no-sim-import-in-library
     message: The library never depends on the simulator (NFR-6, spec §15.5).
