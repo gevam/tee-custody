@@ -136,14 +136,26 @@ These requirements capture the structural controls needed by the threat model. A
 - Given arbitrary, altered, or cross-client route IDs at the reference gateway, when ciphertext is relayed or polled, then route possession does not establish identity or authorize a workload operation; independent client attestation and authenticated protocol checks remain required.
 - Given missing, invalid, expired, or mismatched workload attestation, client protocol authentication, or production workload service identity, when the corresponding verifier or adapter boundary is reached, then the check fails before trust establishment, operation dispatch, or protected service access.
 - Test description: integration-test gateway routes without caller credentials and verify the gateway only performs bounded ciphertext relay, with route IDs treated solely as routing hints. Test clients against altered/missing workload attestation and authenticated protocol data; test workload dispatch to ensure route IDs cannot substitute for authenticated identity; verify production-adapter calls fail without the workload service identity. Exercise configured rate, size, and polling limits as specified by SR-4.
-  - Token JWS (ADR 0009), in addition to the ADR's own test list:
-    - Discovery `issuer` differs from the profile → `UNTRUSTED_SIGNER`.
-    - `jwks_uri` origin differs from `jwks_origin` → `UNTRUSTED_SIGNER`. Cover `http:`, a different port, userinfo, the suffix host `https://www.googleapis.com.evil.test`, and a path-only difference that still passes.
-    - A cross-origin redirect on either fetch → `UNTRUSTED_SIGNER`.
-    - Oversized or non-JSON discovery/JWKS documents → `UNTRUSTED_SIGNER`.
+  - Token JWS (ADR 0009 as amended by ADR 0012 / D-043: pinned `jwks_uri`, no runtime discovery; INC-2-API §16.9), in addition to the ADR's own test list:
+    - The Fetcher is called exactly once per verification that reaches key retrieval, with an argument `===` `profile.jwks_uri`. No call ever names a discovery document (`openid-configuration`). Static rule `tc-core-no-oidc-discovery` holds in Core.
+    - T-29: a token signed by a key served at another path on the same origin (simulator `/attacker/jwks`) → `UNTRUSTED_SIGNER`. Test it twice, once with the attacker's own `kid` and once with the issuer's `kid`. Vector rows `jwks_other_path` and `jwks_other_path_same_kid` cover it in both languages. Positive control: a Fetcher that maps the pinned URI to the attacker JWKS makes the same tokens pass, which proves that only the pin decides.
+    - `parseTrustProfile` rejects at field `jwks_uri`:
+      - a production value that differs in any way from the Core constant (FACTS F-07): path, trailing `/`, query, fragment, host or path case, scheme, explicit `:443`, userinfo, `%40` for `@`, whitespace, empty, non-string, over 2048 characters;
+      - a development value that is non-loopback, non-canonical (`new URL(v).href !== v`), carries a query, fragment or userinfo, or has a path other than exactly `/jwks`.
+
+      It also rejects v1 profiles (at `profile_version`) and v2 profiles that carry `discovery_url` or `jwks_origin`.
+    - A redirect, a non-200 status, an oversized body or a non-JSON JWKS → `UNTRUSTED_SIGNER`.
     - Candidate filtering: matching `kid` with `kty` EC, `use` `enc`, `alg` `RS384`, missing `n`/`e`, or a duplicate `kid` → `UNTRUSTED_SIGNER`.
     - Every header-rule failure asserts the Fetcher was never called.
-    - A production profile with `http:` discovery/JWKS URLs, and a development profile with non-loopback `http:` URLs, are rejected by `parseTrustProfile`.
+    - Browser: verification succeeds while the discovery document is CORS-blocked, and the attacker-path token is rejected while its JWKS is fetchable.
+    - Build-time binding (`teecustody-profile check-discovery`, ADR 0012 rule 3). Each of the following fails with its own code, and no skip or offline option exists:
+      - a discovery `issuer` or `jwks_uri` that is not exactly string-equal (trailing `/`, case, `%40`);
+      - unavailable or invalid discovery or JWKS;
+      - zero usable keys;
+      - a production profile with a non-Google discovery URL;
+      - `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+      The scheduled real-GCP job runs the command against Google with a JWKS CORS probe and no secrets. Security does not depend on this check, because Core enforces the constant; it detects drift.
   - Image signer threshold (D-016, T-22), all with the `image_digest` on the allow-list:
     - (a) `signers_required` distinct matching `key_id`s → accept.
     - (b) One fewer → `UNTRUSTED_SIGNER`.
@@ -231,6 +243,12 @@ These requirements capture the structural controls needed by the threat model. A
   - ADR 0011 C3:
     - A fixture adding `@hpke/dhkem-x25519` (or any `@noble/*`, `tweetnacl` or other JS curve/cipher package) to the runtime closure of `@teecustody/core` or `@teecustody/web` fails the job.
     - So does a range (non-exact) version on `@hpke/core`/`@hpke/common`/`pyhpke`, and a `pyhpke` runtime dependency other than `cryptography`.
+  - ADR 0011 C3a/C7a (D-045; `@hpke/common` admitted only as `@hpke/core`'s dependency at the C6-signed version):
+    - Lint fixtures: an import of `@hpke/common` anywhere in `packages/**` fails. So does an import from `@hpke/core` in `webcrypto.ts` of any name other than `CipherSuite`, `DhkemX25519HkdfSha256`, `HkdfSha256`, `Aes256Gcm` and its error classes.
+    - Native-path proof (T-17): a spy on `globalThis.crypto.subtle.deriveBits` sees `name: "X25519"` for every encap/decap in the round trip and the KATs.
+    - With global WebCrypto X25519 removed, or with `globalThis.crypto` undefined, every HPKE call rejects `UNSUPPORTED` and no `@hpke/core` API runs.
+    - Review: any `@hpke/*` version change needs a new C6 sign-off before lock approval.
+    - The SR-13 bundle-scan metafile checks are the control for vendored code, because the `@noble/*` bar cannot see it.
 
 **SR-10 [INC-5] Release artifact authenticity.** Workload image and client release signing shall use controlled signing identities, protected key custody, separation from ordinary build execution, and independent signature verification. Reproducible builds shall be tied to the verified source and dependency inputs.
 - Given an image or package is built from approved inputs, when it is released, then its signature verifies under the approved release identity; an unsigned, altered, or incorrectly signed artifact cannot be deployed or published.
@@ -269,7 +287,13 @@ A pre-key burn rate above a configured threshold SHOULD also alert (T-17).
   - Two clean builds produce identical bundle hashes that match the published manifest.
   - `teecustody-profile csp` rejects any `--connect` value that is not a single exact `https://host[:port]` origin (loopback only with a development profile). It also rejects wildcards, schemes other than `https`, quotes, semicolons, whitespace and CSP keywords, and never emits `'self'`, `'unsafe-inline'`, `'unsafe-eval'` or `'strict-dynamic'` in `script-src`. Unit fixtures cover each rejection.
   - `teecustody-profile check-html` fails on every violating fixture: a missing or mismatched `integrity`, an inline script, an inline handler, a `javascript:` URL, or a third-party origin.
-  - `connect-src` includes both the discovery origin and the `jwks_uri` origin that the production trust profile requires.
+  - `connect-src` names `new URL(profile.jwks_uri).origin` (production: `https://www.googleapis.com`), the gateway origin and, from INC-3, the security-event origin. It never names a discovery origin (D-043, ADR 0012). For the production fixture profile, the emitted `connect-src` contains `https://www.googleapis.com` and does not contain `confidentialcomputing.googleapis.com`.
+  - Bundle-scan metafile checks (ADR 0011 C7a/C3a, D-045):
+    - Any `external` import fails the scan (exit 2), except exactly one entry, which must match exactly once: importer `…/@hpke/common/esm/src/algorithm.js`, path `crypto`, kind `dynamic-import`.
+    - A fixture containing `try { await import("fs") } catch {}` fails.
+    - No input under `@hpke/common/esm/src/curve/**` contributes bytes.
+    - Any `@hpke/*` input outside the list pinned in the C6 amendment that contributes bytes, or any growth of the two recorded hash fragments, fails.
+    - The `src/index.ts` scan of `@teecustody/web` has no input under `src/profile/`.
 
 **SR-11 [INC-1 onward] Non-disclosing errors.** Untrusted callers shall receive only stable public error categories and sanitized messages. Provider exceptions, tokens, payloads, credentials, and secret-bearing internal causes shall not cross the boundary or be written to logs.
 - Given a request triggers parser, authentication, authorization, crypto, or backend failure, when its error is returned or logged, then only the documented category and allow-listed fields are observable.

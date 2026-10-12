@@ -953,3 +953,21 @@ For httpx: switch to httpx2, add a targeted warning filter, or pin older starlet
 **Follow-ups:**
 - Architect: change the INC-2-API §11 `httpx` row to `httpx2`.
 - Tech Lead, in the D-043 pass: place the `INSECURE_TLS_ENVIRONMENT` error code so that it does not trip `tc-no-verification-skip`, or exempt it as exactly as `NO_VERIFIED_BUNDLE` is.
+
+## D-047 — Security Architect APPROVES the D-043 design; SR-1, SR-9 and SR-13 updated (INC-2, 2026-10-12)
+
+Type: gate-routing
+Chair / decider: Orchestrator (on the Security Architect's verdict)
+Participants: Architect, Security Architect
+
+**Decision:** The D-043 design (INC-2-API rev 3 §16, ADR 0012; commit 0949533) is approved with one Low condition. L-1: the simulator's attacker JWKS key is generated fresh per state directory, is never committed, and signs only the `jwks_other_path*` cases. New test S6 checks that `/jwks` never contains the attacker modulus.
+
+Q9 answers (a)–(e) are all confirmed: the production `jwks_uri` is a Core constant, so a change needs a Core patch release; the development path is `/jwks`; the attacker route is always served; `maxDiscoveryBytes` is inert, with a DEBT entry expiring at INC-5; the version is checked before the key set.
+
+The Security Architect updated SR-1 (pin tests and build-time binding tests), SR-13 (`connect-src` lists only the JWKS origin) and SR-9/SR-13 (D-045 C3a/C7a lines). T-29 is now "mitigated by design (D-043, ADR 0012); test required".
+
+**Traceability:** the §6.1 row changes only the Coverage type, Location and Status columns, which is within D-014's standing authority. The Architect applies it when the Core task, T-21, the vectors task and T-32 land. Requirement and Doc version are unchanged.
+
+**Follow-ups:**
+- Tech Lead D-043/D-045 pass: L-1/S6; C3a.2 (import-confinement lint rule) assigned to a task; the T-17 provenance evidence items 1–4.
+- Add a DEBT entry for `maxDiscoveryBytes` when the Core task lands.
