@@ -895,3 +895,33 @@ Participants: —
 **Revisit when:** —
 
 **Follow-ups:** The retro checks the worktree-isolation instructions in the engineer prompt.
+
+## D-045 — Human: admit @hpke/core with @hpke/common under ADR 0011 C3a/C7a (H-HPKE) (INC-2, 2026-10-12)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Security Architect
+
+**Options considered**
+A. Admit @hpke/core 1.9.0 and @hpke/common 1.10.1, scoped by a `framework.yaml` `dependency_policy` exception and new ADR conditions C3a/C7a.
+B. Pin the pre-vendoring @hpke/common 1.7.3.
+C. Block HPKE in the browser until upstream fixes it.
+
+**Decision:** A, chosen by the human. The Orchestrator applied the Security Architect's wording verbatim to `framework.yaml`: the `security.dependency_policy` exception, and the `forbidden_dependencies` pure-JS entry marked "except as admitted in security.dependency_policy".
+
+**Reasoning:** V-01 found two problems:
+- C7: an unresolved `import("crypto")` sits in a try/catch Node ≤18 fallback that runs only when `globalThis.crypto` is absent.
+- C3: @hpke/common ≥1.8.0 vendors pure-JS noble X25519 and hash code. Our path never reaches it, but two dead fragments do reach the bundle.
+
+Spec §10.2 is still met. The literal framework rule forbade the package, so admitting it was the human's call. B expires on 2026-12-01 under the 18-month rule. C stalls the browser channel.
+
+**Dissent:** none
+
+**Revisit when:** any @hpke/* version change (new C6 sign-off required), or upstream drops the fallback or the vendored code (B-28).
+
+**Follow-ups:**
+1. Security Architect: before the T-17 pin, explain the @hpke/core 1.9.0 provenance gap (the provenance names tag `hpke-js@1.8.0`; Medium). Then write the follow-up C6 amendment and sign-off, and add the C3a/C7a test lines to SR-9 and SR-13.
+2. Tech Lead: add C7a.1–2 and C3a.1 to T-27 (esbuild metafile external check, guarded-import fixture, C3a input manifest). Add C7a.3 and C3a.3 to T-17. T-17 criteria 1–3 and 6 may start now; criteria 4, 5, 7 and 8 wait for the follow-up sign-off.
+3. pyhpke 0.6.5 is signed. T-08 proceeds after V-01 merges, with the exact wheel/sdist hash pin and `open_base` mapping every exception to `OPEN_FAILED`.
+4. Release: V-01's ADR section goes before the Security Architect's section in ADR 0011 (append conflict).
+5. BACKLOG B-28: ask upstream to drop the Node ≤18 fallback and split out the vendored noble code.

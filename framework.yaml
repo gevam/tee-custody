@@ -84,7 +84,7 @@ coding_standards:
     - elliptic                 # pure-JS EC
     - sjcl
     - "teecustody-sim (as a dependency of teecustody or of any client package)"
-    - "any package that implements X25519, Ed25519, AES-GCM, HKDF or HPKE in pure Python or pure JS"
+    - "any package that implements X25519, Ed25519, AES-GCM, HKDF or HPKE in pure Python or pure JS (except as admitted in security.dependency_policy, D-045)"
   logging: "structured JSON via stdlib logging (Python) and a pino-compatible logger (TS) with an explicit allow-list of fields: client_id, request_id, session_id, prekey_id, epoch, timestamps, outcome codes; security audit records may additionally carry actor_client_id, subject_client_id and recovery_id (D-007, spec §11 identifier kinds); aggregate pre-authentication failure records may carry a non-negative integer count (D-012). Never payloads, keys, shares, nonces, ciphertext or request bodies. Secrets are held in teecustody.secrets.Secret, whose repr is redacted."
 
 # Commands the roles run. Must work from a clean checkout.
@@ -130,7 +130,7 @@ escalation:
 security:
   threat_model_method: STRIDE  # applied on top of spec §2, which is normative and takes precedence where they overlap
   scanners: [bandit, pip-audit, gitleaks, semgrep, pnpm-audit, trivy]   # trivy on the workload image; gitleaks on every PR
-  dependency_policy: "OSI licences only; no runtime, build-backend or shipped-artifact package without a release in the last 18 months (dev/test tooling and its transitive deps are exempt from the age rule but must still be OSI-licensed, exactly locked and pass pip-audit/pnpm-audit — D-019). Cryptographic dependencies are limited to: cryptography, pyhpke (or Tink), cbor2, a libsodium binding for Ristretto255, @hpke/core, cbor-x. Every crypto dependency is pinned by exact version and hash. Adding or replacing a crypto dependency requires an ADR and Security Architect sign-off."
+  dependency_policy: "OSI licences only; no runtime, build-backend or shipped-artifact package without a release in the last 18 months (dev/test tooling and its transitive deps are exempt from the age rule but must still be OSI-licensed, exactly locked and pass pip-audit/pnpm-audit — D-019). Cryptographic dependencies are limited to: cryptography, pyhpke (or Tink), cbor2, a libsodium binding for Ristretto255, @hpke/core, cbor-x. Every crypto dependency is pinned by exact version and hash. Adding or replacing a crypto dependency requires an ADR and Security Architect sign-off. @hpke/common is admitted only as the runtime dependency of @hpke/core, at the exact version signed in ADR 0011's C6 amendment; its vendored pure-JS curve and hash modules are admitted as unreachable code under ADR 0011 C3a, the SR-13 bundle scan proves they contribute no curve or hash-compression code to the shipped bundle, and every version change needs a new C6 sign-off (D-045)."
   residual_risk_acceptor: human   # who can accept High/Critical residual risk — always human
   paths:                          # security-relevant paths: security_paths_min coverage, STRONG tier, full review
     - packages/teecustody-py/src/teecustody/attest/**
