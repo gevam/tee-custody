@@ -177,7 +177,8 @@ describe("SR-14 HPKE Base mode through the adapter", () => {
         const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
         await receiver.open(AAD, ct);
         expect(derived.filter((n) => n === "X25519").length).toBeGreaterThanOrEqual(2);
-        expect(derived.every((n) => n === "X25519")).toBe(true);
+        // every algorithm used is native WebCrypto: X25519 for the DH, HKDF for the key schedule
+        expect(derived.every((n) => n === "X25519" || n === "HKDF")).toBe(true);
     });
 
     it("fails closed with UNSUPPORTED when native X25519 is missing (no JS curve fallback)", async () => {
