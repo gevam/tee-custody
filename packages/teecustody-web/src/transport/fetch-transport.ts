@@ -10,6 +10,7 @@ import {
     type ResponseCursor,
     type ResponsePage,
     type Transport,
+    utf8DecodeStrict,
 } from "@teecustody/core";
 
 import type { FetchFn } from "../fetch/fetcher.js";
@@ -37,6 +38,102 @@ function requireArgument(ok: boolean): void {
     }
 }
 
+function invalidResponse(): CapabilityError {
+    return new CapabilityError("INVALID_RESPONSE");
+}
+
+// Rejects duplicate member names at any depth. Runs only on text JSON.parse accepted and that has no
+// backslash, so every string ends at the next quote and its raw text is its value.
+function rejectDuplicateKeys(text: string): void {
+    const scopes: (Set<string> | null)[] = [];
+    let pending: Set<string> | null = null;
+    for (let i = 0; i < text.length; i += 1) {
+        switch (text[i]) {
+            case '"': {
+                const end = text.indexOf('"', i + 1);
+                if (pending !== null) {
+                    const key = text.slice(i + 1, end);
+                    if (pending.has(key)) {
+                        throw invalidResponse();
+                    }
+                    pending.add(key);
+                    pending = null;
+                }
+                i = end;
+                break;
+            }
+            case "{":
+                pending = new Set();
+                scopes.push(pending);
+                break;
+            case "[":
+                scopes.push(null);
+                break;
+            case "}":
+            case "]":
+                scopes.pop();
+                break;
+            case ",":
+                pending = scopes[scopes.length - 1] ?? null;
+                break;
+        }
+    }
+}
+
+// Gateway JSON is ASCII ids, cursors and base64url with fixed member names, so it never needs an
+// escape; a backslash is refused rather than decoded.
+function parseStrictJson(bytes: Uint8Array): unknown {
+    let text: string;
+    let value: unknown;
+    try {
+        text = utf8DecodeStrict(bytes);
+        value = JSON.parse(text);
+    } catch {
+        throw invalidResponse();
+    }
+    if (text.includes("\\")) {
+        throw invalidResponse();
+    }
+    rejectDuplicateKeys(text);
+    return value;
+}
+
+function exactObject(value: unknown, keys: readonly string[]): Json {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw invalidResponse();
+    }
+    const members = Object.keys(value);
+    if (members.length !== keys.length || !keys.every((key) => members.includes(key))) {
+        throw invalidResponse();
+    }
+    return value as Json;
+}
+
+function array(value: unknown): readonly unknown[] {
+    if (!Array.isArray(value)) {
+        throw invalidResponse();
+    }
+    return value;
+}
+
+function patterned(pattern: RegExp, value: unknown): string {
+    if (!matches(pattern, value)) {
+        throw invalidResponse();
+    }
+    return value;
+}
+
+function base64Url(value: unknown): Uint8Array {
+    if (typeof value !== "string") {
+        throw invalidResponse();
+    }
+    try {
+        return base64UrlDecode(value);
+    } catch {
+        throw invalidResponse();
+    }
+}
+
 export class FetchTransport implements Transport {
     readonly #base: string;
     readonly #fetch: FetchFn;
@@ -48,11 +145,14 @@ export class FetchTransport implements Transport {
     }
 
     async listBundles(): Promise<readonly PublishedBundle[]> {
-        const value = await this.#exchange("bundles", { method: "GET" });
-        return (value.bundles as Json[]).map((entry) => ({
-            instanceId: entry.instance_id as string,
-            bundle: base64UrlDecode(entry.bundle as string),
-        }));
+        const value = exactObject(await this.#exchange("bundles", { method: "GET" }), ["bundles"]);
+        return array(value.bundles).map((item) => {
+            const entry = exactObject(item, ["instance_id", "bundle"]);
+            return {
+                instanceId: patterned(HEX32, entry.instance_id),
+                bundle: base64Url(entry.bundle),
+            };
+        });
     }
 
     async postRequest(instance: InstanceId, body: CanonicalEnvelope): Promise<RequestId> {
@@ -64,24 +164,30 @@ export class FetchTransport implements Transport {
             headers: { "Content-Type": "application/octet-stream" },
             body: body.slice().buffer,
         });
-        return value.request_id as string;
+        return patterned(HEX32, exactObject(value, ["request_id"]).request_id);
     }
 
     async getResponses(client: ClientId, after?: ResponseCursor): Promise<ResponsePage> {
         requireArgument(matches(HEX32, client));
         requireArgument(after === undefined || matches(CURSOR, after));
         const query = after === undefined ? "" : `?after=${after}`;
-        const value = await this.#exchange(`responses/${client}${query}`, { method: "GET" });
+        const value = exactObject(
+            await this.#exchange(`responses/${client}${query}`, { method: "GET" }),
+            ["responses", "next"],
+        );
         return {
-            responses: (value.responses as Json[]).map((entry) => ({
-                requestId: entry.request_id as string,
-                body: base64UrlDecode(entry.body as string),
-            })),
-            next: value.next === null ? undefined : (value.next as string),
+            responses: array(value.responses).map((item) => {
+                const entry = exactObject(item, ["request_id", "body"]);
+                return {
+                    requestId: patterned(HEX32, entry.request_id),
+                    body: base64Url(entry.body),
+                };
+            }),
+            next: value.next === null ? undefined : patterned(CURSOR, value.next),
         };
     }
 
-    async #exchange(path: string, init: RequestInit): Promise<Json> {
+    async #exchange(path: string, init: RequestInit): Promise<unknown> {
         const response = await this.#fetch(new URL(path, this.#base).href, {
             ...init,
             redirect: "manual",
@@ -89,6 +195,6 @@ export class FetchTransport implements Transport {
             cache: "no-store",
             referrerPolicy: "no-referrer",
         });
-        return JSON.parse(await response.text()) as Json;
+        return parseStrictJson(new Uint8Array(await response.arrayBuffer()));
     }
 }

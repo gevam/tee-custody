@@ -157,3 +157,141 @@ describe("FetchTransport criterion 2: arguments outside the §6 patterns never r
         expect((calls[1]?.init.body as ArrayBuffer).byteLength).toBe(65_536);
     });
 });
+
+describe("FetchTransport criterion 3: only strict JSON of exactly the §6 shape is accepted", () => {
+    const entry = `{"instance_id":"${IID}","bundle":"AQI"}`;
+    const reply = `{"request_id":"${RID}","body":"AQI"}`;
+
+    const bundleBodies: [string, string][] = [
+        ["invalid JSON", "{"],
+        ["empty body", ""],
+        ["trailing garbage", `{"bundles":[]}x`],
+        ["top-level array", "[]"],
+        ["top-level null", "null"],
+        ["top-level string", '"bundles"'],
+        ["unknown top-level key", `{"bundles":[],"extra":1}`],
+        ["missing top-level key", "{}"],
+        ["wrong key in place of bundles", `{"bundle":[]}`],
+        ["proto key", `{"bundles":[],"__proto__":{}}`],
+        ["duplicate top-level key", `{"bundles":[],"bundles":[]}`],
+        ["duplicate key, later valid", `{"bundles":[{"x":1}],"bundles":[]}`],
+        [
+            "duplicate key in entry",
+            `{"bundles":[{"instance_id":"${IID}","instance_id":"${IID}","bundle":"AQI"}]}`,
+        ],
+        [
+            "duplicate key in second entry",
+            `{"bundles":[${entry},{"bundle":"AQI","instance_id":"${IID}","bundle":"AQI"}]}`,
+        ],
+        ["escaped key", `{"\\u0062undles":[]}`],
+        ["escape in a value", `{"bundles":[{"instance_id":"${IID}","bundle":"A\\u0051I"}]}`],
+        ["bundles not an array", `{"bundles":{}}`],
+        ["bundles a string", `{"bundles":"x"}`],
+        ["entry not an object", `{"bundles":["x"]}`],
+        ["entry null", `{"bundles":[null]}`],
+        ["entry an array", `{"bundles":[[]]}`],
+        ["entry unknown key", `{"bundles":[{"instance_id":"${IID}","bundle":"AQI","x":1}]}`],
+        ["entry missing bundle", `{"bundles":[{"instance_id":"${IID}"}]}`],
+        [
+            "entry key swapped for an unknown one",
+            `{"bundles":[{"instance_id":"${IID}","bundlez":"AQI"}]}`,
+        ],
+        [
+            "instance id uppercase",
+            `{"bundles":[{"instance_id":"${IID.toUpperCase()}","bundle":"AQI"}]}`,
+        ],
+        ["instance id short", `{"bundles":[{"instance_id":"${IID.slice(1)}","bundle":"AQI"}]}`],
+        ["instance id a number", `{"bundles":[{"instance_id":1,"bundle":"AQI"}]}`],
+        ["bundle padded", `{"bundles":[{"instance_id":"${IID}","bundle":"AQI="}]}`],
+        ["bundle standard alphabet", `{"bundles":[{"instance_id":"${IID}","bundle":"+/+/"}]}`],
+        ["bundle non-zero trailing bits", `{"bundles":[{"instance_id":"${IID}","bundle":"AQJ"}]}`],
+        ["bundle dangling digit", `{"bundles":[{"instance_id":"${IID}","bundle":"AQIDB"}]}`],
+        ["bundle a number", `{"bundles":[{"instance_id":"${IID}","bundle":12}]}`],
+        ["bundle an array", `{"bundles":[{"instance_id":"${IID}","bundle":["AAAA"]}]}`],
+    ];
+
+    it.each(bundleBodies)("listBundles: %s → INVALID_RESPONSE", async (_name, text) => {
+        const { fetch } = spy(json(text));
+        expect(await codeOf(make(fetch).listBundles())).toBe("INVALID_RESPONSE");
+    });
+
+    it("listBundles: rejects a body that is not UTF-8", async () => {
+        const bytes = new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]);
+        const { fetch } = spy(new Response(bytes, { status: 200 }));
+        expect(await codeOf(make(fetch).listBundles())).toBe("INVALID_RESPONSE");
+    });
+
+    it("listBundles: accepts whitespace, key order and the same key name at different depths", async () => {
+        const text = ` { "bundles" : [ ${entry} , {"bundle":"","instance_id":"${RID}"} ] } `;
+        const { fetch } = spy(json(text));
+        expect(await make(fetch).listBundles()).toEqual([
+            { instanceId: IID, bundle: new Uint8Array([1, 2]) },
+            { instanceId: RID, bundle: new Uint8Array(0) },
+        ]);
+    });
+
+    const requestBodies: [string, string][] = [
+        ["unknown key", `{"request_id":"${RID}","x":null}`],
+        ["missing key", "{}"],
+        ["duplicate key", `{"request_id":"${RID}","request_id":"${RID}"}`],
+        ["request id uppercase", `{"request_id":"${RID.toUpperCase()}"}`],
+        ["request id with newline", `{"request_id":"${RID}\\n"}`],
+        ["request id a number", `{"request_id":5}`],
+        ["array", `[{"request_id":"${RID}"}]`],
+    ];
+
+    it.each(requestBodies)("postRequest: %s → INVALID_RESPONSE", async (_name, text) => {
+        const { fetch } = spy(json(text, 202));
+        expect(await codeOf(make(fetch).postRequest(IID, new Uint8Array(1)))).toBe(
+            "INVALID_RESPONSE",
+        );
+    });
+
+    const pageBodies: [string, string][] = [
+        ["missing next", `{"responses":[]}`],
+        ["missing responses", `{"next":null}`],
+        ["unknown key", `{"responses":[],"next":null,"more":true}`],
+        ["duplicate next", `{"responses":[],"next":null,"next":"abc"}`],
+        [
+            "duplicate in a reply",
+            `{"responses":[{"request_id":"${RID}","body":"AQI","body":"AQI"}],"next":null}`,
+        ],
+        ["responses not an array", `{"responses":{},"next":null}`],
+        ["reply not an object", `{"responses":[1],"next":null}`],
+        [
+            "reply unknown key",
+            `{"responses":[{"request_id":"${RID}","body":"AQI","seq":1}],"next":null}`,
+        ],
+        ["reply missing body", `{"responses":[{"request_id":"${RID}"}],"next":null}`],
+        ["reply bad request id", `{"responses":[{"request_id":"XYZ","body":"AQI"}],"next":null}`],
+        ["reply padded body", `{"responses":[{"request_id":"${RID}","body":"AQ=="}],"next":null}`],
+        [
+            "reply non-canonical body",
+            `{"responses":[{"request_id":"${RID}","body":"AR"}],"next":null}`,
+        ],
+        ["reply body null", `{"responses":[{"request_id":"${RID}","body":null}],"next":null}`],
+        ["next with slash", `{"responses":[],"next":"a/b"}`],
+        ["next empty", `{"responses":[],"next":""}`],
+        ["next 129 chars", `{"responses":[],"next":"${"a".repeat(129)}"}`],
+        ["next a number", `{"responses":[],"next":7}`],
+        ["next false", `{"responses":[],"next":false}`],
+        [
+            "page valid but a reply is a duplicate-keyed object",
+            `{"responses":[${reply},{"request_id":"${RID}","request_id":"${RID}","body":"AQI"}],"next":null}`,
+        ],
+    ];
+
+    it.each(pageBodies)("getResponses: %s → INVALID_RESPONSE", async (_name, text) => {
+        const { fetch } = spy(json(text));
+        expect(await codeOf(make(fetch).getResponses(CID))).toBe("INVALID_RESPONSE");
+    });
+
+    it("getResponses: accepts several replies and a 128-char next cursor", async () => {
+        const { fetch } = spy(
+            json(`{"responses":[${reply},${reply}],"next":"${"Z".repeat(128)}"}`),
+        );
+        const page = await make(fetch).getResponses(CID);
+        expect(page.responses).toHaveLength(2);
+        expect(page.next).toBe("Z".repeat(128));
+    });
+});
