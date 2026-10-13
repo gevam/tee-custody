@@ -186,9 +186,10 @@ def test_vectors_with_force_regenerates(cli: Cli, workdir: Path) -> None:
     code, stdout, err = cli(
         "vectors", "--state-dir", str(workdir / "st"), "--out", str(out), "--force"
     )
-    # Then it succeeds, lists both paths, and the suite (ephemeral keys) is regenerated
+    # Then it succeeds, lists all three paths (attestation, corpus, channel: INC-2-API A-4), and
+    # the suite (ephemeral keys) is regenerated
     assert code == 0, err
-    assert stdout.count("\n") == 2
+    assert stdout.count("\n") == 3
     after = _tree(out)
     assert set(after) == set(before)
     assert after["attestation/suite.cbor"] != before["attestation/suite.cbor"]
