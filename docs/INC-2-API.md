@@ -8,6 +8,13 @@ Revision 3 addendum (2026-10-12, V-02 findings):
 - §9.3: harness CSP uses `img-src 'self'` with a same-origin favicon (Firefox), and Firefox vault expectations are added.
 - §8.4: PRF capability hints are never trusted.
 
+Revision 3 addendum (2026-10-13):
+- §16.3: CI-2-4, the simulator echoes `Origin` with `Vary: Origin` and never sends `Allow-Credentials`.
+- §16.5, §16.6: CI-2-5, TL-10 adopted.
+- §11: `httpx2` (D-046).
+- §4.5, §4.8: `repr=False` on payload fields.
+- §4.9: `FrameAad` is excluded from the `seq`-parameter check.
+
 Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
 (THREAT_MODEL review log 2026-10-05; SR-14). The Tech Lead transcribes §3–§8 into Wave-0 stubs and Task
@@ -517,7 +524,15 @@ def prekey_signing_message(instance_id: str, prekey_id: int, pub: bytes, not_aft
 def hpke_info(ik_pub: bytes, prekey_id: int) -> bytes: ...   # §2, 47 bytes; ValueError("<FIELD>_RANGE")
 ```
 `OpenResultEnvelope`/`FrameResultEnvelope` mirror the request envelopes (`aad_bytes`, decoded `aad`, `ct`).
-`OpenResultBody` is `{ok, payload | error}`. The nonce builder is private to `channel/session.py` (§4.9). Example:
+`OpenResultBody` is `{ok, payload | error}`, and its `payload` is `field(repr=False)`.
+
+**Repr rule (2026-10-13, T-04 security review; spec §11, I1).** Every dataclass field in `teecustody.channel` that holds
+decrypted plaintext or ciphertext is declared `field(repr=False)`, so the default `repr` never shows it. The fields are:
+- `body` and `ct` (above);
+- `OpenResultBody.payload` (here);
+- `HandlerOk.payload`, `OpenAccepted.payload` and `OpenRequest.payload` (§4.8).
+
+A unit test asserts that a sentinel value placed in each of these fields is absent from `repr()` and `str()`. The nonce builder is private to `channel/session.py` (§4.9). Example:
 `env = decode_request(msg.body, limits)` → `OpenRequestEnvelope(...)` or `EnvelopeError(INVALID)`.
 
 ### 4.6 HPKE (`channel/hpke.py`; spec §5.3–§5.4, §11 libraries)
@@ -591,10 +606,10 @@ class OpenRequest:
     request_id: bytes
     instance_id: str
     session_id: bytes               # pre-minted; becomes the session id if accepted
-    payload: OpenSessionPayload | EnrollPayload
+    payload: OpenSessionPayload | EnrollPayload = field(repr=False)
 
 @dataclass(frozen=True, slots=True)
-class OpenAccepted: client_id: str; payload: CanonicalValue   # client_id = principal (minted one for enroll)
+class OpenAccepted: client_id: str; payload: CanonicalValue = field(repr=False)   # client_id = principal (minted one for enroll)
 @dataclass(frozen=True, slots=True)
 class OpenRejected: error: RemoteErrorCode
 type OpenResult = OpenAccepted | OpenRejected
@@ -612,7 +627,7 @@ class SessionOpener(Protocol):
     def closed(self, session: SessionInfo, reason: CloseReason) -> None: ...   # INC-3 wipes SK etc. (spec §5.5 step 18)
 
 @dataclass(frozen=True, slots=True)
-class HandlerOk: payload: CanonicalValue
+class HandlerOk: payload: CanonicalValue = field(repr=False)   # plaintext; never in repr (§4.5 repr rule)
 @dataclass(frozen=True, slots=True)
 class HandlerError: error: RemoteErrorCode
 type FrameResultBody = HandlerOk | HandlerError
@@ -696,7 +711,11 @@ class SessionTable:
 - The nonce builder (`_nonce(seq) = b"\x00" * 4 + seq.to_bytes(8, "big")`) is module-private to
   `channel/session.py`. An API-surface test asserts two things:
   - no public callable in `teecustody.channel` has a parameter named `seq` or `nonce` (the decrypt side reads
-    `aad.seq` from a decoded frame);
+    `aad.seq` from a decoded frame). The check covers functions and methods. It excludes the constructors of the
+    frozen wire-record dataclasses in `channel/codec.py` that hold decoded or to-be-encoded AAD values and perform no
+    encryption. That exclusion is an exact allow-list in the test, currently `{FrameAad}` (2026-10-13; T-04 security
+    review: otherwise a false positive for T-23). Any other class constructor with a `seq` or `nonce` parameter fails
+    the test;
   - no sealing method takes a key. Keys enter only through `T2cSealer.__init__` and `SessionTable.create`, which
     take ownership.
 
@@ -1529,7 +1548,7 @@ authenticated-principal authorization exists until INC-3).
 | `pyhpke` | `teecustody` runtime; `teecustody-sim` | **crypto** | MIT | Allow-listed; release ≤ 18 months confirmed in V-2.3 | ADR 0011 **Accepted, C1**: the workload library (spec §11). Runtime deps ⊆ {`cryptography`} (C3) |
 | `@hpke/core` + `@hpke/common` (same repo and publisher) | `@teecustody/web` runtime | **crypto** | MIT | Allow-listed; confirm in V-2.4 | ADR 0011 **Accepted, C3/C7**: runtime closure exactly these two; native WebCrypto X25519 only; never `@hpke/dhkem-x25519` |
 | `fastapi`, `starlette`, `pydantic`, `uvicorn` | `examples/notes-app/gateway` only | example runtime | MIT / BSD-3 / MIT / BSD-3 | maintained | SR-9 rules; FastAPI is in `stack.frameworks` |
-| `httpx` | gateway tests (`TestClient`) | dev | BSD-3 | maintained | SR-9 (D-019 dev scope) |
+| `httpx2==2.13.1` | gateway tests (starlette `TestClient`) | dev only | BSD-3-Clause | released 2026-09-23, github.com/pydantic/httpx2 | SR-9 (D-019 dev scope); replaces `httpx` per D-046 (avoids the starlette 1.7.0 deprecation warning without a filter) |
 | `fake-indexeddb` | `@teecustody/web` unit tests | dev | Apache-2.0 | maintained | SR-9 (D-019 dev scope) |
 | `@playwright/test` | `@teecustody/web` browser tests | dev | Apache-2.0 | admitted by ADR 0008 | — |
 | `esbuild` | bundle scan, harness bundle | build/dev | MIT | admitted by ADR 0008 | — |
@@ -1851,14 +1870,22 @@ class IssuerServer:
 | Request | Status | Headers besides `Content-Type` / `Content-Length` | Body |
 |---|---|---|---|
 | `GET /.well-known/openid-configuration` | 200 | **none**: no `Access-Control-*` header (Google parity, CI-2-1) | unchanged (`jwks_uri` = origin + `/jwks`) |
-| `GET /jwks` | 200 | `Access-Control-Allow-Origin: *` | issuer JWKS (unchanged) |
-| `GET /attacker/jwks` | 200 when `attacker_jwks` is set; otherwise 404 | `Access-Control-Allow-Origin: *` | attacker JWKS |
-| `OPTIONS /jwks`; `OPTIONS /attacker/jwks` when set | 204 | `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET`, `Content-Length: 0`; no `Content-Type` | empty |
+| `GET /jwks` | 200 | `Vary: Origin`; plus `Access-Control-Allow-Origin: <echo>` when the request carries a valid `Origin` (rule below) | issuer JWKS (unchanged) |
+| `GET /attacker/jwks` | 200 when `attacker_jwks` is set; otherwise 404 | same as `GET /jwks` | attacker JWKS |
+| `OPTIONS /jwks`; `OPTIONS /attacker/jwks` when set | 200 | `Vary: Origin`; with a valid `Origin`, also `Access-Control-Allow-Origin: <echo>` and `Access-Control-Allow-Methods: GET`; `Content-Length: 0`; no `Content-Type` | empty |
 | `OPTIONS` on any other path | 405 with `Allow: GET` (unchanged) | — | — |
-| every 404, 405, 431 and over-capacity 503 | unchanged | no `Access-Control-*` header | unchanged |
+| every 404, 405, 431 and over-capacity 503 | unchanged | no `Access-Control-*` and no `Vary` header | unchanged |
 
-- Never sent: `Access-Control-Allow-Credentials`, `-Allow-Headers`, `-Max-Age`, `-Expose-Headers`, `Vary`.
-- `*` is the value V-02 is expected to record (V-2.7) for Google's JWKS response. If V-02 records any other value, stop with a CONTRACT_ISSUE. Do not invent an origin echo.
+**Ruling CI-2-4 (2026-10-13; Security Architect concurs).** V-02 (V-2.7) recorded that Google's JWKS **echoes** the request `Origin`, sends `Vary: Origin` and never sends `Access-Control-Allow-Credentials`. The simulator emulates that exact echo, not `*`, so that browser and Node tests see production behaviour.
+- **Echo rule.** The request must carry exactly one `Origin` header whose value is at most 256 bytes, all printable ASCII (`0x21`–`0x7E`), and matches the whole-string pattern `(?:https?://(?:[a-z0-9.-]+|\[[0-9a-f:]+\])(?::[0-9]{1,5})?|null)`, checked with `fullmatch`. Its value is echoed byte for byte.
+  - If the header is missing, repeated or invalid, no `Access-Control-Allow-Origin` is sent. The response is otherwise unchanged and is still 200.
+  - The simulator never reflects anything else from the request.
+- **Never sent:** `Access-Control-Allow-Credentials` (Security Architect requirement), `-Allow-Headers`, `-Max-Age`, `-Expose-Headers`.
+  - Google's broader preflight method list and its `Max-Age` are not emulated. Clients only make simple credential-less GETs (§16.8), so they never preflight.
+- **Security impact.** None on SR-1, SR-13 or T-29. Key authenticity comes from the pinned URI, TLS and the JWS signature, not from CORS (Security Architect, 2026-10-13).
+- **Consumers.**
+  - `check-discovery --probe-cors` already accepts `*` or the exact origin (§16.5). Against the simulator it now reports the echoed origin.
+  - Tests S1 and N3 are amended in §16.9.
 
 ```python
 # keys.py
@@ -2001,7 +2028,12 @@ Example: `await checkDiscoveryBinding({ profile, discoveryUrl: GOOGLE_DISCOVERY_
 
 **CLI** `teecustody-profile check-discovery`.
 - Lives in `packages/teecustody-web/src/profile/cli.ts` and runs on Node ≥ 22 only.
-- Exposed as the `bin` `teecustody-profile` in `@teecustody/web/package.json`, pointing at the build output of `cli.ts` under T-02's package layout.
+- Exposed as the `bin` `teecustody-profile` in `@teecustody/web/package.json`. The exact layout is API-TL TL-10, adopted 2026-10-13 for CI-2-5:
+  - `cli.ts` exports `main(argv, io)`;
+  - the entry point is `src/profile/bin.ts`, built by the script `build:cli` to `dist/profile/bin.js`;
+  - `bin` is `{"teecustody-profile": "./dist/profile/bin.js"}`.
+
+  In-repository runs call `node dist/profile/bin.js`, because pnpm does not link a workspace package's own bin. Hosts that install the package get the `teecustody-profile` command.
 - Never imported by `src/index.ts`, so it is outside the browser bundle and the §9.2 scan entry.
 - **Bundle-scan consistency (D-045, ADR 0011 C7a.1).**
   - The scan allows exactly one `external` import. The `node:fs`, `node:http` and `node:https` imports in `cli.ts` would each add a forbidden external if `cli.ts` were reachable from the scan entry. They must never be.
@@ -2044,8 +2076,10 @@ Example: `teecustody-profile check-discovery --profile trust-profile.json` print
 `.github/workflows/ci.yml` gains a job `discovery-binding`:
 - **Trigger.** `if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`. It never runs on push or PR, because it needs network access to Google.
 - **Runner.** `ubuntu-24.04`, `timeout-minutes: 10`. It uses the workflow-level `permissions: contents: read`, no secrets and no cloud credentials. Actions are pinned by SHA exactly as in the existing jobs.
-- **Steps.** `pnpm install --frozen-lockfile`, the build step T-02's layout needs, then:
-  `pnpm --filter @teecustody/web exec teecustody-profile check-discovery --profile test/fixtures/binding-check-production-profile.json --probe-cors https://ci.teecustody.invalid`.
+- **Steps** (CI-2-5; TL-10 adopted; pnpm 11.5 does not link a package's own bin, so the original `exec teecustody-profile` line cannot work):
+  1. `pnpm install --frozen-lockfile`.
+  2. `pnpm --filter @teecustody/web run build:cli`.
+  3. `pnpm --filter @teecustody/web exec node dist/profile/bin.js check-discovery --profile test/fixtures/binding-check-production-profile.json --probe-cors https://ci.teecustody.invalid`.
 - **Fixture** `packages/teecustody-web/test/fixtures/binding-check-production-profile.json`. A v2 production profile whose anchors are inert placeholders:
   - audience `https://binding-check.teecustody.invalid/tee`;
   - `allowed_hwmodels` `["GCP_AMD_SEV"]`;
@@ -2060,7 +2094,7 @@ Example: `teecustody-profile check-discovery --profile trust-profile.json` print
   - the job exists;
   - its `if` is exactly the expression above;
   - it references no `secrets.`;
-  - its run line is the command above.
+  - its run lines are the two commands in steps 2 and 3.
 
 ### 16.7 SR-13 `connect-src` (delta 5)
 
@@ -2117,8 +2151,9 @@ Example: `teecustody-profile check-discovery --profile trust-profile.json` print
 
 **Simulator** (A-8):
 - **S1.**
-  - `GET /jwks` and `GET /attacker/jwks` with `Origin: http://127.0.0.1:5555` → 200 with `Access-Control-Allow-Origin: *`.
-  - `OPTIONS` with `Access-Control-Request-Method: GET` → 204 with exactly the two headers.
+  - `GET /jwks` and `GET /attacker/jwks` with `Origin: http://127.0.0.1:5555` → 200 with `Access-Control-Allow-Origin: http://127.0.0.1:5555` and `Vary: Origin`.
+  - With no `Origin`, two `Origin` headers, or an invalid `Origin` (CR/LF, over 256 bytes, `javascript:x`, an uppercase scheme) → 200, `Vary: Origin`, and no `Access-Control-Allow-Origin`.
+  - `OPTIONS` with `Origin` and `Access-Control-Request-Method: GET` → 200 with the echo, `Access-Control-Allow-Methods: GET` and `Vary: Origin`, and nothing else from the `Access-Control-*` family.
   - `GET` discovery → 200 with no `Access-Control-*` header.
   - 404, 405, 431 and 503 → no `Access-Control-*` header.
   - `Access-Control-Allow-Credentials` never appears.
@@ -2130,7 +2165,7 @@ Example: `teecustody-profile check-discovery --profile trust-profile.json` print
 **Node end-to-end** (T-31; live simulator; `FetchFetcher`):
 - **N1.** A recording Fetcher wraps `FetchFetcher` during `ChannelClient.open`. Every URL it records equals `profile.jwks_uri`.
 - **N2.** `verifyAttestation(fixture.attacker_token, …)` → `signature` / `UNTRUSTED_SIGNER`, while `FetchFetcher.get(fixture.attacker_jwks_url)` → 200.
-- **N3.** `teecustody-profile check-discovery --profile <harness profile> --discovery-url <fixture.discovery_url> --probe-cors http://127.0.0.1:1` → exit 0, with `jwks_acao=* discovery_acao=absent`.
+- **N3.** `node packages/teecustody-web/dist/profile/bin.js check-discovery --profile <harness profile> --discovery-url <fixture.discovery_url> --probe-cors http://127.0.0.1:1`, run after `build:cli` (TL-10) → exit 0, with `jwks_acao=http://127.0.0.1:1 discovery_acao=absent` (CI-2-4 echo).
 
 **Browser** (T-32):
 - **B1.** Step `discovery_cors` is `"blocked"`: a page `fetch` of the discovery URL rejects with `TypeError`. The origin is in `connect-src`, so this is a CORS block, not a CSP violation. The `attestation` and channel steps are `"ok"`. Verification therefore works while discovery is CORS-blocked.

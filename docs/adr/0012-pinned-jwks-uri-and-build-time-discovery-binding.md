@@ -41,7 +41,7 @@ Option A, as decided by the human in D-043. Normative rules (INC-2-API §16 hold
    The check has no skip flag and no offline mode.
 4. **Scheduled check (NFR-11).** A scheduled and on-demand CI job runs the same command against real Google endpoints, using an inert production-shaped fixture profile. It also probes CORS on the JWKS, and reports whether discovery has gained CORS, which is a revisit trigger in D-043. The job is also part of the INC-5 pre-release checklist.
 5. **Simulator parity.**
-   - The simulator JWKS route sends `Access-Control-Allow-Origin` (the V-2.7 value; `*` expected) and answers a preflight. The discovery route sends no CORS header, exactly like Google.
+   - The simulator JWKS route echoes a valid request `Origin` in `Access-Control-Allow-Origin`, always sends `Vary: Origin` and answers a preflight. It never sends `Access-Control-Allow-Credentials`. This matches the Google behaviour V-2.7 recorded (CI-2-4). The discovery route sends no CORS header, exactly like Google.
    - `teecustody-sim profile` emits the exact loopback `jwks_uri`.
    - The simulator also serves an "attacker" JWKS at `/attacker/jwks` on the same origin, so that T-29 can be exercised end to end.
 6. **Vectors.** Every vector `http` map holds only JWKS URLs, never a discovery URL. A verifier that fetches discovery therefore fails the `valid` case. The attestation suite gains the T-29 rows `jwks_other_path` and `jwks_other_path_same_kid`. The CDDL and `proto` are unchanged: the profile is a build artifact, not a wire structure.
