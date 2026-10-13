@@ -196,6 +196,9 @@ INVALID_REQUESTS: dict[str, bytes] = {
     "frame-with-enc": encode(frame_request(enc=ENC)),
     "missing-kind": encode(_without(open_request(), "kind")),
     "kind-close": encode(open_request(kind="close")),
+    "frame-kind-close": encode(frame_request(kind="close")),
+    "frame-kind-open-result": encode(frame_request(kind="open_result")),
+    "frame-kind-uppercase": encode(frame_request(kind="Frame")),
     "kind-uppercase": encode(open_request(kind="Open")),
     "kind-open-result": encode(open_request(kind="open_result")),
     "kind-bytes": encode(open_request(kind=b"open")),
@@ -374,6 +377,7 @@ INVALID_BUNDLES: dict[str, bytes] = {
     "instance-id-newline": encode(bundle(instance_id=INSTANCE_ID + "\n")),
     "token-empty": encode(bundle(token="")),
     "token-16385": encode(bundle(token="t" * 16385)),
+    "token-16386-utf8-bytes-in-8193-chars": encode(bundle(token="\u00e9" * 8193)),
     "token-bytes": encode(bundle(token=TOKEN.encode())),
     "ik-pub-31": encode(bundle(IK_pub=IK_PUB[:31])),
     "ik-pub-33": encode(bundle(IK_pub=IK_PUB + b"\x00")),
@@ -451,6 +455,7 @@ INVALID_BUNDLE_INPUTS: dict[str, tuple[dict[str, Any], str]] = {
     "instance-id-newline": ({"instance_id": INSTANCE_ID + "\n"}, "INSTANCE_ID_RANGE"),
     "token-empty": ({"token": ""}, "TOKEN_RANGE"),
     "token-16385": ({"token": "t" * 16385}, "TOKEN_RANGE"),
+    "token-16386-utf8-bytes": ({"token": "\u00e9" * 8193}, "TOKEN_RANGE"),
     "token-bytes": ({"token": b"t"}, "TOKEN_RANGE"),
     "ik-pub-31": ({"ik_pub": IK_PUB[:31]}, "IK_PUB_RANGE"),
     "ik-pub-bytearray": ({"ik_pub": bytearray(IK_PUB)}, "IK_PUB_RANGE"),
@@ -893,6 +898,23 @@ def test_open_payload_violation_is_invalid(data: bytes) -> None:
 
     assert exc.value.code is EnvelopeErrorCode.INVALID
     assert exc.value.__context__ is None
+
+
+def test_wiped_open_payload_is_invalid() -> None:
+    pt = Secret(encode(open_session_payload()))
+    pt.wipe()
+
+    with pytest.raises(EnvelopeError) as exc:
+        decode_open_payload(pt, PAYLOAD_LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert exc.value.__context__ is None
+
+
+def test_token_limit_counts_utf8_bytes_not_characters() -> None:
+    token = "\u00e9" * 8192  # 16384 bytes
+
+    assert decode_bundle(encode(bundle(token=token)), BUNDLE_LIMITS).token == token
 
 
 def test_open_payload_is_decoded_with_the_given_limits() -> None:

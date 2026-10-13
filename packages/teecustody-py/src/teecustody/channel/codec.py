@@ -23,7 +23,7 @@ from teecustody.channel.ports import (
     RemoteErrorCode,
 )
 from teecustody.config import BoundaryLimits
-from teecustody.secrets import Secret
+from teecustody.secrets import Secret, SecretError
 from teecustody.wire.types import CanonicalValue, DecodeLimits
 
 
@@ -338,7 +338,7 @@ def _checked_frame_aad(session_id: object, seq: object, op: object) -> FrameAad:
 def decode_open_payload(pt: Secret, limits: DecodeLimits) -> OpenSessionPayload | EnrollPayload:
     try:
         return _parse_open_payload(wire.decode(pt.reveal(), limits))
-    except (wire.WireError, ValueError):
+    except (wire.WireError, ValueError, SecretError):
         pass
     raise EnvelopeError(EnvelopeErrorCode.INVALID)
 
