@@ -1,9 +1,16 @@
-// SR-1 (ADR 0009 test list) and spec 6.1/6.2: JWS header rules, discovery and JWKS handling.
-// Expected failure on trunk: NOT_IMPLEMENTED: T-10 (buildFixture), then T-11 / T-15.
+// SR-1 (ADR 0009 as amended by ADR 0012 / D-043) and spec 6.1/6.2: JWS header rules and the pinned
+// jwks_uri. Updated by T-36 (MU-1). Red on v1 Core (it fetches discovery); green on the MU-1 branch.
 import { AttestationError, verifyAttestation, type Bytes } from "@teecustody/core";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DISCOVERY_URL, ISSUER, JWKS_URL, type Fixture } from "../support/token-factory.js";
+import {
+    ATTACKER_JWKS_URL,
+    DISCOVERY_URL,
+    ISSUER,
+    JWKS_URL,
+    KID,
+    type Fixture,
+} from "../support/token-factory.js";
 import { MemorySink, makeDeps, rejection, sharedFixture } from "./support.js";
 
 let fx: Fixture;
@@ -28,11 +35,11 @@ function httpWith(entries: Record<string, Bytes>): ReadonlyMap<string, Bytes> {
 async function verifyWith(
     http: ReadonlyMap<string, Bytes>,
     token?: string,
-    maxDiscoveryBytes?: number,
+    maxJwksBytes?: number,
 ): Promise<{ err: unknown; calls: readonly string[] }> {
     const { deps, fetcher } = makeDeps(
         fx,
-        maxDiscoveryBytes === undefined ? { http } : { http, maxDiscoveryBytes },
+        maxJwksBytes === undefined ? { http } : { http, maxJwksBytes },
     );
     const err = await rejection(
         verifyAttestation(
@@ -99,55 +106,91 @@ describe("SR-1 given a bad signature or unknown key", () => {
     });
 });
 
-describe("SR-1 discovery issuer and jwks_uri origin", () => {
-    it("rejects a discovery issuer that differs from the profile", async () => {
-        const http = httpWith({
-            [DISCOVERY_URL]: json({ issuer: "https://other.invalid", jwks_uri: JWKS_URL }),
-        });
-        expectCheck((await verifyWith(http)).err, "signature", "UNTRUSTED_SIGNER");
-    });
-
-    it.each([
-        ["http scheme to https origin", "https://127.0.0.1:8791/jwks"],
-        ["different port", "http://127.0.0.1:8792/jwks"],
-        ["userinfo", "http://user@127.0.0.1:8791/jwks"],
-        ["suffix host", "http://127.0.0.1.evil.test:8791/jwks"],
-        ["different host", "http://localhost:8791/jwks"],
-    ])("rejects jwks_uri with %s", async (_n, uri) => {
-        const http = httpWith({ [DISCOVERY_URL]: json({ issuer: ISSUER, jwks_uri: uri }) });
-        expectCheck((await verifyWith(http)).err, "signature", "UNTRUSTED_SIGNER");
-    });
-
-    it("accepts a path-only difference in jwks_uri", async () => {
-        const other = "http://127.0.0.1:8791/other/keys.json";
-        const http = httpWith({
-            [DISCOVERY_URL]: json({ issuer: ISSUER, jwks_uri: other }),
-            [other]: fx.http.get(JWKS_URL) as Bytes,
-        });
-        const { deps } = makeDeps(fx, { http });
+describe("SR-1 / D-043 the pinned jwks_uri is the only key source", () => {
+    const verifyOk = async (
+        http: ReadonlyMap<string, Bytes>,
+        token: string,
+    ): Promise<{ issuer: string; calls: readonly string[] }> => {
+        const { deps, fetcher } = makeDeps(fx, { http });
         const result = await verifyAttestation(
-            await fx.mint(),
+            token,
             fx.profile,
             { identityNonce: fx.identityNonce },
             new MemorySink(),
             deps,
         );
-        expect(result.issuer).toBe(ISSUER);
+        return { issuer: result.issuer, calls: fetcher.calls };
+    };
+
+    it("fetches exactly the profile's jwks_uri once and never a discovery document", async () => {
+        const { issuer, calls } = await verifyOk(fx.http, await fx.mint());
+        expect(issuer).toBe(ISSUER);
+        expect(calls).toEqual([fx.profile.jwks_uri]);
+        expect(fx.profile.jwks_uri).toBe(JWKS_URL);
+        expect(calls.some((u) => u.includes("openid-configuration"))).toBe(false);
     });
 
-    it("rejects an oversized discovery document", async () => {
+    it("works with a Fetcher that holds no discovery URL at all", async () => {
+        const onlyJwks = new Map<string, Bytes>([[JWKS_URL, fx.http.get(JWKS_URL) as Bytes]]);
+        expect((await verifyOk(onlyJwks, await fx.mint())).issuer).toBe(ISSUER);
+    });
+
+    it("never touches discovery, even when the discovery document is hostile", async () => {
+        const hostile = httpWith({
+            [DISCOVERY_URL]: json({
+                issuer: "https://other.invalid",
+                jwks_uri: "http://evil.test/k",
+            }),
+        });
+        const { calls } = await verifyOk(hostile, await fx.mint());
+        expect(calls).toEqual([JWKS_URL]);
+    });
+
+    it.each([
+        ["its own kid", { alg: "RS256", kid: "attacker-kid", typ: "JWT" }],
+        ["the issuer's kid", { alg: "RS256", kid: KID, typ: "JWT" }],
+    ])(
+        "rejects a token signed by the attacker key (header carries %s) although its JWKS is served on the same origin",
+        async (_n, header) => {
+            expect(fx.http.has(ATTACKER_JWKS_URL)).toBe(true);
+            const { err, calls } = await verifyWith(
+                fx.http,
+                await fx.mint({ signer: "attacker", header }),
+            );
+            expectCheck(err, "signature", "UNTRUSTED_SIGNER");
+            expect(calls).toEqual([JWKS_URL]);
+        },
+    );
+
+    it("positive control: when the pin itself is served the attacker JWKS, the same tokens pass", async () => {
+        const attackerBody = fx.http.get(ATTACKER_JWKS_URL) as Bytes;
+        const mapped = new Map<string, Bytes>([[JWKS_URL, attackerBody]]);
+        for (const kid of ["attacker-kid", KID]) {
+            const token = await fx.mint({
+                signer: "attacker",
+                header: { alg: "RS256", kid, typ: "JWT" },
+            });
+            expect((await verifyOk(mapped, token)).issuer).toBe(ISSUER);
+        }
+    });
+
+    it("rejects an oversized JWKS body", async () => {
         const { err } = await verifyWith(fx.http, undefined, 16);
         expectCheck(err, "signature", "UNTRUSTED_SIGNER");
     });
 
-    it.each(["not json", "[1,2,3]", "", "null"])(
-        "rejects non-object discovery %j",
+    it.each(["not json", "[1,2,3]", "", "null", '"text"'])(
+        "rejects a JWKS body that is not a JSON object: %j",
         async (body) => {
-            const { err } = await verifyWith(httpWith({ [DISCOVERY_URL]: enc.encode(body) }));
-            expect(err).toBeInstanceOf(AttestationError);
-            expect((err as AttestationError).code).toBe("UNTRUSTED_SIGNER");
+            const { err } = await verifyWith(httpWith({ [JWKS_URL]: enc.encode(body) }));
+            expectCheck(err, "signature", "UNTRUSTED_SIGNER");
         },
     );
+
+    it("rejects an unreachable JWKS with UNTRUSTED_SIGNER", async () => {
+        const { err } = await verifyWith(new Map());
+        expectCheck(err, "signature", "UNTRUSTED_SIGNER");
+    });
 
     it("rejects a non-JSON JWKS document", async () => {
         const { err } = await verifyWith(httpWith({ [JWKS_URL]: enc.encode("<html>") }));

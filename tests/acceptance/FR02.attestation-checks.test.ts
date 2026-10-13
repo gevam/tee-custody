@@ -222,7 +222,7 @@ describe("FR-2 given a token with any required check altered or missing", () => 
         expect(err.message).not.toContain(token.split(".")[1] ?? "x");
     });
 
-    it("fails closed when discovery/JWKS cannot be fetched (network down)", async () => {
+    it("fails closed when the pinned JWKS cannot be fetched (network down)", async () => {
         const { deps } = makeDeps(fx, { http: new Map() });
         const err = await rejection(
             verifyAttestation(
@@ -233,7 +233,12 @@ describe("FR-2 given a token with any required check altered or missing", () => 
                 deps,
             ),
         );
-        expect(err).toBeInstanceOf(Error);
+        // D-043: the only fetch is the pinned jwks_uri; its failure is UNTRUSTED_SIGNER at signature
+        expect(err).toBeInstanceOf(AttestationError);
+        expect([(err as AttestationError).check, (err as AttestationError).code]).toEqual([
+            "signature",
+            "UNTRUSTED_SIGNER",
+        ]);
     });
 });
 

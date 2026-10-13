@@ -65,7 +65,7 @@ describe("hostile token strings", () => {
 });
 
 describe("hostile fetcher responses", () => {
-    it("empty / garbage / oversized discovery and jwks bodies fail closed", async () => {
+    it("empty / garbage / oversized jwks bodies fail closed", async () => {
         const token = await fx.mint();
         for (const body of [
             new Uint8Array(0),
@@ -224,14 +224,13 @@ describe("hostile profile parsing", () => {
             ...base(),
             profile_kind: "production",
             issuer: "https://confidentialcomputing.googleapis.com",
-            discovery_url:
-                "https://confidentialcomputing.googleapis.com/.well-known/openid-configuration",
-            jwks_origin: "https://www.googleapis.com",
+            jwks_uri:
+                "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com",
         };
         expect(() => parseTrustProfile({ ...prod, allowed_hwmodels: ["SIMULATED"] })).toThrow(
             TrustProfileError,
         );
-        expect(() => parseTrustProfile({ ...prod, discovery_url: "http://127.0.0.1:1/x" })).toThrow(
+        expect(() => parseTrustProfile({ ...prod, jwks_uri: "http://127.0.0.1:1/jwks" })).toThrow(
             TrustProfileError,
         );
         expect(() =>
@@ -240,15 +239,13 @@ describe("hostile profile parsing", () => {
     });
     it("loopback lookalike hosts rejected for development", () => {
         for (const u of [
-            "http://127.0.0.1.evil.test/.well-known/openid-configuration",
-            "http://localhost.evil.test/.well-known/openid-configuration",
-            "http://user@evil.test:80@127.0.0.1/x",
-            "http://[::ffff:8.8.8.8]/x",
+            "http://127.0.0.1.evil.test/jwks",
+            "http://localhost.evil.test/jwks",
+            "http://user@evil.test:80@127.0.0.1/jwks",
+            "http://[::ffff:8.8.8.8]/jwks",
             "file:///etc/passwd",
         ]) {
-            expect(() => parseTrustProfile({ ...base(), discovery_url: u })).toThrow(
-                TrustProfileError,
-            );
+            expect(() => parseTrustProfile({ ...base(), jwks_uri: u })).toThrow(TrustProfileError);
         }
     });
 });
@@ -257,31 +254,17 @@ describe("13.9 simulator-shaped token against a production profile", () => {
     const G = "https://confidentialcomputing.googleapis.com";
     it("is rejected even if the production JWKS endpoint serves the simulator signing key", async () => {
         const token = await fx.mint();
-        const jwks = fx.http.get("http://127.0.0.1:8791/jwks") as Uint8Array;
+        const jwks = fx.http.get(fx.profile.jwks_uri) as Uint8Array;
+        const googleJwksUri =
+            "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com";
         const prod = parseTrustProfile({
             ...JSON.parse(JSON.stringify(fx.profileJson)),
             profile_kind: "production",
             issuer: G,
-            discovery_url: `${G}/.well-known/openid-configuration`,
-            jwks_origin: "https://www.googleapis.com",
+            jwks_uri: googleJwksUri,
             allowed_hwmodels: ["GCP_INTEL_TDX"],
         });
-        const http = new Map<string, Uint8Array>([
-            [
-                `${G}/.well-known/openid-configuration`,
-                new TextEncoder().encode(
-                    JSON.stringify({
-                        issuer: G,
-                        jwks_uri:
-                            "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@cs.iam.gserviceaccount.com",
-                    }),
-                ),
-            ],
-            [
-                "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@cs.iam.gserviceaccount.com",
-                jwks,
-            ],
-        ]);
+        const http = new Map<string, Uint8Array>([[googleJwksUri, jwks]]);
         const { deps } = makeDeps(fx, { http });
         const err = await rejection(
             verifyAttestation(

@@ -4,6 +4,7 @@ Expected failure on trunk: NotImplementedError('T-07' | 'T-08' | 'T-16' | 'T-17'
 """
 
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -155,7 +156,11 @@ def test_FR03_cli_never_prints_key_material(
     assert "PRIVATE KEY" not in text
     profile = json.loads(out_file.read_text())
     assert profile["profile_kind"] == "development"
-    assert profile["profile_version"] == 1
+    # D-043: profile v2 pins the exact jwks_uri; discovery_url and jwks_origin are gone
+    assert profile["profile_version"] == 2
+    assert profile["jwks_uri"] == running_sim.sim.jwks_uri
+    assert "discovery_url" not in profile and "jwks_origin" not in profile
+    assert len(profile) == 13
     assert set(profile["signer_keys"][0]) == {"key_id", "algorithm"}
 
 
@@ -194,6 +199,49 @@ def test_FR03_corpus_is_deterministic_for_the_same_seed(cli: Cli, tmp_path: Path
     a = (tmp_path / "a/wire/differential-corpus.json").read_bytes()
     b = (tmp_path / "b/wire/differential-corpus.json").read_bytes()
     assert a == b
+
+
+@pytest.mark.parametrize(
+    ("case_id", "same_kid"), [("jwks_other_path", False), ("jwks_other_path_same_kid", True)]
+)
+def test_FR03_attacker_cases_change_only_the_signing_key_and_maybe_the_kid(
+    cli: Cli, running_sim: RunningSim, case_id: str, same_kid: bool
+) -> None:
+    # Given the valid token and a D-043 attacker-key case (INC-2-API 16.3 rows 38-39)
+    valid = _token(cli, running_sim)
+    valid_header, valid_claims = decode_jws(valid)
+    token = _token(cli, running_sim, "--case", case_id)
+    header, claims = decode_jws(token)
+    # Then the payload is byte-identical, the algorithm unchanged, the signature is by another key
+    assert claims == valid_claims
+    assert header["alg"] == "RS256" and header["typ"] == valid_header["typ"]
+    assert token.split(".")[1] == valid.split(".")[1]
+    assert token.split(".")[2] != valid.split(".")[2]
+    # And the header kid is the issuer's (row 39) or a different one (row 38)
+    assert (header["kid"] == valid_header["kid"]) is same_kid
+
+
+def test_FR03_a_v1_state_file_is_not_initialised_state(
+    cli: Cli, running_sim: RunningSim, tmp_path: Path
+) -> None:
+    # Given a copy of a real state directory rewritten as a v1 state (discovery_url, no jwks_uri)
+    state = tmp_path / "old-state"
+    shutil.copytree(running_sim.config.state_dir, state)
+    path = state / "sim-state.json"
+    doc = json.loads(path.read_text())
+    doc.pop("jwks_uri", None)
+    doc.update(
+        state_version=1,
+        discovery_url=running_sim.sim.discovery_url,
+        jwks_origin=running_sim.sim.issuer_origin,
+    )
+    path.write_text(json.dumps(doc))
+    # When emitting a profile from it
+    code, out, err = cli("profile", "--state-dir", str(state), "--out", str(tmp_path / "p.json"))
+    # Then it fails with the existing stable code and writes nothing
+    assert (code, out) == (2, "")
+    assert err.strip() == "STATE_NOT_INITIALISED"
+    assert not (tmp_path / "p.json").exists()
 
 
 def test_FR03_kid_unknown_case_changes_only_the_header_kid(

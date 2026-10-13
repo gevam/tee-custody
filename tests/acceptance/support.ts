@@ -22,7 +22,7 @@ export interface DepsBundle {
 
 export function makeDeps(
     fx: Fixture,
-    options: { http?: ReadonlyMap<string, Bytes>; maxDiscoveryBytes?: number } = {},
+    options: { http?: ReadonlyMap<string, Bytes>; maxJwksBytes?: number } = {},
 ): DepsBundle {
     const fetcher = fixtureFetcher(options.http ?? fx.http);
     return {
@@ -33,8 +33,7 @@ export function makeDeps(
             now: () => NOW_MS,
             limits: {
                 maxTokenBytes: MAX_TOKEN_BYTES,
-                maxDiscoveryBytes: options.maxDiscoveryBytes ?? 4096,
-                maxJwksBytes: 16384,
+                maxJwksBytes: options.maxJwksBytes ?? 16384,
             },
         },
     };
