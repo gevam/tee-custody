@@ -322,3 +322,17 @@ describe("criterion 8: every rejection is CapabilityError(code), message === cod
         expect(rendered).not.toContain("leak-marker");
     });
 });
+
+describe("edge: the default fetch is globalThis.fetch", () => {
+    it("calls globalThis.fetch with a receiver a browser accepts (no Illegal invocation)", async () => {
+        const receivers: unknown[] = [];
+        vi.stubGlobal("fetch", function (this: unknown): Promise<Response> {
+            receivers.push(this);
+            return Promise.resolve(new Response("{}"));
+        });
+        const result = await new FetchFetcher({ maxBodyBytes: 1024, timeoutMs: 1000 }).get(URL_OK);
+        expect(result.status).toBe(200);
+        expect(receivers).toHaveLength(1);
+        expect(receivers[0] === undefined || receivers[0] === globalThis).toBe(true);
+    });
+});

@@ -92,7 +92,7 @@ export class FetchFetcher implements Fetcher {
         if (!isPositiveSafeInteger(options.maxBodyBytes) || !isPositiveSafeInteger(options.timeoutMs)) {
             throw new TypeError("INVALID_CONFIG");
         }
-        this.#fetch = options.fetch as FetchFn;
+        this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
         this.#maxBodyBytes = options.maxBodyBytes;
         this.#timeoutMs = options.timeoutMs;
     }
