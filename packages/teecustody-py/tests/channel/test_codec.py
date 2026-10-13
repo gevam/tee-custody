@@ -608,7 +608,7 @@ def test_response_envelope_round_trips_through_decode_response(kind: str) -> Non
         aad_bytes = encode_frame_aad(FrameAad(session_id=SESSION_ID, seq=1, op="notes.put"))
     ct = b"r" * 32
 
-    body = encode_response_envelope(kind, aad_bytes, ct)  # type: ignore[arg-type]
+    body = encode_response_envelope(kind, aad_bytes, ct)
 
     assert body == encode({"kind": kind, "aad": aad_bytes, "ct": ct})
     decoded = decode_response(body, LIMITS)
@@ -647,7 +647,7 @@ AAD_ENCODER_VIOLATIONS: dict[str, tuple[Any, str]] = {
         "SESSION_ID_RANGE",
     ),
     "open-result-session-text": (
-        lambda: encode_open_result_aad(OpenResultAad("s" * 16, REQUEST_ID)),  # type: ignore[arg-type]
+        lambda: encode_open_result_aad(OpenResultAad("s" * 16, REQUEST_ID)),
         "SESSION_ID_RANGE",
     ),
     "open-result-request-17": (
@@ -655,11 +655,11 @@ AAD_ENCODER_VIOLATIONS: dict[str, tuple[Any, str]] = {
         "REQUEST_ID_RANGE",
     ),
     "open-result-request-nil": (
-        lambda: encode_open_result_aad(OpenResultAad(SESSION_ID, None)),  # type: ignore[arg-type]
+        lambda: encode_open_result_aad(OpenResultAad(SESSION_ID, None)),
         "REQUEST_ID_RANGE",
     ),
     "frame-session-nil": (
-        lambda: encode_frame_aad(FrameAad(None, 0, "a")),  # type: ignore[arg-type]
+        lambda: encode_frame_aad(FrameAad(None, 0, "a")),
         "SESSION_ID_RANGE",
     ),
     "frame-seq-2^53": (lambda: encode_frame_aad(FrameAad(SESSION_ID, 2**53, "a")), "SEQ_RANGE"),
