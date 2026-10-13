@@ -534,3 +534,27 @@ describe("native X25519 only (criterion 5, C3, C3a.3)", () => {
         expect(() => require.resolve("@hpke/dhkem-x25519")).toThrow();
     });
 });
+
+/** The parameter list of a function's source text, whitespace-normalised. */
+function parameterList(fn: unknown): string {
+    const source = Function.prototype.toString.call(fn);
+    const open = source.indexOf("(");
+    const close = source.indexOf(")", open);
+    return source
+        .slice(open, close + 1)
+        .replace(/\s+/g, " ")
+        .replace("( ", "(")
+        .replace(/,? \)$/, ")");
+}
+
+describe("no HPKE seams (criterion 8, C5)", () => {
+    it("exposes exactly (recipientPublicKey, info) and (recipientPrivateKey, encapsulatedKey, info)", () => {
+        const crypto = createWebCrypto();
+        const sender = Reflect.get(crypto, "setupHpkeSender") as (...a: unknown[]) => unknown;
+        const receiver = Reflect.get(crypto, "setupHpkeReceiver") as (...a: unknown[]) => unknown;
+        expect(parameterList(sender)).toBe("(recipientPublicKey, info)");
+        expect(parameterList(receiver)).toBe("(recipientPrivateKey, encapsulatedKey, info)");
+        expect(sender).toHaveLength(2);
+        expect(receiver).toHaveLength(3);
+    });
+});
