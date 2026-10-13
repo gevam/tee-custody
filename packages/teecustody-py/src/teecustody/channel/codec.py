@@ -20,6 +20,7 @@ from teecustody.channel.ports import (
     OpenAccepted,
     OpenRejected,
     OpenSessionPayload,
+    RemoteErrorCode,
 )
 from teecustody.config import BoundaryLimits
 from teecustody.secrets import Secret
@@ -140,6 +141,12 @@ _OPEN_AAD_KEYS: Final = frozenset(
 _FRAME_AAD_KEYS: Final = frozenset({"session_id", "seq", "op"})
 _BUNDLE_KEYS: Final = frozenset({"instance_id", "token", "IK_pub", "published_at", "prekeys"})
 _PREKEY_KEYS: Final = frozenset({"id", "pub", "not_after", "sig"})
+_OPEN_RESULT_AAD_KEYS: Final = frozenset({"session_id", "request_id", "seq"})
+_RESPONSE_KEYS: Final = frozenset({"kind", "aad", "ct"})
+_RESPONSE_KINDS: Final = ("open_result", "frame_result")
+# Encoders re-check the aad they wrap with the default aad bounds (the decoders take theirs from
+# BoundaryLimits).
+_ENCODER_AAD_LIMITS: Final = BoundaryLimits().aad_decode
 _RESULT_OK_KEYS: Final = frozenset({"ok", "payload"})
 _RESULT_ERROR_KEYS: Final = frozenset({"ok", "error"})
 _SIG_LEN: Final = 64
@@ -313,10 +320,14 @@ def _open_aad(value: CanonicalValue) -> OpenAad:
 
 def _frame_aad(value: CanonicalValue) -> FrameAad:
     fields = _fields(value, _FRAME_AAD_KEYS)
+    return _checked_frame_aad(fields["session_id"], fields["seq"], fields["op"])
+
+
+def _checked_frame_aad(session_id: object, seq: object, op: object) -> FrameAad:
     return FrameAad(
-        session_id=_sized_bytes(fields["session_id"], _ID_LEN, _ID_LEN, "SESSION_ID"),
-        seq=_uint(fields["seq"], MAX_SEQ, "SEQ"),
-        op=_text(fields["op"], OP_NAME_PATTERN, "OP"),
+        session_id=_sized_bytes(session_id, _ID_LEN, _ID_LEN, "SESSION_ID"),
+        seq=_uint(seq, MAX_SEQ, "SEQ"),
+        op=_text(op, OP_NAME_PATTERN, "OP"),
     )
 
 
@@ -325,31 +336,101 @@ def decode_open_payload(pt: Secret, limits: DecodeLimits) -> OpenSessionPayload 
 
 
 def encode_open_result_aad(aad: OpenResultAad) -> bytes:
-    raise NotImplementedError("T-07")
+    checked = _checked_open_result_aad(aad.session_id, aad.request_id)
+    return wire.encode(
+        {"session_id": checked.session_id, "request_id": checked.request_id, "seq": 0}
+    )
 
 
 def encode_frame_aad(aad: FrameAad) -> bytes:
-    raise NotImplementedError("T-07")
+    checked = _checked_frame_aad(aad.session_id, aad.seq, aad.op)
+    return wire.encode({"session_id": checked.session_id, "seq": checked.seq, "op": checked.op})
 
 
 def encode_open_result_plaintext(result: OpenAccepted | OpenRejected) -> bytes:
-    raise NotImplementedError("T-07")
+    if isinstance(result, OpenAccepted):
+        return wire.encode({"ok": True, "payload": result.payload})
+    return wire.encode({"ok": False, "error": _error_code(result.error)})
 
 
 def encode_frame_result_plaintext(re: int, body: HandlerOk | HandlerError) -> bytes:
-    raise NotImplementedError("T-07")
+    checked_re = _uint(re, MAX_SEQ, "RE")
+    if isinstance(body, HandlerOk):
+        return wire.encode({"re": checked_re, "ok": True, "payload": body.payload})
+    return wire.encode({"re": checked_re, "ok": False, "error": _error_code(body.error)})
 
 
 def encode_response_envelope(
     kind: Literal["open_result", "frame_result"], aad_bytes: bytes, ct: bytes
 ) -> bytes:
-    raise NotImplementedError("T-07")
+    if type(kind) is not str or kind not in _RESPONSE_KINDS:
+        raise ValueError("KIND_RANGE")
+    if not _is_result_aad(kind, aad_bytes):
+        raise ValueError("AAD_RANGE")
+    checked_ct = _sized_bytes(ct, _CT_MIN, _FRAME_CT_MAX, "CT")
+    return wire.encode({"kind": kind, "aad": aad_bytes, "ct": checked_ct})
+
+
+def _is_result_aad(kind: str, aad_bytes: object) -> bool:
+    try:
+        _result_aad(kind, wire.decode(_bytes(aad_bytes, "AAD"), _ENCODER_AAD_LIMITS))
+    except (wire.WireError, ValueError):
+        return False
+    return True
 
 
 def decode_response(
     body: bytes, limits: BoundaryLimits
 ) -> OpenResultEnvelope | FrameResultEnvelope:
-    raise NotImplementedError("T-07")
+    if len(body) > limits.max_request_bytes:
+        raise EnvelopeError(EnvelopeErrorCode.TOO_LARGE)
+    try:
+        return _parse_response(body, limits)
+    except (wire.WireError, ValueError):
+        pass
+    raise EnvelopeError(EnvelopeErrorCode.INVALID)
+
+
+def _parse_response(
+    body: bytes, limits: BoundaryLimits
+) -> OpenResultEnvelope | FrameResultEnvelope:
+    envelope = wire.decode(body, limits.envelope_decode)
+    kind = _member(envelope, "kind")
+    if kind not in _RESPONSE_KINDS:
+        raise ValueError("KIND_RANGE")
+    fields = _fields(envelope, _RESPONSE_KEYS)
+    aad_bytes = _bytes(fields["aad"], "AAD")
+    aad = _result_aad(kind, wire.decode(aad_bytes, limits.aad_decode))
+    ct = _sized_bytes(fields["ct"], _CT_MIN, _FRAME_CT_MAX, "CT")
+    if isinstance(aad, OpenResultAad):
+        return OpenResultEnvelope(aad_bytes=aad_bytes, aad=aad, ct=ct)
+    return FrameResultEnvelope(aad_bytes=aad_bytes, aad=aad, ct=ct)
+
+
+def _result_aad(kind: CanonicalValue, value: CanonicalValue) -> OpenResultAad | FrameAad:
+    if kind == "open_result":
+        return _open_result_aad(value)
+    return _frame_aad(value)
+
+
+def _open_result_aad(value: CanonicalValue) -> OpenResultAad:
+    fields = _fields(value, _OPEN_RESULT_AAD_KEYS)
+    _uint(fields["seq"], 0, "SEQ")  # the literal 0: t2c nonce 0 belongs to the open_result
+    return _checked_open_result_aad(fields["session_id"], fields["request_id"])
+
+
+def _checked_open_result_aad(session_id: object, request_id: object) -> OpenResultAad:
+    return OpenResultAad(
+        session_id=None
+        if session_id is None
+        else _sized_bytes(session_id, _ID_LEN, _ID_LEN, "SESSION_ID"),
+        request_id=_sized_bytes(request_id, _ID_LEN, _ID_LEN, "REQUEST_ID"),
+    )
+
+
+def _error_code(error: object) -> str:
+    code = error.value if isinstance(error, RemoteErrorCode) else error
+    return _text(code, ERROR_CODE_PATTERN, "ERROR")
 
 
 def decode_open_result_plaintext(

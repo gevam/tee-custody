@@ -13,19 +13,34 @@ from teecustody.channel.codec import (
     EnvelopeErrorCode,
     FrameAad,
     FrameRequestEnvelope,
+    FrameResultEnvelope,
     OpenAad,
     OpenRequestEnvelope,
     OpenResultAad,
     OpenResultBody,
+    OpenResultEnvelope,
     PreKeyBundle,
     PreKeyEntry,
     decode_bundle,
     decode_open_result_plaintext,
     decode_request,
+    decode_response,
     encode_bundle,
+    encode_frame_aad,
+    encode_frame_result_plaintext,
+    encode_open_result_aad,
+    encode_open_result_plaintext,
+    encode_response_envelope,
+)
+from teecustody.channel.ports import (
+    HandlerError,
+    HandlerOk,
+    OpenAccepted,
+    OpenRejected,
+    RemoteErrorCode,
 )
 from teecustody.config import BoundaryLimits
-from teecustody.wire import PROTO, DecodeLimits, encode
+from teecustody.wire import PROTO, DecodeLimits, decode, encode
 
 LIMITS = BoundaryLimits()
 CLIENT_ID = "0123456789abcdef" * 2
@@ -521,3 +536,277 @@ def test_open_result_is_decoded_with_the_given_limits() -> None:
         decode_open_result_plaintext(
             pt, WITH_SESSION, DecodeLimits(max_bytes=32768, max_depth=3, max_items=4096)
         )
+
+
+# ---------------------------------------------------------------- criterion 8
+def _open_result_aad(**override: Any) -> bytes:
+    aad: dict[str, Any] = {"session_id": SESSION_ID, "request_id": REQUEST_ID, "seq": 0}
+    aad.update(override)
+    return encode(aad)
+
+
+AAD_LIMITS = LIMITS.aad_decode
+PAYLOAD = {"items": [1, -2, b"\x00", "t", None, True], "nested": {"k": [[]]}}
+
+
+@pytest.mark.parametrize("session_id", [SESSION_ID, None], ids=["session", "nil"])
+def test_open_result_aad_is_canonical_with_the_literal_seq_zero(session_id: bytes | None) -> None:
+    aad_bytes = encode_open_result_aad(OpenResultAad(session_id=session_id, request_id=REQUEST_ID))
+
+    assert aad_bytes == encode({"session_id": session_id, "request_id": REQUEST_ID, "seq": 0})
+    assert decode(aad_bytes, AAD_LIMITS) == {
+        "session_id": session_id,
+        "request_id": REQUEST_ID,
+        "seq": 0,
+    }
+
+
+def test_frame_aad_is_canonical() -> None:
+    aad_bytes = encode_frame_aad(FrameAad(session_id=SESSION_ID, seq=2**53 - 1, op="notes.get"))
+
+    assert aad_bytes == encode({"session_id": SESSION_ID, "seq": 2**53 - 1, "op": "notes.get"})
+    assert decode_request(encode(frame_request(aad_bytes)), LIMITS).aad == FrameAad(
+        session_id=SESSION_ID, seq=2**53 - 1, op="notes.get"
+    )
+
+
+def test_open_result_plaintext_accepted_carries_the_payload_and_not_the_principal() -> None:
+    pt = encode_open_result_plaintext(OpenAccepted(client_id=CLIENT_ID, payload=PAYLOAD))
+
+    assert pt == encode({"ok": True, "payload": PAYLOAD})
+    assert decode_open_result_plaintext(pt, WITH_SESSION, RESULT_LIMITS) == OpenResultBody(
+        ok=True, payload=PAYLOAD
+    )
+
+
+def test_open_result_plaintext_rejected_carries_the_code_value() -> None:
+    pt = encode_open_result_plaintext(OpenRejected(error=RemoteErrorCode.LIMIT_EXCEEDED))
+
+    assert pt == encode({"ok": False, "error": "LIMIT_EXCEEDED"})
+    assert decode_open_result_plaintext(pt, WITHOUT_SESSION, RESULT_LIMITS) == OpenResultBody(
+        ok=False, error="LIMIT_EXCEEDED"
+    )
+
+
+def test_frame_result_plaintext_ok_and_error_shapes() -> None:
+    ok = encode_frame_result_plaintext(2**53 - 1, HandlerOk(payload=PAYLOAD))
+    error = encode_frame_result_plaintext(0, HandlerError(error=RemoteErrorCode.NOT_AUTHORIZED))
+
+    assert ok == encode({"re": 2**53 - 1, "ok": True, "payload": PAYLOAD})
+    assert error == encode({"re": 0, "ok": False, "error": "NOT_AUTHORIZED"})
+
+
+@pytest.mark.parametrize("kind", ["open_result", "frame_result"])
+def test_response_envelope_round_trips_through_decode_response(kind: str) -> None:
+    if kind == "open_result":
+        aad_bytes = encode_open_result_aad(WITH_SESSION)
+    else:
+        aad_bytes = encode_frame_aad(FrameAad(session_id=SESSION_ID, seq=1, op="notes.put"))
+    ct = b"r" * 32
+
+    body = encode_response_envelope(kind, aad_bytes, ct)  # type: ignore[arg-type]
+
+    assert body == encode({"kind": kind, "aad": aad_bytes, "ct": ct})
+    decoded = decode_response(body, LIMITS)
+    assert decoded.aad_bytes == aad_bytes
+    assert decoded.ct == ct
+    if kind == "open_result":
+        assert decoded == OpenResultEnvelope(aad_bytes=aad_bytes, aad=WITH_SESSION, ct=ct)
+    else:
+        assert decoded == FrameResultEnvelope(
+            aad_bytes=aad_bytes,
+            aad=FrameAad(session_id=SESSION_ID, seq=1, op="notes.put"),
+            ct=ct,
+        )
+
+
+BAD_ERROR_CODES = ["internal", "", "INTERNAL\n", "1INTERNAL", "E" * 65, b"INTERNAL", None]
+
+
+@pytest.mark.parametrize("error", BAD_ERROR_CODES)
+def test_plaintext_encoders_refuse_an_error_failing_the_pattern(error: Any) -> None:
+    with pytest.raises(ValueError, match=r"^ERROR_RANGE$"):
+        encode_open_result_plaintext(OpenRejected(error=error))
+    with pytest.raises(ValueError, match=r"^ERROR_RANGE$"):
+        encode_frame_result_plaintext(0, HandlerError(error=error))
+
+
+@pytest.mark.parametrize("re", [-1, 2**53, True, "0"])
+def test_frame_result_plaintext_refuses_re_out_of_range(re: Any) -> None:
+    with pytest.raises(ValueError, match=r"^RE_RANGE$"):
+        encode_frame_result_plaintext(re, HandlerOk(payload=None))
+
+
+AAD_ENCODER_VIOLATIONS: dict[str, tuple[Any, str]] = {
+    "open-result-session-15": (
+        lambda: encode_open_result_aad(OpenResultAad(SESSION_ID[:15], REQUEST_ID)),
+        "SESSION_ID_RANGE",
+    ),
+    "open-result-session-text": (
+        lambda: encode_open_result_aad(OpenResultAad("s" * 16, REQUEST_ID)),  # type: ignore[arg-type]
+        "SESSION_ID_RANGE",
+    ),
+    "open-result-request-17": (
+        lambda: encode_open_result_aad(OpenResultAad(SESSION_ID, REQUEST_ID + b"\x00")),
+        "REQUEST_ID_RANGE",
+    ),
+    "open-result-request-nil": (
+        lambda: encode_open_result_aad(OpenResultAad(SESSION_ID, None)),  # type: ignore[arg-type]
+        "REQUEST_ID_RANGE",
+    ),
+    "frame-session-nil": (
+        lambda: encode_frame_aad(FrameAad(None, 0, "a")),  # type: ignore[arg-type]
+        "SESSION_ID_RANGE",
+    ),
+    "frame-seq-2^53": (lambda: encode_frame_aad(FrameAad(SESSION_ID, 2**53, "a")), "SEQ_RANGE"),
+    "frame-seq-negative": (lambda: encode_frame_aad(FrameAad(SESSION_ID, -1, "a")), "SEQ_RANGE"),
+    "frame-seq-bool": (lambda: encode_frame_aad(FrameAad(SESSION_ID, True, "a")), "SEQ_RANGE"),
+    "frame-op-uppercase": (lambda: encode_frame_aad(FrameAad(SESSION_ID, 0, "A")), "OP_RANGE"),
+    "frame-op-newline": (lambda: encode_frame_aad(FrameAad(SESSION_ID, 0, "a\n")), "OP_RANGE"),
+}
+
+
+@pytest.mark.parametrize(
+    ("build", "message"), AAD_ENCODER_VIOLATIONS.values(), ids=AAD_ENCODER_VIOLATIONS.keys()
+)
+def test_aad_encoders_apply_the_decoder_range_checks(build: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        build()
+
+
+ENVELOPE_ENCODER_VIOLATIONS: dict[str, tuple[Any, Any, Any, str]] = {
+    "kind-open": ("open", _open_result_aad(), b"r" * 16, "KIND_RANGE"),
+    "kind-frame": (
+        "frame",
+        encode(frame_aad()),
+        b"r" * 16,
+        "KIND_RANGE",
+    ),
+    "ct-15": ("open_result", _open_result_aad(), b"r" * 15, "CT_RANGE"),
+    "ct-32785": (
+        "frame_result",
+        encode(frame_aad()),
+        b"r" * 32785,
+        "CT_RANGE",
+    ),
+    "ct-text": ("open_result", _open_result_aad(), "r" * 16, "CT_RANGE"),
+    "open-result-with-frame-aad": (
+        "open_result",
+        encode(frame_aad()),
+        b"r" * 16,
+        "AAD_RANGE",
+    ),
+    "frame-result-with-open-result-aad": (
+        "frame_result",
+        _open_result_aad(),
+        b"r" * 16,
+        "AAD_RANGE",
+    ),
+    "aad-noncanonical": ("frame_result", _noncanonical_frame_aad(), b"r" * 16, "AAD_RANGE"),
+    "aad-text": ("open_result", "aad", b"r" * 16, "AAD_RANGE"),
+}
+
+
+@pytest.mark.parametrize(
+    ("kind", "aad_bytes", "ct", "message"),
+    ENVELOPE_ENCODER_VIOLATIONS.values(),
+    ids=ENVELOPE_ENCODER_VIOLATIONS.keys(),
+)
+def test_response_envelope_encoder_applies_the_decoder_checks(
+    kind: Any, aad_bytes: Any, ct: Any, message: str
+) -> None:
+    with pytest.raises(ValueError, match=f"^{message}$") as exc:
+        encode_response_envelope(kind, aad_bytes, ct)
+
+    assert exc.value.__context__ is None
+
+
+def test_response_envelope_ct_bounds_are_inclusive() -> None:
+    aad_bytes = encode_open_result_aad(WITH_SESSION)
+
+    for ct in (b"r" * 16, b"r" * 32784):
+        assert (
+            decode_response(encode_response_envelope("open_result", aad_bytes, ct), LIMITS).ct == ct
+        )
+
+
+# ---------------------------------------------------------------- decode_response
+def open_result_envelope(aad_bytes: bytes | None = None, **override: Any) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "kind": "open_result",
+        "aad": encode({"session_id": SESSION_ID, "request_id": REQUEST_ID, "seq": 0})
+        if aad_bytes is None
+        else aad_bytes,
+        "ct": b"r" * 32,
+    }
+    envelope.update(override)
+    return envelope
+
+
+def frame_result_envelope(aad_bytes: bytes | None = None, **override: Any) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "kind": "frame_result",
+        "aad": encode(frame_aad()) if aad_bytes is None else aad_bytes,
+        "ct": b"r" * 32,
+    }
+    envelope.update(override)
+    return envelope
+
+
+def test_oversize_response_is_too_large_and_never_reaches_the_wire_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bytes] = []
+    monkeypatch.setattr(wire, "decode", lambda data, limits: calls.append(data))
+
+    with pytest.raises(EnvelopeError) as exc:
+        decode_response(b"\x00" * (LIMITS.max_request_bytes + 1), LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.TOO_LARGE
+    assert calls == []
+
+
+def test_open_result_with_nil_session_decodes() -> None:
+    aad_bytes = _open_result_aad(session_id=None)
+
+    decoded = decode_response(encode(open_result_envelope(aad_bytes)), LIMITS)
+
+    assert decoded == OpenResultEnvelope(aad_bytes=aad_bytes, aad=WITHOUT_SESSION, ct=b"r" * 32)
+
+
+INVALID_RESPONSES: dict[str, bytes] = {
+    "not-a-map": encode([open_result_envelope()]),
+    "kind-open": encode(open_result_envelope(kind="open")),
+    "kind-frame": encode(frame_result_envelope(kind="frame")),
+    "missing-kind": encode({"aad": _open_result_aad(), "ct": b"r" * 32}),
+    "unknown-key": encode(open_result_envelope(extra=1)),
+    "frame-result-with-enc": encode(frame_result_envelope(enc=ENC)),
+    "missing-ct": encode({"kind": "open_result", "aad": _open_result_aad()}),
+    "ct-15": encode(open_result_envelope(ct=b"r" * 15)),
+    "ct-32785": encode(frame_result_envelope(ct=b"r" * 32785)),
+    "aad-text": encode(open_result_envelope(aad="aad")),
+    "aad-trailing-byte": encode(open_result_envelope(_open_result_aad() + b"\x00")),
+    "seq-1": encode(open_result_envelope(_open_result_aad(seq=1))),
+    "seq-false": encode(open_result_envelope(_open_result_aad(seq=False))),
+    "seq-missing": encode(
+        open_result_envelope(encode({"session_id": SESSION_ID, "request_id": REQUEST_ID}))
+    ),
+    "session-15": encode(open_result_envelope(_open_result_aad(session_id=SESSION_ID[:15]))),
+    "request-17": encode(open_result_envelope(_open_result_aad(request_id=REQUEST_ID + b"\x00"))),
+    "request-nil": encode(open_result_envelope(_open_result_aad(request_id=None))),
+    "open-result-aad-extra": encode(open_result_envelope(_open_result_aad(extra=1))),
+    "open-result-with-frame-aad": encode(open_result_envelope(encode(frame_aad()))),
+    "frame-result-with-open-result-aad": encode(frame_result_envelope(_open_result_aad())),
+    "frame-result-noncanonical-aad": encode(frame_result_envelope(_noncanonical_frame_aad())),
+    "frame-result-op-newline": encode(frame_result_envelope(encode(frame_aad(op="a\n")))),
+    "frame-result-seq-2^53": encode(frame_result_envelope(encode(frame_aad(seq=2**53)))),
+}
+
+
+@pytest.mark.parametrize("body", INVALID_RESPONSES.values(), ids=INVALID_RESPONSES.keys())
+def test_response_schema_violation_is_invalid(body: bytes) -> None:
+    with pytest.raises(EnvelopeError) as exc:
+        decode_response(body, LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert exc.value.__context__ is None
