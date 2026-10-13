@@ -268,3 +268,57 @@ describe("criterion 7: both numeric options must be positive safe integers", () 
         ).not.toThrow();
     });
 });
+
+describe("criterion 8: every rejection is CapabilityError(code), message === code, no cause, no URL or body", () => {
+    const SECRET_URL = "https://jwks.example/leak-marker-url";
+    const SECRET_BODY = "leak-marker-body";
+    const text = new TextEncoder().encode(SECRET_BODY);
+
+    function erroringBody(): ReadableStream<Uint8Array> {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+            pull(controller) {
+                if (sent) {
+                    controller.error(new Error(`${SECRET_URL} ${SECRET_BODY}`));
+                } else {
+                    sent = true;
+                    controller.enqueue(text);
+                }
+            },
+        });
+    }
+
+    it.each<[string, string, FetchFn]>([
+        ["INVALID_ARGUMENT", `${SECRET_URL}#${SECRET_BODY}`, () => Promise.resolve(new Response(text))],
+        [
+            "UNAVAILABLE",
+            SECRET_URL,
+            () => Promise.reject(new TypeError(`${SECRET_URL} ${SECRET_BODY}`)),
+        ],
+        [
+            "HTTP_ERROR",
+            SECRET_URL,
+            () => Promise.resolve(new Response(text, { status: 500, statusText: SECRET_BODY })),
+        ],
+        [
+            "HTTP_ERROR",
+            SECRET_URL,
+            () => Promise.resolve(shaped({ url: `https://evil.example/${SECRET_BODY}` }, new Response(text))),
+        ],
+        [
+            "INVALID_RESPONSE",
+            SECRET_URL,
+            () => Promise.resolve(new Response(new Uint8Array(2048).fill(0x41))),
+        ],
+        ["UNAVAILABLE", SECRET_URL, () => Promise.resolve(new Response(erroringBody()))],
+    ])("%s carries only its code", async (expected, url, fetch) => {
+        const error = await rejection(make(fetch, 1024).get(url));
+        expect(error).toBeInstanceOf(CapabilityError);
+        const capability = error as CapabilityError;
+        expect(capability.code).toBe(expected);
+        expect(capability.message).toBe(expected);
+        expect("cause" in capability).toBe(false);
+        const rendered = `${String(capability)} ${capability.stack ?? ""} ${JSON.stringify(capability)}`;
+        expect(rendered).not.toContain("leak-marker");
+    });
+});

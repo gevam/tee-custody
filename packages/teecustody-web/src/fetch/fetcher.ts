@@ -52,7 +52,13 @@ async function readBounded(
     const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
-        const { done, value } = await reader.read();
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+            chunk = await reader.read();
+        } catch {
+            throw new CapabilityError("UNAVAILABLE");
+        }
+        const { done, value } = chunk;
         if (done) {
             break;
         }
