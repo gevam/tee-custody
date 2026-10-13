@@ -6,7 +6,7 @@ import { createCipheriv, createDecipheriv, generateKeyPairSync, sign } from "nod
 
 import { CapabilityError, type Bytes } from "@teecustody/core";
 import { createWebCrypto } from "@teecustody/web";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { expectThrown } from "./e2e-support.js";
 
@@ -74,6 +74,15 @@ function proxySubtle(options: { hide?: readonly string[] } = {}): {
     });
     return { subtle, derived };
 }
+
+/** D-051(b), ADR 0011 C3a.3: HPKE uses only globalThis.crypto.subtle, never an injected one. */
+function installGlobalSubtle(subtle: SubtleCrypto): void {
+    Object.defineProperty(globalThis.crypto, "subtle", { value: subtle, configurable: true });
+}
+
+afterEach(() => {
+    Reflect.deleteProperty(globalThis.crypto, "subtle");
+});
 
 describe("SR-14 HPKE Base mode through the adapter", () => {
     it("round-trips seal/open, agrees on both exports, and binds info and aad", async () => {
@@ -160,7 +169,8 @@ describe("SR-14 HPKE Base mode through the adapter", () => {
 
     it("runs X25519 on the native WebCrypto path for every encap and decap", async () => {
         const { subtle, derived } = proxySubtle();
-        const crypto = createWebCrypto({ subtle });
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
         const { sk, pk } = x25519();
         const sender = await crypto.setupHpkeSender(pk, INFO);
         const ct = await sender.seal(AAD, PT);
@@ -172,7 +182,8 @@ describe("SR-14 HPKE Base mode through the adapter", () => {
 
     it("fails closed with UNSUPPORTED when native X25519 is missing (no JS curve fallback)", async () => {
         const { subtle } = proxySubtle({ hide: ["X25519"] });
-        const crypto = createWebCrypto({ subtle });
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
         const { sk, pk } = x25519();
         expect(code(await failure(crypto.setupHpkeSender(pk, INFO)))).toBe("UNSUPPORTED");
         expect(code(await failure(crypto.setupHpkeReceiver(sk, pk, INFO)))).toBe("UNSUPPORTED");
