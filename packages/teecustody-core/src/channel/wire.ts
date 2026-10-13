@@ -53,12 +53,65 @@ export type FrameResultBody =
     | { readonly re: number; readonly ok: true; readonly payload: CanonicalValue }
     | { readonly re: number; readonly ok: false; readonly error: string };
 
+const MAX_UINT32 = 0xffff_ffff;
+const ID_BYTES = 16;
+const KEY_BYTES = 32;
+const MIN_CT = 16;
+const MAX_OPEN_CT = 2048;
+const MAX_CT = 32_784;
+
+type RangeCode =
+    | "CLIENT_ID_RANGE"
+    | "INSTANCE_ID_RANGE"
+    | "PREKEY_ID_RANGE"
+    | "REQUEST_ID_RANGE"
+    | "TIMESTAMP_RANGE"
+    | "SESSION_ID_RANGE"
+    | "SEQ_RANGE"
+    | "OP_RANGE"
+    | "ENC_RANGE"
+    | "CT_RANGE"
+    | "IK_PUB_RANGE"
+    | "CS_RANGE"
+    | "KEY_ID_RANGE"
+    | "EPOCH_RANGE";
+
+// The arguments are typed, but every check also holds for a value the type system was bypassed for.
+function check(ok: boolean, code: RangeCode): void {
+    if (!ok) {
+        throw new RangeError(code);
+    }
+}
+
+function isUint(value: unknown, max: number): boolean {
+    return (
+        typeof value === "number" &&
+        Number.isSafeInteger(value) &&
+        !Object.is(value, -0) &&
+        value >= 0 &&
+        value <= max
+    );
+}
+
+function matches(value: unknown, pattern: RegExp): boolean {
+    return typeof value === "string" && pattern.test(value);
+}
+
+function hasLength(value: unknown, min: number, max = min): boolean {
+    return value instanceof Uint8Array && value.length >= min && value.length <= max;
+}
+
 function encodeMap(entries: Record<string, CanonicalValue>): Bytes {
     return encodeCanonical(new Map(Object.entries(entries)));
 }
 
 // RangeError("<FIELD>_RANGE")
 export function encodeOpenAad(aad: OpenAadFields): Bytes {
+    check(matches(aad.clientId, HEX32_PATTERN), "CLIENT_ID_RANGE");
+    check(matches(aad.instanceId, HEX32_PATTERN), "INSTANCE_ID_RANGE");
+    check(isUint(aad.prekeyId, MAX_UINT32), "PREKEY_ID_RANGE");
+    check(hasLength(aad.requestId, ID_BYTES), "REQUEST_ID_RANGE");
+    check(isUint(aad.timestamp, MAX_UNIX_S), "TIMESTAMP_RANGE");
     return encodeMap({
         proto: PROTO,
         client_id: aad.clientId,
@@ -74,6 +127,9 @@ export function encodeOpenPlaintext(payload: OpenPayload): Bytes {
     if (payload.op === "enroll") {
         return encodeMap({ op: "enroll" });
     }
+    check(hasLength(payload.cs, KEY_BYTES), "CS_RANGE");
+    check(hasLength(payload.keyId, ID_BYTES), "KEY_ID_RANGE");
+    check(isUint(payload.epoch, MAX_UINT32), "EPOCH_RANGE");
     return encodeMap({
         op: "open_session",
         cs: payload.cs,
@@ -83,15 +139,21 @@ export function encodeOpenPlaintext(payload: OpenPayload): Bytes {
 }
 
 export function encodeOpenRequest(aadBytes: Bytes, enc: Bytes, ct: Bytes): CanonicalEnvelope {
+    check(hasLength(enc, KEY_BYTES), "ENC_RANGE");
+    check(hasLength(ct, MIN_CT, MAX_OPEN_CT), "CT_RANGE");
     return encodeMap({ kind: "open", aad: aadBytes, enc, ct });
 }
 
 // RangeError("SEQ_RANGE"|"OP_RANGE"|"SESSION_ID_RANGE")
 export function encodeFrameAad(aad: FrameAadFields): Bytes {
+    check(hasLength(aad.sessionId, ID_BYTES), "SESSION_ID_RANGE");
+    check(isUint(aad.seq, MAX_SEQ), "SEQ_RANGE");
+    check(matches(aad.op, OP_NAME_PATTERN), "OP_RANGE");
     return encodeMap({ session_id: aad.sessionId, seq: aad.seq, op: aad.op });
 }
 
 export function encodeFrameRequest(aadBytes: Bytes, ct: Bytes): CanonicalEnvelope {
+    check(hasLength(ct, MIN_CT, MAX_CT), "CT_RANGE");
     return encodeMap({ kind: "frame", aad: aadBytes, ct });
 }
 

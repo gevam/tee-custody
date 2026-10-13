@@ -1,7 +1,8 @@
 // T-15: Core channel wire codec (INC-2-API §2, §3.1, §7.3; API-TL §3; SR-3, SR-14).
 // Expected bytes are hex literals computed independently with the Python canonical codec.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as cbor from "../../src/wire/cbor.js";
 import {
     encodeFrameAad,
     encodeFrameRequest,
@@ -9,6 +10,20 @@ import {
     encodeOpenPlaintext,
     encodeOpenRequest,
 } from "../../src/channel/wire.js";
+
+// Pass-through spies: a test can assert the encoder/decoder was (not) called, or substitute one call.
+vi.mock("../../src/wire/cbor.js", async (importOriginal) => {
+    const real = await importOriginal<typeof import("../../src/wire/cbor.js")>();
+    return {
+        encodeCanonical: vi.fn(real.encodeCanonical),
+        decodeCanonical: vi.fn(real.decodeCanonical),
+    };
+});
+
+afterEach(() => {
+    vi.mocked(cbor.encodeCanonical).mockClear();
+    vi.mocked(cbor.decodeCanonical).mockClear();
+});
 
 const CLIENT = "a1".repeat(16);
 const INSTANCE = "b2".repeat(16);
@@ -157,5 +172,115 @@ describe("criterion 1: request encoders produce the CDDL bytes", () => {
         expect(hex(encodeFrameRequest(new Uint8Array(0), new Uint8Array(32_784)))).toContain(
             "626374" + "598010",
         );
+    });
+});
+
+function expectRangeError(fn: () => unknown, code: string): void {
+    let thrown: unknown;
+    try {
+        fn();
+    } catch (error) {
+        thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RangeError);
+    expect((thrown as RangeError).message).toBe(code);
+}
+
+// Values the type system forbids but a caller could still pass at runtime.
+const forced = (value: unknown): never => value as never;
+
+describe("criterion 2: builders reject out-of-range input before encoding (SR-3, SR-14)", () => {
+    const openAadCases: readonly (readonly [string, Partial<Record<string, unknown>>])[] = [
+        ["CLIENT_ID_RANGE", { clientId: CLIENT.toUpperCase() }],
+        ["CLIENT_ID_RANGE", { clientId: CLIENT.slice(1) }],
+        ["CLIENT_ID_RANGE", { clientId: `${CLIENT}0` }],
+        ["CLIENT_ID_RANGE", { clientId: `${CLIENT}\n` }],
+        ["CLIENT_ID_RANGE", { clientId: `${CLIENT.slice(1)}g` }],
+        ["CLIENT_ID_RANGE", { clientId: 7 }],
+        ["INSTANCE_ID_RANGE", { instanceId: INSTANCE.slice(1) }],
+        ["INSTANCE_ID_RANGE", { instanceId: INSTANCE.toUpperCase() }],
+        ["INSTANCE_ID_RANGE", { instanceId: null }],
+        ["PREKEY_ID_RANGE", { prekeyId: 2 ** 32 }],
+        ["PREKEY_ID_RANGE", { prekeyId: -1 }],
+        ["PREKEY_ID_RANGE", { prekeyId: -0 }],
+        ["PREKEY_ID_RANGE", { prekeyId: 1.5 }],
+        ["PREKEY_ID_RANGE", { prekeyId: Number.NaN }],
+        ["PREKEY_ID_RANGE", { prekeyId: 5n }],
+        ["REQUEST_ID_RANGE", { requestId: new Uint8Array(15) }],
+        ["REQUEST_ID_RANGE", { requestId: new Uint8Array(17) }],
+        ["REQUEST_ID_RANGE", { requestId: Array.from(RID) }],
+        ["TIMESTAMP_RANGE", { timestamp: 2 ** 53 }],
+        ["TIMESTAMP_RANGE", { timestamp: -1 }],
+        ["TIMESTAMP_RANGE", { timestamp: 1.5 }],
+        ["TIMESTAMP_RANGE", { timestamp: Number.POSITIVE_INFINITY }],
+        ["TIMESTAMP_RANGE", { timestamp: Number.NaN }],
+        ["TIMESTAMP_RANGE", { timestamp: 1n }],
+    ];
+
+    it.each(openAadCases)("encodeOpenAad: %s for %o", (code, override) => {
+        expectRangeError(() => encodeOpenAad(forced({ ...OPEN_AAD, ...override })), code);
+        expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+    });
+
+    const plaintextCases: readonly (readonly [string, Partial<Record<string, unknown>>])[] = [
+        ["CS_RANGE", { cs: new Uint8Array(31) }],
+        ["CS_RANGE", { cs: new Uint8Array(33) }],
+        ["CS_RANGE", { cs: "x".repeat(32) }],
+        ["KEY_ID_RANGE", { keyId: new Uint8Array(15) }],
+        ["KEY_ID_RANGE", { keyId: new Uint8Array(17) }],
+        ["EPOCH_RANGE", { epoch: 2 ** 32 }],
+        ["EPOCH_RANGE", { epoch: -1 }],
+        ["EPOCH_RANGE", { epoch: 0.5 }],
+        ["EPOCH_RANGE", { epoch: 3n }],
+    ];
+
+    it.each(plaintextCases)("encodeOpenPlaintext: %s for %o", (code, override) => {
+        expectRangeError(() => encodeOpenPlaintext(forced({ ...OPEN_SESSION, ...override })), code);
+        expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+    });
+
+    const frameAadCases: readonly (readonly [string, Partial<Record<string, unknown>>])[] = [
+        ["SESSION_ID_RANGE", { sessionId: new Uint8Array(15) }],
+        ["SESSION_ID_RANGE", { sessionId: new Uint8Array(17) }],
+        ["SESSION_ID_RANGE", { sessionId: null }],
+        ["SEQ_RANGE", { seq: -1 }],
+        ["SEQ_RANGE", { seq: 2 ** 53 }],
+        ["SEQ_RANGE", { seq: 0.5 }],
+        ["SEQ_RANGE", { seq: 4n }],
+        ["OP_RANGE", { op: "Bad Op" }],
+        ["OP_RANGE", { op: "" }],
+        ["OP_RANGE", { op: "1abc" }],
+        ["OP_RANGE", { op: `a${"b".repeat(64)}` }],
+        ["OP_RANGE", { op: "test.echo\n" }],
+        ["OP_RANGE", { op: 1 }],
+    ];
+
+    it.each(frameAadCases)("encodeFrameAad: %s for %o", (code, override) => {
+        expectRangeError(() => encodeFrameAad(forced({ ...FRAME_AAD, ...override })), code);
+        expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+    });
+
+    it("encodeOpenRequest: ENC_RANGE and CT_RANGE (16..2048)", () => {
+        const aad = new Uint8Array(3);
+        const enc = new Uint8Array(32);
+        const ct = new Uint8Array(16);
+        expectRangeError(() => encodeOpenRequest(aad, new Uint8Array(31), ct), "ENC_RANGE");
+        expectRangeError(() => encodeOpenRequest(aad, new Uint8Array(33), ct), "ENC_RANGE");
+        expectRangeError(() => encodeOpenRequest(aad, enc, new Uint8Array(15)), "CT_RANGE");
+        expectRangeError(() => encodeOpenRequest(aad, enc, new Uint8Array(2049)), "CT_RANGE");
+        expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+    });
+
+    it("encodeFrameRequest: CT_RANGE (16..32784)", () => {
+        const aad = new Uint8Array(3);
+        expectRangeError(() => encodeFrameRequest(aad, new Uint8Array(15)), "CT_RANGE");
+        expectRangeError(() => encodeFrameRequest(aad, new Uint8Array(32_785)), "CT_RANGE");
+        expectRangeError(() => encodeFrameRequest(aad, forced(Array(16).fill(0))), "CT_RANGE");
+        expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+    });
+
+    it("the enroll plaintext needs no range checks and is encoded", () => {
+        encodeOpenPlaintext({ op: "enroll" });
+        expect(cbor.encodeCanonical).toHaveBeenCalledOnce();
     });
 });
