@@ -869,7 +869,12 @@ UVICORN_RELEASED = "2026-09-25T00:00:00.000000Z"
 
 
 def _pypi_document(licence: str, released: str, version: str) -> dict[str, object]:
-    info = {"license_expression": licence, "license": None, "classifiers": [], "version": version}
+    info: dict[str, object] = {
+        "license_expression": licence,
+        "license": None,
+        "classifiers": [],
+        "version": version,
+    }
     return {"info": info, "urls": [{"upload_time_iso_8601": released}]}
 
 
@@ -947,9 +952,7 @@ def test_h11_0_16_0_reached_only_through_uvicorn_in_the_gateway_is_not_stale(
     assert _h11_violations(tool, gateway_tree, capsys) == []
 
 
-@pytest.mark.parametrize(
-    "case", ["h11-other-version", "h11-library-closure", "h11-direct-gateway"]
-)
+@pytest.mark.parametrize("case", ["h11-other-version", "h11-library-closure", "h11-direct-gateway"])
 def test_h11_outside_the_exact_exception_is_still_stale(
     tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str], case: str
 ) -> None:
@@ -961,7 +964,9 @@ def test_other_stale_packages_in_the_gateway_closure_are_still_reported(
     tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     lock = (gateway_tree / "uv.lock").read_text()
-    lock = lock.replace('    { name = "uvicorn" },\n', '    { name = "oldpkg" },\n    { name = "uvicorn" },\n', 1)
+    lock = lock.replace(
+        '    { name = "uvicorn" },\n', '    { name = "oldpkg" },\n    { name = "uvicorn" },\n', 1
+    )
     lock = lock.replace(
         '[[package]]\nname = "pytest"',
         _uv_entry("oldpkg", "0.1.0", '{ registry = "https://pypi.org/simple" }', [])
@@ -990,7 +995,8 @@ def test_h11_through_uvicorn_is_stale_when_the_gateway_member_is_not_locked(
     _write(
         gateway_tree,
         GATEWAY_MANIFEST,
-        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\ndependencies = ["uvicorn==0.54.0"]\n',
+        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\n'
+        'dependencies = ["uvicorn==0.54.0"]\n',
     )
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
 
@@ -1000,7 +1006,9 @@ def test_h11_through_uvicorn_in_the_library_closure_is_still_stale(
 ) -> None:
     library = '    { name = "cbor2" },\n    { name = "cryptography" },\n'
     lock = (gateway_tree / "uv.lock").read_text()
-    _write(gateway_tree, "uv.lock", lock.replace(library, library + '    { name = "uvicorn" },\n', 1))
+    _write(
+        gateway_tree, "uv.lock", lock.replace(library, library + '    { name = "uvicorn" },\n', 1)
+    )
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
 
 
@@ -1014,3 +1022,13 @@ def test_an_npm_package_named_h11_gets_no_age_exception(
     assert ("npm", "h11") in repo.runtime
     assert tool._age_exempt(repo, "pypi", "h11")
     assert not tool._age_exempt(repo, "npm", "h11")
+
+
+def test_h11_locked_at_a_second_version_as_well_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (gateway_tree / "uv.lock").read_text()
+    second = _uv_entry("h11", "0.14.0", '{ registry = "https://pypi.org/simple" }', [])
+    lock = lock.replace('[[package]]\nname = "h11"', second + '[[package]]\nname = "h11"', 1)
+    _write(gateway_tree, "uv.lock", lock)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
