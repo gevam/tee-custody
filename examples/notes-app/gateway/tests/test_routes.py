@@ -72,3 +72,27 @@ def test_bundles_never_exceed_max_bundles_even_if_the_queue_returns_more() -> No
         f"{i:032x}" for i in range(2)
     ]
     assert relay.calls == [("list_bundles", 2)]
+
+
+# ---------------------------------------------------------------- criterion 2: POST /requests
+OCTET = {"Content-Type": "application/octet-stream"}
+
+
+def test_request_is_relayed_unchanged_with_the_relay_id_from_rng() -> None:
+    relay = RecordingRelay()
+    sizes: list[int] = []
+
+    def rng(n: int) -> bytes:
+        sizes.append(n)
+        return bytes(range(n))
+
+    client = TestClient(create_app(relay, rng=rng))
+    body = bytes(range(256)) * 3
+
+    response = client.post(f"/requests/{INSTANCE}", content=body, headers=OCTET)
+
+    assert response.status_code == 202
+    assert response.headers["content-type"] == "application/json"
+    assert response.content == b'{"request_id":"' + bytes(range(16)).hex().encode() + b'"}'
+    assert sizes == [16]
+    assert relay.calls == [("publish_request", INSTANCE, bytes(range(16)).hex(), body)]

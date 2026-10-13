@@ -48,4 +48,12 @@ def create_app(
         ]
         return _json(200, {"bundles": items})
 
+    @app.post("/requests/{instance}")
+    async def publish_request(request: Request) -> Response:
+        instance: str = request.path_params["instance"]
+        body = await request.body()
+        request_id = rng(16).hex()
+        await run_in_threadpool(queue.publish_request, instance, request_id, body)
+        return _json(202, {"request_id": request_id})
+
     return app
