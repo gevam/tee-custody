@@ -24,12 +24,11 @@ const NOW_MS = NOW_S * 1000;
 const MAX_AGE_S = 3600;
 
 const PROFILE: TrustProfile = brandTrustProfile({
-    profile_version: 1,
+    profile_version: 2,
     profile_kind: "development",
     token_type: "OIDC",
     issuer: "https://issuer.unit.test",
-    discovery_url: "http://127.0.0.1:1/.well-known/openid-configuration",
-    jwks_origin: "http://127.0.0.1:1",
+    jwks_uri: "http://127.0.0.1:1/jwks",
     expected_audience: AUDIENCE,
     token_max_age_s: MAX_AGE_S,
     allowed_hwmodels: ["GCP_AMD_SEV", "GCP_INTEL_TDX"],

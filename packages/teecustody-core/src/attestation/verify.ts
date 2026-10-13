@@ -1,5 +1,5 @@
 // Full attestation verification [CI-1]: spec §6 checks as one fixed code path, parameterised by the profile.
-import type { SecurityEventSink } from "../capabilities.js";
+import type { Bytes, SecurityEventSink } from "../capabilities.js";
 import { getPath } from "../json.js";
 import {
     checkAudience,
@@ -51,6 +51,21 @@ async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Pr
     }
 }
 
+// INC-2-API §7.1 (A2): the caller owns identityNonce, so it is copied before the first await and only the copy is
+// read. A value that cannot be copied is undefined here and fails the nonce step as MALFORMED.
+function copyIdentityNonce(expected: ExpectedAttestation): Bytes | undefined {
+    try {
+        return expected.identityNonce.slice();
+    } catch {
+        return undefined;
+    }
+}
+
+// VerifierLimits.maxDiscoveryBytes without its @deprecated tag (INC-2-API §16.2, DEBT-2).
+interface LegacyLimits {
+    readonly maxDiscoveryBytes?: number;
+}
+
 // Every VerifierLimits value is a positive safe integer; a NaN, infinite or non-positive cap would disable a
 // size bound downstream, so it fails the step that uses it.
 function requireLimit(value: number, check: AttestationCheckId): void {
@@ -66,6 +81,7 @@ export async function verifyAttestation(
     events: SecurityEventSink,
     deps: VerifierDeps,
 ): Promise<VerifiedAttestation> {
+    const identityNonce = copyIdentityNonce(expected);
     // (0) The TrustProfile brand is compile-time only; provenance is established before anything runs.
     if (!isBrandedTrustProfile(profile)) {
         throw new AttestationError("MALFORMED", "profile");
@@ -75,7 +91,12 @@ export async function verifyAttestation(
         requireLimit(deps.limits.maxTokenBytes, "token");
     });
     await step("signature", () => {
-        requireLimit(deps.limits.maxDiscoveryBytes, "signature");
+        // D-043 / DEBT-2: the one sanctioned read of the deprecated field. It is validated only when present
+        // and never used as a bound.
+        const legacy: LegacyLimits = deps.limits;
+        if (legacy.maxDiscoveryBytes !== undefined) {
+            requireLimit(legacy.maxDiscoveryBytes, "signature");
+        }
         requireLimit(deps.limits.maxJwksBytes, "signature");
     });
     const t = await step("token", () => parseToken(token, deps.limits.maxTokenBytes));
@@ -94,7 +115,10 @@ export async function verifyAttestation(
         checkTime(t, profile, deps.now());
     });
     await step("nonce", () => {
-        checkNonce(t, expected);
+        if (identityNonce === undefined) {
+            throw new AttestationError("MALFORMED", "nonce");
+        }
+        checkNonce(t, { identityNonce });
     });
     await step("platform", () => {
         checkPlatform(t, profile);

@@ -334,12 +334,11 @@ describe("API.md §D type pins", () => {
             readonly algorithm: SignerAlgorithm;
         }>();
         expectTypeOf<StringKeyed<TrustProfile>>().toEqualTypeOf<{
-            readonly profile_version: 1;
+            readonly profile_version: 2;
             readonly profile_kind: ProfileKind;
             readonly token_type: "OIDC";
             readonly issuer: string;
-            readonly discovery_url: string;
-            readonly jwks_origin: string;
+            readonly jwks_uri: string;
             readonly expected_audience: string;
             readonly token_max_age_s: number;
             readonly allowed_hwmodels: readonly string[];
@@ -410,8 +409,8 @@ describe("API.md §D type pins", () => {
         expectTypeOf<core.TrustProfileError>().toExtend<Error>();
         expectTypeOf<VerifierLimits>().toEqualTypeOf<{
             readonly maxTokenBytes: number;
-            readonly maxDiscoveryBytes: number;
             readonly maxJwksBytes: number;
+            readonly maxDiscoveryBytes?: number;
         }>();
         expectTypeOf<VerifierDeps>().toEqualTypeOf<{
             readonly crypto: Pick<Crypto, "sha256" | "verifySignature">;

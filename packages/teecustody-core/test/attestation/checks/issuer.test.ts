@@ -13,12 +13,12 @@ import type { JsonObject } from "../../../src/json.js";
 const ISSUER = "https://confidentialcomputing.googleapis.com";
 
 const PROFILE: TrustProfile = brandTrustProfile({
-    profile_version: 1,
+    profile_version: 2,
     profile_kind: "production",
     token_type: "OIDC",
     issuer: ISSUER,
-    discovery_url: `${ISSUER}/.well-known/openid-configuration`,
-    jwks_origin: "https://www.googleapis.com",
+    jwks_uri:
+        "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com",
     expected_audience: "https://unit.test/tee",
     token_max_age_s: 3600,
     allowed_hwmodels: ["GCP_AMD_SEV"],
