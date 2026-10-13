@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Final
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.secrets import Secret
 
@@ -18,6 +19,10 @@ AEAD_ID: Final = 0x0002
 EXPORT_C2T: Final = b"c2t"
 EXPORT_T2C: Final = b"t2c"
 EXPORT_LENGTH: Final = 32
+
+_SUITE: Final = CipherSuite.new(
+    KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM
+)
 
 
 class HpkeErrorCode(StrEnum):
@@ -49,4 +54,12 @@ class OpenedHpke:
 
 
 def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: bytes) -> OpenedHpke:
-    raise NotImplementedError("T-08")
+    """Base-mode receiver: Open once, then export both session keys from the same context."""
+    recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
+    context = _SUITE.create_recipient_context(enc, recipient_key, info)
+    plaintext = context.open(ct, aad=aad)
+    return OpenedHpke(
+        plaintext=Secret(plaintext),
+        sk_c2t=Secret(context.export(EXPORT_C2T, EXPORT_LENGTH)),
+        sk_t2c=Secret(context.export(EXPORT_T2C, EXPORT_LENGTH)),
+    )
