@@ -5,14 +5,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrustProfile } from "../../src/attestation/types.js";
 import { verifyAttestation } from "../../src/attestation/verify.js";
 import type { SecurityEventSink } from "../../src/capabilities.js";
-import { isVerifiedBundle } from "../../src/bundle/types.js";
+import { BundleError, isVerifiedBundle, type BundleErrorCode } from "../../src/bundle/types.js";
+import { encodeCanonical } from "../../src/wire/cbor.js";
+import type { CanonicalValue } from "../../src/wire/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
 import {
+    BUNDLE_LIMITS,
     INSTANCE,
+    NOW_S,
     attestation,
     bundleBytes,
+    bundleMap,
     bundleDeps,
     identity,
+    nonCanonicalPublishedAt,
     pubFor,
     standardEntries,
     type Identity,
@@ -25,6 +31,29 @@ const profile = {} as TrustProfile;
 const events: SecurityEventSink = { report: () => Promise.resolve() };
 
 let ik: Identity;
+
+type BundleMap = Map<string, CanonicalValue>;
+
+function entriesOf(map: BundleMap): BundleMap[] {
+    return map.get("prekeys") as BundleMap[];
+}
+
+function verifyBytes(bundle: Uint8Array, deps = bundleDeps()): Promise<unknown> {
+    return verifyBundle({ instanceId: INSTANCE, bundle }, profile, events, deps);
+}
+
+async function expectBundleError(
+    run: Promise<unknown>,
+    code: BundleErrorCode,
+    attestationCheck?: string,
+): Promise<void> {
+    const error: unknown = await run.then(
+        () => undefined,
+        (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(BundleError);
+    expect(error).toMatchObject({ code, message: code, attestationCheck });
+}
 
 beforeEach(async () => {
     mockedVerifyAttestation.mockReset();
@@ -53,5 +82,65 @@ describe("verifyBundle", () => {
         );
         expect(vb.verifiedAtMs).toBe(bundleDeps().now());
         expect(vb.attestation).toEqual(attestation());
+    });
+
+    describe("(2) schema failures are MALFORMED before verifyAttestation runs", () => {
+        const edits: [string, (m: BundleMap) => void][] = [
+            ["an unknown top-level key", (m) => m.set("extra", 1)],
+            ["an unknown entry key", (m) => entriesOf(m)[0]?.set("extra", 1)],
+            ["IK_pub of 31 bytes", (m) => m.set("IK_pub", new Uint8Array(31))],
+            ["sig of 63 bytes", (m) => entriesOf(m)[0]?.set("sig", new Uint8Array(63))],
+            [
+                "ids [2, 1]",
+                (m) => {
+                    entriesOf(m)[0]?.set("id", 2);
+                    entriesOf(m)[1]?.set("id", 1);
+                },
+            ],
+            ["ids [1, 1]", (m) => entriesOf(m)[1]?.set("id", 1)],
+            ["published_at = 2^53", (m) => m.set("published_at", 2n ** 53n)],
+            ["not_after = 2^53", (m) => entriesOf(m)[0]?.set("not_after", 2n ** 53n)],
+        ];
+        it.each(edits)("%s", async (_name, edit) => {
+            const map = await bundleMap({
+                ik,
+                entries: [
+                    { id: 1, notAfter: NOW_S + 60 },
+                    { id: 2, notAfter: NOW_S + 60 },
+                ],
+            });
+            edit(map);
+            await expectBundleError(verifyBytes(encodeCanonical(map)), "MALFORMED");
+            expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+        });
+
+        it("257 entries", async () => {
+            const entries = Array.from({ length: 257 }, (_, i) => ({
+                id: i,
+                notAfter: NOW_S + 60,
+            }));
+            await expectBundleError(verifyBytes(await bundleBytes({ ik, entries })), "MALFORMED");
+            expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+        });
+
+        it("non-canonical bytes", async () => {
+            const bytes = nonCanonicalPublishedAt(
+                await bundleBytes({ ik, entries: standardEntries() }),
+            );
+            await expectBundleError(verifyBytes(bytes), "MALFORMED");
+            expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+        });
+
+        it("more than maxBytes", async () => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            const deps = bundleDeps({
+                bundleLimits: {
+                    ...BUNDLE_LIMITS,
+                    decode: { ...BUNDLE_LIMITS.decode, maxBytes: bytes.length - 1 },
+                },
+            });
+            await expectBundleError(verifyBytes(bytes, deps), "MALFORMED");
+            expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+        });
     });
 });

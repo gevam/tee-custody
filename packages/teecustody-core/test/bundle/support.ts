@@ -197,3 +197,23 @@ export function standardEntries(): EntrySpec[] {
         { id: 9, notAfter: NOW_S + 60 },
     ];
 }
+
+// The published_at value (a 4-byte uint, head 0x1a) re-encoded in the 8-byte form: well-formed CBOR that is
+// not in shortest form, so not canonical.
+export function nonCanonicalPublishedAt(bytes: Bytes): Bytes {
+    const key = encodeCanonical("published_at");
+    for (let at = 0; at + key.length < bytes.length; at++) {
+        if (key.every((b, i) => bytes[at + i] === b)) {
+            const value = at + key.length;
+            if (bytes[value] !== 0x1a) {
+                throw new Error("fixture: published_at is not a 4-byte uint");
+            }
+            const out = new Uint8Array(bytes.length + 4);
+            out.set(bytes.subarray(0, value));
+            out[value] = 0x1b;
+            out.set(bytes.subarray(value + 1), value + 5);
+            return out;
+        }
+    }
+    throw new Error("fixture: published_at not found");
+}

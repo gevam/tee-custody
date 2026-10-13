@@ -3,7 +3,12 @@ import type { Bytes, Crypto, PublishedBundle, SecurityEventSink } from "../capab
 import type { TrustProfile } from "../attestation/types.js";
 import { verifyAttestation } from "../attestation/verify.js";
 import { decodeCanonical } from "../wire/cbor.js";
-import { createVerifiedBundle, type BundleDeps, type VerifiedBundle } from "./types.js";
+import {
+    BundleError,
+    createVerifiedBundle,
+    type BundleDeps,
+    type VerifiedBundle,
+} from "./types.js";
 
 interface DecodedEntry {
     readonly id: number;
@@ -19,19 +24,73 @@ interface DecodedBundle {
     readonly prekeys: readonly DecodedEntry[];
 }
 
+const BUNDLE_KEYS = ["IK_pub", "instance_id", "prekeys", "published_at", "token"];
+const ENTRY_KEYS = ["id", "not_after", "pub", "sig"];
+
+function malformed(): never {
+    throw new BundleError("MALFORMED");
+}
+
+// Strict schema (INC-2-API §3.1): a map with exactly the given keys.
+function exactMap(value: unknown, keys: readonly string[]): ReadonlyMap<string, unknown> {
+    const map = value as ReadonlyMap<string, unknown>;
+    if (map.size !== keys.length || !keys.every((k) => map.has(k))) {
+        malformed();
+    }
+    return map;
+}
+
+function bytesOf(value: unknown, length: number): Bytes {
+    const bytes = value as Bytes;
+    if (bytes.length !== length) {
+        malformed();
+    }
+    return bytes;
+}
+
+// unix-s (D2-17, R-1): a safe-integer number; a decoded bigint (> 2^53 − 1) is a schema failure.
+function unixS(value: unknown): number {
+    if (typeof value !== "number") {
+        malformed();
+    }
+    return value;
+}
+
+function decodeTop(bytes: Bytes, deps: BundleDeps): unknown {
+    try {
+        return decodeCanonical(bytes, deps.bundleLimits.decode);
+    } catch {
+        return malformed();
+    }
+}
+
 function decodeBundle(bytes: Bytes, deps: BundleDeps): DecodedBundle {
-    const top = decodeCanonical(bytes, deps.bundleLimits.decode) as ReadonlyMap<string, unknown>;
-    const entries = top.get("prekeys") as readonly ReadonlyMap<string, unknown>[];
+    const top = exactMap(decodeTop(bytes, deps), BUNDLE_KEYS);
+    unixS(top.get("published_at"));
+    const entries = top.get("prekeys") as readonly unknown[];
+    if (entries.length > deps.bundleLimits.maxPrekeys) {
+        malformed();
+    }
+    let previousId = -1;
+    const prekeys = entries.map((value) => {
+        const e = exactMap(value, ENTRY_KEYS);
+        const id = e.get("id") as number;
+        if (id <= previousId) {
+            malformed();
+        }
+        previousId = id;
+        return {
+            id,
+            pub: e.get("pub") as Bytes,
+            notAfter: unixS(e.get("not_after")),
+            sig: bytesOf(e.get("sig"), 64),
+        };
+    });
     return {
         instanceId: top.get("instance_id") as string,
         token: top.get("token") as string,
-        ikPub: top.get("IK_pub") as Bytes,
-        prekeys: entries.map((e) => ({
-            id: e.get("id") as number,
-            pub: e.get("pub") as Bytes,
-            notAfter: e.get("not_after") as number,
-            sig: e.get("sig") as Bytes,
-        })),
+        ikPub: bytesOf(top.get("IK_pub"), 32),
+        prekeys,
     };
 }
 
