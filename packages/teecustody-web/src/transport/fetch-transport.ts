@@ -124,6 +124,37 @@ async function discard(response: Response): Promise<void> {
     await response.body?.cancel().then(ignore, ignore);
 }
 
+async function readBounded(response: Response, limit: number): Promise<Uint8Array> {
+    if (Number(response.headers.get("Content-Length")) > limit) {
+        await discard(response);
+        throw invalidResponse();
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    if (response.body !== null) {
+        const reader = response.body.getReader();
+        for (;;) {
+            const step = await reader.read();
+            if (step.done) {
+                break;
+            }
+            total += step.value.byteLength;
+            if (total > limit) {
+                await reader.cancel().then(ignore, ignore);
+                throw invalidResponse();
+            }
+            chunks.push(step.value);
+        }
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return bytes;
+}
+
 function exactObject(value: unknown, keys: readonly string[]): Json {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw invalidResponse();
@@ -163,10 +194,12 @@ function base64Url(value: unknown): Uint8Array {
 export class FetchTransport implements Transport {
     readonly #base: string;
     readonly #fetch: FetchFn;
+    readonly #maxResponseBytes: number;
 
     // TypeError("INVALID_CONFIG")
     constructor(options: FetchTransportOptions) {
         this.#base = options.baseUrl;
+        this.#maxResponseBytes = options.maxResponseBytes;
         this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     }
 
@@ -236,6 +269,6 @@ export class FetchTransport implements Transport {
             await discard(response);
             throw new CapabilityError(STATUS_CODES.get(response.status) ?? "INTERNAL");
         }
-        return parseStrictJson(new Uint8Array(await response.arrayBuffer()));
+        return parseStrictJson(await readBounded(response, this.#maxResponseBytes));
     }
 }

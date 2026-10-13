@@ -303,7 +303,10 @@ function withFields(response: Response, fields: Record<string, unknown>): Respon
     return response;
 }
 
-function trackedBody(text: string): { stream: ReadableStream<Uint8Array>; cancelled: () => boolean } {
+function trackedBody(text: string): {
+    stream: ReadableStream<Uint8Array>;
+    cancelled: () => boolean;
+} {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -392,5 +395,76 @@ describe("FetchTransport criterion 4: status mapping; redirects are refused, nev
         expect(await codeOf(transport.listBundles())).toBe("INVALID_RESPONSE");
         expect(failed.cancelled()).toBe(true);
         expect(moved.cancelled()).toBe(true);
+    });
+});
+
+function endlessBody(chunk: Uint8Array): {
+    stream: ReadableStream<Uint8Array>;
+    pulls: () => number;
+    cancelled: () => boolean;
+} {
+    let pulls = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+        {
+            pull(controller) {
+                pulls += 1;
+                controller.enqueue(chunk.slice());
+            },
+            cancel() {
+                cancelled = true;
+            },
+        },
+        { highWaterMark: 0 },
+    );
+    return { stream, pulls: () => pulls, cancelled: () => cancelled };
+}
+
+describe("FetchTransport criterion 5: response bodies are bounded while streaming", () => {
+    it("cancels a streamed body as soon as it crosses maxResponseBytes", async () => {
+        const body = endlessBody(new TextEncoder().encode('{"bundles":[]}      '));
+        const { fetch } = spy(new Response(body.stream, { status: 200 }));
+        const transport = make(fetch, { maxResponseBytes: 50 });
+        expect(await codeOf(transport.listBundles())).toBe("INVALID_RESPONSE");
+        expect(body.cancelled()).toBe(true);
+        expect(body.pulls()).toBe(3);
+    });
+
+    it("refuses a declared Content-Length above the limit before reading", async () => {
+        const body = endlessBody(new Uint8Array(1));
+        const response = new Response(body.stream, {
+            status: 200,
+            headers: { "Content-Length": "51" },
+        });
+        const { fetch } = spy(response);
+        expect(await codeOf(make(fetch, { maxResponseBytes: 50 }).listBundles())).toBe(
+            "INVALID_RESPONSE",
+        );
+        expect(body.pulls()).toBe(0);
+        expect(body.cancelled()).toBe(true);
+    });
+
+    it("accepts a body of exactly maxResponseBytes, whatever Content-Length says if not above", async () => {
+        const text = '{"bundles":[]}';
+        const { fetch } = spy(
+            new Response(text, { status: 200, headers: { "Content-Length": String(text.length) } }),
+            new Response(text, { status: 200, headers: { "Content-Length": "junk" } }),
+        );
+        const transport = make(fetch, { maxResponseBytes: text.length });
+        expect(await transport.listBundles()).toEqual([]);
+        expect(await transport.listBundles()).toEqual([]);
+    });
+
+    it("refuses a body one byte over the limit without a Content-Length", async () => {
+        const text = '{"bundles":[]} ';
+        const { fetch } = spy(new Response(text, { status: 200 }));
+        expect(await codeOf(make(fetch, { maxResponseBytes: text.length - 1 }).listBundles())).toBe(
+            "INVALID_RESPONSE",
+        );
+    });
+
+    it("treats a 200 with no body as an invalid response", async () => {
+        const { fetch } = spy(new Response(null, { status: 200 }));
+        expect(await codeOf(make(fetch).listBundles())).toBe("INVALID_RESPONSE");
     });
 });
