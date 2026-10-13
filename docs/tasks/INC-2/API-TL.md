@@ -241,7 +241,8 @@ Changing anything below is a contract amendment.
     `pnpm --filter @teecustody/web exec node dist/profile/bin.js check-discovery --profile
     test/fixtures/binding-check-production-profile.json --probe-cors https://ci.teecustody.invalid`.
   - Reason (CI-2-5): pnpm does not link a workspace package's own `bin` for `pnpm --filter <pkg> exec`.
-    Verified with pnpm 11.5.0: `Command "teecustody-profile" not found`. §16.6's run line cannot work as written.
+    Verified with pnpm 11.5.0: `Command "teecustody-profile" not found`. The Architect adopted this in §16.6 on
+    2026-10-13.
   - Hosts that install `@teecustody/web` get the `teecustody-profile` bin normally.
 - **TL-11 merge unit MU-1** (INC-2-API §16.10). T-21, T-33, T-34 and T-36 merge as one unit:
   - T-34's branch is created from the merge of T-21's and T-33's branches, and T-36 rebases onto it.

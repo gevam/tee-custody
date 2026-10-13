@@ -21,8 +21,8 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | Id | Issue | Blocking | Proposal |
 |---|---|---|---|
 | CI-2-1 (resolved: D-043) | Browser CORS on discovery/JWKS. Production discovery sends no CORS. | — | Resolved: pinned `jwks_uri`, no runtime discovery (D-043, ADR 0012, INC-2-API §16). (a) `--cors-origin` adopted (TL-8). |
-| **CI-2-4** | V-2.7 records that Google's JWKS **echoes** the request `Origin` (with `Vary: Origin`), and that its preflight answers 200 with a broad `Allow-Methods` and `Max-Age`. INC-2-API §16.3 fixes `Access-Control-Allow-Origin: *` with a 204 preflight, and it says to stop if V-2.7 is not `*`. | **Yes**: T-21's start, and therefore MU-1 and everything after it | Architect rules before T-21 starts. Tech Lead recommendation: keep `*`. For the credential-less simple GETs every client makes (§16.8), `*` and an echo behave identically. `*` avoids origin-reflection logic in the simulator, and the CLI probe accepts either value (§16.5). If an echo is chosen, the Tech Lead amends T-21, T-31 (N3 line) and T-32 first. |
-| CI-2-5 (resolved by TL, for the Architect's text) | §16.6's run line `pnpm --filter @teecustody/web exec teecustody-profile …` cannot work: pnpm does not link a workspace package's own `bin` (verified with pnpm 11.5.0). | No | TL-10: `build:cli` plus `pnpm --filter @teecustody/web exec node dist/profile/bin.js check-discovery …`. The Architect aligns the §16.6 text. |
+| CI-2-4 (resolved 2026-10-13, Architect; Security Architect concurs) | V-2.7: Google's JWKS echoes `Origin`. | — | INC-2-API §16.3: an exact echo of a valid `Origin`, always `Vary: Origin`, never `Allow-Credentials`, preflight 200. T-21 A1, T-31 A2 and the contract test are amended; T-21 is unblocked. |
+| CI-2-5 (resolved: the Architect adopted TL-10 in §16.6) | §16.6's `exec teecustody-profile` run line cannot work: pnpm does not link a package's own bin. | — | §16.6 steps 2–3 = TL-10. T-35 A1. |
 | CI-2-6 (resolved by TL) | `tc-no-tls-override` bans the text `NODE_TLS_REJECT_UNAUTHORIZED` in every `.ts` file, and `tc-no-verification-skip` matches `INSECURE_TLS_ENVIRONMENT`. §16.5 requires both in `cli.ts`. | No | TL-13: exact narrowings in T-35 (D-046 pattern), verified with semgrep 1.178.0. |
 | CI-2-7 (resolved by TL) | The §16.2 rule "T-16/T-26 profiles only from `buildFixture`" cannot be met from Core package tests, which cannot import `tests/support`. | No | TL-12: those tests module-mock attestation and never write profiles. Real verification is covered by the contract tests and vectors. |
 | CI-2-8 (resolved by TL) | T-08/T-21 conflict on sim `tests/test_api_surface.py` in Wave 1. A new pins file alone does not resolve it, because the existing exact-list test in that file must change once the sim requires `pyhpke`. | No | T-08 A1: the sim `pyhpke` pin moves to T-25 (Wave 2), the sim's first `pyhpke` importer. The version and hashes are unchanged. |
@@ -42,12 +42,10 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
    - T-30 (`spec/vectors/channel/suite.cbor`);
    - T-34 (`spec/vectors/attestation/suite.cbor`, the harness and the README; INC-2-API §15 Q11);
    - T-35 (the inert production fixture profile, Q11).
-4. **Architect ruling on CI-2-4** (V-2.7 origin echo vs `*`). T-21 starts only after it. The Architect also
-   aligns the §16.6 run line (CI-2-5) and the §11 `httpx` → `httpx2` row (D-046).
-4a. **Security Architect sign-off of T-17's C6 follow-up section** (ADR 0011, items 1–4 in T-17). T-17's lock change
-   and its criteria 4, 5 and 7–10, then T-27's C3a constants and criterion 6, wait for it. The Tech Lead
-   inferred items 1–4 from the sign-off's §2(c), the C7 guard quote and the C3a list. The Security Architect
-   confirms them, or adds to them, when signing.
+4. **Architect rulings CI-2-4 and CI-2-5, and the §11 `httpx2` row:** done (2026-10-13). T-21 is unblocked.
+4a. **Security Architect sign-off of T-17's C6 follow-up section** (ADR 0011, items 1–5 in T-17, as
+   corrected by the Security Architect after D-048). T-17's lock change and its criteria 4, 5 and 7–10, then T-27's
+   C3a constants and criterion 6, wait for it.
 4b. **Merge unit MU-1** (TL-11): T-21, T-33, T-34 and T-36 merge consecutively after one full-suite run on the
    combined branch, and after the human approves T-34. When MU-1 lands, the Architect updates the traceability
    §6.1 row (D-047), and T-33 records DEBT-2.
@@ -91,7 +89,7 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 1 | T-18 | `FetchFetcher` (B-06); no `headers` (§16.8) | STRONG | T-02 | |
 | 1 | T-19 | `FetchTransport` | STRONG | T-02 | |
 | 1 | T-20 | `PrfShareVault`; no capability hints (§8.4 a–d) | STRONG | T-02, V-02 | |
-| 1 | T-21 | Simulator Google parity, attacker path, v2 profile/state, rows 38–39 (A-8; L-1) — **MU-1** | STRONG | V-02, CI-2-4 ruling | |
+| 1 | T-21 | Simulator Google parity (Origin echo), attacker path, v2 profile/state, rows 38–39 (A-8; L-1) — **MU-1** | STRONG | V-02, CI-2-4 ruling (done) | |
 | 1 | T-33 | Core trust profile v2 + pinned `jwks_uri` (A-6, A-7, A-9); semgrep `tc-core-no-oidc-discovery`; DEBT-2 — **MU-1** | STRONG | T-02, T-05 | |
 | 1 | T-36 | QA: INC-1 acceptance tests for D-043 — **MU-1** | MID (QA) | INC-2-API §16 | |
 | 1 (MU-1 tail) | T-34 | Regenerate attestation vectors v2 + rows 38–39 — **MU-1** | FAST | T-21, T-33 (DONE; combined branch), T-03 | **YES** — `spec/vectors` |
@@ -121,7 +119,7 @@ The largest wave is Wave 1.
 Critical paths:
 - T-04 → T-07 → T-23 → T-28 → T-31 → T-32.
 - V-01 sign-off → T-08 → T-22 → T-28.
-- CI-2-4 → T-21 → MU-1 (with T-34 and human approval) → T-25 → T-30, and MU-1 → T-35 → T-31.
+- T-21 → MU-1 (with T-34 and human approval) → T-25 → T-30, and MU-1 → T-35 → T-31.
 - SA C6 follow-up sign-off → T-17 lock change → T-27 → T-35.
 
 Early starts are safe on these edges only:
@@ -223,7 +221,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | Q3 expired pre-keys after all signatures | T-16, T-25 (`expired_prekey_sig_corrupted`) |
 | Q6, Q7, Q8 (INC-3) | T-06 (B-25..B-27) |
 | ADR 0011 C1–C7 | V-01 (C1–C4, C6, C7 evidence), T-08 (C1, C4, C5 Python), T-17 (C3–C5 web), T-05 (C2, C3, C5 rules), T-27 (C7) |
-| ADR 0011 C3a/C7a (D-045) | T-17 (C7a.3, C3a.3, C6 follow-up evidence items 1–4), T-27 (C7a.1, C7a.2, C3a.1, C3a.2), INC-5 README (C7a.4, Orchestrator action 9) |
+| ADR 0011 C3a/C7a (D-045) | T-17 (C7a.3, C3a.3, C6 follow-up evidence items 1–5), T-27 (C7a.1, C7a.2, C3a.1, C3a.2), INC-5 README (C7a.4, Orchestrator action 9) |
 | D-043 / ADR 0012 (INC-2-API §16) | T-33 (rules 1–2, C1–C7), T-21 (rule 5, S1–S6, L-1), T-34 (rule 6), T-35 (rules 3–4, D1–D4), T-32 (rule 7, B1–B3), T-31 (N1–N3), T-18 (§16.8), T-25/T-30 (channel suite v2), T-36 (acceptance) |
 | D-047 L-1 (attacker key) and DEBT-2 (`maxDiscoveryBytes`, expires INC-5) | T-21; T-33 |
 | V-02 rulings 2026-10-12 (§8.4 capability hints; §9.3 favicon/`img-src 'self'`) | T-20 (criteria 13–16), T-32 |
@@ -266,7 +264,7 @@ TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test s
 | Condition | Status |
 |---|---|
 | No two tasks in the same wave touch the same file | Met. The owned-file sets of all 38 contracts, brace-expanded, were checked per wave; the only W1 conflict (sim `test_api_surface.py`) is resolved by T-08 A1 |
-| Inputs exist or come from earlier waves | Met, with the documented exception: T-34 is the MU-1 tail built on T-21 and T-33 (TL-11). Gates: CI-2-4 before T-21; SA C6 follow-up sign-off before T-17's lock change and T-27's constants |
+| Inputs exist or come from earlier waves | Met, with the documented exception: T-34 is the MU-1 tail built on T-21 and T-33 (TL-11). Gates: CI-2-4 (resolved); SA C6 follow-up sign-off before T-17's lock change and T-27's constants |
 | Contract test stubs for every new boundary | Met. `test_profile_cli_contract.py` (new; red until T-35). The changed boundaries are amended inside MU-1 to the exact §16.9 lists: trust profile and verifier (T-33), sim OIDC and CLI (T-21), attestation vectors (T-34) |
 | New scanner or static rules in `lint_command` in the same merge | Met. Every new semgrep rule lands in `.semgrep.yml` (already in `lint_command`) in the same merge as its code. No `framework.yaml` change (Orchestrator action 8) |
 | Frozen-type ownership (D-038) | Met (table above) |
@@ -285,8 +283,7 @@ TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test s
 
 ## G4 risks
 
-- **R-1 CI-2-1** is resolved by D-043. **R-1a CI-2-4 (origin echo vs `*`)** now blocks T-21, and through it MU-1,
-  T-25, T-30, T-31, T-32 and T-35. It needs an Architect ruling before Wave 1 batch B1 starts T-21.
+- **R-1 CI-2-1** is resolved by D-043, and **R-1a CI-2-4** is resolved (exact Origin echo, 2026-10-13).
 - **R-1b MU-1 coordination.** Four branches, one of them human-gated (T-34), must be green together. A defect
   in any one of them holds back all four. Keep T-34 FAST and mechanical, and report BLOCKED instead of editing.
 - **R-1c T-17 hold point.** The `@hpke/core` provenance gap (Medium) must be explained before the lock change.

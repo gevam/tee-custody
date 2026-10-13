@@ -162,7 +162,7 @@ def test_simulator_binding_with_cors_probe_succeeds(
     assert match is not None
     assert match.group(2) == simulator.jwks_uri
     jwks_acao, _, discovery_acao = probe.partition(" discovery_acao=")
-    assert jwks_acao in {"*", "http://127.0.0.1:1"}  # §16.5: `*` or the probe origin
+    assert jwks_acao == "http://127.0.0.1:1"  # CI-2-4: the simulator echoes the origin (N3)
     assert discovery_acao == "absent"  # Google parity (CI-2-1, V-2.7)
 
 
