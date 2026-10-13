@@ -39,7 +39,7 @@ class Secret:
 
     @classmethod
     def random(cls, length: int) -> "Secret":
-        if not 1 <= length <= _MAX_LENGTH:
+        if type(length) is not int or not 1 <= length <= _MAX_LENGTH:
             raise SecretError(SecretErrorCode.INVALID_LENGTH)
         return cls(os.urandom(length))
 
@@ -96,6 +96,9 @@ class Secret:
         raise SecretError(SecretErrorCode.FORBIDDEN)
 
     def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
+        raise SecretError(SecretErrorCode.FORBIDDEN)
+
+    def __getstate__(self) -> NoReturn:
         raise SecretError(SecretErrorCode.FORBIDDEN)
 
     def __iter__(self) -> NoReturn:

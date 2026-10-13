@@ -44,6 +44,7 @@ FORBIDDEN: dict[str, Callable[[Secret], object]] = {
     "slice": lambda s: s[0:4],
     "reduce": lambda s: s.__reduce__(),
     "reduce_ex": lambda s: s.__reduce_ex__(4),
+    "getstate": lambda s: s.__getstate__(),
 }
 
 
@@ -100,6 +101,32 @@ def test_equals_uses_constant_time_compare(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert Secret(KEY).equals(b"other")
     assert len(calls) == 1
+
+
+def test_equals_secret_uses_constant_time_compare(monkeypatch: pytest.MonkeyPatch) -> None:
+    import teecustody.secrets as module
+
+    calls: list[tuple[object, object]] = []
+
+    def recording(a: bytes, b: bytes) -> bool:
+        calls.append((bytes(a), bytes(b)))
+        return True
+
+    monkeypatch.setattr(module.hmac, "compare_digest", recording)
+
+    assert Secret(KEY).equals(Secret(b"other"))
+    assert calls == [(KEY, b"other")]
+
+
+def test_bytearray_input_is_copied_and_wipe_leaves_the_source_alone() -> None:
+    source = bytearray(KEY)
+    s = Secret(source)
+
+    source[0] = ord("j")
+    assert s.reveal() == KEY
+
+    s.wipe()
+    assert source == bytearray(b"j" + KEY[1:])
 
 
 def test_secret_error_carries_only_its_code() -> None:
@@ -187,7 +214,7 @@ def test_length_bounds_are_inclusive(length: int) -> None:
     assert len(Secret.random(length)) == length
 
 
-@pytest.mark.parametrize("length", [0, -1, 65537])
+@pytest.mark.parametrize("length", [0, -1, 65537, True, False, 32.0])
 def test_random_length_outside_bounds_is_rejected(length: int) -> None:
     with pytest.raises(SecretError) as excinfo:
         Secret.random(length)
@@ -201,3 +228,20 @@ def test_random_secrets_differ() -> None:
     assert isinstance(first, Secret)
     assert len(first) == 32
     assert not first.equals(second)
+
+
+def test_random_draws_from_os_urandom(monkeypatch: pytest.MonkeyPatch) -> None:
+    import teecustody.secrets as module
+
+    requested: list[int] = []
+
+    def recording(n: int) -> bytes:
+        requested.append(n)
+        return b"\x5a" * n
+
+    monkeypatch.setattr(module.os, "urandom", recording)
+
+    s = Secret.random(32)
+
+    assert requested == [32]
+    assert s.reveal() == b"\x5a" * 32
