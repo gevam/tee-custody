@@ -465,6 +465,7 @@ describe("verifyBundle", () => {
             ["a missing top-level key", (m) => m.delete("token")],
             ["a missing entry key", (m) => entriesOf(m)[0]?.delete("sig")],
             ["an entry that is not a map", (m) => m.set("prekeys", [1])],
+            ["a null entry", (m) => m.set("prekeys", [null])],
             ["prekeys not an array", (m) => m.set("prekeys", new Map())],
             ["no prekeys", (m) => m.set("prekeys", [])],
             ["an upper-case instance_id", (m) => m.set("instance_id", INSTANCE.toUpperCase())],
@@ -529,6 +530,14 @@ describe("verifyBundle", () => {
                 verifyBytes(await bundleBytes({ ik, entries: many(257) }), deps),
                 "MALFORMED",
             );
+        });
+
+        it.each([
+            ["null", null],
+            ["an array", []],
+            ["a byte string", new Uint8Array(4)],
+        ])("a top-level %s is MALFORMED", async (_name, value) => {
+            await expectBundleError(verifyBytes(encodeCanonical(value)), "MALFORMED");
         });
 
         it("invalid decode limits are MALFORMED", async () => {

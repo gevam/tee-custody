@@ -88,8 +88,16 @@ function byteMutation(input: Uint8Array, pick: Pick): Uint8Array {
 
 function valueMutation(base: BundleMap, pick: Pick): Uint8Array {
     const map = new Map(base);
-    const prekeys = (map.get("prekeys") as BundleMap[]).map((e) => new Map(e));
+    const prekeys: CanonicalValue[] = (map.get("prekeys") as BundleMap[]).map((e) => new Map(e));
     map.set("prekeys", prekeys);
+    if (pick(5) === 0) {
+        // replace a whole entry, or the bundle itself, with a value of another type
+        if (pick(4) === 0) {
+            return encodeCanonical(randomValue(pick));
+        }
+        prekeys[pick(prekeys.length)] = randomValue(pick);
+        return encodeCanonical(map);
+    }
     const target = pick(2) === 0 ? map : (prekeys[pick(prekeys.length)] as BundleMap);
     const keys = [...target.keys()];
     if (pick(4) === 0) {
