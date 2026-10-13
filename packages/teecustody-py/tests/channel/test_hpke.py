@@ -3,12 +3,15 @@
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from pyhpke import AEADId, CipherSuite, KDFId, KEMId
+from pyhpke.recipient_context import RecipientContext
 
+from teecustody.channel import hpke as hpke_module
 from teecustody.channel.hpke import HpkeError, HpkeErrorCode, generate_keypair, open_base
 from teecustody.secrets import Secret
 
@@ -186,3 +189,34 @@ def test_open_base_leaves_the_private_key_to_the_caller() -> None:
         open_base(private, bytes(32), INFO, AAD, sealed.ct)
 
     assert not private.wiped
+
+
+# ---------------------------------------------------------------- review round 1 (Low, D-031)
+class _RecordingSecret(Secret):
+    __slots__ = ()
+    built: ClassVar[list[Secret]] = []
+
+    def __init__(self, data: bytes | bytearray | memoryview) -> None:
+        super().__init__(data)
+        _RecordingSecret.built.append(self)
+
+
+def test_export_failure_after_open_wipes_the_plaintext_and_is_open_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private, public = generate_keypair()
+    sealed = _seal(public)
+
+    def failing_export(self: object, exporter_context: bytes, length: int) -> bytes:
+        raise RuntimeError("export failed")
+
+    _RecordingSecret.built = []
+    monkeypatch.setattr(hpke_module, "Secret", _RecordingSecret)
+    monkeypatch.setattr(RecipientContext, "export", failing_export)
+
+    with pytest.raises(HpkeError) as err:
+        open_base(private, sealed.enc, INFO, AAD, sealed.ct)
+
+    _assert_open_failed(err)
+    assert len(_RecordingSecret.built) == 1
+    assert _RecordingSecret.built[0].wiped

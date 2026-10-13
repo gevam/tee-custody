@@ -62,17 +62,19 @@ def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: byte
     """
     if len(private_key) != _PRIVATE_KEY_LENGTH:  # a wiped Secret has length 0
         raise HpkeError(HpkeErrorCode.INVALID_KEY) from None
+    built: list[Secret] = []
     try:
         recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
         context = _SUITE.create_recipient_context(enc, recipient_key, info)
-        opened = OpenedHpke(
-            plaintext=Secret(context.open(ct, aad=aad)),
-            sk_c2t=Secret(context.export(EXPORT_C2T, EXPORT_LENGTH)),
-            sk_t2c=Secret(context.export(EXPORT_T2C, EXPORT_LENGTH)),
-        )
+        built.append(Secret(context.open(ct, aad=aad)))
+        for label in (EXPORT_C2T, EXPORT_T2C):
+            built.append(Secret(context.export(label, EXPORT_LENGTH)))
     except Exception:  # noqa: BLE001 - fail closed on anything the HPKE library raises
-        opened = None
-    if opened is None:
+        for secret in built:
+            secret.wipe()
+        built.clear()
+    if not built:
         # Raised outside the handler so neither __cause__ nor __context__ carries the library error.
         raise HpkeError(HpkeErrorCode.OPEN_FAILED) from None
-    return opened
+    plaintext, sk_c2t, sk_t2c = built
+    return OpenedHpke(plaintext=plaintext, sk_c2t=sk_c2t, sk_t2c=sk_t2c)
