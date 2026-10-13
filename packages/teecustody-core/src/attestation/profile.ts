@@ -13,12 +13,20 @@ import {
 
 const GOOGLE_ISSUER_HOST = "confidentialcomputing.googleapis.com";
 const GOOGLE_ISSUER = `https://${GOOGLE_ISSUER_HOST}`; // F-07
+// F-07, re-confirmed 2026-10-13. A change needs a Core patch release (ADR 0012, D-047 Q9a).
+const GOOGLE_JWKS_URI =
+    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com";
 // FACTS F-09 as amended: confidential hardware only (no GCP_SHIELDED_VM, no unprefixed INTEL_TDX).
 const PRODUCTION_HWMODELS: ReadonlySet<string> = new Set([
     "GCP_AMD_SEV",
     "GCP_AMD_SEV_ES",
     "GCP_INTEL_TDX",
 ]);
+// ADR 0012 rule 1: development keys come only from the simulator on this host, at exactly this path.
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const FETCH_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:"]);
+const DEV_JWKS_PATH = "/jwks";
+const MAX_JWKS_URI_LENGTH = 2048;
 const PROFILE_KEYS = [
     "profile_version",
     "profile_kind",
@@ -202,8 +210,39 @@ function readIssuer(value: unknown, kind: ProfileKind): string {
     return value;
 }
 
-function readJwksUri(value: unknown): string {
-    return readString(value, "jwks_uri");
+// INC-2-API §16.1 step 5. Production compares exact strings with no parsing; development requires a
+// canonical loopback URL, so the string the Fetcher receives is the one the profile names.
+function readJwksUri(value: unknown, kind: ProfileKind): string {
+    const text = readString(value, "jwks_uri");
+    if (text.length === 0 || text.length > MAX_JWKS_URI_LENGTH) {
+        throw fail("jwks_uri");
+    }
+    if (kind === "production") {
+        if (text !== GOOGLE_JWKS_URI) {
+            throw fail("jwks_uri");
+        }
+        return text;
+    }
+    if (text.includes("?") || text.includes("#")) {
+        throw fail("jwks_uri");
+    }
+    let url: URL;
+    try {
+        url = new URL(text);
+    } catch {
+        throw fail("jwks_uri");
+    }
+    if (
+        url.href !== text ||
+        url.username !== "" ||
+        url.password !== "" ||
+        !FETCH_PROTOCOLS.has(url.protocol) ||
+        !LOOPBACK_HOSTS.has(url.hostname) ||
+        url.pathname !== DEV_JWKS_PATH
+    ) {
+        throw fail("jwks_uri");
+    }
+    return text;
 }
 
 export function parseTrustProfile(input: unknown): TrustProfile {
@@ -218,7 +257,7 @@ export function parseTrustProfile(input: unknown): TrustProfile {
         throw fail("token_type", "UNSUPPORTED_TOKEN_TYPE");
     }
     const issuer = readIssuer(source.issuer, kind);
-    const jwksUri = readJwksUri(source.jwks_uri);
+    const jwksUri = readJwksUri(source.jwks_uri, kind);
     const audience = readString(source.expected_audience, "expected_audience");
     if (audience.length === 0 || audience.length > MAX_AUDIENCE_LENGTH) {
         throw fail("expected_audience");

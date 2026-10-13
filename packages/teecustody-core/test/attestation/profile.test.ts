@@ -695,3 +695,94 @@ describe("the production jwks_uri constant is canonical (T-33 C5)", () => {
         expect(new URL(pinned).href).toBe(pinned);
     });
 });
+
+// T-33 C3 (INC-2-API §16.1 step 5, §16.9 C3; ADR 0012 rule 1): jwks_uri is an exact, canonical URL string.
+const NOT_A_STRING_OR_TOO_LONG: readonly (readonly [string, unknown])[] = [
+    ["empty", ""],
+    ["a number", 42],
+    ["null", null],
+    ["an array", [GOOGLE_JWKS_URI]],
+    ["an object", { href: GOOGLE_JWKS_URI }],
+    ["2049 characters", `${GOOGLE_JWKS_URI}${"a".repeat(2049 - GOOGLE_JWKS_URI.length)}`],
+];
+
+const PRODUCTION_JWKS_URI_VARIANTS: readonly (readonly [string, unknown])[] = [
+    [
+        "another service account path",
+        "https://www.googleapis.com/service_accounts/v1/metadata/jwk/other@confidentialspace-sign.iam.gserviceaccount.com",
+    ],
+    ["a trailing /", `${GOOGLE_JWKS_URI}/`],
+    ["an empty query", `${GOOGLE_JWKS_URI}?`],
+    ["a query", `${GOOGLE_JWKS_URI}?x=1`],
+    ["an empty fragment", `${GOOGLE_JWKS_URI}#`],
+    ["a fragment", `${GOOGLE_JWKS_URI}#x`],
+    ["host WWW.googleapis.com", GOOGLE_JWKS_URI.replace("www.", "WWW.")],
+    ["path segment /Service_accounts/", GOOGLE_JWKS_URI.replace("/service_", "/Service_")],
+    ["scheme http:", GOOGLE_JWKS_URI.replace("https:", "http:")],
+    ["an explicit :443", GOOGLE_JWKS_URI.replace(".com/", ".com:443/")],
+    ["userinfo", GOOGLE_JWKS_URI.replace("https://", "https://u:p@")],
+    ["a username only", GOOGLE_JWKS_URI.replace("https://", "https://u@")],
+    ["%40 in place of @", GOOGLE_JWKS_URI.replace("@", "%40")],
+    ["a leading space", ` ${GOOGLE_JWKS_URI}`],
+    ["a trailing space", `${GOOGLE_JWKS_URI} `],
+    ["a trailing newline", `${GOOGLE_JWKS_URI}\n`],
+    ["a leading tab", `\t${GOOGLE_JWKS_URI}`],
+    ["the development loopback URI", DEV_JWKS_URI],
+    ...NOT_A_STRING_OR_TOO_LONG,
+];
+
+const DEVELOPMENT_JWKS_URI_VARIANTS: readonly (readonly [string, unknown])[] = [
+    ["a non-loopback IPv4 host", "http://10.0.0.1:8791/jwks"],
+    ["a non-loopback name", "http://sim.example.test:8791/jwks"],
+    ["a loopback-prefixed name", "http://127.0.0.1.evil.test:8791/jwks"],
+    ["a localhost-prefixed name", "http://localhost.evil.test:8791/jwks"],
+    ["the production URI", GOOGLE_JWKS_URI],
+    ["path /jwks/", "http://127.0.0.1:8791/jwks/"],
+    ["path /JWKS", "http://127.0.0.1:8791/JWKS"],
+    ["path /attacker/jwks", "http://127.0.0.1:8791/attacker/jwks"],
+    ["path //jwks", "http://127.0.0.1:8791//jwks"],
+    ["path /", "http://127.0.0.1:8791/"],
+    ["no path", "http://127.0.0.1:8791"],
+    ["http:// with an explicit :80", "http://127.0.0.1:80/jwks"],
+    ["https:// with an explicit :443", "https://127.0.0.1:443/jwks"],
+    ["a port with a leading zero", "http://127.0.0.1:08791/jwks"],
+    ["host 127.1 (href differs)", "http://127.1:8791/jwks"],
+    ["host 0x7f.1", "http://0x7f.1:8791/jwks"],
+    ["host 2130706433", "http://2130706433:8791/jwks"],
+    ["host [0:0:0:0:0:0:0:1]", "http://[0:0:0:0:0:0:0:1]:8791/jwks"],
+    ["host LOCALHOST", "http://LOCALHOST:8791/jwks"],
+    ["scheme HTTP:", "HTTP://127.0.0.1:8791/jwks"],
+    ["dot segments", "http://127.0.0.1:8791/x/../jwks"],
+    ["an empty query", "http://127.0.0.1:8791/jwks?"],
+    ["a query", "http://127.0.0.1:8791/jwks?x=1"],
+    ["an empty fragment", "http://127.0.0.1:8791/jwks#"],
+    ["a fragment", "http://127.0.0.1:8791/jwks#x"],
+    ["userinfo", "http://u:p@127.0.0.1:8791/jwks"],
+    ["a username only", "http://u@127.0.0.1:8791/jwks"],
+    ["a password only", "http://:p@127.0.0.1:8791/jwks"],
+    ["scheme ftp:", "ftp://127.0.0.1:8791/jwks"],
+    ["scheme ws:", "ws://127.0.0.1:8791/jwks"],
+    ["scheme file:", "file://127.0.0.1/jwks"],
+    ["not a URL", "/jwks"],
+    ["a leading space", ` ${DEV_JWKS_URI}`],
+    ["a trailing space", `${DEV_JWKS_URI} `],
+    ...NOT_A_STRING_OR_TOO_LONG,
+];
+
+describe("parseTrustProfile pins a canonical jwks_uri (T-33 C3)", () => {
+    it.each(PRODUCTION_JWKS_URI_VARIANTS)("production: rejects %s", (_name, jwksUri) => {
+        const error = profileError({ ...productionJson(), jwks_uri: jwksUri });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "jwks_uri"]);
+        expect(error.message).toBe("jwks_uri: INVALID_PROFILE");
+    });
+
+    it.each(DEVELOPMENT_JWKS_URI_VARIANTS)("development: rejects %s", (_name, jwksUri) => {
+        const error = profileError({ ...developmentJson(), jwks_uri: jwksUri });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "jwks_uri"]);
+        expect(error.message).toBe("jwks_uri: INVALID_PROFILE");
+    });
+
+    it("production: accepts exactly the F-07 constant", () => {
+        expect(parseTrustProfile(productionJson()).jwks_uri).toBe(GOOGLE_JWKS_URI);
+    });
+});
