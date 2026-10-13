@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
 from teecustody.secrets import Secret
 
 KEM_ID: Final = 0x0020
@@ -34,7 +36,9 @@ class HpkeError(Exception):
 
 
 def generate_keypair() -> tuple[Secret, bytes]:
-    raise NotImplementedError("T-08")
+    """Fresh X25519 key pair as (raw private key, raw public key)."""
+    key = X25519PrivateKey.generate()
+    return Secret(key.private_bytes_raw()), key.public_key().public_bytes_raw()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
