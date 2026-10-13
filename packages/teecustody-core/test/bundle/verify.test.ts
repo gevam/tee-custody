@@ -2,6 +2,7 @@
 // verifyAttestation is module-mocked (A1); bundles are signed with WebCrypto Ed25519 by ./support.ts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type * as TypesModule from "../../src/bundle/types.js";
 import {
     AttestationError,
     type AttestationCheckId,
@@ -40,6 +41,19 @@ import {
 } from "./support.js";
 
 vi.mock("../../src/attestation/verify.js", () => ({ verifyAttestation: vi.fn() }));
+
+// (12) Delegates to the real createVerifiedBundle and records the argument verifyBundle passed to it.
+const recorded = vi.hoisted(() => ({ args: [] as unknown[] }));
+vi.mock("../../src/bundle/types.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof TypesModule>();
+    return {
+        ...actual,
+        createVerifiedBundle: (f: Parameters<typeof actual.createVerifiedBundle>[0]) => {
+            recorded.args.push(f);
+            return actual.createVerifiedBundle(f);
+        },
+    };
+});
 
 const mockedVerifyAttestation = vi.mocked(verifyAttestation);
 const profile = {} as TrustProfile;
@@ -382,5 +396,20 @@ describe("verifyBundle", () => {
             const bytes = await bundleBytes({ ik, entries: standardEntries() });
             await expectBundleError(verifyBytes(bytes), "MALFORMED");
         });
+    });
+
+    it("(12) keeps no reference to the buffers it passed to createVerifiedBundle (A2)", async () => {
+        recorded.args.length = 0;
+        const bytes = await bundleBytes({ ik, entries: standardEntries() });
+        const vb = (await verifyBytes(bytes)) as VerifiedBundle;
+        expect(recorded.args).toHaveLength(1);
+        const arg = recorded.args[0] as Parameters<typeof TypesModule.createVerifiedBundle>[0];
+        const buffers = [arg.identityPublicKey, ...arg.prekeys.map((p) => p.publicKey)];
+        expect(buffers).toHaveLength(4);
+        for (const buffer of buffers) {
+            buffer.fill(0xee);
+        }
+        expect(vb.identityPublicKey).toEqual(ik.publicKey);
+        expect(vb.prekeys.map((p) => p.publicKey)).toEqual([pubFor(1), pubFor(5), pubFor(9)]);
     });
 });
