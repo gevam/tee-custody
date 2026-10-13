@@ -379,3 +379,16 @@ def test_a_clock_jump_skips_empty_intervals_and_keeps_them_contiguous() -> None:
         (START_MS, START_MS + INTERVAL_MS),
         (START_MS + 10 * INTERVAL_MS, START_MS + 11 * INTERVAL_MS),
     ]
+
+
+def test_a_retry_that_finds_its_record_already_written_raises_one_conflict_alert() -> None:
+    emitter, sink, _, _ = _make()
+    sink.faults = [*_unavailable(1), AppendResult.ALREADY_EXISTS]
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A, request_id=REQ)
+    emitter.tick()
+    [(_, conflict)] = sink.of(AuditClass.ALERT)
+    assert conflict.outcome == "AUDIT_WRITE_CONFLICT"
+    assert conflict.request_id == REQ
+    attempts = sink.attempts
+    emitter.tick()
+    assert sink.attempts == attempts
