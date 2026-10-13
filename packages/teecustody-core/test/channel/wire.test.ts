@@ -764,6 +764,22 @@ describe("criterion 6: decodeFrameResultPlaintext (SR-3, R-1)", () => {
         expectInvalidResponse(() => decode(body));
     });
 
+    it("rejects re encoded as a float (not canonical CBOR, so never a number)", () => {
+        // {"ok": true, "re": 1.5, "payload": null} with re as half float f9 3e00
+        const float = Uint8Array.of(
+            0xa3,
+            ...cbor.encodeCanonical("ok"),
+            0xf5,
+            ...cbor.encodeCanonical("re"),
+            0xf9,
+            0x3e,
+            0x00,
+            ...cbor.encodeCanonical("payload"),
+            0xf6,
+        );
+        expectInvalidResponse(() => decodeFrameResultPlaintext(float, PAYLOAD_LIMITS));
+    });
+
     it("rejects a plaintext that is not a map, not CBOR, or over the limits", () => {
         expectInvalidResponse(() =>
             decodeFrameResultPlaintext(cbor.encodeCanonical(1), PAYLOAD_LIMITS),
