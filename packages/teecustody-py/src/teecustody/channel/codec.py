@@ -7,7 +7,7 @@ function bodies belong to T-07.
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
 from teecustody import wire
 from teecustody.channel.ports import (
@@ -122,6 +122,57 @@ class OpenResultBody:
     error: str | None = None
 
 
+_U32_MAX: Final = 2**32 - 1
+_KEY_LEN: Final = 32  # enc, pub, IK_pub
+_ID_LEN: Final = 16  # request_id, session_id
+_CT_MIN: Final = 16
+_OPEN_CT_MAX: Final = 2048
+_FRAME_CT_MAX: Final = 32784  # frame request and both results
+_OPEN_REQUEST_KEYS: Final = frozenset({"kind", "aad", "enc", "ct"})
+_FRAME_REQUEST_KEYS: Final = frozenset({"kind", "aad", "ct"})
+_OPEN_AAD_KEYS: Final = frozenset(
+    {"proto", "client_id", "instance_id", "prekey_id", "request_id", "timestamp"}
+)
+_FRAME_AAD_KEYS: Final = frozenset({"session_id", "seq", "op"})
+
+
+# Checks shared by every encoder and decoder. Each raises ValueError("<FIELD>_RANGE"); `bool` is
+# never an `int` and patterns are applied with `fullmatch` only (R-7).
+def _uint(value: object, maximum: int, field: str) -> int:
+    if type(value) is not int or not 0 <= value <= maximum:
+        raise ValueError(f"{field}_RANGE")
+    return value
+
+
+def _bytes(value: object, field: str) -> bytes:
+    if type(value) is not bytes:
+        raise ValueError(f"{field}_RANGE")
+    return value
+
+
+def _sized_bytes(value: object, minimum: int, maximum: int, field: str) -> bytes:
+    if type(value) is not bytes or not minimum <= len(value) <= maximum:
+        raise ValueError(f"{field}_RANGE")
+    return value
+
+
+def _text(value: object, pattern: re.Pattern[str], field: str) -> str:
+    if type(value) is not str or pattern.fullmatch(value) is None:
+        raise ValueError(f"{field}_RANGE")
+    return value
+
+
+def _fields(value: CanonicalValue, keys: frozenset[str]) -> dict[str, CanonicalValue]:
+    """A decoded map with exactly `keys` (no unknown, no missing key)."""
+    if type(value) is not dict or value.keys() != keys:
+        raise ValueError("SCHEMA_RANGE")
+    return value
+
+
+def _kind(value: CanonicalValue) -> CanonicalValue:
+    return value.get("kind") if type(value) is dict else None
+
+
 def encode_bundle(b: PreKeyBundle) -> bytes:
     raise NotImplementedError("T-07")
 
@@ -137,7 +188,7 @@ def decode_request(
         raise EnvelopeError(EnvelopeErrorCode.TOO_LARGE)
     try:
         return _parse_request(body, limits)
-    except wire.WireError:
+    except (wire.WireError, ValueError):
         pass
     raise EnvelopeError(EnvelopeErrorCode.INVALID)
 
@@ -145,26 +196,47 @@ def decode_request(
 def _parse_request(
     body: bytes, limits: BoundaryLimits
 ) -> OpenRequestEnvelope | FrameRequestEnvelope:
-    envelope: Any = wire.decode(body, limits.envelope_decode)
-    aad_bytes = envelope["aad"]
-    aad: Any = wire.decode(aad_bytes, limits.aad_decode)
-    if envelope["kind"] == "open":
+    envelope = wire.decode(body, limits.envelope_decode)
+    kind = _kind(envelope)
+    if kind == "open":
+        fields = _fields(envelope, _OPEN_REQUEST_KEYS)
+        aad_bytes = _bytes(fields["aad"], "AAD")
         return OpenRequestEnvelope(
             aad_bytes=aad_bytes,
-            aad=OpenAad(
-                client_id=aad["client_id"],
-                instance_id=aad["instance_id"],
-                prekey_id=aad["prekey_id"],
-                request_id=aad["request_id"],
-                timestamp=aad["timestamp"],
-            ),
-            enc=envelope["enc"],
-            ct=envelope["ct"],
+            aad=_open_aad(wire.decode(aad_bytes, limits.aad_decode)),
+            enc=_sized_bytes(fields["enc"], _KEY_LEN, _KEY_LEN, "ENC"),
+            ct=_sized_bytes(fields["ct"], _CT_MIN, _OPEN_CT_MAX, "CT"),
         )
-    return FrameRequestEnvelope(
-        aad_bytes=aad_bytes,
-        aad=FrameAad(session_id=aad["session_id"], seq=aad["seq"], op=aad["op"]),
-        ct=envelope["ct"],
+    if kind == "frame":
+        fields = _fields(envelope, _FRAME_REQUEST_KEYS)
+        aad_bytes = _bytes(fields["aad"], "AAD")
+        return FrameRequestEnvelope(
+            aad_bytes=aad_bytes,
+            aad=_frame_aad(wire.decode(aad_bytes, limits.aad_decode)),
+            ct=_sized_bytes(fields["ct"], _CT_MIN, _FRAME_CT_MAX, "CT"),
+        )
+    raise ValueError("KIND_RANGE")
+
+
+def _open_aad(value: CanonicalValue) -> OpenAad:
+    fields = _fields(value, _OPEN_AAD_KEYS)
+    if fields["proto"] != wire.PROTO:
+        raise ValueError("PROTO_RANGE")
+    return OpenAad(
+        client_id=_text(fields["client_id"], CLIENT_ID_PATTERN, "CLIENT_ID"),
+        instance_id=_text(fields["instance_id"], INSTANCE_ID_PATTERN, "INSTANCE_ID"),
+        prekey_id=_uint(fields["prekey_id"], _U32_MAX, "PREKEY_ID"),
+        request_id=_sized_bytes(fields["request_id"], _ID_LEN, _ID_LEN, "REQUEST_ID"),
+        timestamp=_uint(fields["timestamp"], MAX_UNIX_S, "TIMESTAMP"),
+    )
+
+
+def _frame_aad(value: CanonicalValue) -> FrameAad:
+    fields = _fields(value, _FRAME_AAD_KEYS)
+    return FrameAad(
+        session_id=_sized_bytes(fields["session_id"], _ID_LEN, _ID_LEN, "SESSION_ID"),
+        seq=_uint(fields["seq"], MAX_SEQ, "SEQ"),
+        op=_text(fields["op"], OP_NAME_PATTERN, "OP"),
     )
 
 
