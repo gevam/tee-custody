@@ -142,3 +142,42 @@ describe("verifySignature (criterion 3, B-06)", () => {
         expect(await crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)).toBe(true);
     });
 });
+
+describe("aes256GcmEncrypt / aes256GcmDecrypt (criterion 6)", () => {
+    const key = new Uint8Array(32).fill(7);
+    const nonce = new Uint8Array(12).fill(9);
+    const aad = enc.encode("aad");
+    const plaintext = enc.encode("seventeen bytes!!");
+
+    it("rejects a 31-byte key or an 11-byte nonce with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        for (const call of [
+            () => crypto.aes256GcmEncrypt(key.slice(0, 31), nonce, aad, plaintext),
+            () => crypto.aes256GcmEncrypt(key, nonce.slice(0, 11), aad, plaintext),
+            () => crypto.aes256GcmDecrypt(key.slice(0, 31), nonce, aad, plaintext),
+            () => crypto.aes256GcmDecrypt(key, nonce.slice(0, 11), aad, plaintext),
+        ]) {
+            expect(await codeOfRejection(call())).toBe("INVALID_ARGUMENT");
+        }
+    });
+
+    it("outputs ct || 16-byte tag that decrypts back to the plaintext", async () => {
+        const crypto = createWebCrypto();
+        const sealed = await crypto.aes256GcmEncrypt(key, nonce, aad, plaintext);
+        expect(sealed).toHaveLength(plaintext.length + 16);
+        expect(Array.from(await crypto.aes256GcmDecrypt(key, nonce, aad, sealed))).toEqual(
+            Array.from(plaintext),
+        );
+    });
+
+    it("rejects a flipped tag bit with AUTHENTICATION_FAILED", async () => {
+        const crypto = createWebCrypto();
+        const sealed = await crypto.aes256GcmEncrypt(key, nonce, aad, plaintext);
+        const flipped = sealed.slice();
+        const last = flipped.length - 1;
+        flipped[last] = (flipped[last] ?? 0) ^ 0x80;
+        expect(await codeOfRejection(crypto.aes256GcmDecrypt(key, nonce, aad, flipped))).toBe(
+            "AUTHENTICATION_FAILED",
+        );
+    });
+});
