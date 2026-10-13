@@ -360,3 +360,82 @@ describe("decision: a malformed Content-Length is INVALID_RESPONSE before readin
         expect(probe.cancelled).toBe(true);
     });
 });
+
+describe("edge: a refused redirect releases its body", () => {
+    it.each<[string, (body: ReadableStream<Uint8Array>) => Response]>([
+        ["302", (body) => new Response(body, { status: 302, headers: { Location: "https://evil.example/" } })],
+        ["opaqueredirect", (body) => shaped({ type: "opaqueredirect" }, new Response(body))],
+        ["redirected", (body) => shaped({ redirected: true }, new Response(body))],
+        ["url differs", (body) => shaped({ url: "https://evil.example/" }, new Response(body))],
+    ])("%s -> HTTP_ERROR, body cancelled unread", async (_name, respond) => {
+        const { body, probe } = probedBody([new Uint8Array(10)]);
+        const { fetch } = spy(() => respond(body));
+        expect(codeOf(await rejection(make(fetch).get(URL_OK)))).toBe("HTTP_ERROR");
+        expect(probe.pulls).toBe(0);
+        expect(probe.cancelled).toBe(true);
+    });
+});
+
+describe("edge: a cancel that rejects is swallowed, never an unhandled rejection", () => {
+    // The underlying source's cancel throws, so ReadableStream.cancel() returns a rejected promise.
+    function hostileBody(chunks: readonly Uint8Array[]): ReadableStream<Uint8Array> {
+        let i = 0;
+        return new ReadableStream<Uint8Array>(
+            {
+                pull(controller) {
+                    const chunk = chunks[i];
+                    i += 1;
+                    if (chunk === undefined) {
+                        controller.close();
+                    } else {
+                        controller.enqueue(chunk);
+                    }
+                },
+                cancel() {
+                    throw new Error("cancel failed");
+                },
+            },
+            { highWaterMark: 0 },
+        );
+    }
+
+    async function settleAndCollectUnhandled(run: () => Promise<unknown>): Promise<unknown[]> {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            await run();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+        return unhandled;
+    }
+
+    it.each<[string, string, () => Response]>([
+        ["500", "HTTP_ERROR", () => new Response(hostileBody([new Uint8Array(1)]), { status: 500 })],
+        [
+            "Content-Length over the bound",
+            "INVALID_RESPONSE",
+            () =>
+                new Response(hostileBody([new Uint8Array(1)]), {
+                    headers: { "Content-Length": "4096" },
+                }),
+        ],
+        [
+            "streaming overflow",
+            "INVALID_RESPONSE",
+            () => new Response(hostileBody([new Uint8Array(1000), new Uint8Array(1000)])),
+        ],
+    ])("%s -> %s with no unhandled rejection", async (_name, expected, respond) => {
+        const { fetch } = spy(respond);
+        let error: unknown;
+        const unhandled = await settleAndCollectUnhandled(async () => {
+            error = await rejection(make(fetch, 1024).get(URL_OK));
+        });
+        expect(codeOf(error)).toBe(expected);
+        expect(unhandled).toEqual([]);
+    });
+});

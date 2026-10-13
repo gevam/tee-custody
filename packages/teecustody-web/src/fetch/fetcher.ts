@@ -1,5 +1,10 @@
 // FetchFetcher: the Core Fetcher over fetch (INC-2-API §8.2, §16.8; B-06; ADR 0009 rules 3, 9).
-import { CapabilityError, type FetchResponse, type Fetcher } from "@teecustody/core";
+import {
+    CapabilityError,
+    type CapabilityErrorCode,
+    type FetchResponse,
+    type Fetcher,
+} from "@teecustody/core";
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -29,13 +34,21 @@ function isAllowedUrl(url: string): boolean {
     );
 }
 
+// Releases an unread body without awaiting it; a cancel that rejects is ignored, never left unhandled.
+function refuse(
+    source: { cancel(): Promise<void> } | null,
+    code: CapabilityErrorCode,
+): CapabilityError {
+    void source?.cancel().catch(() => undefined);
+    return new CapabilityError(code);
+}
+
 // D2-14: with redirect "manual" a browser surfaces a redirect as an opaqueredirect; anything that shows a redirect
 // was followed (by a non-conforming fetch) is refused as well. Core cannot see this, so it is enforced here.
 function isRedirect(response: Response, url: string): boolean {
     return (
         response.type === "opaqueredirect" ||
         response.redirected ||
-        (response.status >= 300 && response.status <= 399) ||
         (response.url !== "" && response.url !== url)
     );
 }
@@ -73,8 +86,7 @@ async function readBounded(
         }
         total += value.byteLength;
         if (total > maxBodyBytes) {
-            void reader.cancel();
-            throw new CapabilityError("INVALID_RESPONSE");
+            throw refuse(reader, "INVALID_RESPONSE");
         }
         chunks.push(value);
     }
@@ -139,16 +151,12 @@ export class FetchFetcher implements Fetcher {
         } catch {
             throw new CapabilityError("UNAVAILABLE");
         }
-        if (isRedirect(response, url)) {
-            throw new CapabilityError("HTTP_ERROR");
-        }
-        if (response.status < 200 || response.status > 299) {
-            void response.body?.cancel();
-            throw new CapabilityError("HTTP_ERROR");
+        // A 3xx is refused by the 2xx-only rule; it is never followed (D2-14).
+        if (isRedirect(response, url) || response.status < 200 || response.status > 299) {
+            throw refuse(response.body, "HTTP_ERROR");
         }
         if (!declaredLengthFits(response.headers.get("Content-Length"), this.#maxBodyBytes)) {
-            void response.body?.cancel();
-            throw new CapabilityError("INVALID_RESPONSE");
+            throw refuse(response.body, "INVALID_RESPONSE");
         }
         return { status: response.status, body: await readBounded(response.body, this.#maxBodyBytes) };
     }
