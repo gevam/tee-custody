@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { CapabilityError } from "../../src/capabilities.js";
 import { ChannelError } from "../../src/channel/errors.js";
 import * as wire from "../../src/channel/wire.js";
 import * as cbor from "../../src/wire/cbor.js";
@@ -837,6 +838,17 @@ describe("criterion 7: hpkeInfo (SR-14 layout)", () => {
         expect(hex(await hpkeInfo(sha256Spy(), IK, 2 ** 32 - 1)).slice(-8)).toBe("ffffffff");
         expect(hex(await hpkeInfo(sha256Spy(), IK, 2 ** 31)).slice(-8)).toBe("80000000");
     });
+
+    it.each([0, 31, 33, 64])(
+        "fails closed when the Crypto port returns a %i-byte SHA-256 digest",
+        async (length) => {
+            const crypto = { sha256: vi.fn(() => Promise.resolve(new Uint8Array(length))) };
+            await expect(hpkeInfo(crypto, IK, 1)).rejects.toThrow(
+                new CapabilityError("INVALID_RESPONSE"),
+            );
+            await expect(hpkeInfo(crypto, IK, 1)).rejects.toBeInstanceOf(CapabilityError);
+        },
+    );
 
     it.each<readonly [string, unknown, unknown]>([
         ["IK_PUB_RANGE", new Uint8Array(31), 0],

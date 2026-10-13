@@ -1,6 +1,13 @@
 // Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions stub → T-15.
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
-import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
+import {
+    CapabilityError,
+    type Bytes,
+    type CanonicalEnvelope,
+    type ClientId,
+    type Crypto,
+    type InstanceId,
+} from "../capabilities.js";
 import { utf8Encode } from "../encoding.js";
 import { decodeCanonical, encodeCanonical } from "../wire/cbor.js";
 import { ChannelError } from "./errors.js";
@@ -58,6 +65,7 @@ export type FrameResultBody =
 const MAX_UINT32 = 0xffff_ffff;
 const ID_BYTES = 16;
 const KEY_BYTES = 32;
+const SHA256_BYTES = 32;
 const MIN_CT = 16;
 const MAX_OPEN_CT = 2048;
 const MAX_CT = 32_784;
@@ -292,7 +300,7 @@ export function decodeFrameResultPlaintext(pt: Bytes, limits: DecodeLimits): Fra
     return { re, ...body };
 }
 
-// 47 B; RangeError
+// 47 B; RangeError on input; CapabilityError("INVALID_RESPONSE") if sha256 is not 32 B
 export async function hpkeInfo(
     crypto: Pick<Crypto, "sha256">,
     ikPub: Bytes,
@@ -302,6 +310,10 @@ export async function hpkeInfo(
     check(isUint(prekeyId, MAX_UINT32), "PREKEY_ID_RANGE");
     const proto = utf8Encode(PROTO);
     const ikHash = await crypto.sha256(ikPub);
+    // The digest is width-checked like every other layout input (SR-14): a bad port fails closed.
+    if (!hasLength(ikHash, SHA256_BYTES)) {
+        throw new CapabilityError("INVALID_RESPONSE");
+    }
     const info = new Uint8Array(proto.length + ikHash.length + 4);
     info.set(proto);
     info.set(ikHash, proto.length);
