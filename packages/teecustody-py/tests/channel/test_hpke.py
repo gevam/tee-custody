@@ -91,6 +91,9 @@ TAMPERED: dict[str, Tamper] = {
     "modified-aad": lambda s: (s.enc, INFO, _flip_first_bit(AAD), s.ct),
     "ct-bit-flip": lambda s: (s.enc, INFO, AAD, _flip_first_bit(s.ct)),
     "enc-31-bytes": lambda s: (s.enc[:31], INFO, AAD, s.ct),
+    "enc-33-bytes": lambda s: (s.enc + b"\x00", INFO, AAD, s.ct),
+    "enc-empty": lambda s: (b"", INFO, AAD, s.ct),
+    "ct-empty": lambda s: (s.enc, INFO, AAD, b""),
     "enc-all-zero": lambda s: (bytes(32), INFO, AAD, s.ct),
     **{
         f"enc-low-order-{name}": (lambda s, u=u: (bytes.fromhex(u), INFO, AAD, s.ct))
@@ -128,6 +131,7 @@ def _wiped_key() -> Secret:
 INVALID_KEYS: dict[str, Callable[[], Secret]] = {
     "wiped": _wiped_key,
     "31-bytes": lambda: Secret(bytes(range(1, 32))),
+    "33-bytes": lambda: Secret(bytes(range(1, 34))),
 }
 
 
@@ -160,3 +164,25 @@ def test_open_base_parameters_are_exactly_the_contract() -> None:
     names = list(inspect.signature(open_base).parameters)
 
     assert names == ["private_key", "enc", "info", "aad", "ct"]
+
+
+# ---------------------------------------------------------------- edge cases
+def test_empty_plaintext_is_open_failed_because_a_secret_cannot_be_empty() -> None:
+    private, public = generate_keypair()
+    sealed = _seal(public, pt=b"")
+
+    with pytest.raises(HpkeError) as err:
+        open_base(private, sealed.enc, INFO, AAD, sealed.ct)
+
+    _assert_open_failed(err)
+
+
+def test_open_base_leaves_the_private_key_to_the_caller() -> None:
+    private, public = generate_keypair()
+    sealed = _seal(public)
+
+    open_base(private, sealed.enc, INFO, AAD, sealed.ct)
+    with pytest.raises(HpkeError):
+        open_base(private, bytes(32), INFO, AAD, sealed.ct)
+
+    assert not private.wiped
