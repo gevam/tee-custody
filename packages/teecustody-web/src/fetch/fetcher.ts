@@ -64,6 +64,10 @@ export class FetchFetcher implements Fetcher {
         if (isRedirect(response, url)) {
             throw new CapabilityError("HTTP_ERROR");
         }
+        if (response.status < 200 || response.status > 299) {
+            void response.body?.cancel();
+            throw new CapabilityError("HTTP_ERROR");
+        }
         return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
     }
 }

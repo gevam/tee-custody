@@ -122,3 +122,41 @@ describe("criterion 3: no redirect is ever followed or accepted (D2-14)", () => 
         expect((await make(fetch).get(URL_OK)).status).toBe(200);
     });
 });
+
+interface Probe {
+    pulls: number;
+    cancelled: boolean;
+}
+
+// A pull-driven body (highWaterMark 0: one pull per read) that records pulls and cancellation.
+function probedBody(chunks: readonly Uint8Array[]): { body: ReadableStream<Uint8Array>; probe: Probe } {
+    const probe: Probe = { pulls: 0, cancelled: false };
+    const body = new ReadableStream<Uint8Array>(
+        {
+            pull(controller) {
+                const chunk = chunks[probe.pulls];
+                probe.pulls += 1;
+                if (chunk === undefined) {
+                    controller.close();
+                } else {
+                    controller.enqueue(chunk);
+                }
+            },
+            cancel() {
+                probe.cancelled = true;
+            },
+        },
+        { highWaterMark: 0 },
+    );
+    return { body, probe };
+}
+
+describe("criterion 4: a non-2xx status fails closed and the body is cancelled", () => {
+    it.each([404, 500])("status %i -> HTTP_ERROR, body cancelled", async (status) => {
+        const { body, probe } = probedBody([new Uint8Array(10)]);
+        const { fetch } = spy(() => new Response(body, { status }));
+        expect(codeOf(await rejection(make(fetch).get(URL_OK)))).toBe("HTTP_ERROR");
+        expect(probe.cancelled).toBe(true);
+        expect(probe.pulls).toBe(0);
+    });
+});
