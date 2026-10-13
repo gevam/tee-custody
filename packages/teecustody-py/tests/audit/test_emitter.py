@@ -364,3 +364,18 @@ def test_close_at_the_interval_start_still_writes_a_non_empty_interval() -> None
     [(_, record)] = sink.of(AuditClass.AGGREGATE)
     assert record.interval_start == START_MS
     assert record.interval_end == START_MS + 1
+
+
+def test_a_clock_jump_skips_empty_intervals_and_keeps_them_contiguous() -> None:
+    emitter, sink, clock, _ = _make()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    clock.now = START + 10.5 * INTERVAL_S
+    emitter.tick()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    clock.now = START + 11.5 * INTERVAL_S
+    emitter.tick()
+    intervals = [(r.interval_start, r.interval_end) for _, r in sink.of(AuditClass.AGGREGATE)]
+    assert intervals == [
+        (START_MS, START_MS + INTERVAL_MS),
+        (START_MS + 10 * INTERVAL_MS, START_MS + 11 * INTERVAL_MS),
+    ]

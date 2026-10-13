@@ -161,6 +161,8 @@ class AuditEmitter:
         end = self._start + self._interval_ms
         if now >= end:
             self._flush(end, now)
+            skipped = (now - self._start) // self._interval_ms  # empty intervals after a clock jump
+            self._start += skipped * self._interval_ms
 
     def close(self) -> None:
         self.tick()
