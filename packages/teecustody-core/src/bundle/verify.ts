@@ -39,6 +39,8 @@ interface DecodedBundle {
 
 const BUNDLE_KEYS = ["IK_pub", "instance_id", "prekeys", "published_at", "token"];
 const ENTRY_KEYS = ["id", "not_after", "pub", "sig"];
+const MAX_TOKEN_BYTES = 16_384;
+const MAX_ENTRIES = 256;
 
 function malformed(): never {
     throw new BundleError("MALFORMED");
@@ -46,27 +48,61 @@ function malformed(): never {
 
 // Strict schema (INC-2-API §3.1): a map with exactly the given keys.
 function exactMap(value: unknown, keys: readonly string[]): ReadonlyMap<string, unknown> {
-    const map = value as ReadonlyMap<string, unknown>;
-    if (map.size !== keys.length || !keys.every((k) => map.has(k))) {
+    if (!(value instanceof Map) || value.size !== keys.length || !keys.every((k) => value.has(k))) {
         malformed();
     }
-    return map;
+    return value as ReadonlyMap<string, unknown>;
 }
 
 function bytesOf(value: unknown, length: number): Bytes {
-    const bytes = value as Bytes;
-    if (bytes.length !== length) {
+    if (!(value instanceof Uint8Array) || value.length !== length) {
         malformed();
     }
-    return bytes;
+    return value;
 }
 
 // unix-s (D2-17, R-1): a safe-integer number; a decoded bigint (> 2^53 − 1) is a schema failure.
 function unixS(value: unknown): number {
-    if (typeof value !== "number") {
+    if (typeof value !== "number" || !isUnixS(value)) {
         malformed();
     }
     return value;
+}
+
+function prekeyId(value: unknown, previous: number): number {
+    if (typeof value !== "number" || !isPrekeyId(value) || value <= previous) {
+        malformed();
+    }
+    return value;
+}
+
+function instanceIdOf(value: unknown): string {
+    if (typeof value !== "string" || !HEX32_PATTERN.test(value)) {
+        malformed();
+    }
+    return value;
+}
+
+function tokenOf(value: unknown): string {
+    if (typeof value !== "string") {
+        malformed();
+    }
+    const length = utf8Encode(value).length;
+    if (length < 1 || length > MAX_TOKEN_BYTES) {
+        malformed();
+    }
+    return value;
+}
+
+function entriesOf(value: unknown, maxPrekeys: number): readonly unknown[] {
+    if (!Array.isArray(value)) {
+        malformed();
+    }
+    const n = value.length;
+    if (!(n >= 1 && n <= MAX_ENTRIES && n <= maxPrekeys)) {
+        malformed();
+    }
+    return value as readonly unknown[];
 }
 
 function decodeTop(bytes: Bytes, deps: BundleDeps): unknown {
@@ -77,31 +113,24 @@ function decodeTop(bytes: Bytes, deps: BundleDeps): unknown {
     }
 }
 
+// spec §5.2 step 1 / INC-2-API §7.2 (1): canonical decode and the strict prekey-bundle schema.
 function decodeBundle(bytes: Bytes, deps: BundleDeps): DecodedBundle {
     const top = exactMap(decodeTop(bytes, deps), BUNDLE_KEYS);
     unixS(top.get("published_at"));
-    const entries = top.get("prekeys") as readonly unknown[];
-    if (entries.length > deps.bundleLimits.maxPrekeys) {
-        malformed();
-    }
     let previousId = -1;
-    const prekeys = entries.map((value) => {
+    const prekeys = entriesOf(top.get("prekeys"), deps.bundleLimits.maxPrekeys).map((value) => {
         const e = exactMap(value, ENTRY_KEYS);
-        const id = e.get("id") as number;
-        if (id <= previousId) {
-            malformed();
-        }
-        previousId = id;
+        previousId = prekeyId(e.get("id"), previousId);
         return {
-            id,
-            pub: e.get("pub") as Bytes,
+            id: previousId,
+            pub: bytesOf(e.get("pub"), 32),
             notAfter: unixS(e.get("not_after")),
             sig: bytesOf(e.get("sig"), 64),
         };
     });
     return {
-        instanceId: top.get("instance_id") as string,
-        token: top.get("token") as string,
+        instanceId: instanceIdOf(top.get("instance_id")),
+        token: tokenOf(top.get("token")),
         ikPub: bytesOf(top.get("IK_pub"), 32),
         prekeys,
     };
@@ -219,6 +248,10 @@ function requireRange(ok: boolean, field: string): void {
     }
 }
 
+function isPrekeyId(value: number): boolean {
+    return Number.isSafeInteger(value) && value >= 0 && value <= MAX_PREKEY_ID;
+}
+
 function isUnixS(value: number): boolean {
     return Number.isSafeInteger(value) && value >= 0 && value <= MAX_UNIX_S;
 }
@@ -256,7 +289,7 @@ export async function prekeySigningMessage(
     imageDigest: string,
 ): Promise<Bytes> {
     requireRange(HEX32_PATTERN.test(instanceId), "INSTANCE_ID_RANGE");
-    requireRange(Number.isSafeInteger(id) && id >= 0 && id <= MAX_PREKEY_ID, "PREKEY_ID_RANGE");
+    requireRange(isPrekeyId(id), "PREKEY_ID_RANGE");
     requireRange(pub.length === 32, "PUB_RANGE");
     requireRange(isUnixS(notAfter), "NOT_AFTER_RANGE");
     requireRange(IMAGE_DIGEST_PATTERN.test(imageDigest), "IMAGE_DIGEST_RANGE");
