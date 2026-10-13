@@ -140,6 +140,96 @@ SR-9's 18-month rule re-evaluates on every lock change.
 - **C6:** the pin amendment is appended here by the adopting task and needs the scoped Security Architect sign-off
   before the lock-file merge. It is not written yet; no versions are pinned.
 
+### 2026-10-06 — C6 pin amendment (V-01)
+
+Result: `pyhpke` meets every V-2.3 condition. `@hpke/core` meets C2 (executed path), C3 (closure), C4 and §9.2, but
+**fails C7**. Its browser bundle keeps an unresolved Node built-in, `import("crypto")`. A further C3 question is open:
+`@hpke/common` ships vendored pure-JS curve and hash code. Both are returned to the Orchestrator as CONTRACT_ISSUE.
+No lock file is changed. Evidence was gathered on 2026-10-06 in a scratch directory (Python 3.12.3, Node v22.16.0,
+esbuild 0.25.10).
+
+**Package evidence**
+
+| | `pyhpke` | `@hpke/core` | `@hpke/common` |
+|---|---|---|---|
+| Version | 0.6.5 (latest) | 1.9.0 (latest) | 1.10.1 (latest; core requires `^1.10.0`) |
+| Registry hash | wheel `pyhpke-0.6.5-py3-none-any.whl` sha256 `e8d794724e43053fe04e8971be55033225d6da904effc748b303cece763a3f3c`; sdist `pyhpke-0.6.5.tar.gz` sha256 `8dac22eb143cd83b8066213b8ad0ecc9d5326ef41f930197197f3bbb5c99cb93` | `sha512-pFxWl1nNJeQCSUFs7+GAblHvXBCjn9EPN65vdKlYQil2aURaRxfGMO6vBKGqm1YHTKwiAxJQNEI70PbSowMP9Q==` | `sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw==` |
+| Licence | MIT (`License-Expression: MIT`; OSI classifier) | MIT | MIT |
+| Release date | 2026-07-16T04:22:57Z (previous: 0.6.4, 2025-12-21) | 2026-03-08T14:17:53Z | 2026-03-12T13:21:52Z |
+| Source | github.com/dajiaji/pyhpke tag `v0.6.5` = `7f3c9cba66132295b62412459c3e037ac0e6063e`; wheel and sdist `pyhpke/` are byte-identical to the tag's `src/pyhpke/` | github.com/dajiaji/hpke-js; SLSA provenance: tag `hpke-js@1.8.0`, commit `f9fbe3d5a6404f516df859e472c078c0d08e8057` | github.com/dajiaji/hpke-js; SLSA provenance: tag `@hpke/common@1.10.1`, commit `d56a674fd9c63e2c8176a6e2d68150707158926c` |
+| Publisher | PyPI trusted publishing (PEP 740 provenance: GitHub `dajiaji/pyhpke`, `cd.yml`) | npm trusted publishing (GitHub Actions OIDC), `dajiaji/hpke-js` `.github/workflows/publish.yml` | same repository and workflow as `@hpke/core` |
+| Runtime closure | `Requires-Dist: cryptography>=42.0.1,<52`, so ⊆ {`cryptography`}; resolves to the pinned `cryptography==50.0.2` | `dependencies: {"@hpke/common": "^1.10.0"}`; `npm ls --omit=dev` = {`@hpke/core`, `@hpke/common`} | no dependencies |
+
+The tarball and wheel hashes were recomputed from the downloaded files, and each matched its registry value.
+Registry sources: `https://pypi.org/pypi/pyhpke/json`, `https://registry.npmjs.org/@hpke%2Fcore`,
+`https://registry.npmjs.org/@hpke%2Fcommon`, and `https://registry.npmjs.org/-/npm/v1/attestations/@hpke%2f<pkg>@<ver>`.
+
+**C2 primitive sources: `pyhpke` 0.6.5 → `cryptography` 50.0.2 (Rust over OpenSSL 4.0.3, statically linked in the wheel)**
+
+| Primitive | `pyhpke` call site | Native implementation |
+|---|---|---|
+| X25519 DH | `kem_primitives/x25519.py:45` `sk.raw.exchange(pk.raw)` (encap `kem.py:80`, decap `kem.py:97`) | `src/rust/src/backend/x25519.rs:70–74` `openssl::derive::Deriver` (EVP_PKEY_derive) |
+| X25519 keys (DeriveKeyPair, deserialize) | `kem_primitives/x25519.py:27–28`; `keys/x25519_key.py:29`, `:33` `from_private_bytes` / `from_public_bytes` | `x25519.rs` EVP_PKEY raw key import and `public_key()` |
+| HMAC-SHA256 (HKDF Extract/Expand) | `kdf.py:19` `hashes.SHA256()`; `kdf.py:44–46` (extract); `kdf.py:58–60` (expand loop, permitted composition under C2) | `src/rust/src/backend/hmac.rs:29` → `src/rust/cryptography-openssl/src/hmac.rs:36` `HMAC_Init_ex`, `:54` `HMAC_Update`, `:64` `HMAC_Final` |
+| AES-256-GCM | `keys/aes_gcm_key.py:16` `aead.AESGCM(key)`, `:19` `encrypt`, `:22` `decrypt` | `src/rust/src/backend/aead.rs:602` `Cipher::aes_256_gcm()`; `:632` / `:690` encrypt/decrypt → `EvpCipherAead` (`:200`, `:262`) |
+
+`pyhpke` imports nothing outside the standard library and `cryptography`. The exporter API is
+`export(exporter_context, length)` (`exporter_context.py:18`), inherited by the sender and recipient contexts.
+
+**C2 primitive sources: `@hpke/core` 1.9.0 / `@hpke/common` 1.10.1 → WebCrypto (`globalThis.crypto.subtle`, `common/esm/src/algorithm.js:6`)**
+
+| Primitive | Call site (ESM build) | Native implementation |
+|---|---|---|
+| X25519 DH | `core/esm/src/kems/dhkemPrimitives/x25519.js:168` `deriveBits({name:"X25519"})` | WebCrypto X25519 |
+| X25519 keys | `x25519.js:212` `importKey("pkcs8", …, X25519)`; `:118` `generateKey`; `:145–148` public key via JWK export, with Firefox fallback `:153–158` (`deriveBits` on the base point) | WebCrypto X25519 |
+| HMAC-SHA256 / HKDF | `common/esm/src/kdfs/hkdf.js:91–94` `sign("HMAC")` (extract); `:99–116` (expand loop); `:131–133` `deriveBits({name:"HKDF"})` (key schedule `extractAndExpand`) | WebCrypto HMAC / HKDF |
+| AES-256-GCM | `core/esm/src/aeads/aesGcm.js:50` `importKey(…,"AES-GCM")`, `:26` `encrypt`, `:36` `decrypt` | WebCrypto AES-GCM |
+
+`DhkemX25519HkdfSha256` (`core/esm/src/kems/dhkemX25519.js:28–29`) is `NativeAlgorithm`-based. No JS curve is on this
+path, and `curve/montgomery.js` and `curve/modular.js` contribute 0 bytes to the bundle.
+
+**Open C3 finding.** `@hpke/common` 1.10.1 ships vendored noble-curves/noble-hashes code: a pure-JS X25519/X448
+Montgomery ladder (`esm/src/curve/montgomery.js`), SHA-2, SHA-3 and HMAC (`esm/src/hash/*`), exported from its
+`mod.js`. Our path does not reach it. Two dead fragments still reach the bundle: the noble `_HMAC` class (2698 B) and
+the SHA-3 round-constant setup (622 B), with no hash compression function. The `framework.yaml` rule forbids "any
+package that implements X25519 … in pure JS", and C3 admits `@hpke/common` by name, so only the Security Architect or
+the human can reconcile the two. The vendoring first appears in `@hpke/common` 1.8.0. Version 1.7.3 (2025-06-01) has
+none, but it still contains `import("crypto")`.
+
+**C4 KAT result.** `tests/fixtures/rfc9180/test-vectors.json` has SHA-256
+`61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6` (CFRG commit `5f503c56…`, see README).
+
+| Filtered set | Cases | Encryptions | Exports | `pyhpke` (receiver; sender too, via scratch `eks`) | `@hpke/core` (sender via scratch `ekm`, and receiver) |
+|---|---|---|---|---|---|
+| mode 0 / 0x0020 / 0x0001 / 0x0002 | 1 | 257 | 3 | PASS | PASS |
+| mode 0 / 0x0020 / 0x0001 / 0x0001 (A.1) | 1 | 257 | 3 | PASS | PASS |
+
+Every case checked DeriveKeyPair(ikmE/ikmR) → pkEm/pkRm/skRm, `enc`, each `ct`/`pt`, and each export. The A.1 JSON case
+was also compared with the RFC 9180 A.1.1 text, and they match. Five low-order `enc` values, including all-zero, are
+rejected:
+- `pyhpke`: `ValueError: Error computing shared key.` raised from `cryptography`. It is not wrapped in pyhpke's
+  `OpenError`, so `open_base` must map every exception to `OPEN_FAILED`.
+- `@hpke/core`: `DecapError`.
+
+Mutation check: changing one `exported_value` makes both runs fail.
+
+**C7 / §9.2 result: FAIL.** The test bundle is esbuild `platform: "browser"` with the §9.2 options, entry importing
+`CipherSuite`, `DhkemX25519HkdfSha256`, `HkdfSha256` and `Aes256Gcm`. It is 50684 B.
+- The five §9.2 regexes: **0 hits**.
+- The metafile lists `{"path":"crypto","kind":"dynamic-import","external":true}`. This is the Node ≤18 fallback
+  `await import("crypto")` in `@hpke/common/esm/src/algorithm.js:11`. esbuild cannot resolve it for the browser
+  platform; a probe file containing the same import outside `try` fails with `Could not resolve "crypto"`. The build
+  passes only because esbuild suppresses unresolved imports inside `try/catch`. The fallback is present in
+  `@hpke/common` 1.7.3, 1.8.1 and 1.10.1.
+- C7 names exactly this case as CONTRACT_ISSUE. No shim, alias or allow-list was tried.
+
+**C1 (information only).** `cryptography` 50.0.2 has `cryptography.hazmat.primitives.hpke`, which provides
+`Suite(KEM.X25519, KDF.HKDF_SHA256, AEAD.AES_256_GCM)` with single-shot Base-mode `encrypt`/`decrypt` only. It has no
+context and **no secret export**, so it does not satisfy spec §5.3 step 10. The C1 deviation path is therefore not
+available with 50.0.2.
+
+Sign-off: pending Security Architect (scoped to C1–C5 evidence)
+
 ### 2026-10-11 — Security Architect: C6 scoped sign-off; rulings on V-01's C3 and C7 CONTRACT_ISSUEs
 
 *Merge note: written on `main` while V-01's "C6 pin amendment (V-01)" section is still on `inc-2/V-01-hpke-verify`.
