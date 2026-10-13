@@ -15,9 +15,12 @@ from teecustody.channel.codec import (
     FrameRequestEnvelope,
     OpenAad,
     OpenRequestEnvelope,
+    OpenResultAad,
+    OpenResultBody,
     PreKeyBundle,
     PreKeyEntry,
     decode_bundle,
+    decode_open_result_plaintext,
     decode_request,
     encode_bundle,
 )
@@ -453,3 +456,68 @@ def test_encode_bundle_applies_the_decoder_range_checks(
 ) -> None:
     with pytest.raises(ValueError, match=f"^{message}$"):
         encode_bundle(dataclasses.replace(VALID_BUNDLE, **override))
+
+
+# ---------------------------------------------------------------- criterion 5
+RESULT_LIMITS = DecodeLimits(max_bytes=32768, max_depth=16, max_items=4096)
+WITH_SESSION = OpenResultAad(session_id=SESSION_ID, request_id=REQUEST_ID)
+WITHOUT_SESSION = OpenResultAad(session_id=None, request_id=REQUEST_ID)
+
+
+def test_open_result_ok_with_a_session_decodes() -> None:
+    payload = {"client_id": CLIENT_ID, "n": [1, b"x", None]}
+    body = decode_open_result_plaintext(
+        encode({"ok": True, "payload": payload}), WITH_SESSION, RESULT_LIMITS
+    )
+
+    assert body == OpenResultBody(ok=True, payload=payload, error=None)
+
+
+def test_open_result_error_without_a_session_decodes() -> None:
+    body = decode_open_result_plaintext(
+        encode({"ok": False, "error": "LIMIT_EXCEEDED"}), WITHOUT_SESSION, RESULT_LIMITS
+    )
+
+    assert body == OpenResultBody(ok=False, payload=None, error="LIMIT_EXCEEDED")
+
+
+INVALID_OPEN_RESULTS: dict[str, tuple[bytes, OpenResultAad]] = {
+    "ok-without-session": (encode({"ok": True, "payload": None}), WITHOUT_SESSION),
+    "error-with-session": (encode({"ok": False, "error": "INTERNAL"}), WITH_SESSION),
+    "not-a-map": (encode([True, None]), WITH_SESSION),
+    "ok-missing-payload": (encode({"ok": True}), WITH_SESSION),
+    "ok-with-error": (encode({"ok": True, "payload": None, "error": "INTERNAL"}), WITH_SESSION),
+    "ok-with-error-not-payload": (encode({"ok": True, "error": "INTERNAL"}), WITH_SESSION),
+    "error-missing-error": (encode({"ok": False}), WITHOUT_SESSION),
+    "error-with-payload": (encode({"ok": False, "payload": None}), WITHOUT_SESSION),
+    "error-lowercase": (encode({"ok": False, "error": "internal"}), WITHOUT_SESSION),
+    "error-newline": (encode({"ok": False, "error": "INTERNAL\n"}), WITHOUT_SESSION),
+    "error-65-chars": (encode({"ok": False, "error": "E" * 65}), WITHOUT_SESSION),
+    "error-bytes": (encode({"ok": False, "error": b"INTERNAL"}), WITHOUT_SESSION),
+    "ok-integer": (encode({"ok": 1, "payload": None}), WITH_SESSION),
+    "ok-nil": (encode({"ok": None, "payload": None}), WITH_SESSION),
+    "missing-ok": (encode({"payload": None}), WITH_SESSION),
+    "unknown-key": (encode({"ok": True, "payload": None, "re": 0}), WITH_SESSION),
+    "noncanonical": (bytes.fromhex("a2677061796c6f6164f6626f6bf5"), WITH_SESSION),
+}
+
+
+@pytest.mark.parametrize(
+    ("pt", "aad"), INVALID_OPEN_RESULTS.values(), ids=INVALID_OPEN_RESULTS.keys()
+)
+def test_open_result_violation_is_invalid(pt: bytes, aad: OpenResultAad) -> None:
+    with pytest.raises(EnvelopeError) as exc:
+        decode_open_result_plaintext(pt, aad, RESULT_LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert exc.value.__context__ is None
+
+
+def test_open_result_is_decoded_with_the_given_limits() -> None:
+    pt = encode({"ok": True, "payload": [[[1]]]})
+    decode_open_result_plaintext(pt, WITH_SESSION, RESULT_LIMITS)
+
+    with pytest.raises(EnvelopeError):
+        decode_open_result_plaintext(
+            pt, WITH_SESSION, DecodeLimits(max_bytes=32768, max_depth=3, max_items=4096)
+        )

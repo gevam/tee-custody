@@ -137,6 +137,8 @@ _OPEN_AAD_KEYS: Final = frozenset(
 _FRAME_AAD_KEYS: Final = frozenset({"session_id", "seq", "op"})
 _BUNDLE_KEYS: Final = frozenset({"instance_id", "token", "IK_pub", "published_at", "prekeys"})
 _PREKEY_KEYS: Final = frozenset({"id", "pub", "not_after", "sig"})
+_RESULT_OK_KEYS: Final = frozenset({"ok", "payload"})
+_RESULT_ERROR_KEYS: Final = frozenset({"ok", "error"})
 _SIG_LEN: Final = 64
 _MAX_PREKEYS: Final = 256
 _MAX_TOKEN_BYTES: Final = 16384
@@ -175,8 +177,9 @@ def _fields(value: CanonicalValue, keys: frozenset[str]) -> dict[str, CanonicalV
     return value
 
 
-def _kind(value: CanonicalValue) -> CanonicalValue:
-    return value.get("kind") if type(value) is dict else None
+def _member(value: CanonicalValue, key: str) -> CanonicalValue:
+    """`value[key]` if `value` is a map holding `key`, else `None` (dispatch before `_fields`)."""
+    return value.get(key) if type(value) is dict else None
 
 
 def encode_bundle(b: PreKeyBundle) -> bytes:
@@ -271,7 +274,7 @@ def _parse_request(
     body: bytes, limits: BoundaryLimits
 ) -> OpenRequestEnvelope | FrameRequestEnvelope:
     envelope = wire.decode(body, limits.envelope_decode)
-    kind = _kind(envelope)
+    kind = _member(envelope, "kind")
     if kind == "open":
         fields = _fields(envelope, _OPEN_REQUEST_KEYS)
         aad_bytes = _bytes(fields["aad"], "AAD")
@@ -349,7 +352,22 @@ def decode_response(
 def decode_open_result_plaintext(
     pt: bytes, aad: OpenResultAad, limits: DecodeLimits
 ) -> OpenResultBody:
-    raise NotImplementedError("T-07")
+    try:
+        body = _parse_open_result(wire.decode(pt, limits))
+        if body.ok is (aad.session_id is not None):  # R-3
+            return body
+    except (wire.WireError, ValueError):
+        pass
+    raise EnvelopeError(EnvelopeErrorCode.INVALID)
+
+
+def _parse_open_result(value: CanonicalValue) -> OpenResultBody:
+    if _member(value, "ok") is True:
+        return OpenResultBody(ok=True, payload=_fields(value, _RESULT_OK_KEYS)["payload"])
+    fields = _fields(value, _RESULT_ERROR_KEYS)
+    if fields["ok"] is not False:
+        raise ValueError("OK_RANGE")
+    return OpenResultBody(ok=False, error=_text(fields["error"], ERROR_CODE_PATTERN, "ERROR"))
 
 
 def prekey_signing_message(
