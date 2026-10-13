@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from teecustody.channel.codec import prekey_signing_message
+from teecustody.channel.codec import hpke_info, prekey_signing_message
 
 INSTANCE_ID = "0123456789abcdef" * 2
 PUB = bytes(range(32))
@@ -117,3 +117,40 @@ def test_prekey_signing_message_rejects_each_violation_before_hashing(
 
     with pytest.raises(ValueError, match=f"^{message}$"):
         prekey_signing_message(**{**args, **override})
+
+
+# ---------------------------------------------------------------- criterion 7
+IK_PUB = bytes(range(1, 33))
+
+
+@pytest.mark.parametrize("prekey_id", [5, 0, 2**32 - 1, 0x01020304])
+def test_hpke_info_is_proto_then_ik_hash_then_u32_prekey_id(prekey_id: int) -> None:
+    info = hpke_info(IK_PUB, prekey_id)
+
+    assert type(info) is bytes
+    assert len(info) == 47
+    assert info == b"tee-chan-v1" + hashlib.sha256(IK_PUB).digest() + _u32(prekey_id)
+
+
+HPKE_INFO_VIOLATIONS: dict[str, tuple[Any, Any, str]] = {
+    "ik-pub-31": (IK_PUB[:31], 0, "IK_PUB_RANGE"),
+    "ik-pub-33": (IK_PUB + b"\x00", 0, "IK_PUB_RANGE"),
+    "ik-pub-empty": (b"", 0, "IK_PUB_RANGE"),
+    "ik-pub-bytearray": (bytearray(IK_PUB), 0, "IK_PUB_RANGE"),
+    "prekey-id-2^32": (IK_PUB, 2**32, "PREKEY_ID_RANGE"),
+    "prekey-id-negative": (IK_PUB, -1, "PREKEY_ID_RANGE"),
+    "prekey-id-bool": (IK_PUB, True, "PREKEY_ID_RANGE"),
+}
+
+
+@pytest.mark.usefixtures("no_hashing")
+@pytest.mark.parametrize(
+    ("ik_pub", "prekey_id", "message"),
+    HPKE_INFO_VIOLATIONS.values(),
+    ids=HPKE_INFO_VIOLATIONS.keys(),
+)
+def test_hpke_info_rejects_each_violation_before_hashing(
+    ik_pub: Any, prekey_id: Any, message: str
+) -> None:
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        hpke_info(ik_pub, prekey_id)

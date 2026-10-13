@@ -390,7 +390,9 @@ def prekey_signing_message(
 
 
 def hpke_info(ik_pub: bytes, prekey_id: int) -> bytes:
-    raise NotImplementedError("T-07")
+    checked_ik_pub = _sized_bytes(ik_pub, _KEY_LEN, _KEY_LEN, "IK_PUB")
+    suffix = _uint(prekey_id, _U32_MAX, "PREKEY_ID").to_bytes(4, "big")
+    return wire.PROTO.encode("ascii") + hashlib.sha256(checked_ik_pub).digest() + suffix
 
 
 __all__ = [
