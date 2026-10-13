@@ -119,8 +119,13 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         });
     }
 
+    /** ADR 0011 C7a.3: no @hpke/* call unless `globalThis.crypto.subtle` exists right now. */
     async function hpkeSuite(): Promise<CipherSuite> {
-        suite ??= probeSuite(globalThis.crypto.subtle);
+        const globalSubtle = platformCrypto()?.subtle;
+        if (globalSubtle === undefined) {
+            throw new CapabilityError("UNSUPPORTED");
+        }
+        suite ??= probeSuite(globalSubtle);
         const ready = await suite;
         if (ready === undefined) {
             throw new CapabilityError("UNSUPPORTED");

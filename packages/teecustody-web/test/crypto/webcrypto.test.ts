@@ -7,6 +7,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
 
+/** Counts every construction of an @hpke/core class; the real implementation runs unchanged. */
+const hpkeConstructed = vi.hoisted(() => vi.fn<(name: string) => void>());
+
+vi.mock("@hpke/core", async (importOriginal) => {
+    const real = await importOriginal<typeof import("@hpke/core")>();
+    class CipherSuite extends real.CipherSuite {
+        constructor(...args: ConstructorParameters<typeof real.CipherSuite>) {
+            hpkeConstructed("CipherSuite");
+            super(...args);
+        }
+    }
+    class DhkemX25519HkdfSha256 extends real.DhkemX25519HkdfSha256 {
+        constructor() {
+            hpkeConstructed("DhkemX25519HkdfSha256");
+            super();
+        }
+    }
+    class HkdfSha256 extends real.HkdfSha256 {
+        constructor() {
+            hpkeConstructed("HkdfSha256");
+            super();
+        }
+    }
+    class Aes256Gcm extends real.Aes256Gcm {
+        constructor() {
+            hpkeConstructed("Aes256Gcm");
+            super();
+        }
+    }
+    return { ...real, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm };
+});
+
 const enc = new TextEncoder();
 const MSG = enc.encode("signed message");
 
@@ -556,5 +588,44 @@ describe("no HPKE seams (criterion 8, C5)", () => {
         expect(parameterList(receiver)).toBe("(recipientPrivateKey, encapsulatedKey, info)");
         expect(sender).toHaveLength(2);
         expect(receiver).toHaveLength(3);
+    });
+});
+
+describe("no globalThis.crypto (criterion 9, C7a.3)", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("rejects every HPKE call with UNSUPPORTED and never touches @hpke/core", async () => {
+        const { sk, pk } = await x25519KeyPair();
+        hpkeConstructed.mockClear();
+        vi.stubGlobal("crypto", undefined);
+        const crypto = createWebCrypto();
+        expect(await codeOfRejection(crypto.setupHpkeSender(pk, INFO))).toBe("UNSUPPORTED");
+        expect(await codeOfRejection(crypto.setupHpkeReceiver(sk, pk, INFO))).toBe("UNSUPPORTED");
+        expect(hpkeConstructed).not.toHaveBeenCalled();
+    });
+
+    it("re-checks the global on every call, even after a successful probe", async () => {
+        const { sk, pk } = await x25519KeyPair();
+        const crypto = createWebCrypto();
+        await crypto.setupHpkeSender(pk, INFO);
+        vi.stubGlobal("crypto", undefined);
+        expect(await codeOfRejection(crypto.setupHpkeSender(pk, INFO))).toBe("UNSUPPORTED");
+        expect(await codeOfRejection(crypto.setupHpkeReceiver(sk, pk, INFO))).toBe("UNSUPPORTED");
+    });
+
+    it("constructs the @hpke/core suite only after a successful probe", async () => {
+        hpkeConstructed.mockClear();
+        const crypto = createWebCrypto();
+        const { pk } = await x25519KeyPair();
+        expect(hpkeConstructed).not.toHaveBeenCalled();
+        await crypto.setupHpkeSender(pk, INFO);
+        expect(hpkeConstructed.mock.calls.map(([name]) => name).sort()).toEqual([
+            "Aes256Gcm",
+            "CipherSuite",
+            "DhkemX25519HkdfSha256",
+            "HkdfSha256",
+        ]);
     });
 });
