@@ -853,6 +853,19 @@ describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33
         expect(nonce).toEqual(new Uint8Array(32).fill(0xee));
     });
 
+    it("a Node Buffer nonce is copied, not viewed: a write after the call starts changes nothing", async () => {
+        const nonce = Buffer.from(IDENTITY_NONCE);
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: nonce },
+            new MemorySink(),
+            mutatingDeps(nonce),
+        );
+        expect(result.issuer).toBe(ISSUER);
+        expect(nonce.every((byte) => byte === 0xee)).toBe(true);
+    });
+
     it("a token for the overwritten value is rejected at nonce", async () => {
         const nonce = IDENTITY_NONCE.slice();
         const token = await mint((c) => (c.eat_nonce = "ee".repeat(32)));
@@ -863,18 +876,35 @@ describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33
         expect([err.check, err.code]).toEqual(["nonce", "CLAIM_MISMATCH"]);
     });
 
-    it("an identityNonce whose slice throws is nonce/MALFORMED, after signature and issuer", async () => {
-        const h = harness();
+    it.each([
+        ["a Symbol nonce", { identityNonce: Symbol("nonce") }],
+        ["a negative-length nonce", { identityNonce: -1 }],
+    ])(
+        "%s cannot be copied and is nonce/MALFORMED, after signature and issuer",
+        async (_label, expected) => {
+            const h = harness();
+            const err = await verifyWith(await mint(), {
+                expected: expected as unknown as ExpectedAttestation,
+                deps: h.deps,
+            });
+            expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+            expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+        },
+    );
+
+    it("a nonce whose own slice is hostile is still copied byte for byte", async () => {
         const hostile = Object.assign(IDENTITY_NONCE.slice(), {
             slice(): Uint8Array {
                 throw new Error("no copy");
             },
         });
-        const err = await verifyWith(await mint(), {
-            expected: { identityNonce: hostile },
-            deps: h.deps,
-        });
-        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
-        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: hostile },
+            new MemorySink(),
+            mutatingDeps(hostile),
+        );
+        expect(result.issuer).toBe(ISSUER);
     });
 });

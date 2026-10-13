@@ -669,8 +669,8 @@ describe("parseTrustProfile accepts only trust profile v2 (T-33 C4)", () => {
         expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "jwks_uri"]);
     });
 
-    it("rejects an absent profile_version when Object.prototype.profile_version is 2", () => {
-        const json = developmentJson();
+    it("rejects an absent profile_version when Object.prototype.profile_version is 2, before an unknown key", () => {
+        const json: ProfileJson = { ...developmentJson(), extra: true };
         Reflect.deleteProperty(json, "profile_version");
         Object.defineProperty(Object.prototype, "profile_version", {
             value: 2,
