@@ -13,6 +13,7 @@ import {
     type VerifiedAttestation,
 } from "../attestation/types.js";
 import { verifyAttestation } from "../attestation/verify.js";
+import { HEX32_PATTERN, MAX_UNIX_S } from "../channel/wire.js";
 import { utf8Encode } from "../encoding.js";
 import { decodeCanonical } from "../wire/cbor.js";
 import {
@@ -146,6 +147,30 @@ async function verifyPreKeySignature(
     }
 }
 
+// Builder inputs are range-checked first; a RangeError is a schema failure (INC-2-API §7.2).
+async function signingMessage(
+    deps: BundleDeps,
+    instanceId: string,
+    e: DecodedEntry,
+    imageDigest: string,
+): Promise<Bytes> {
+    try {
+        return await prekeySigningMessage(
+            deps.crypto,
+            instanceId,
+            e.id,
+            e.pub,
+            e.notAfter,
+            imageDigest,
+        );
+    } catch (error) {
+        if (error instanceof RangeError) {
+            malformed();
+        }
+        throw error;
+    }
+}
+
 export async function verifyBundle(
     published: PublishedBundle,
     profile: TrustProfile,
@@ -162,14 +187,7 @@ export async function verifyBundle(
         throw new BundleError("ATTESTATION_FAILED");
     }
     for (const e of decoded.prekeys) {
-        const m = await prekeySigningMessage(
-            deps.crypto,
-            decoded.instanceId,
-            e.id,
-            e.pub,
-            e.notAfter,
-            attestation.imageDigest,
-        );
+        const m = await signingMessage(deps, decoded.instanceId, e, attestation.imageDigest);
         if (!(await verifyPreKeySignature(deps, decoded.ikPub, m, e.sig))) {
             throw new BundleError("PREKEY_SIGNATURE_INVALID");
         }
@@ -191,6 +209,19 @@ export async function verifyBundle(
 }
 
 const PREKEY_PREFIX = utf8Encode("prekey-v1");
+const MAX_PREKEY_ID = 0xffff_ffff;
+const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+// SR-14 layouts (INC-2-API §2): every width or range violation is refused before hashing.
+function requireRange(ok: boolean, field: string): void {
+    if (!ok) {
+        throw new RangeError(field);
+    }
+}
+
+function isUnixS(value: number): boolean {
+    return Number.isSafeInteger(value) && value >= 0 && value <= MAX_UNIX_S;
+}
 
 function u32be(value: number): Bytes {
     const out = new Uint8Array(4);
@@ -216,7 +247,7 @@ function concat(parts: readonly Bytes[]): Bytes {
 
 // INC-2-API §2 pre-key signing message m:
 // H( ascii("prekey-v1") ‖ ascii(instance_id) ‖ u32be(id) ‖ pub ‖ u64be(not_after) ‖ ascii(image_digest) )
-export function prekeySigningMessage(
+export async function prekeySigningMessage(
     crypto: Pick<Crypto, "sha256">,
     instanceId: string,
     id: number,
@@ -224,6 +255,11 @@ export function prekeySigningMessage(
     notAfter: number,
     imageDigest: string,
 ): Promise<Bytes> {
+    requireRange(HEX32_PATTERN.test(instanceId), "INSTANCE_ID_RANGE");
+    requireRange(Number.isSafeInteger(id) && id >= 0 && id <= MAX_PREKEY_ID, "PREKEY_ID_RANGE");
+    requireRange(pub.length === 32, "PUB_RANGE");
+    requireRange(isUnixS(notAfter), "NOT_AFTER_RANGE");
+    requireRange(IMAGE_DIGEST_PATTERN.test(imageDigest), "IMAGE_DIGEST_RANGE");
     return crypto.sha256(
         concat([
             PREKEY_PREFIX,

@@ -17,9 +17,10 @@ import {
 } from "../../src/bundle/types.js";
 import { encodeCanonical } from "../../src/wire/cbor.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
-import { verifyBundle } from "../../src/bundle/verify.js";
+import { prekeySigningMessage, verifyBundle } from "../../src/bundle/verify.js";
 import {
     BUNDLE_LIMITS,
+    IMAGE_DIGEST,
     INSTANCE,
     NOW_S,
     OTHER_DIGEST,
@@ -31,6 +32,7 @@ import {
     identity,
     nonCanonicalPublishedAt,
     pubFor,
+    referencePreimage,
     sha256,
     standardEntries,
     type EntrySpec,
@@ -279,6 +281,106 @@ describe("verifyBundle", () => {
             ];
             const vb = (await verifyBytes(await bundleBytes({ ik, entries }))) as VerifiedBundle;
             expect(vb.prekeys.map((p) => [p.id, p.notAfterMs])).toEqual([[4, (NOW_S + 1) * 1000]]);
+        });
+    });
+
+    describe("(9) prekeySigningMessage (SR-14 layouts)", () => {
+        function spyCrypto() {
+            const sha = vi.fn(sha256);
+            return { crypto: { sha256: sha }, sha };
+        }
+
+        it("is SHA-256 of the 156-byte preimage", async () => {
+            const { crypto, sha } = spyCrypto();
+            const pub = pubFor(7);
+            const m = await prekeySigningMessage(
+                crypto,
+                INSTANCE,
+                0xfedcba98,
+                pub,
+                NOW_S,
+                IMAGE_DIGEST,
+            );
+            const preimage = referencePreimage(INSTANCE, 0xfedcba98, pub, NOW_S, IMAGE_DIGEST);
+            expect(preimage).toHaveLength(156);
+            expect(sha).toHaveBeenCalledTimes(1);
+            expect(sha.mock.calls[0]?.[0]).toEqual(preimage);
+            expect(m).toEqual(await sha256(preimage));
+        });
+
+        it("encodes the largest id and not_after in full width", async () => {
+            const { crypto, sha } = spyCrypto();
+            const max = Number.MAX_SAFE_INTEGER;
+            await prekeySigningMessage(crypto, INSTANCE, 2 ** 32 - 1, pubFor(1), max, IMAGE_DIGEST);
+            expect(sha.mock.calls[0]?.[0]).toEqual(
+                referencePreimage(INSTANCE, 2 ** 32 - 1, pubFor(1), max, IMAGE_DIGEST),
+            );
+        });
+
+        const hex = "ab".repeat(32);
+        const violations: [string, [string, number, Uint8Array, number, string], string][] = [
+            [
+                "upper-case instance id",
+                ["B2".repeat(16), 1, pubFor(1), 1, IMAGE_DIGEST],
+                "INSTANCE_ID_RANGE",
+            ],
+            [
+                "31-char instance id",
+                [INSTANCE.slice(1), 1, pubFor(1), 1, IMAGE_DIGEST],
+                "INSTANCE_ID_RANGE",
+            ],
+            [
+                "instance id with a newline",
+                [`${INSTANCE}\n`, 1, pubFor(1), 1, IMAGE_DIGEST],
+                "INSTANCE_ID_RANGE",
+            ],
+            ["negative id", [INSTANCE, -1, pubFor(1), 1, IMAGE_DIGEST], "PREKEY_ID_RANGE"],
+            ["id 2^32", [INSTANCE, 2 ** 32, pubFor(1), 1, IMAGE_DIGEST], "PREKEY_ID_RANGE"],
+            ["fractional id", [INSTANCE, 1.5, pubFor(1), 1, IMAGE_DIGEST], "PREKEY_ID_RANGE"],
+            ["NaN id", [INSTANCE, Number.NaN, pubFor(1), 1, IMAGE_DIGEST], "PREKEY_ID_RANGE"],
+            ["31-byte pub", [INSTANCE, 1, new Uint8Array(31), 1, IMAGE_DIGEST], "PUB_RANGE"],
+            ["33-byte pub", [INSTANCE, 1, new Uint8Array(33), 1, IMAGE_DIGEST], "PUB_RANGE"],
+            ["negative not_after", [INSTANCE, 1, pubFor(1), -1, IMAGE_DIGEST], "NOT_AFTER_RANGE"],
+            ["not_after 2^53", [INSTANCE, 1, pubFor(1), 2 ** 53, IMAGE_DIGEST], "NOT_AFTER_RANGE"],
+            [
+                "fractional not_after",
+                [INSTANCE, 1, pubFor(1), 0.5, IMAGE_DIGEST],
+                "NOT_AFTER_RANGE",
+            ],
+            ["digest without prefix", [INSTANCE, 1, pubFor(1), 1, hex], "IMAGE_DIGEST_RANGE"],
+            [
+                "upper-case digest",
+                [INSTANCE, 1, pubFor(1), 1, `sha256:${hex.toUpperCase()}`],
+                "IMAGE_DIGEST_RANGE",
+            ],
+            [
+                "short digest",
+                [INSTANCE, 1, pubFor(1), 1, `sha256:${hex.slice(1)}`],
+                "IMAGE_DIGEST_RANGE",
+            ],
+            [
+                "digest with a newline",
+                [INSTANCE, 1, pubFor(1), 1, `sha256:${hex}\n`],
+                "IMAGE_DIGEST_RANGE",
+            ],
+        ];
+        it.each(violations)("%s is a RangeError before sha256", async (_name, args, message) => {
+            const { crypto, sha } = spyCrypto();
+            let thrown: unknown;
+            try {
+                await prekeySigningMessage(crypto, ...args);
+            } catch (error) {
+                thrown = error;
+            }
+            expect(thrown).toBeInstanceOf(RangeError);
+            expect(thrown).toMatchObject({ message });
+            expect(sha).not.toHaveBeenCalled();
+        });
+
+        it("verifyBundle maps a builder RangeError (attested digest out of range) to MALFORMED", async () => {
+            mockedVerifyAttestation.mockResolvedValue(attestation("sha256:" + "AB".repeat(32)));
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(verifyBytes(bytes), "MALFORMED");
         });
     });
 });
