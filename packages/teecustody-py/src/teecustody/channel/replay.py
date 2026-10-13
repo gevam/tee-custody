@@ -6,6 +6,7 @@ from collections.abc import Callable
 class ReplayCache:
     def __init__(self, *, skew_s: int, max_entries: int, clock: Callable[[], float]) -> None:
         self._skew_s = skew_s
+        self._max_entries = max_entries
         self._clock = clock
         self._expires: dict[tuple[str, bytes], int] = {}
 
@@ -14,6 +15,8 @@ class ReplayCache:
         return (aad_client_id, request_id) in self._expires
 
     def record(self, aad_client_id: str, request_id: bytes, timestamp: int) -> None:
+        if len(self._expires) >= self._max_entries:
+            raise OverflowError("REPLAY_CACHE_FULL")
         self._expires[(aad_client_id, request_id)] = timestamp + self._skew_s
 
     def _purge(self) -> None:

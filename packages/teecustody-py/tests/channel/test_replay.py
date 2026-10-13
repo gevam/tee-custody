@@ -1,5 +1,7 @@
 """T-10: the open-request replay cache (INC-2-API §4.9; R-6; SR-4, SR-14)."""
 
+import pytest
+
 from teecustody.channel import ReplayCache
 
 CLIENT = "c1" * 16
@@ -47,3 +49,21 @@ def test_entry_lives_until_timestamp_plus_skew_inclusive_and_is_purged_one_secon
     clock.now = timestamp + skew + 1
     assert not cache.seen(CLIENT, RID)
     assert cache._size() == 0
+
+
+def _full_cache(clock: Clock) -> ReplayCache:
+    cache = ReplayCache(skew_s=300, max_entries=3, clock=clock)
+    for n in range(3):
+        cache.record(CLIENT, bytes([n]) * 16, T0)
+    return cache
+
+
+def test_full_cache_refuses_a_new_entry_and_keeps_every_live_one() -> None:
+    cache = _full_cache(Clock())
+
+    with pytest.raises(OverflowError, match="^REPLAY_CACHE_FULL$"):
+        cache.record(CLIENT, b"\x09" * 16, T0)
+
+    assert all(cache.seen(CLIENT, bytes([n]) * 16) for n in range(3))
+    assert not cache.seen(CLIENT, b"\x09" * 16)
+    assert cache._size() == 3
