@@ -49,6 +49,7 @@ def _assert_rejected(token: AttestationToken, *, max_token_bytes: int = LIMIT) -
     assert caught.value.args == ("TOKEN_REJECTED",)
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+    assert caught.value.__suppress_context__ is True
 
 
 def test_token_one_byte_over_the_limit_is_rejected_before_any_decoding(
@@ -126,3 +127,77 @@ def test_malformed_token_or_digest_claim_is_token_rejected_with_no_chained_cause
     value: str,
 ) -> None:
     _assert_rejected(_token(value))
+
+
+def _digest_token(digest: object) -> str:
+    return f"{HEADER}.{_payload(_claims(digest))}.{SIGNATURE}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(f"{HEADER}.{PAYLOAD}.c2l{chr(0xE9)}", id="non-ascii-signature"),
+        pytest.param(f"{HEADER}.{PAYLOAD}.c2lnA", id="impossible-base64-length"),
+        pytest.param(f"{HEADER}.{PAYLOAD}.c2lnbh", id="non-canonical-trailing-bits"),
+        pytest.param(f"{HEADER}.{PAYLOAD} .{SIGNATURE}", id="space-in-payload"),
+        pytest.param(f"{HEADER}.{_b64(b'\xef\xbb\xbf{}')}.{SIGNATURE}", id="utf8-bom-payload"),
+        pytest.param(f"{HEADER}.{_b64(b'[' * 5000)}.{SIGNATURE}", id="deeply-nested-payload"),
+        pytest.param(f"{HEADER}.{_payload('a string')}.{SIGNATURE}", id="string-payload"),
+        pytest.param(
+            f"{HEADER}.{_payload({'submods': {'container': 'x'}})}.{SIGNATURE}",
+            id="container-string",
+        ),
+        pytest.param(
+            f"{HEADER}.{_payload({'submods': {'container': [DIGEST]}})}.{SIGNATURE}",
+            id="container-array",
+        ),
+        pytest.param(f"{HEADER}.{_payload({'container': _claims()})}.{SIGNATURE}", id="no-submods"),
+        pytest.param(_digest_token(None), id="digest-null"),
+        pytest.param(_digest_token(12345), id="digest-int"),
+        pytest.param(_digest_token([DIGEST]), id="digest-array"),
+        pytest.param(_digest_token({"value": DIGEST}), id="digest-object"),
+        pytest.param(_digest_token(""), id="digest-empty"),
+        pytest.param(_digest_token("sha256:" + HEX + "0"), id="65-hex"),
+        pytest.param(_digest_token("sha256:" + HEX[:-1] + "A"), id="one-uppercase-hex"),
+        pytest.param(_digest_token("sha256:" + HEX[:-1] + "g"), id="non-hex-letter"),
+        pytest.param(_digest_token("SHA256:" + HEX), id="uppercase-prefix"),
+        pytest.param(_digest_token("sha256" + HEX), id="no-colon"),
+        pytest.param(_digest_token(HEX), id="no-prefix"),
+        pytest.param(_digest_token(" sha256:" + HEX), id="leading-space"),
+        pytest.param(_digest_token("sha256:" + HEX + " "), id="trailing-space"),
+        pytest.param(_digest_token("sha256:" + HEX + "\r\n"), id="trailing-crlf"),
+        pytest.param(_digest_token("sha256:" + HEX + "\x00"), id="trailing-nul"),
+        pytest.param(_digest_token("sha256:" + HEX[:-1] + chr(0xFF10)), id="fullwidth-digit"),
+        pytest.param(_digest_token("sha256:" + HEX[:-1] + chr(0x0660)), id="arabic-indic-digit"),
+    ],
+)
+def test_edge_shapes_are_token_rejected_with_no_chained_cause(value: str) -> None:
+    _assert_rejected(_token(value))
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_non_positive_limit_rejects_every_token(limit: int) -> None:
+    _assert_rejected(_with_claims(_claims()), max_token_bytes=limit)
+
+
+def test_signature_and_header_contents_are_not_the_digest_readers_concern() -> None:
+    value = f"{_b64(b'not a jws header')}.{PAYLOAD}.{_b64(bytes(256))}"
+    assert own_image_digest(_token(value), max_token_bytes=LIMIT) == DIGEST
+
+
+def test_unrelated_claims_do_not_affect_the_digest() -> None:
+    claims = {
+        "eat_nonce": ["ab" * 32],
+        "submods": {"container": {"image_digest": DIGEST, "args": ["x"]}, "gce": {}},
+    }
+    assert own_image_digest(_with_claims(claims), max_token_bytes=LIMIT) == DIGEST
+
+
+def test_payload_that_is_json_only_under_a_non_utf8_decoding_is_rejected() -> None:
+    raw = b'{"submods": {"container": {"image_digest": "' + DIGEST.encode() + b'", "x": "\xff"}}}'
+    _assert_rejected(_token(f"{HEADER}.{_b64(raw)}.{SIGNATURE}"))
+
+
+def test_payload_nested_beyond_the_json_recursion_limit_is_rejected() -> None:
+    value = f"{HEADER}.{_b64(b'[' * 100_000)}.{SIGNATURE}"
+    _assert_rejected(_token(value), max_token_bytes=len(value))
