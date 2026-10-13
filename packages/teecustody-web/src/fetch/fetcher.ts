@@ -29,6 +29,17 @@ function isAllowedUrl(url: string): boolean {
     );
 }
 
+// D2-14: with redirect "manual" a browser surfaces a redirect as an opaqueredirect; anything that shows a redirect
+// was followed (by a non-conforming fetch) is refused as well. Core cannot see this, so it is enforced here.
+function isRedirect(response: Response, url: string): boolean {
+    return (
+        response.type === "opaqueredirect" ||
+        response.redirected ||
+        (response.status >= 300 && response.status <= 399) ||
+        (response.url !== "" && response.url !== url)
+    );
+}
+
 export class FetchFetcher implements Fetcher {
     readonly #fetch: FetchFn;
 
@@ -50,6 +61,9 @@ export class FetchFetcher implements Fetcher {
             referrerPolicy: "no-referrer",
             signal: controller.signal,
         });
+        if (isRedirect(response, url)) {
+            throw new CapabilityError("HTTP_ERROR");
+        }
         return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
     }
 }

@@ -86,3 +86,39 @@ describe("criterion 2: only canonical https (or loopback http) URLs are fetched"
         },
     );
 });
+
+// A real Response whose read-only `type`, `redirected` or `url` is overridden, as a browser would report them.
+function shaped(
+    overrides: { type?: ResponseType; redirected?: boolean; url?: string },
+    response: Response = new Response("{}"),
+): Response {
+    for (const [key, value] of Object.entries(overrides)) {
+        Object.defineProperty(response, key, { value });
+    }
+    return response;
+}
+
+describe("criterion 3: no redirect is ever followed or accepted (D2-14)", () => {
+    it.each<[string, () => Response]>([
+        [
+            "same-origin 302",
+            () => new Response(null, { status: 302, headers: { Location: `${URL_OK}/next` } }),
+        ],
+        [
+            "cross-origin 302",
+            () => new Response(null, { status: 302, headers: { Location: "https://evil.example/" } }),
+        ],
+        ["opaqueredirect, status 0", () => shaped({ type: "opaqueredirect" }, Response.error())],
+        ["opaqueredirect reported with a 200", () => shaped({ type: "opaqueredirect" })],
+        ["redirected: true with a 200", () => shaped({ redirected: true, url: URL_OK })],
+        ["response.url differs from the input", () => shaped({ url: "https://evil.example/keys" })],
+    ])("%s -> HTTP_ERROR", async (_name, respond) => {
+        const { fetch } = spy(respond);
+        expect(codeOf(await rejection(make(fetch).get(URL_OK)))).toBe("HTTP_ERROR");
+    });
+
+    it("accepts a response whose url equals the input (positive control)", async () => {
+        const { fetch } = spy(() => shaped({ type: "basic", url: URL_OK }));
+        expect((await make(fetch).get(URL_OK)).status).toBe(200);
+    });
+});
