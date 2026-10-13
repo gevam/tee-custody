@@ -930,9 +930,18 @@ def _gateway_lock(clean_lock: str) -> str:
     return lock + "\n" + _uv_entry("uvicorn", "0.54.0", registry, ["h11"]).rstrip("\n") + "\n"
 
 
+def _gateway_manifest(*dependencies: str) -> str:
+    return (
+        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\n'
+        f"dependencies = {json.dumps(list(dependencies))}\n"
+    )
+
+
 @pytest.fixture
 def gateway_tree(clean_tree: Path) -> Path:
+    """Shaped like the real tree: the gateway manifest declares uvicorn directly."""
     _write(clean_tree, "uv.lock", _gateway_lock((clean_tree / "uv.lock").read_text()))
+    _write(clean_tree, GATEWAY_MANIFEST, _gateway_manifest("teecustody==0.1.0", "uvicorn==0.54.0"))
     return clean_tree
 
 
@@ -992,12 +1001,7 @@ def test_h11_through_uvicorn_is_stale_when_the_gateway_member_is_not_locked(
     start = lock.index('[[package]]\nname = "notes-gateway"')
     lock = lock[:start] + lock[lock.index("[[package]]", start + 1) :]
     _write(gateway_tree, "uv.lock", lock)
-    _write(
-        gateway_tree,
-        GATEWAY_MANIFEST,
-        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\n'
-        'dependencies = ["uvicorn==0.54.0"]\n',
-    )
+    _write(gateway_tree, GATEWAY_MANIFEST, _gateway_manifest("uvicorn==0.54.0"))
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
 
 
@@ -1031,4 +1035,12 @@ def test_h11_locked_at_a_second_version_as_well_is_still_stale(
     second = _uv_entry("h11", "0.14.0", '{ registry = "https://pypi.org/simple" }', [])
     lock = lock.replace('[[package]]\nname = "h11"', second + '[[package]]\nname = "h11"', 1)
     _write(gateway_tree, "uv.lock", lock)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_h11_declared_directly_in_the_gateway_manifest_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = _gateway_manifest("teecustody==0.1.0", "uvicorn==0.54.0", "h11==0.16.0")
+    _write(gateway_tree, GATEWAY_MANIFEST, manifest)
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
