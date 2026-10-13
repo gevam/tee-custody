@@ -252,6 +252,8 @@ class Repo:
     npm_manifest_paths: tuple[str, ...]  # repository-relative, aligned with npm_manifests
     workspace: frozenset[str]
     lock_errors: frozenset[Violation]
+    uv_members: frozenset[str]  # uv workspace members, from uv.lock
+    python_declared: dict[str, frozenset[str]]  # pyproject name -> its shipped dependencies
 
 
 def normalise_python(name: str) -> str:
@@ -533,10 +535,13 @@ def load_repo(root: Path) -> Repo:
     uv = _parse_uv_lock(root / UV_LOCK) if (root / UV_LOCK).is_file() else LockData()
     pnpm = _parse_pnpm_lock(root / PNPM_LOCK) if (root / PNPM_LOCK).is_file() else LockData()
     workspace = uv.members | {str(m["name"]) for m in npm_manifests if "name" in m}
+    python_declared: dict[str, frozenset[str]] = {}
     for path in pyprojects:
         name = _read_toml(path).get("project", {}).get("name")
         if name:
             workspace.add(normalise_python(name))
+            shipped = frozenset(d.name for d in _python_direct([path]) if d.shipped)
+            python_declared[normalise_python(name)] = shipped
     errors = uv.errors | pnpm.errors
     for ecosystem, lock_name, path in (
         (PYPI, UV_LOCK, root / UV_LOCK),
@@ -559,6 +564,8 @@ def load_repo(root: Path) -> Repo:
         npm_manifest_paths=tuple(path.relative_to(root).as_posix() for path in manifests),
         workspace=frozenset(workspace),
         lock_errors=frozenset(errors),
+        uv_members=frozenset(uv.members),
+        python_declared=python_declared,
     )
 
 
@@ -858,11 +865,15 @@ def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
         return False
     graph = repo.uv_runtime_graph
     versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
-    members = {member for member in repo.workspace if member in graph}
+    members = set(repo.uv_members)
     shipped = members | {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
+    libraries = {LIBRARY_PACKAGE, SIM_PACKAGE}
+    libraries |= {dep for lib in libraries for dep in repo.python_declared.get(lib, frozenset())}
     return (
         versions == {exception.version}
+        and exception.member in repo.uv_members
         and name in _closure(graph, [exception.member])
+        and name not in libraries | _closure(graph, libraries)
         and name not in _reachable_avoiding(graph, shipped, exception.via)
         and exception.via not in _reachable_avoiding(graph, members, exception.member)
     )
