@@ -8,7 +8,7 @@ import {
     type TrustProfile,
 } from "../../src/attestation/types.js";
 import { verifyAttestation } from "../../src/attestation/verify.js";
-import type { SecurityEventSink } from "../../src/capabilities.js";
+import { CapabilityError, type SecurityEventSink } from "../../src/capabilities.js";
 import { BundleError, isVerifiedBundle, type BundleErrorCode } from "../../src/bundle/types.js";
 import { encodeCanonical } from "../../src/wire/cbor.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
@@ -20,8 +20,9 @@ import {
     OTHER_DIGEST,
     attestation,
     bundleBytes,
-    bundleMap,
+    bundleCrypto,
     bundleDeps,
+    bundleMap,
     identity,
     nonCanonicalPublishedAt,
     pubFor,
@@ -217,6 +218,39 @@ describe("verifyBundle", () => {
             const map = await bundleMap({ ik, entries: standardEntries() });
             map.set("IK_pub", (await identity()).publicKey);
             await expectBundleError(verifyBytes(encodeCanonical(map)), "PREKEY_SIGNATURE_INVALID");
+        });
+    });
+
+    describe("(7) verifyEd25519 rejections", () => {
+        function rejectingDeps(error: unknown) {
+            const verifyEd25519 = (): Promise<boolean> => {
+                throw error;
+            };
+            return bundleDeps({ crypto: { ...bundleCrypto(), verifyEd25519 } });
+        }
+
+        it("CapabilityError(UNSUPPORTED) is BundleError(UNSUPPORTED)", async () => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(
+                verifyBytes(bytes, rejectingDeps(new CapabilityError("UNSUPPORTED"))),
+                "UNSUPPORTED",
+            );
+        });
+
+        it.each([
+            ["CapabilityError(INVALID_ARGUMENT)", new CapabilityError("INVALID_ARGUMENT")],
+            [
+                "CapabilityError(UNSUPPORTED_ALGORITHM)",
+                new CapabilityError("UNSUPPORTED_ALGORITHM"),
+            ],
+            ["a plain Error", new Error("boom")],
+            ["a non-Error value", "boom"],
+        ])("any other rejection (%s) is PREKEY_SIGNATURE_INVALID", async (_name, error) => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(
+                verifyBytes(bytes, rejectingDeps(error)),
+                "PREKEY_SIGNATURE_INVALID",
+            );
         });
     });
 });

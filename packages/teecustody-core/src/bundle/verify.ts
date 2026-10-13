@@ -1,5 +1,11 @@
 // Bundle verification (INC-2-API §7.2; spec §5.2; D2-1, D2-2, D2-4).
-import type { Bytes, Crypto, PublishedBundle, SecurityEventSink } from "../capabilities.js";
+import {
+    CapabilityError,
+    type Bytes,
+    type Crypto,
+    type PublishedBundle,
+    type SecurityEventSink,
+} from "../capabilities.js";
 import {
     AttestationError,
     isVerifiedAttestation,
@@ -123,6 +129,23 @@ async function attest(
     }
 }
 
+// spec §5.2 step 5; CapabilityError(UNSUPPORTED) fails closed as UNSUPPORTED, any other rejection is a bad signature.
+async function verifyPreKeySignature(
+    deps: BundleDeps,
+    ikPub: Bytes,
+    m: Bytes,
+    sig: Bytes,
+): Promise<boolean> {
+    try {
+        return await deps.crypto.verifyEd25519(ikPub, m, sig);
+    } catch (error) {
+        if (error instanceof CapabilityError && error.code === "UNSUPPORTED") {
+            throw new BundleError("UNSUPPORTED");
+        }
+        return false;
+    }
+}
+
 export async function verifyBundle(
     published: PublishedBundle,
     profile: TrustProfile,
@@ -147,7 +170,7 @@ export async function verifyBundle(
             e.notAfter,
             attestation.imageDigest,
         );
-        if (!(await deps.crypto.verifyEd25519(decoded.ikPub, m, e.sig))) {
+        if (!(await verifyPreKeySignature(deps, decoded.ikPub, m, e.sig))) {
             throw new BundleError("PREKEY_SIGNATURE_INVALID");
         }
     }
