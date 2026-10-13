@@ -1,6 +1,10 @@
 // Bundle verification (INC-2-API §7.2; spec §5.2; D2-1, D2-2, D2-4).
 import type { Bytes, Crypto, PublishedBundle, SecurityEventSink } from "../capabilities.js";
-import type { TrustProfile } from "../attestation/types.js";
+import {
+    AttestationError,
+    type TrustProfile,
+    type VerifiedAttestation,
+} from "../attestation/types.js";
 import { verifyAttestation } from "../attestation/verify.js";
 import { decodeCanonical } from "../wire/cbor.js";
 import {
@@ -94,6 +98,29 @@ function decodeBundle(bytes: Bytes, deps: BundleDeps): DecodedBundle {
     };
 }
 
+// spec §5.2 step 2: the §6 checks with the H(IK_pub) nonce; any AttestationError keeps its check id.
+async function attest(
+    token: string,
+    profile: TrustProfile,
+    identityNonce: Bytes,
+    events: SecurityEventSink,
+    deps: BundleDeps,
+): Promise<VerifiedAttestation> {
+    try {
+        return await verifyAttestation(token, profile, { identityNonce }, events, {
+            crypto: deps.crypto,
+            fetcher: deps.fetcher,
+            now: deps.now,
+            limits: deps.verifierLimits,
+        });
+    } catch (error) {
+        if (error instanceof AttestationError) {
+            throw new BundleError("ATTESTATION_FAILED", error.check);
+        }
+        throw error;
+    }
+}
+
 export async function verifyBundle(
     published: PublishedBundle,
     profile: TrustProfile,
@@ -105,12 +132,7 @@ export async function verifyBundle(
         throw new BundleError("INSTANCE_MISMATCH");
     }
     const identityNonce = await deps.crypto.sha256(decoded.ikPub);
-    const attestation = await verifyAttestation(decoded.token, profile, { identityNonce }, events, {
-        crypto: deps.crypto,
-        fetcher: deps.fetcher,
-        now: deps.now,
-        limits: deps.verifierLimits,
-    });
+    const attestation = await attest(decoded.token, profile, identityNonce, events, deps);
     const nowMs = deps.now();
     const prekeys = decoded.prekeys
         .filter((e) => e.notAfter * 1000 > nowMs)

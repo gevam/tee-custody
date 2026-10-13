@@ -2,7 +2,11 @@
 // verifyAttestation is module-mocked (A1); bundles are signed with WebCrypto Ed25519 by ./support.ts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { TrustProfile } from "../../src/attestation/types.js";
+import {
+    AttestationError,
+    type AttestationCheckId,
+    type TrustProfile,
+} from "../../src/attestation/types.js";
 import { verifyAttestation } from "../../src/attestation/verify.js";
 import type { SecurityEventSink } from "../../src/capabilities.js";
 import { BundleError, isVerifiedBundle, type BundleErrorCode } from "../../src/bundle/types.js";
@@ -20,6 +24,7 @@ import {
     identity,
     nonCanonicalPublishedAt,
     pubFor,
+    sha256,
     standardEntries,
     type Identity,
 } from "./support.js";
@@ -152,5 +157,37 @@ describe("verifyBundle", () => {
             "INSTANCE_MISMATCH",
         );
         expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+    });
+
+    describe("(4) attestation", () => {
+        it("calls verifyAttestation once with the token, the caller's profile and events, and H(IK_pub)", async () => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries(), token: "t.o.k" });
+            const deps = bundleDeps();
+            await verifyBytes(bytes, deps);
+            expect(mockedVerifyAttestation).toHaveBeenCalledTimes(1);
+            const [token, calledProfile, expected, calledEvents, verifierDeps] =
+                mockedVerifyAttestation.mock.calls[0] ?? [];
+            expect(token).toBe("t.o.k");
+            expect(calledProfile).toBe(profile);
+            expect(calledEvents).toBe(events);
+            expect(expected).toEqual({ identityNonce: await sha256(ik.publicKey) });
+            expect(verifierDeps).toMatchObject({
+                crypto: deps.crypto,
+                fetcher: deps.fetcher,
+                now: deps.now,
+                limits: deps.verifierLimits,
+            });
+        });
+
+        it.each<AttestationCheckId>(["nonce", "platform"])(
+            "maps AttestationError(CLAIM_MISMATCH, %s) to ATTESTATION_FAILED with that check",
+            async (check) => {
+                mockedVerifyAttestation.mockRejectedValue(
+                    new AttestationError("CLAIM_MISMATCH", check),
+                );
+                const bytes = await bundleBytes({ ik, entries: standardEntries() });
+                await expectBundleError(verifyBytes(bytes), "ATTESTATION_FAILED", check);
+            },
+        );
     });
 });
