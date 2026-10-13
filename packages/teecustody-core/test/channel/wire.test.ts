@@ -1,5 +1,7 @@
 // T-15: Core channel wire codec (INC-2-API §2, §3.1, §7.3; API-TL §3; SR-3, SR-14).
 // Expected bytes are hex literals computed independently with the Python canonical codec.
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChannelError } from "../../src/channel/errors.js";
@@ -14,6 +16,7 @@ import {
     encodeOpenAad,
     encodeOpenPlaintext,
     encodeOpenRequest,
+    hpkeInfo,
 } from "../../src/channel/wire.js";
 
 // Pass-through spies: a test can assert the encoder/decoder was (not) called, or substitute one call.
@@ -773,5 +776,49 @@ describe("criterion 6: decodeFrameResultPlaintext (SR-3, R-1)", () => {
                 maxDepth: 3,
             }),
         );
+    });
+});
+
+describe("criterion 7: hpkeInfo (SR-14 layout)", () => {
+    const sha256Spy = () => ({
+        sha256: vi.fn((data: Uint8Array) =>
+            Promise.resolve(new Uint8Array(createHash("sha256").update(data).digest())),
+        ),
+    });
+    const IK = new Uint8Array(32).fill(8);
+
+    it("is ascii(PROTO) || SHA-256(IK_pub) || u32be(prekey_id), 47 bytes", async () => {
+        const crypto = sha256Spy();
+        const info = await hpkeInfo(crypto, IK, 0x0102_0304);
+        expect(hex(info)).toBe(
+            "7465652d6368616e2d7631" +
+                "2578ccf8645b2d1dc10c465eff843585970f3a7e22296a92cad55d489a272072" +
+                "01020304",
+        );
+        expect(info).toHaveLength(47);
+        expect(crypto.sha256).toHaveBeenCalledOnce();
+        expect(crypto.sha256).toHaveBeenCalledWith(IK);
+    });
+
+    it("encodes the pre-key id bounds as u32be", async () => {
+        expect(hex(await hpkeInfo(sha256Spy(), IK, 0)).slice(-8)).toBe("00000000");
+        expect(hex(await hpkeInfo(sha256Spy(), IK, 2 ** 32 - 1)).slice(-8)).toBe("ffffffff");
+        expect(hex(await hpkeInfo(sha256Spy(), IK, 2 ** 31)).slice(-8)).toBe("80000000");
+    });
+
+    it.each<readonly [string, unknown, unknown]>([
+        ["IK_PUB_RANGE", new Uint8Array(31), 0],
+        ["IK_PUB_RANGE", new Uint8Array(33), 0],
+        ["IK_PUB_RANGE", Array(32).fill(0), 0],
+        ["PREKEY_ID_RANGE", IK, 2 ** 32],
+        ["PREKEY_ID_RANGE", IK, -1],
+        ["PREKEY_ID_RANGE", IK, 1.5],
+        ["PREKEY_ID_RANGE", IK, 1n],
+    ])("rejects with RangeError(%s) before hashing", async (code, ikPub, prekeyId) => {
+        const crypto = sha256Spy();
+        await expect(hpkeInfo(crypto, forced(ikPub), forced(prekeyId))).rejects.toThrow(
+            new RangeError(code),
+        );
+        expect(crypto.sha256).not.toHaveBeenCalled();
     });
 });

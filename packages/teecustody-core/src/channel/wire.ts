@@ -1,6 +1,7 @@
 // Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions stub → T-15.
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
+import { utf8Encode } from "../encoding.js";
 import { decodeCanonical, encodeCanonical } from "../wire/cbor.js";
 import { ChannelError } from "./errors.js";
 import { PROTO, WireError, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
@@ -292,10 +293,18 @@ export function decodeFrameResultPlaintext(pt: Bytes, limits: DecodeLimits): Fra
 }
 
 // 47 B; RangeError
-export function hpkeInfo(
+export async function hpkeInfo(
     crypto: Pick<Crypto, "sha256">,
     ikPub: Bytes,
     prekeyId: number,
 ): Promise<Bytes> {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    check(hasLength(ikPub, KEY_BYTES), "IK_PUB_RANGE");
+    check(isUint(prekeyId, MAX_UINT32), "PREKEY_ID_RANGE");
+    const proto = utf8Encode(PROTO);
+    const ikHash = await crypto.sha256(ikPub);
+    const info = new Uint8Array(proto.length + ikHash.length + 4);
+    info.set(proto);
+    info.set(ikHash, proto.length);
+    new DataView(info.buffer).setUint32(proto.length + ikHash.length, prekeyId);
+    return info;
 }
