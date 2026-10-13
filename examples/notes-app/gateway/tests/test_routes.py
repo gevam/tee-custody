@@ -543,7 +543,8 @@ def test_every_response_kind_carries_the_security_headers() -> None:
     relay = RecordingRelay()
     relay.pages[CLIENT] = ResponsePage((), None)
     origins = ("https://app.example",)
-    app = create_app(relay, limits=GatewayLimits(per_source_burst=7, cors_origins=origins))
+    limits = GatewayLimits(per_source_burst=7, cors_origins=origins)
+    app = create_app(relay, limits=limits, clock=lambda: 0.0)
     client = TestClient(app, raise_server_exceptions=False)
     preflight = {"Origin": origins[0], "Access-Control-Request-Method": "POST"}
 
