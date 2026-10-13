@@ -168,14 +168,31 @@ def test_an_invalid_origin_gets_no_echo_and_is_still_200(
 
 @pytest.mark.parametrize("path", JWKS_PATHS)
 def test_an_origin_with_a_cr_or_lf_is_not_echoed(issuer: IssuerServer, path: str) -> None:
-    for head in (
-        f"GET {path} HTTP/1.1\r\nOrigin: http://a\rb\r\n\r\n",
-        f"GET {path} HTTP/1.1\r\nOrigin: http://a\r\n b\r\n\r\n",  # obsolete line folding
+    for origin_line in (
+        "Origin: http://a\rb\r\n",
+        "Origin: http://a\r\n b\r\n",  # obsolete line folding
+        "Origin: http://a\rX-Foo: y\r\n",  # bare CR, remainder parses as a header
+        "Origin: http://a\nX-A: b\r\n",  # bare LF
+        "Origin: \rX-A: b\r\n",
+        "Origin: http://a\n",  # bare LF ends the Origin line itself
     ):
+        head = f"GET {path} HTTP/1.1\r\n{origin_line}\r\n"
         status, headers, _ = _exchange(issuer.origin, head.encode("latin-1"))
-        assert status == 200
-        assert _cors(headers) == []
+        assert status == 200, repr(origin_line)
+        assert _cors(headers) == [], repr(origin_line)
         assert _values(headers, "Vary") == ["Origin"]
+
+
+@pytest.mark.parametrize("path", JWKS_PATHS)
+def test_a_malformed_unrelated_header_does_not_block_a_valid_origin_echo(
+    issuer: IssuerServer, path: str
+) -> None:
+    head = f"GET {path} HTTP/1.1\r\nOrigin: {ORIGIN}\r\nbogusline\r\n\r\n"
+    status, headers, _ = _exchange(issuer.origin, head.encode("latin-1"))
+
+    assert status == 200
+    assert _cors(headers) == [("Access-Control-Allow-Origin", ORIGIN)]
+    assert _values(headers, "Vary") == ["Origin"]
 
 
 @pytest.mark.parametrize("path", JWKS_PATHS)

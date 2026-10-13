@@ -178,7 +178,12 @@ class _HeadBudgetReader(io.BufferedIOBase):
 
     `read` (used only for a bounded body) is not counted. Not an `HTTPException`, so it escapes
     `BaseHTTPRequestHandler.parse_request` and reaches `_SimRequestHandler.handle_one_request`.
+
+    It also records whether any head line holds a CR or LF other than its CRLF ending: the stdlib
+    parser splits a header at such a byte, so the values it then reports are not the bytes sent.
     """
+
+    bare_line_break = False
 
     def __init__(self, inner: io.BufferedIOBase, budget: int) -> None:
         super().__init__()
@@ -189,6 +194,9 @@ class _HeadBudgetReader(io.BufferedIOBase):
         cap = self._remaining + 1 if size is None or size < 0 else min(size, self._remaining + 1)
         line = self._inner.readline(cap)
         self._remaining -= len(line)
+        content = line.removesuffix(b"\r\n")
+        if b"\r" in content or b"\n" in content:
+            self.bare_line_break = True
         if self._remaining < 0:
             raise _HeadTooLarge
         return line
@@ -296,12 +304,12 @@ class _IssuerHandler(_SimRequestHandler):
     def _echoable_origin(self) -> str | None:
         """The request's only `Origin` value if it passes the CI-2-4 rule; nothing else is read.
 
-        A bare CR splits a header line in the stdlib parser and is recorded only as a defect: the
-        value it leaves behind is not the value the client sent, so nothing is echoed.
+        A head with a bare CR or LF is never echoed from: the stdlib parser splits a line there, so
+        the `Origin` value it reports may not be the bytes the client sent (only 0x21-0x7E are).
         """
         origins = self.headers.get_all("Origin") or []
         if (
-            self.headers.defects
+            cast(_HeadBudgetReader, self.rfile).bare_line_break
             or len(origins) != 1
             or len(origins[0].encode("latin-1")) > _MAX_ORIGIN_BYTES
             or _ECHO_ORIGIN.fullmatch(origins[0]) is None
