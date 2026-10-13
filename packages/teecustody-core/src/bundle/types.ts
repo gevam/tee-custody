@@ -60,25 +60,32 @@ export interface BundleDeps {
 
 const verifiedBundles = new WeakSet();
 
-// deep-freezes (pre-key list, entries, copied key bytes) and registers
+// INC-2-API §7.1 ruling: key bytes are copied once into private storage (this closure) and exposed only as
+// an enumerable, setter-less getter that returns a fresh copy, so a host cannot change verified bytes.
+function defineKeyBytes(owner: object, name: string, bytes: Bytes): void {
+    const stored = bytes.slice();
+    Object.defineProperty(owner, name, { get: () => stored.slice(), enumerable: true });
+}
+
+// copy-on-read key bytes; frozen bundle, pre-key list and entries; registers the brand
 export function createVerifiedBundle(
     f: Omit<VerifiedBundle, typeof verifiedBundle>,
 ): VerifiedBundle {
-    const bundle = Object.freeze({
-        ...f,
-        identityPublicKey: f.identityPublicKey.slice(),
-        prekeys: Object.freeze(
-            f.prekeys.map((p) =>
-                Object.freeze({
-                    id: p.id,
-                    publicKey: p.publicKey.slice(),
-                    notAfterMs: p.notAfterMs,
-                }),
-            ),
-        ),
-    }) as VerifiedBundle;
-    verifiedBundles.add(bundle);
-    return bundle;
+    const prekeys = f.prekeys.map((p) => {
+        const entry = { id: p.id, notAfterMs: p.notAfterMs };
+        defineKeyBytes(entry, "publicKey", p.publicKey);
+        return Object.freeze(entry);
+    });
+    const bundle = {
+        instanceId: f.instanceId,
+        attestation: f.attestation,
+        prekeys: Object.freeze(prekeys),
+        verifiedAtMs: f.verifiedAtMs,
+    };
+    defineKeyBytes(bundle, "identityPublicKey", f.identityPublicKey);
+    const branded = Object.freeze(bundle) as unknown as VerifiedBundle;
+    verifiedBundles.add(branded);
+    return branded;
 }
 
 export function isVerifiedBundle(v: unknown): v is VerifiedBundle {
