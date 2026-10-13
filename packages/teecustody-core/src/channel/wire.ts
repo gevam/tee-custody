@@ -126,6 +126,28 @@ function decodePlaintext(pt: Bytes, limits: DecodeLimits): CanonicalValue {
     }
 }
 
+// {ok: true, payload} or {ok: false, error}, each with exactly the `extra` keys besides.
+function resultBody(
+    value: CanonicalValue,
+    extra: readonly string[],
+):
+    | { readonly map: ReadonlyMap<string, CanonicalValue>; readonly body: OpenResultBody }
+    | undefined {
+    const success = exactMap(value, [...SUCCESS_KEYS, ...extra]);
+    if (success?.get("ok") === true) {
+        return {
+            map: success,
+            body: { ok: true, payload: success.get("payload") as CanonicalValue },
+        };
+    }
+    const failure = exactMap(value, [...FAILURE_KEYS, ...extra]);
+    const error = failure?.get("error");
+    if (failure?.get("ok") === false && matches(error, ERROR_CODE_PATTERN)) {
+        return { map: failure, body: { ok: false, error } };
+    }
+    return undefined;
+}
+
 function malformed(): never {
     throw new WireError("MALFORMED");
 }
@@ -251,26 +273,22 @@ export function decodeOpenResultPlaintext(
     aad: OpenResultAadFields,
     limits: DecodeLimits,
 ): OpenResultBody {
-    const value = decodePlaintext(pt, limits);
-    const success = exactMap(value, SUCCESS_KEYS);
-    if (success?.get("ok") === true && aad.sessionId !== null) {
-        return { ok: true, payload: success.get("payload") as CanonicalValue };
+    const { body } = resultBody(decodePlaintext(pt, limits), []) ?? invalidResponse();
+    // R-3: a session exists exactly when the open succeeded.
+    if (body.ok !== (aad.sessionId !== null)) {
+        return invalidResponse();
     }
-    const failure = exactMap(value, FAILURE_KEYS);
-    const error = failure?.get("error");
-    if (
-        failure?.get("ok") === false &&
-        matches(error, ERROR_CODE_PATTERN) &&
-        aad.sessionId === null
-    ) {
-        return { ok: false, error };
-    }
-    return invalidResponse();
+    return body;
 }
 
 // ChannelError("INVALID_RESPONSE")
 export function decodeFrameResultPlaintext(pt: Bytes, limits: DecodeLimits): FrameResultBody {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    const { map, body } = resultBody(decodePlaintext(pt, limits), ["re"]) ?? invalidResponse();
+    const re = map.get("re");
+    if (!isUint(re, MAX_SEQ)) {
+        return invalidResponse();
+    }
+    return { re, ...body };
 }
 
 // 47 B; RangeError

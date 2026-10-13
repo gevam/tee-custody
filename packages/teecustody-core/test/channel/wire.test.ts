@@ -6,6 +6,7 @@ import { ChannelError } from "../../src/channel/errors.js";
 import * as cbor from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue, type WireErrorCode } from "../../src/wire/types.js";
 import {
+    decodeFrameResultPlaintext,
     decodeOpenResultPlaintext,
     decodeResponse,
     encodeFrameAad,
@@ -715,5 +716,62 @@ describe("criterion 5: decodeOpenResultPlaintext (SR-3, R-3)", () => {
     it("decodes the plaintext with the given limits", () => {
         decodeOpenResultPlaintext(cborMap({ ok: false, error: "X" }), refused, PAYLOAD_LIMITS);
         expect(cbor.decodeCanonical).toHaveBeenCalledWith(expect.any(Uint8Array), PAYLOAD_LIMITS);
+    });
+});
+
+describe("criterion 6: decodeFrameResultPlaintext (SR-3, R-1)", () => {
+    const decode = (body: Record<string, CanonicalValue>): unknown =>
+        decodeFrameResultPlaintext(cborMap(body), PAYLOAD_LIMITS);
+
+    it("decodes success and failure bodies, re at both bounds", () => {
+        const payload = [new Uint8Array([1]), "x", null];
+        expect(decode({ re: 4, ok: true, payload })).toEqual({ re: 4, ok: true, payload });
+        expect(decode({ re: 0, ok: false, error: "NOT_AUTHORIZED" })).toEqual({
+            re: 0,
+            ok: false,
+            error: "NOT_AUTHORIZED",
+        });
+        expect(decode({ re: 2 ** 53 - 1, ok: true, payload: null })).toEqual({
+            re: 2 ** 53 - 1,
+            ok: true,
+            payload: null,
+        });
+    });
+
+    const invalid: readonly (readonly [string, Record<string, CanonicalValue>])[] = [
+        ["re missing (success)", { ok: true, payload: null }],
+        ["re missing (failure)", { ok: false, error: "INTERNAL" }],
+        ["re as bigint 2^53", { re: 2n ** 53n, ok: true, payload: null }],
+        ["re negative", { re: -1, ok: true, payload: null }],
+        ["re text", { re: "1", ok: true, payload: null }],
+        ["re nil", { re: null, ok: false, error: "INTERNAL" }],
+        ["ok missing", { re: 1, payload: null }],
+        ["ok not boolean", { re: 1, ok: 0, payload: null }],
+        ["error lower case", { re: 1, ok: false, error: "lower" }],
+        ["error too long", { re: 1, ok: false, error: `A${"B".repeat(64)}` }],
+        ["payload on failure", { re: 1, ok: false, payload: null }],
+        ["error on success", { re: 1, ok: true, error: "INTERNAL" }],
+        ["extra key (success)", { re: 1, ok: true, payload: null, x: 1 }],
+        ["extra key (failure)", { re: 1, ok: false, error: "INTERNAL", x: 1 }],
+        ["error and payload together", { re: 1, ok: false, error: "X", payload: null }],
+    ];
+
+    it.each(invalid)("rejects %s as INVALID_RESPONSE", (_name, body) => {
+        expectInvalidResponse(() => decode(body));
+    });
+
+    it("rejects a plaintext that is not a map, not CBOR, or over the limits", () => {
+        expectInvalidResponse(() =>
+            decodeFrameResultPlaintext(cbor.encodeCanonical(1), PAYLOAD_LIMITS),
+        );
+        expectInvalidResponse(() =>
+            decodeFrameResultPlaintext(new Uint8Array([0xff]), PAYLOAD_LIMITS),
+        );
+        expectInvalidResponse(() =>
+            decodeFrameResultPlaintext(cborMap({ re: 1, ok: true, payload: [[[1]]] }), {
+                ...PAYLOAD_LIMITS,
+                maxDepth: 3,
+            }),
+        );
     });
 });
