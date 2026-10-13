@@ -39,7 +39,7 @@ function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
 
 /** The platform object `globalThis.crypto`, which may be absent (fail closed, never polyfilled). */
 interface PlatformCrypto {
-    readonly subtle: SubtleCrypto;
+    readonly subtle?: SubtleCrypto; // undefined in insecure browser contexts
     getRandomValues(array: Uint8Array): Uint8Array;
 }
 
@@ -199,11 +199,16 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         async setupHpkeSender(recipientPublicKey, info): Promise<HpkeSenderContext> {
             requireKeyLength(recipientPublicKey);
             const hpke = await hpkeSuite();
-            const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
-            const context = await hpke.createSenderContext({
-                recipientPublicKey: publicKey,
-                info: info.slice(),
-            });
+            let context: SenderContext;
+            try {
+                const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
+                context = await hpke.createSenderContext({
+                    recipientPublicKey: publicKey,
+                    info: info.slice(),
+                });
+            } catch {
+                throw new CapabilityError("INVALID_ARGUMENT");
+            }
             const handle = new ContextHandle(context);
             return {
                 encapsulatedKey: new Uint8Array(context.enc),

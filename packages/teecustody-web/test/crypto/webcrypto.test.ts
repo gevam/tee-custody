@@ -663,3 +663,50 @@ describe("native X25519 path (criterion 10, C3a.3)", () => {
         }
     });
 });
+
+describe("HPKE edge cases", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("rejects a non-integer export length with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(await codeOfRejection(sender.export(C2T, 1.5))).toBe("INVALID_ARGUMENT");
+        expect(await sender.export(new Uint8Array(64), 64)).toHaveLength(64);
+        expect(await sender.export(new Uint8Array(0), 1)).toHaveLength(1);
+    });
+
+    it("rejects a low-order recipient public key with INVALID_ARGUMENT and no cause", async () => {
+        const crypto = createWebCrypto();
+        for (const lowOrder of LOW_ORDER_ENC) {
+            const error = await crypto.setupHpkeSender(lowOrder, INFO).catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(CapabilityError);
+            expect((error as CapabilityError).code).toBe("INVALID_ARGUMENT");
+            expect((error as CapabilityError).cause).toBeUndefined();
+        }
+    });
+
+    it("treats destroy() as idempotent", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        for (const context of [sender, receiver]) {
+            context.destroy();
+            expect(() => {
+                context.destroy();
+            }).not.toThrow();
+        }
+    });
+
+    it("fails closed when globalThis.crypto has no subtle (insecure context)", async () => {
+        const { sk, pk } = await x25519KeyPair();
+        vi.stubGlobal("crypto", { getRandomValues: (a: Uint8Array) => a });
+        const crypto = createWebCrypto();
+        expect(await codeOfRejection(crypto.setupHpkeSender(pk, INFO))).toBe("UNSUPPORTED");
+        expect(await codeOfRejection(crypto.setupHpkeReceiver(sk, pk, INFO))).toBe("UNSUPPORTED");
+        expect(await codeOfRejection(crypto.sha256(MSG))).toBe("UNSUPPORTED");
+    });
+});
