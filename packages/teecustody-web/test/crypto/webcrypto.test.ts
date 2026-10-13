@@ -548,7 +548,10 @@ describe("native X25519 only (criterion 5, C3, C3a.3)", () => {
 
     it("probes the global subtle even when options.subtle supports X25519", async () => {
         const { pk } = await x25519KeyPair();
-        const injected = refusingImport("none", () => new Error("unused"));
+        // An injected subtle that claims X25519 support, independent of the global one.
+        const injected = {
+            generateKey: () => Promise.resolve({}),
+        } as unknown as SubtleCrypto;
         const hidden = hideGlobalX25519();
         try {
             const crypto = createWebCrypto({ subtle: injected });
