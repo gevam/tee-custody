@@ -295,3 +295,102 @@ describe("FetchTransport criterion 3: only strict JSON of exactly the §6 shape 
         expect(page.next).toBe("Z".repeat(128));
     });
 });
+
+function withFields(response: Response, fields: Record<string, unknown>): Response {
+    for (const [name, value] of Object.entries(fields)) {
+        Object.defineProperty(response, name, { value });
+    }
+    return response;
+}
+
+function trackedBody(text: string): { stream: ReadableStream<Uint8Array>; cancelled: () => boolean } {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+            controller.enqueue(new TextEncoder().encode(text));
+        },
+        cancel() {
+            cancelled = true;
+        },
+    });
+    return { stream, cancelled: () => cancelled };
+}
+
+describe("FetchTransport criterion 4: status mapping; redirects are refused, never followed", () => {
+    it.each([
+        [400, "INVALID_ARGUMENT"],
+        [404, "NOT_FOUND"],
+        [429, "UNAVAILABLE"],
+        [503, "UNAVAILABLE"],
+        [500, "INTERNAL"],
+        [418, "INTERNAL"],
+        [201, "INTERNAL"],
+        [202, "INTERNAL"],
+        [204, "INTERNAL"],
+        [302, "INVALID_RESPONSE"],
+        [301, "INVALID_RESPONSE"],
+        [303, "INVALID_RESPONSE"],
+        [307, "INVALID_RESPONSE"],
+        [308, "INVALID_RESPONSE"],
+        [300, "INVALID_RESPONSE"],
+        [399, "INVALID_RESPONSE"],
+    ])("listBundles: HTTP %i → %s", async (status, expected) => {
+        const body = status === 204 ? null : '{"bundles":[]}';
+        const { fetch, calls } = spy(
+            new Response(body, { status, headers: { Location: "https://evil.example/" } }),
+        );
+        expect(await codeOf(make(fetch).listBundles())).toBe(expected);
+        expect(calls).toHaveLength(1);
+    });
+
+    it("postRequest requires 202 and maps 404 UNKNOWN_INSTANCE to NOT_FOUND", async () => {
+        const { fetch } = spy(
+            json(`{"request_id":"${RID}"}`, 200),
+            json(`{"code":"UNKNOWN_INSTANCE"}`, 404),
+            json(`{"code":"INVALID_ARGUMENT"}`, 400),
+        );
+        const transport = make(fetch);
+        const one = new Uint8Array(1);
+        expect(await codeOf(transport.postRequest(IID, one))).toBe("INTERNAL");
+        expect(await codeOf(transport.postRequest(IID, one))).toBe("NOT_FOUND");
+        expect(await codeOf(transport.postRequest(IID, one))).toBe("INVALID_ARGUMENT");
+    });
+
+    it("getResponses requires 200 and maps 429 to UNAVAILABLE", async () => {
+        const { fetch } = spy(
+            json(`{"responses":[],"next":null}`, 202),
+            json(`{"code":"RATE_LIMITED"}`, 429),
+        );
+        const transport = make(fetch);
+        expect(await codeOf(transport.getResponses(CID))).toBe("INTERNAL");
+        expect(await codeOf(transport.getResponses(CID))).toBe("UNAVAILABLE");
+    });
+
+    it.each([
+        ["an opaque redirect", { type: "opaqueredirect", status: 0 }],
+        ["a followed redirect", { redirected: true }],
+        ["a final URL other than the one requested", { url: "https://evil.example/bundles" }],
+    ])("refuses %s even with a 200 status", async (_name, fields) => {
+        const { fetch } = spy(withFields(json('{"bundles":[]}'), fields));
+        expect(await codeOf(make(fetch).listBundles())).toBe("INVALID_RESPONSE");
+    });
+
+    it("accepts a final URL equal to the one requested", async () => {
+        const { fetch } = spy(withFields(json('{"bundles":[]}'), { url: `${BASE}bundles` }));
+        expect(await make(fetch).listBundles()).toEqual([]);
+    });
+
+    it("cancels the body of a refused status without reading it", async () => {
+        const failed = trackedBody('{"code":"INTERNAL"}');
+        const moved = trackedBody("");
+        const { fetch } = spy(
+            new Response(failed.stream, { status: 500 }),
+            new Response(moved.stream, { status: 302 }),
+        );
+        const transport = make(fetch);
+        expect(await codeOf(transport.listBundles())).toBe("INTERNAL");
+        expect(await codeOf(transport.listBundles())).toBe("INVALID_RESPONSE");
+        expect(failed.cancelled()).toBe(true);
+        expect(moved.cancelled()).toBe(true);
+    });
+});

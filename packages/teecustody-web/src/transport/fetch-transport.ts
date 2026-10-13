@@ -2,6 +2,7 @@
 import {
     base64UrlDecode,
     CapabilityError,
+    type CapabilityErrorCode,
     type CanonicalEnvelope,
     type ClientId,
     type InstanceId,
@@ -98,6 +99,31 @@ function parseStrictJson(bytes: Uint8Array): unknown {
     return value;
 }
 
+// Gateway statuses other than the expected success (INC-2-API §8.3); anything unlisted is INTERNAL.
+const STATUS_CODES: ReadonlyMap<number, CapabilityErrorCode> = new Map([
+    [400, "INVALID_ARGUMENT"],
+    [404, "NOT_FOUND"],
+    [429, "UNAVAILABLE"],
+    [503, "UNAVAILABLE"],
+]);
+
+function isRedirect(response: Response, url: string): boolean {
+    return (
+        response.type === "opaqueredirect" ||
+        response.redirected ||
+        (response.status >= 300 && response.status < 400) ||
+        (response.url !== "" && response.url !== url)
+    );
+}
+
+function ignore(): undefined {
+    return undefined;
+}
+
+async function discard(response: Response): Promise<void> {
+    await response.body?.cancel().then(ignore, ignore);
+}
+
 function exactObject(value: unknown, keys: readonly string[]): Json {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw invalidResponse();
@@ -145,7 +171,9 @@ export class FetchTransport implements Transport {
     }
 
     async listBundles(): Promise<readonly PublishedBundle[]> {
-        const value = exactObject(await this.#exchange("bundles", { method: "GET" }), ["bundles"]);
+        const value = exactObject(await this.#exchange("bundles", { method: "GET" }, 200), [
+            "bundles",
+        ]);
         return array(value.bundles).map((item) => {
             const entry = exactObject(item, ["instance_id", "bundle"]);
             return {
@@ -159,11 +187,15 @@ export class FetchTransport implements Transport {
         requireArgument(matches(HEX32, instance));
         requireArgument(body instanceof Uint8Array);
         requireArgument(body.byteLength >= 1 && body.byteLength <= MAX_REQUEST_BYTES);
-        const value = await this.#exchange(`requests/${instance}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/octet-stream" },
-            body: body.slice().buffer,
-        });
+        const value = await this.#exchange(
+            `requests/${instance}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/octet-stream" },
+                body: body.slice().buffer,
+            },
+            202,
+        );
         return patterned(HEX32, exactObject(value, ["request_id"]).request_id);
     }
 
@@ -172,7 +204,7 @@ export class FetchTransport implements Transport {
         requireArgument(after === undefined || matches(CURSOR, after));
         const query = after === undefined ? "" : `?after=${after}`;
         const value = exactObject(
-            await this.#exchange(`responses/${client}${query}`, { method: "GET" }),
+            await this.#exchange(`responses/${client}${query}`, { method: "GET" }, 200),
             ["responses", "next"],
         );
         return {
@@ -187,14 +219,23 @@ export class FetchTransport implements Transport {
         };
     }
 
-    async #exchange(path: string, init: RequestInit): Promise<unknown> {
-        const response = await this.#fetch(new URL(path, this.#base).href, {
+    async #exchange(path: string, init: RequestInit, expected: number): Promise<unknown> {
+        const url = new URL(path, this.#base).href;
+        const response = await this.#fetch(url, {
             ...init,
             redirect: "manual",
             credentials: "omit",
             cache: "no-store",
             referrerPolicy: "no-referrer",
         });
+        if (isRedirect(response, url)) {
+            await discard(response);
+            throw invalidResponse();
+        }
+        if (response.status !== expected) {
+            await discard(response);
+            throw new CapabilityError(STATUS_CODES.get(response.status) ?? "INTERNAL");
+        }
         return parseStrictJson(new Uint8Array(await response.arrayBuffer()));
     }
 }
