@@ -1,6 +1,7 @@
 """T-10: the open-request replay cache (INC-2-API §4.9; R-6; SR-4, SR-14)."""
 
 import time
+import tracemalloc
 
 import pytest
 
@@ -144,4 +145,32 @@ def test_recording_a_present_key_with_an_earlier_timestamp_keeps_the_later_expir
 
     clock.now = T0 + 100 + 300
     assert cache.seen(CLIENT, RID)
+    assert cache._size() == 1
+
+
+def test_a_full_cache_still_extends_a_present_key_without_growing() -> None:
+    clock = Clock()
+    cache = _full_cache(clock)
+
+    cache.record(CLIENT, bytes([0]) * 16, T0 + 200)
+
+    clock.now = T0 + 300 + 1
+    assert cache.seen(CLIENT, bytes([0]) * 16)
+    assert cache._size() == 1
+
+
+def test_repeatedly_extending_one_key_does_not_grow_memory() -> None:
+    cache = ReplayCache(skew_s=300, max_entries=1, clock=Clock())
+    cache.record(CLIENT, RID, T0)
+
+    tracemalloc.start()
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        for n in range(1, 100_001):
+            cache.record(CLIENT, RID, T0 + n)
+        after, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert after - before < 64 * 1024
     assert cache._size() == 1
