@@ -528,3 +528,35 @@ describe("edge: a response that arrives after the deadline is released, not read
         expect(probe.cancelled).toBe(true);
     });
 });
+
+describe("edge: URL and status boundaries", () => {
+    it.each([
+        ["password-only userinfo", "https://:p@a.example/"],
+        ["username-only userinfo", "https://u@a.example/"],
+        ["empty fragment", "https://a.example/#"],
+        ["upper-case scheme", "HTTPS://a.example/"],
+        ["default port spelled out", "https://a.example:443/"],
+        ["dot segment", "https://a.example/a/../x"],
+        ["loopback lookalike over http", "http://127.0.0.1.evil.example/x"],
+        ["shortened loopback literal", "http://127.1:1/x"],
+        ["loopback on another scheme", "ws://localhost:1/x"],
+    ])("%s -> INVALID_ARGUMENT, never fetched", async (_name, url) => {
+        const { fetch, calls } = spy(() => new Response("{}"));
+        expect(codeOf(await rejection(make(fetch).get(url)))).toBe("INVALID_ARGUMENT");
+        expect(calls).toHaveLength(0);
+    });
+
+    it.each([200, 201, 299])("status %i is accepted", async (status) => {
+        const { fetch } = spy(() => new Response("{}", { status }));
+        expect((await make(fetch).get(URL_OK)).status).toBe(status);
+    });
+
+    it.each([199, 300, 304, 600])("status %i -> HTTP_ERROR", async (status) => {
+        const { fetch } = spy(() => {
+            const response = new Response("{}");
+            Object.defineProperty(response, "status", { value: status });
+            return response;
+        });
+        expect(codeOf(await rejection(make(fetch).get(URL_OK)))).toBe("HTTP_ERROR");
+    });
+});
