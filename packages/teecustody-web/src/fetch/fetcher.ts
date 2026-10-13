@@ -39,11 +39,11 @@ function isAllowedUrl(url: string): boolean {
     );
 }
 
-// Releases an unread body without awaiting it; a cancel that rejects is ignored, never left unhandled.
 interface Cancellable {
     cancel(): Promise<void>;
 }
 
+// Releases an unread body without awaiting it; a cancel that rejects is ignored, never left unhandled.
 function release(source: Cancellable | null): void {
     void source?.cancel().catch(() => undefined);
 }
@@ -122,12 +122,20 @@ function isPositiveSafeInteger(value: number): boolean {
     return Number.isSafeInteger(value) && value > 0;
 }
 
+/**
+ * The Core `Fetcher` over `fetch` (B-06). `get` accepts only canonical https URLs (http on a loopback host), sends
+ * a CORS-simple GET with no headers, credentials, referrer or cache, follows no redirect, accepts only 2xx, and
+ * bounds the body by `maxBodyBytes` while streaming, all within `timeoutMs`. Every rejection is a
+ * `CapabilityError` whose message is its code.
+ *
+ * Configuration: `maxBodyBytes` must be at least `VerifierLimits.maxJwksBytes` of the verifier this Fetcher
+ * serves; the constructor checks only that both numbers are positive safe integers (`TypeError("INVALID_CONFIG")`).
+ */
 export class FetchFetcher implements Fetcher {
     readonly #fetch: FetchFn;
     readonly #maxBodyBytes: number;
     readonly #timeoutMs: number;
 
-    // TypeError("INVALID_CONFIG") on bad options
     constructor(options: FetchFetcherOptions) {
         if (
             !isPositiveSafeInteger(options.maxBodyBytes) ||
