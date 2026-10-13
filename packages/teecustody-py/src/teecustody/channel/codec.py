@@ -128,8 +128,8 @@ class OpenResultBody:
 
 _U32_MAX: Final = 2**32 - 1
 _PREKEY_DOMAIN: Final = b"prekey-v1"
-_KEY_LEN: Final = 32  # enc, pub, IK_pub
-_ID_LEN: Final = 16  # request_id, session_id
+_KEY_LEN: Final = 32  # enc, pub, IK_pub, cs
+_ID_LEN: Final = 16  # request_id, session_id, key_id
 _CT_MIN: Final = 16
 _OPEN_CT_MAX: Final = 2048
 _FRAME_CT_MAX: Final = 32784  # frame request and both results
@@ -147,6 +147,8 @@ _RESPONSE_KINDS: Final = ("open_result", "frame_result")
 # Encoders re-check the aad they wrap with the default aad bounds (the decoders take theirs from
 # BoundaryLimits).
 _ENCODER_AAD_LIMITS: Final = BoundaryLimits().aad_decode
+_OPEN_SESSION_KEYS: Final = frozenset({"op", "cs", "key_id", "epoch"})
+_ENROLL_KEYS: Final = frozenset({"op"})
 _RESULT_OK_KEYS: Final = frozenset({"ok", "payload"})
 _RESULT_ERROR_KEYS: Final = frozenset({"ok", "error"})
 _SIG_LEN: Final = 64
@@ -332,7 +334,25 @@ def _checked_frame_aad(session_id: object, seq: object, op: object) -> FrameAad:
 
 
 def decode_open_payload(pt: Secret, limits: DecodeLimits) -> OpenSessionPayload | EnrollPayload:
-    raise NotImplementedError("T-07")
+    try:
+        return _parse_open_payload(wire.decode(pt.reveal(), limits))
+    except (wire.WireError, ValueError):
+        pass
+    raise EnvelopeError(EnvelopeErrorCode.INVALID)
+
+
+def _parse_open_payload(value: CanonicalValue) -> OpenSessionPayload | EnrollPayload:
+    if _member(value, "op") == "enroll":
+        _fields(value, _ENROLL_KEYS)
+        return EnrollPayload()
+    fields = _fields(value, _OPEN_SESSION_KEYS)
+    if fields["op"] != "open_session":
+        raise ValueError("OP_RANGE")
+    key_id = _sized_bytes(fields["key_id"], _ID_LEN, _ID_LEN, "KEY_ID")
+    epoch = _uint(fields["epoch"], _U32_MAX, "EPOCH")
+    # Last, so no Secret exists unless the whole payload is valid; cs lives only in it (NFR-3).
+    cs = Secret(_sized_bytes(fields["cs"], _KEY_LEN, _KEY_LEN, "CS"))
+    return OpenSessionPayload(cs=cs, key_id=key_id, epoch=epoch)
 
 
 def encode_open_result_aad(aad: OpenResultAad) -> bytes:

@@ -22,6 +22,7 @@ from teecustody.channel.codec import (
     PreKeyBundle,
     PreKeyEntry,
     decode_bundle,
+    decode_open_payload,
     decode_open_result_plaintext,
     decode_request,
     decode_response,
@@ -33,13 +34,16 @@ from teecustody.channel.codec import (
     encode_response_envelope,
 )
 from teecustody.channel.ports import (
+    EnrollPayload,
     HandlerError,
     HandlerOk,
     OpenAccepted,
     OpenRejected,
+    OpenSessionPayload,
     RemoteErrorCode,
 )
 from teecustody.config import BoundaryLimits
+from teecustody.secrets import Secret
 from teecustody.wire import PROTO, DecodeLimits, decode, encode
 
 LIMITS = BoundaryLimits()
@@ -810,3 +814,88 @@ def test_response_schema_violation_is_invalid(body: bytes) -> None:
 
     assert exc.value.code is EnvelopeErrorCode.INVALID
     assert exc.value.__context__ is None
+
+
+# ---------------------------------------------------------------- decode_open_payload (NFR-3)
+PAYLOAD_LIMITS = LIMITS.open_payload_decode
+CS = bytes(range(64, 96))
+KEY_ID = bytes(range(16))
+
+
+def open_session_payload(**override: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"op": "open_session", "cs": CS, "key_id": KEY_ID, "epoch": 3}
+    payload.update(override)
+    return payload
+
+
+def test_open_session_payload_decodes_with_cs_in_a_new_secret() -> None:
+    pt = Secret(encode(open_session_payload()))
+
+    payload = decode_open_payload(pt, PAYLOAD_LIMITS)
+
+    assert type(payload) is OpenSessionPayload
+    assert type(payload.cs) is Secret
+    assert payload.cs.reveal() == CS
+    assert payload.key_id == KEY_ID
+    assert payload.epoch == 3
+    pt.wipe()
+    assert payload.cs.reveal() == CS
+    assert CS.hex() not in repr(payload)
+
+
+def test_open_session_payload_boundary_values_decode() -> None:
+    payload = decode_open_payload(
+        Secret(encode(open_session_payload(epoch=2**32 - 1))), PAYLOAD_LIMITS
+    )
+
+    assert isinstance(payload, OpenSessionPayload)
+    assert payload.epoch == 2**32 - 1
+
+
+def test_enroll_payload_decodes() -> None:
+    assert decode_open_payload(Secret(encode({"op": "enroll"})), PAYLOAD_LIMITS) == EnrollPayload()
+
+
+def _payload_without(key: str) -> dict[str, Any]:
+    return {k: v for k, v in open_session_payload().items() if k != key}
+
+
+INVALID_OPEN_PAYLOADS: dict[str, bytes] = {
+    "not-a-map": encode([open_session_payload()]),
+    "missing-op": encode(_payload_without("op")),
+    "op-other": encode(open_session_payload(op="close")),
+    "op-bytes": encode(open_session_payload(op=b"open_session")),
+    "unknown-key": encode(open_session_payload(extra=1)),
+    "missing-cs": encode(_payload_without("cs")),
+    "missing-epoch": encode(_payload_without("epoch")),
+    "cs-31": encode(open_session_payload(cs=CS[:31])),
+    "cs-33": encode(open_session_payload(cs=CS + b"\x00")),
+    "cs-text": encode(open_session_payload(cs="c" * 32)),
+    "key-id-15": encode(open_session_payload(key_id=KEY_ID[:15])),
+    "key-id-17": encode(open_session_payload(key_id=KEY_ID + b"\x00")),
+    "epoch-2^32": encode(open_session_payload(epoch=2**32)),
+    "epoch-negative": encode(open_session_payload(epoch=-1)),
+    "epoch-bool": encode(open_session_payload(epoch=True)),
+    "enroll-with-cs": encode({"op": "enroll", "cs": CS}),
+    "enroll-op-uppercase": encode({"op": "ENROLL"}),
+    "trailing-byte": encode(open_session_payload()) + b"\x00",
+    "noncanonical": b"\xa1\x62op\x78\x06enroll",
+}
+
+
+@pytest.mark.parametrize("data", INVALID_OPEN_PAYLOADS.values(), ids=INVALID_OPEN_PAYLOADS.keys())
+def test_open_payload_violation_is_invalid(data: bytes) -> None:
+    with pytest.raises(EnvelopeError) as exc:
+        decode_open_payload(Secret(data), PAYLOAD_LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert exc.value.__context__ is None
+
+
+def test_open_payload_is_decoded_with_the_given_limits() -> None:
+    pt = Secret(encode(open_session_payload()))
+
+    with pytest.raises(EnvelopeError) as exc:
+        decode_open_payload(pt, DecodeLimits(max_bytes=32, max_depth=2, max_items=16))
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
