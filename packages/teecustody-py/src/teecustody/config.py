@@ -3,7 +3,7 @@
 Fields and defaults are frozen. Validation (`__post_init__`) belongs to T-09.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Final
 
@@ -33,6 +33,23 @@ class ConfigError(Exception):
         self.field = field
 
 
+# Inclusive (low, high) per ChannelParams field; None is unbounded. prekey_low_water's upper
+# bound is the cross-field rule `prekey_low_water < prekey_batch`.
+_CHANNEL_RANGES: Final[dict[str, tuple[int, int | None]]] = {
+    "prekey_ttl_s": (60, 3600),
+    "prekey_batch": (1, 256),
+    "prekey_low_water": (0, None),
+    "request_skew_s": (1, 3600),
+    "idle_timeout_s": (1, 86400),
+    "refresh_margin_s": (1, 3599),
+}
+
+
+def _int_in_range(value: object, low: int, high: int | None) -> bool:
+    """True iff `value` is an exact `int` (not `bool`) in [low, high]; `high=None` is unbounded."""
+    return type(value) is int and low <= value and (high is None or value <= high)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChannelParams:
     prekey_ttl_s: int = 3600  # 60..3600 (bounded by token lifetime, FACTS F-10)
@@ -41,6 +58,11 @@ class ChannelParams:
     request_skew_s: int = 300  # 1..3600
     idle_timeout_s: int = 900  # 1..86400
     refresh_margin_s: int = 300  # 1..3599; passed to AttestationLifecycle
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            if not _int_in_range(getattr(self, f.name), *_CHANNEL_RANGES[f.name]):
+                raise ConfigError(ConfigErrorCode.INVALID_PARAMS, f.name)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
