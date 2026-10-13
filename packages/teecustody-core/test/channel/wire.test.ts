@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as cbor from "../../src/wire/cbor.js";
-import type { CanonicalValue } from "../../src/wire/types.js";
+import { WireError, type CanonicalValue, type WireErrorCode } from "../../src/wire/types.js";
 import {
     decodeResponse,
     encodeFrameAad,
@@ -358,5 +358,254 @@ describe("criterion 3: decodeResponse returns the typed envelope", () => {
         expect(calls[0]?.[1]).toBe(ENVELOPE_LIMITS);
         expect(calls[1]?.[0]).toEqual(aad);
         expect(calls[1]?.[1]).toBe(AAD_LIMITS);
+    });
+});
+
+function expectWireError(fn: () => unknown, code: WireErrorCode): void {
+    let thrown: unknown;
+    try {
+        fn();
+    } catch (error) {
+        thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WireError);
+    expect((thrown as WireError).code).toBe(code);
+}
+
+describe("criterion 4: decodeResponse rejects schema violations with WireError (SR-3)", () => {
+    const decode = (body: Uint8Array): unknown => decodeResponse(body, ENVELOPE_LIMITS, AAD_LIMITS);
+    const openAad = openResultAad();
+    const frameAad = frameResultAad();
+
+    const malformed: readonly (readonly [string, () => Uint8Array])[] = [
+        ["envelope is an array", () => cbor.encodeCanonical([1, 2])],
+        ["envelope is an integer", () => cbor.encodeCanonical(1)],
+        ["envelope is a byte string", () => cbor.encodeCanonical(openAad)],
+        [
+            "unknown envelope key",
+            () => response({ kind: "open_result", aad: openAad, ct: CT, x: 1 }),
+        ],
+        ["missing ct", () => response({ kind: "open_result", aad: openAad })],
+        ["missing aad", () => response({ kind: "frame_result", ct: CT })],
+        ["missing kind", () => response({ aad: openAad, ct: CT })],
+        ["kind open (a request)", () => response({ kind: "open", aad: openAad, ct: CT })],
+        ["kind frame (a request)", () => response({ kind: "frame", aad: frameAad, ct: CT })],
+        ["kind not text", () => response({ kind: 1, aad: openAad, ct: CT })],
+        ["kind with different case", () => response({ kind: "Open_result", aad: openAad, ct: CT })],
+        ["aad text", () => response({ kind: "open_result", aad: "text", ct: CT })],
+        ["ct text", () => response({ kind: "open_result", aad: openAad, ct: "text" })],
+        ["ct 15 bytes", () => response({ kind: "open_result", aad: openAad, ct: CT.subarray(1) })],
+        [
+            "ct 32785 bytes",
+            () => response({ kind: "frame_result", aad: frameAad, ct: new Uint8Array(32_785) }),
+        ],
+        [
+            "nested aad is an array",
+            () => response({ kind: "open_result", aad: cbor.encodeCanonical([]), ct: CT }),
+        ],
+        [
+            "open aad seq 1",
+            () => response({ kind: "open_result", aad: openResultAad({ seq: 1 }), ct: CT }),
+        ],
+        [
+            "open aad seq text",
+            () => response({ kind: "open_result", aad: openResultAad({ seq: "0" }), ct: CT }),
+        ],
+        [
+            "open aad seq -1",
+            () => response({ kind: "open_result", aad: openResultAad({ seq: -1 }), ct: CT }),
+        ],
+        [
+            "open aad session id 15 bytes",
+            () =>
+                response({
+                    kind: "open_result",
+                    aad: openResultAad({ session_id: RID.subarray(1) }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "open aad session id text",
+            () =>
+                response({ kind: "open_result", aad: openResultAad({ session_id: "x" }), ct: CT }),
+        ],
+        [
+            "open aad session id false",
+            () =>
+                response({
+                    kind: "open_result",
+                    aad: openResultAad({ session_id: false }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "open aad request id 15 bytes",
+            () =>
+                response({
+                    kind: "open_result",
+                    aad: openResultAad({ request_id: RID.subarray(1) }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "open aad request id nil",
+            () =>
+                response({ kind: "open_result", aad: openResultAad({ request_id: null }), ct: CT }),
+        ],
+        [
+            "open aad extra key",
+            () =>
+                response({ kind: "open_result", aad: openResultAad({ op: "test.echo" }), ct: CT }),
+        ],
+        [
+            "open aad missing seq",
+            () =>
+                response({
+                    kind: "open_result",
+                    aad: cborMap({ session_id: SID, request_id: RID }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "open_result carrying a frame aad",
+            () => response({ kind: "open_result", aad: frameAad, ct: CT }),
+        ],
+        [
+            "frame_result carrying an open-result aad",
+            () => response({ kind: "frame_result", aad: openAad, ct: CT }),
+        ],
+        [
+            "frame aad seq 2^53 (decodes to bigint, R-1)",
+            () =>
+                response({ kind: "frame_result", aad: frameResultAad({ seq: 2n ** 53n }), ct: CT }),
+        ],
+        [
+            "frame aad seq 2^64-1",
+            () =>
+                response({
+                    kind: "frame_result",
+                    aad: frameResultAad({ seq: 2n ** 64n - 1n }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "frame aad seq -1",
+            () => response({ kind: "frame_result", aad: frameResultAad({ seq: -1 }), ct: CT }),
+        ],
+        [
+            "frame aad session id nil",
+            () =>
+                response({
+                    kind: "frame_result",
+                    aad: frameResultAad({ session_id: null }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "frame aad session id 17 bytes",
+            () =>
+                response({
+                    kind: "frame_result",
+                    aad: frameResultAad({ session_id: new Uint8Array(17) }),
+                    ct: CT,
+                }),
+        ],
+        [
+            "frame aad op uppercase",
+            () => response({ kind: "frame_result", aad: frameResultAad({ op: "Test" }), ct: CT }),
+        ],
+        [
+            "frame aad op empty",
+            () => response({ kind: "frame_result", aad: frameResultAad({ op: "" }), ct: CT }),
+        ],
+        [
+            "frame aad op bytes",
+            () => response({ kind: "frame_result", aad: frameResultAad({ op: SID }), ct: CT }),
+        ],
+        [
+            "frame aad extra key",
+            () => response({ kind: "frame_result", aad: frameResultAad({ x: 1 }), ct: CT }),
+        ],
+        [
+            "frame aad missing op",
+            () =>
+                response({
+                    kind: "frame_result",
+                    aad: cborMap({ session_id: SID, seq: 3 }),
+                    ct: CT,
+                }),
+        ],
+        ["garbage", () => new Uint8Array([0xff, 0xff])],
+        ["empty body", () => new Uint8Array(0)],
+        [
+            "trailing byte",
+            () => Uint8Array.of(...response({ kind: "open_result", aad: openAad, ct: CT }), 0),
+        ],
+    ];
+
+    it.each(malformed)("%s → MALFORMED", (_name, make) => {
+        expectWireError(() => decode(make()), "MALFORMED");
+    });
+
+    it("propagates the codec's error for a non-canonical nested aad", () => {
+        // map(3) with keys "session_id", "seq", "request_id": canonical order is by encoded key bytes.
+        const nonCanonical = Uint8Array.of(
+            0xa3,
+            ...cbor.encodeCanonical("session_id"),
+            ...cbor.encodeCanonical(SID),
+            ...cbor.encodeCanonical("seq"),
+            0x00,
+            ...cbor.encodeCanonical("request_id"),
+            ...cbor.encodeCanonical(RID),
+        );
+        expectWireError(
+            () => decode(response({ kind: "open_result", aad: nonCanonical, ct: CT })),
+            "NONCANONICAL",
+        );
+    });
+
+    it("propagates the codec's error for a non-canonical envelope and an over-limit aad", () => {
+        const nonShortest = Uint8Array.of(
+            0xb8,
+            0x03,
+            ...response({ kind: "open_result", aad: openAad, ct: CT }).subarray(1),
+        );
+        expectWireError(() => decode(nonShortest), "NONCANONICAL");
+        expectWireError(
+            () =>
+                decodeResponse(
+                    response({ kind: "open_result", aad: openAad, ct: CT }),
+                    ENVELOPE_LIMITS,
+                    {
+                        ...AAD_LIMITS,
+                        maxBytes: openAad.length - 1,
+                    },
+                ),
+            "TOO_LARGE",
+        );
+        expectWireError(
+            () =>
+                decodeResponse(
+                    response({ kind: "open_result", aad: openAad, ct: CT }),
+                    { ...ENVELOPE_LIMITS, maxBytes: 8 },
+                    AAD_LIMITS,
+                ),
+            "TOO_LARGE",
+        );
+    });
+
+    it("re-encodes the nested aad and requires byte equality with the received bytes", () => {
+        const aad = frameResultAad();
+        const decodeSpy = vi.mocked(cbor.decodeCanonical);
+        const real = decodeSpy.getMockImplementation() as typeof cbor.decodeCanonical;
+        decodeSpy.mockImplementationOnce(real).mockImplementationOnce(
+            () =>
+                new Map<string, CanonicalValue>([
+                    ["session_id", SID],
+                    ["seq", 4],
+                    ["op", "test.echo"],
+                ]),
+        );
+        expectWireError(() => decode(response({ kind: "frame_result", aad, ct: CT })), "MALFORMED");
     });
 });

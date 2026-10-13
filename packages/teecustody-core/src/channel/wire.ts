@@ -2,7 +2,7 @@
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
 import { decodeCanonical, encodeCanonical } from "../wire/cbor.js";
-import { PROTO, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
+import { PROTO, WireError, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
 import type { OpenPayload } from "./types.js";
 
 export const MAX_SEQ = 9_007_199_254_740_991; // also MAX_UNIX_S
@@ -83,7 +83,7 @@ function check(ok: boolean, code: RangeCode): void {
     }
 }
 
-function isUint(value: unknown, max: number): boolean {
+function isUint(value: unknown, max: number): value is number {
     return (
         typeof value === "number" &&
         Number.isSafeInteger(value) &&
@@ -93,16 +93,61 @@ function isUint(value: unknown, max: number): boolean {
     );
 }
 
-function matches(value: unknown, pattern: RegExp): boolean {
+function matches(value: unknown, pattern: RegExp): value is string {
     return typeof value === "string" && pattern.test(value);
 }
 
-function hasLength(value: unknown, min: number, max = min): boolean {
+function hasLength(value: unknown, min: number, max = min): value is Bytes {
     return value instanceof Uint8Array && value.length >= min && value.length <= max;
 }
 
 function encodeMap(entries: Record<string, CanonicalValue>): Bytes {
     return encodeCanonical(new Map(Object.entries(entries)));
+}
+
+const ENVELOPE_KEYS = ["aad", "ct", "kind"];
+const OPEN_RESULT_AAD_KEYS = ["request_id", "seq", "session_id"];
+const FRAME_AAD_KEYS = ["op", "seq", "session_id"];
+
+function malformed(): never {
+    throw new WireError("MALFORMED");
+}
+
+// The map, if it has exactly these keys; otherwise undefined.
+function exactMap(
+    value: CanonicalValue,
+    keys: readonly string[],
+): ReadonlyMap<string, CanonicalValue> | undefined {
+    if (!(value instanceof Map)) {
+        return undefined;
+    }
+    const map = value as ReadonlyMap<string, CanonicalValue>;
+    return map.size === keys.length && keys.every((key) => map.has(key)) ? map : undefined;
+}
+
+function sameBytes(a: Bytes, b: Bytes): boolean {
+    return a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
+
+function openResultAad(value: CanonicalValue): OpenResultAadFields | undefined {
+    const map = exactMap(value, OPEN_RESULT_AAD_KEYS);
+    const sessionId = map?.get("session_id");
+    const requestId = map?.get("request_id");
+    return map?.get("seq") === 0 &&
+        (sessionId === null || hasLength(sessionId, ID_BYTES)) &&
+        hasLength(requestId, ID_BYTES)
+        ? { sessionId, requestId }
+        : undefined;
+}
+
+function frameAad(value: CanonicalValue): FrameAadFields | undefined {
+    const map = exactMap(value, FRAME_AAD_KEYS);
+    const sessionId = map?.get("session_id");
+    const seq = map?.get("seq");
+    const op = map?.get("op");
+    return hasLength(sessionId, ID_BYTES) && isUint(seq, MAX_SEQ) && matches(op, OP_NAME_PATTERN)
+        ? { sessionId, seq, op }
+        : undefined;
 }
 
 // RangeError("<FIELD>_RANGE")
@@ -163,31 +208,24 @@ export function decodeResponse(
     envelopeDecode: DecodeLimits,
     aadDecode: DecodeLimits,
 ): OpenResultEnvelope | FrameResultEnvelope {
-    const envelope = decodeCanonical(body, envelopeDecode) as ReadonlyMap<string, CanonicalValue>;
-    const aadBytes = envelope.get("aad") as Bytes;
-    const ct = envelope.get("ct") as Bytes;
-    const aad = decodeCanonical(aadBytes, aadDecode) as ReadonlyMap<string, CanonicalValue>;
-    if (envelope.get("kind") === "open_result") {
-        return {
-            kind: "open_result",
-            aadBytes,
-            aad: {
-                sessionId: aad.get("session_id") as Bytes | null,
-                requestId: aad.get("request_id") as Bytes,
-            },
-            ct,
-        };
+    const envelope = exactMap(decodeCanonical(body, envelopeDecode), ENVELOPE_KEYS) ?? malformed();
+    const kind = envelope.get("kind");
+    const aadBytes = envelope.get("aad");
+    const ct = envelope.get("ct");
+    if (
+        (kind !== "open_result" && kind !== "frame_result") ||
+        !(aadBytes instanceof Uint8Array) ||
+        !hasLength(ct, MIN_CT, MAX_CT)
+    ) {
+        return malformed();
     }
-    return {
-        kind: "frame_result",
-        aadBytes,
-        aad: {
-            sessionId: aad.get("session_id") as Bytes,
-            seq: aad.get("seq") as number,
-            op: aad.get("op") as string,
-        },
-        ct,
-    };
+    const aadValue = decodeCanonical(aadBytes, aadDecode);
+    if (!sameBytes(encodeCanonical(aadValue), aadBytes)) {
+        return malformed();
+    }
+    return kind === "open_result"
+        ? { kind, aadBytes, aad: openResultAad(aadValue) ?? malformed(), ct }
+        : { kind, aadBytes, aad: frameAad(aadValue) ?? malformed(), ct };
 }
 
 // ChannelError("INVALID_RESPONSE") on any failure, incl. R-3
