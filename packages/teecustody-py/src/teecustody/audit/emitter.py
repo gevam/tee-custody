@@ -6,7 +6,7 @@
 from collections.abc import Callable
 from enum import StrEnum
 
-from teecustody.audit.ports import AuditSink
+from teecustody.audit.ports import AuditClass, AuditKey, AuditRecord, AuditSink
 from teecustody.obs.types import AllowListedLogger
 
 
@@ -36,10 +36,18 @@ class AuditEmitter:
         rng: Callable[[int], bytes],
         logger: AllowListedLogger,
     ) -> None:
-        raise NotImplementedError("T-12")
+        self._sink = sink
+        self._interval_ms = interval_s * 1000
+        self._clock = clock
+        self._rng = rng
+        self._start = self._now_ms()
+        self._counts: dict[str, int] = {}
+
+    def _now_ms(self) -> int:
+        return int(self._clock() * 1000)
 
     def count(self, outcome: AggregateOutcome) -> None:
-        raise NotImplementedError("T-12")
+        self._counts[outcome.value] = self._counts.get(outcome.value, 0) + 1
 
     def pre_principal_alert(
         self,
@@ -62,7 +70,18 @@ class AuditEmitter:
         raise NotImplementedError("T-12")
 
     def tick(self) -> None:
-        raise NotImplementedError("T-12")
+        now = self._now_ms()
+        end = self._start + self._interval_ms
+        if now < end:
+            return
+        for outcome, n in self._counts.items():
+            key = AuditKey(AuditClass.AGGREGATE, f"{self._start}/{outcome}/{self._rng(8).hex()}")
+            record = AuditRecord(
+                outcome=outcome, ts=now, interval_start=self._start, interval_end=end, count=n
+            )
+            self._sink.append(key, record)
+        self._counts = {}
+        self._start = end
 
     def close(self) -> None:
         raise NotImplementedError("T-12")
