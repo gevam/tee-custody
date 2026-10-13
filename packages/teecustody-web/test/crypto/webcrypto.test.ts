@@ -126,6 +126,22 @@ describe("verifyEd25519 (criterion 2)", () => {
         ).toBe("INVALID_ARGUMENT");
     });
 
+    it("checks both lengths before any WebCrypto call", async () => {
+        const importKey = vi.spyOn(globalThis.crypto.subtle, "importKey");
+        const crypto = createWebCrypto();
+        for (const [pk, sig] of [
+            [new Uint8Array(31), new Uint8Array(64)],
+            [new Uint8Array(33), new Uint8Array(64)],
+            [new Uint8Array(32), new Uint8Array(65)],
+        ] as const) {
+            expect(await codeOfRejection(crypto.verifyEd25519(pk, MSG, sig))).toBe(
+                "INVALID_ARGUMENT",
+            );
+        }
+        expect(importKey).not.toHaveBeenCalled();
+        importKey.mockRestore();
+    });
+
     it("reports UNSUPPORTED when the subtle's Ed25519 import throws NotSupportedError", async () => {
         const subtle = refusingImport(
             "Ed25519",
