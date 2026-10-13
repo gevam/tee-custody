@@ -26,3 +26,5 @@ enc, sender = suite.create_sender_context(pk, **{"pks": p})
 recipient = suite.create_recipient_context(enc, sk, b"", b"psk")
 # ruleid: tc-py-no-hpke-seams
 recipient = suite.create_recipient_context(enc, sk, info, **opts)
+# ruleid: tc-py-no-hpke-seams
+recipient = suite.create_recipient_context(enc, sk, **opts)
