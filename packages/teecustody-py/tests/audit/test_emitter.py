@@ -192,3 +192,30 @@ def test_alert_cap_writes_one_cap_reached_then_folds_and_resets_next_interval() 
         "ALERT_CAP_REACHED"
     ]
     assert sink.of(AuditClass.ALERT)[3][1].subject_client_id == _subject(0)
+
+
+def test_alert_is_never_capped_or_deduplicated() -> None:
+    emitter, sink, _, _ = _make(cap=1)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_B)
+    span = (START_MS - INTERVAL_MS, START_MS)
+    for _ in range(200):
+        emitter.alert("PREKEY_BURN_HIGH", interval=span)
+    emitter.alert("AUDIT_WRITE_CONFLICT", request_id=REQ)
+    burns = [(k, r) for k, r in sink.of(AuditClass.ALERT) if r.outcome == "PREKEY_BURN_HIGH"]
+    assert len(burns) == 200
+    assert len({k.id for k, _ in burns}) == 200
+    for key, record in burns:
+        match = ALERT_ID.fullmatch(key.id)
+        assert match is not None
+        assert match.group(2) == "PREKEY_BURN_HIGH"
+        assert (record.interval_start, record.interval_end) == span
+        assert record.count is None
+        assert record.request_id is None
+        assert record.ts == START_MS
+    [(_, conflict)] = [
+        r for r in sink.of(AuditClass.ALERT) if r[1].outcome == "AUDIT_WRITE_CONFLICT"
+    ]
+    assert conflict.request_id == REQ
+    assert conflict.interval_start is None
+    assert conflict.interval_end is None

@@ -70,14 +70,10 @@ class AuditEmitter:
         if len(self._alerted) >= self._alert_cap:
             if not self._cap_reached:
                 self._cap_reached = True
-                self._write(
-                    AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/ALERT_CAP_REACHED"),
-                    AuditRecord(outcome="ALERT_CAP_REACHED", ts=self._now_ms()),
-                )
+                self.alert("ALERT_CAP_REACHED")
             self._fold(outcome)
             return
         self._alerted.add((outcome, subject_client_id))
-        key = AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
         record = AuditRecord(
             outcome=outcome,
             ts=self._now_ms(),
@@ -86,7 +82,10 @@ class AuditEmitter:
             epoch=epoch,
             recovery_id=recovery_id,
         )
-        self._write(key, record)
+        self._write(self._alert_key(outcome), record)
+
+    def _alert_key(self, outcome: str) -> AuditKey:
+        return AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
 
     def _write(self, key: AuditKey, record: AuditRecord) -> None:
         self._sink.append(key, record)
@@ -98,7 +97,17 @@ class AuditEmitter:
         request_id: str | None = None,
         interval: tuple[int, int] | None = None,
     ) -> None:
-        raise NotImplementedError("T-12")
+        start, end = interval if interval is not None else (None, None)
+        self._write(
+            self._alert_key(outcome),
+            AuditRecord(
+                outcome=outcome,
+                ts=self._now_ms(),
+                request_id=request_id,
+                interval_start=start,
+                interval_end=end,
+            ),
+        )
 
     def tick(self) -> None:
         now = self._now_ms()
