@@ -162,15 +162,35 @@ def _importing(module: str) -> str:
     return f"import {module}\n\nPROBE = {module}\n"
 
 
-@pytest.mark.parametrize("module", ["teecustody_sim", "cbor2"])
-def test_ruff_bans_simulator_and_cbor_imports_in_gateway_source(module: str) -> None:
-    result = _ruff_check(_importing(module), f"{_GATEWAY}/src/notes_gateway/app.py")
+_GATEWAY_SOURCES = ("app.py", "dev.py")
+_LAZY_SIMULATOR_IMPORT = "def main() -> None:\n    from teecustody_sim import Simulator\n"
+
+
+@pytest.mark.parametrize("module_file", _GATEWAY_SOURCES)
+def test_ruff_bans_cbor2_everywhere_in_gateway_source(module_file: str) -> None:
+    result = _ruff_check(_importing("cbor2"), f"{_GATEWAY}/src/notes_gateway/{module_file}")
     assert result.returncode != 0
     assert "TID251" in result.stdout
 
 
-def test_ruff_allows_simulator_import_in_dev_module() -> None:
-    result = _ruff_check(_importing("teecustody_sim"), f"{_GATEWAY}/src/notes_gateway/dev.py")
+@pytest.mark.parametrize("module_file", _GATEWAY_SOURCES)
+def test_ruff_bans_module_level_simulator_import_in_gateway_source(module_file: str) -> None:
+    result = _ruff_check(
+        _importing("teecustody_sim"), f"{_GATEWAY}/src/notes_gateway/{module_file}"
+    )
+    assert result.returncode != 0
+    assert "TID253" in result.stdout
+
+
+def test_ruff_raises_no_import_ban_on_lazy_simulator_import_in_dev_module() -> None:
+    result = _ruff_check(_LAZY_SIMULATOR_IMPORT, f"{_GATEWAY}/src/notes_gateway/dev.py")
+    assert "TID251" not in result.stdout
+    assert "TID253" not in result.stdout
+
+
+def test_ruff_allows_used_lazy_simulator_import_in_dev_module() -> None:
+    source = _LAZY_SIMULATOR_IMPORT + "    Simulator()\n"
+    result = _ruff_check(source, f"{_GATEWAY}/src/notes_gateway/dev.py")
     assert result.returncode == 0, result.stdout
 
 
@@ -178,6 +198,13 @@ def test_ruff_allows_simulator_import_in_dev_module() -> None:
 def test_ruff_allows_banned_imports_in_gateway_tests(module: str) -> None:
     result = _ruff_check(_importing(module), f"{_GATEWAY}/tests/test_probe.py")
     assert result.returncode == 0, result.stdout
+
+
+def test_ruff_toml_exempts_only_tests_from_import_bans() -> None:
+    config = tomllib.loads((_REPO_ROOT / _GATEWAY / "ruff.toml").read_text(encoding="utf-8"))
+    lint = config["lint"]
+    assert "per-file-ignores" not in lint
+    assert lint["extend-per-file-ignores"] == {"tests/**": ["TID251", "TID253"]}
 
 
 def test_pytest_puts_repo_root_on_path_so_tests_support_imports() -> None:

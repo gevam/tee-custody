@@ -5,10 +5,12 @@ extend = "../../../pyproject.toml"
 # GatewayLimits is a frozen dataclass: a safe shared default (INC-2-API §6 create_app).
 extend-immutable-calls = ["notes_gateway.GatewayLimits", "notes_gateway.limits.GatewayLimits"]
 
+[lint.flake8-tidy-imports]
+# TID253: the simulator is imported lazily, in dev.py only.
+banned-module-level-imports = ["teecustody_sim"]
+
 [lint.flake8-tidy-imports.banned-api]
-"teecustody_sim".msg = "the gateway never depends on the simulator outside dev.py"
 "cbor2".msg = "the gateway relays opaque bytes and never decodes CBOR"
 
 [lint.extend-per-file-ignores]
-"src/notes_gateway/dev.py" = ["TID251"]
-"tests/**" = ["TID251"]
+"tests/**" = ["TID251", "TID253"]
