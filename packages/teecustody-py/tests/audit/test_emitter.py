@@ -133,3 +133,35 @@ def test_count_saturates_at_max_count() -> None:
     emitter.tick()
     [(_, record)] = sink.of(AuditClass.AGGREGATE)
     assert record.count == MAX_COUNT
+
+
+SUBJECT_A = "a" * 32
+SUBJECT_B = "b" * 32
+REQ = "c" * 32
+
+
+def test_pre_principal_alert_first_per_subject_alerts_and_repeats_fold() -> None:
+    emitter, sink, clock, _ = _make()
+    emitter.pre_principal_alert(
+        "KCV_MISMATCH", subject_client_id=SUBJECT_A, request_id=REQ, epoch=7
+    )
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_B, recovery_id="d" * 32)
+    alerts = sink.of(AuditClass.ALERT)
+    assert [r.subject_client_id for _, r in alerts] == [SUBJECT_A, SUBJECT_B]
+    for key, record in alerts:
+        match = ALERT_ID.fullmatch(key.id)
+        assert match is not None
+        assert match.group(2) == "KCV_MISMATCH"
+        assert record.outcome == "KCV_MISMATCH"
+        assert record.ts == START_MS
+        assert record.count is None
+    assert (alerts[0][1].request_id, alerts[0][1].epoch, alerts[0][1].recovery_id) == (REQ, 7, None)
+    assert (alerts[1][1].request_id, alerts[1][1].recovery_id) == (None, "d" * 32)
+    assert alerts[0][0].id != alerts[1][0].id
+    assert sink.of(AuditClass.AGGREGATE) == []
+    clock.now += INTERVAL_S
+    emitter.tick()
+    [(_, aggregate)] = sink.of(AuditClass.AGGREGATE)
+    assert aggregate.outcome == "KCV_MISMATCH"
+    assert aggregate.count == 1

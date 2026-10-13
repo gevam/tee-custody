@@ -42,12 +42,16 @@ class AuditEmitter:
         self._rng = rng
         self._start = self._now_ms()
         self._counts: dict[str, int] = {}
+        self._alerted: set[tuple[str, str]] = set()
 
     def _now_ms(self) -> int:
         return int(self._clock() * 1000)
 
     def count(self, outcome: AggregateOutcome) -> None:
-        self._counts[outcome.value] = min(self._counts.get(outcome.value, 0) + 1, MAX_COUNT)
+        self._fold(outcome.value)
+
+    def _fold(self, outcome: str) -> None:
+        self._counts[outcome] = min(self._counts.get(outcome, 0) + 1, MAX_COUNT)
 
     def pre_principal_alert(
         self,
@@ -58,7 +62,20 @@ class AuditEmitter:
         epoch: int | None = None,
         recovery_id: str | None = None,
     ) -> None:
-        raise NotImplementedError("T-12")
+        if (outcome, subject_client_id) in self._alerted:
+            self._fold(outcome)
+            return
+        self._alerted.add((outcome, subject_client_id))
+        key = AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
+        record = AuditRecord(
+            outcome=outcome,
+            ts=self._now_ms(),
+            subject_client_id=subject_client_id,
+            request_id=request_id,
+            epoch=epoch,
+            recovery_id=recovery_id,
+        )
+        self._sink.append(key, record)
 
     def alert(
         self,
