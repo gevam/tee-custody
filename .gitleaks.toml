@@ -1,0 +1,12 @@
+# gitleaks configuration (T-05; spec I1, framework.yaml secrets-never-in-logs-fixtures-or-pr-text).
+# Default rules stay on everywhere. The allow-list holds only the two committed files whose keys are
+# synthetic test material: the generated channel vector suite and the CFRG RFC 9180 KAT file. Any
+# other path, including other vectors, is scanned in full.
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  '''^spec/vectors/channel/suite\.cbor$''',
+  '''^tests/fixtures/rfc9180/test-vectors\.json$''',
+]

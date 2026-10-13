@@ -57,7 +57,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-regex: tee-sim\.localhost|SIMULATED
 
   - id: tc-no-verification-skip
@@ -65,15 +65,23 @@ rules:
     severity: ERROR
     languages: [regex]
     paths:
-      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-py/src/**"]
-    pattern-regex: (?i)(skip|disable|bypass|no)_?verif|insecure
+      include:
+        - "/packages/teecustody-core/src/**"
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-web/src/**"
+    # A1/A3 (T-05, D-046): the standalone upper-case NO_VERIFIED_BUNDLE error code (INC-2-API §7.5),
+    # with no word or `$` neighbour, is the only exemption; every other spelling fires (see fixtures).
+    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!(?<![\w$])NO_VERIFIED_BUNDLE(?![\w$])))no_?verif|insecure
 
   - id: tc-no-sim-import-in-library
     message: The library never depends on the simulator (NFR-6, spec §15.5).
     severity: ERROR
     languages: [regex]
     paths:
-      include: ["/packages/teecustody-py/**/*.py", "/packages/teecustody-core/**/*.ts"]
+      include:
+        - "/packages/teecustody-py/**/*.py"
+        - "/packages/teecustody-core/**/*.ts"
+        - "/packages/teecustody-web/src/**"
     pattern-either:
       # Python: every `import`/`from` form, including aliases and comma lists.
       - pattern-regex: >-
@@ -232,7 +240,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern: Function
       - pattern: eval
@@ -257,7 +265,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern: import(...)
       - pattern-regex: \bimport\s*\(
@@ -271,7 +279,7 @@ rules:
     severity: ERROR
     languages: [typescript]
     paths:
-      include: ["/packages/teecustody-core/src/**"]
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-either:
       - pattern-regex: eslint-disable
       - pattern-regex: "@ts-ignore|@ts-nocheck|@ts-expect-error"
@@ -306,3 +314,150 @@ rules:
     paths:
       include: ["/packages/teecustody-core/src/**"]
     pattern-regex: \b(?:setTimeout|setInterval|setImmediate|queueMicrotask|execScript)\b
+
+  # --- INC-2 rules (T-05; INC-2-API §9.5, ADR 0011 C2/C5, SR-3, SR-13, SR-14). Tests and
+  # teecustody_sim/** are outside every "src" path below. ---
+
+  - id: tc-py-hpke-import-confined
+    message: >-
+      pyhpke is imported only by teecustody/channel/hpke.py; every other module uses that facade
+      (SR-14, ADR 0011).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+      exclude: ["/packages/teecustody-py/src/teecustody/channel/hpke.py"]
+    # Semgrep's import pattern also matches submodule, alias, list and `from` forms (see fixtures).
+    pattern: import pyhpke
+
+  - id: tc-ts-hpke-import-confined
+    message: >-
+      @hpke/* is imported only by teecustody-web/src/crypto/webcrypto.ts; Core and the rest of Web
+      reach HPKE through the Crypto port (SR-14, ADR 0011).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
+      exclude: ["/packages/teecustody-web/src/crypto/webcrypto.ts"]
+    # Static, type-only, side-effect, re-export, literal dynamic and require forms; block and line
+    # comments may sit between the keyword and the specifier (A3).
+    pattern-regex: >-
+      (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*["'`]@hpke/
+
+  - id: tc-py-no-hpke-seams
+    message: >-
+      No HPKE test seam in production: no injected sender ephemeral key, PSK, PSK id or sender/auth
+      key argument; Base mode only (ADR 0011 C5, spec §5).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**", "/examples/**"]
+    pattern-either:
+      - pattern: $F(..., eks=$V, ...)
+      - pattern: $F(..., psk=$V, ...)
+      - pattern: $F(..., psk_id=$V, ...)
+      - pattern: $F(..., pks=$V, ...)
+      - pattern: $F(..., sks=$V, ...)
+      # A3: pyhpke takes psk, psk_id, sks, pks and eks positionally or through a ** splat.
+      - pattern: $S.create_sender_context($A, $B, $C, ...)
+      - pattern: $S.create_sender_context(..., **$KW, ...)
+      - pattern: $S.create_recipient_context($A, $B, $C, $D, ...)
+      - pattern: $S.create_recipient_context(..., **$KW, ...)
+
+  - id: tc-ts-no-hpke-seams
+    message: >-
+      No HPKE test seam in Core or Web: no injected sender ephemeral key (ekm), PSK, PSK id or
+      sender/auth key property; Base mode only (ADR 0011 C5, spec §5).
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
+    pattern-either:
+      # Object literal, shorthand, quoted, destructured and declared (`psk?:`) property keys.
+      - pattern-regex: >-
+          (?m)(?:^[ \t]*|[{,;][ \t]*)["'`]?\b(?:ekm|psk|pskId|senderKey|senderPublicKey)\b["'`]?[ \t]*\??[ \t]*[:,}=]
+      # Member access, plain and computed.
+      - pattern-regex: \.\s*(?:ekm|psk|pskId|senderKey|senderPublicKey)\b
+      - pattern-regex: \[\s*["'`](?:ekm|psk|pskId|senderKey|senderPublicKey)["'`]\s*\]
+
+  - id: tc-py-no-kdf-composition
+    message: >-
+      Project code never builds HKDF or HPKE from HMAC; the key schedule lives only in the allow-listed
+      HPKE library and cryptography's HKDF (ADR 0011 C2). hmac.compare_digest is allowed.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**", "/examples/**"]
+    pattern-either:
+      - pattern: hmac.new(...)
+      - pattern: hmac.digest(...)
+      - pattern: hmac.HMAC(...)
+      - pattern: cryptography.hazmat.primitives.hmac.HMAC(...)
+
+  - id: tc-ts-no-kdf-composition
+    message: >-
+      Core and Web never build HKDF or HPKE from WebCrypto HMAC; use native HKDF or the allow-listed
+      HPKE library (ADR 0011 C2). WebCrypto algorithm names are case-insensitive.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
+    pattern-regex: (?i)(["'`])hmac\1
+
+  - id: tc-py-identity-sign-confined
+    message: >-
+      Only channel/prekeys.py calls IdentityKey.sign (and channel/identity.py implements it); no
+      other teecustody module signs anything (SR-14, INC-2-API §4.2).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/**"]
+      exclude:
+        - "/packages/teecustody-py/src/teecustody/channel/prekeys.py"
+        - "/packages/teecustody-py/src/teecustody/channel/identity.py"
+    pattern: $X.sign(...)
+
+  - id: tc-py-pattern-fullmatch
+    message: >-
+      `$` also matches before a trailing newline: validate with fullmatch, not match/search on a
+      pattern ending in `$` (R-7, SR-3).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/**/*.py", "/examples/**/*.py"]
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: re.match($PAT, ...)
+              - pattern: re.search($PAT, ...)
+          - metavariable-regex:
+              metavariable: $PAT
+              regex: (?s)^[rRbBuU]*("|').*(?<!\\)\$\1+$
+      - patterns:
+          - pattern-either:
+              - pattern: $P.match(...)
+              - pattern: $P.search(...)
+          # Also matches annotated assignments (`_P: Final = re.compile(...)`, see fixtures).
+          - pattern-inside: |
+              $P = re.compile($PAT, ...)
+              ...
+          - metavariable-regex:
+              metavariable: $PAT
+              regex: (?s)^[rRbBuU]*("|').*(?<!\\)\$\1+$
+
+  - id: tc-py-no-test-doubles
+    message: >-
+      Shipped code never imports the test tree or defines its doubles; StaticShareOpener lives only
+      in tests/support (INC-2-API §5.2).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/**", "/examples/**/src/**"]
+    pattern-either:
+      # Every `import`/`from` form of the top-level `tests` package, including aliases and lists.
+      - pattern-regex: >-
+          (?m)^[ \t]*(?:from[ \t]+tests\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*tests\b)
+      # Matches the class with or without bases (see fixtures).
+      - pattern: |
+          class StaticShareOpener(...):
+              ...
