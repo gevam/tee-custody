@@ -1,4 +1,7 @@
 // createWebCrypto (INC-2-API §8.1; T-17 criteria 1–6, 8–10; ADR 0011). KATs: hpke-kat.test.ts.
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
 import { CapabilityError, type PublicKeyInput } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -469,5 +472,60 @@ describe("HPKE Base mode (criterion 4)", () => {
                 "INVALID_ARGUMENT",
             );
         }
+    });
+});
+
+/** Makes `globalThis.crypto.subtle.generateKey` reject for X25519 (as a browser without it does). */
+function hideGlobalX25519(): { restore: () => void; probes: () => number } {
+    const subtle = globalThis.crypto.subtle;
+    const real = subtle.generateKey.bind(subtle) as (...a: unknown[]) => Promise<unknown>;
+    let probes = 0;
+    const spy = vi.spyOn(subtle, "generateKey").mockImplementation(((...args: unknown[]) => {
+        const algorithm = args[0] as AlgorithmIdentifier;
+        if ((typeof algorithm === "string" ? algorithm : algorithm.name) === "X25519") {
+            probes += 1;
+            return Promise.reject(new DOMException("no X25519", "NotSupportedError"));
+        }
+        return real(...args);
+    }) as typeof subtle.generateKey);
+    return { restore: () => spy.mockRestore(), probes: () => probes };
+}
+
+describe("native X25519 only (criterion 5, C3, C3a.3)", () => {
+    it("rejects both HPKE setups with UNSUPPORTED and no output when global X25519 is missing", async () => {
+        const { sk, pk } = await x25519KeyPair();
+        const hidden = hideGlobalX25519();
+        try {
+            const crypto = createWebCrypto();
+            const sender = crypto.setupHpkeSender(pk, INFO);
+            expect(await codeOfRejection(sender)).toBe("UNSUPPORTED");
+            expect(await codeOfRejection(crypto.setupHpkeReceiver(sk, pk, INFO))).toBe(
+                "UNSUPPORTED",
+            );
+            expect(await sender.catch(() => "no output")).toBe("no output");
+            expect(hidden.probes()).toBe(1);
+        } finally {
+            hidden.restore();
+        }
+    });
+
+    it("probes the global subtle even when options.subtle supports X25519", async () => {
+        const { pk } = await x25519KeyPair();
+        const injected = refusingImport("none", () => new Error("unused"));
+        const hidden = hideGlobalX25519();
+        try {
+            const crypto = createWebCrypto({ subtle: injected });
+            expect(await codeOfRejection(crypto.setupHpkeSender(pk, INFO))).toBe("UNSUPPORTED");
+        } finally {
+            hidden.restore();
+        }
+    });
+
+    it("has no @hpke/dhkem-x25519 (JS curve) in the lock file or the module graph", () => {
+        const lock = readFileSync(new URL("../../../../pnpm-lock.yaml", import.meta.url), "utf8");
+        expect(lock).not.toContain("@hpke/dhkem-x25519");
+        expect(lock).toContain("'@hpke/core@1.9.0'");
+        const require = createRequire(import.meta.url);
+        expect(() => require.resolve("@hpke/dhkem-x25519")).toThrow();
     });
 });

@@ -103,15 +103,29 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         return resolvedSubtle;
     }
 
-    let suite: CipherSuite | undefined;
+    let suite: Promise<CipherSuite | undefined> | undefined;
 
-    function hpkeSuite(): CipherSuite {
-        suite ??= new CipherSuite({
+    /** ADR 0011 C3a.3: one X25519 probe per adapter, on the global subtle that @hpke/* uses. */
+    async function probeSuite(globalSubtle: SubtleCrypto): Promise<CipherSuite | undefined> {
+        try {
+            await globalSubtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+        } catch {
+            return undefined;
+        }
+        return new CipherSuite({
             kem: new DhkemX25519HkdfSha256(),
             kdf: new HkdfSha256(),
             aead: new Aes256Gcm(),
         });
-        return suite;
+    }
+
+    async function hpkeSuite(): Promise<CipherSuite> {
+        suite ??= probeSuite(globalThis.crypto.subtle);
+        const ready = await suite;
+        if (ready === undefined) {
+            throw new CapabilityError("UNSUPPORTED");
+        }
+        return ready;
     }
 
     async function aesGcmKey(key: Uint8Array, nonce: Uint8Array): Promise<CryptoKey> {
@@ -179,7 +193,7 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         },
         async setupHpkeSender(recipientPublicKey, info): Promise<HpkeSenderContext> {
             requireKeyLength(recipientPublicKey);
-            const hpke = hpkeSuite();
+            const hpke = await hpkeSuite();
             const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
             const context = await hpke.createSenderContext({
                 recipientPublicKey: publicKey,
@@ -205,7 +219,7 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         ): Promise<HpkeReceiverContext> {
             requireKeyLength(recipientPrivateKey);
             requireKeyLength(encapsulatedKey);
-            const hpke = hpkeSuite();
+            const hpke = await hpkeSuite();
             let context: RecipientContext;
             try {
                 const privateKey = await hpke.kem.deserializePrivateKey(
