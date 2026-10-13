@@ -60,7 +60,9 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 function codeOf(error: unknown): string {
-    return error instanceof CapabilityError ? error.code : `not a CapabilityError: ${String(error)}`;
+    return error instanceof CapabilityError
+        ? error.code
+        : `not a CapabilityError: ${String(error)}`;
 }
 
 describe("criterion 2: only canonical https (or loopback http) URLs are fetched", () => {
@@ -106,7 +108,8 @@ describe("criterion 3: no redirect is ever followed or accepted (D2-14)", () => 
         ],
         [
             "cross-origin 302",
-            () => new Response(null, { status: 302, headers: { Location: "https://evil.example/" } }),
+            () =>
+                new Response(null, { status: 302, headers: { Location: "https://evil.example/" } }),
         ],
         ["opaqueredirect, status 0", () => shaped({ type: "opaqueredirect" }, Response.error())],
         ["opaqueredirect reported with a 200", () => shaped({ type: "opaqueredirect" })],
@@ -129,7 +132,10 @@ interface Probe {
 }
 
 // A pull-driven body (highWaterMark 0: one pull per read) that records pulls and cancellation.
-function probedBody(chunks: readonly Uint8Array[]): { body: ReadableStream<Uint8Array>; probe: Probe } {
+function probedBody(chunks: readonly Uint8Array[]): {
+    body: ReadableStream<Uint8Array>;
+    probe: Probe;
+} {
     const probe: Probe = { pulls: 0, cancelled: false };
     const body = new ReadableStream<Uint8Array>(
         {
@@ -181,7 +187,11 @@ describe("criterion 5: the body is bounded by maxBodyBytes while streaming", () 
     });
 
     it("a streamed body of exactly maxBodyBytes is returned whole, in order", async () => {
-        const chunks = [new Uint8Array(400).fill(1), new Uint8Array(400).fill(2), new Uint8Array(224).fill(3)];
+        const chunks = [
+            new Uint8Array(400).fill(1),
+            new Uint8Array(400).fill(2),
+            new Uint8Array(224).fill(3),
+        ];
         const { body } = probedBody(chunks);
         const { fetch } = spy(
             () => new Response(body, { status: 200, headers: { "Content-Length": "1024" } }),
@@ -222,7 +232,8 @@ describe("criterion 6: network failure and timeout are UNAVAILABLE", () => {
     });
 
     it("a rejecting fetch -> UNAVAILABLE", async () => {
-        const down: FetchFn = () => Promise.reject(new TypeError("Failed to fetch https://jwks.example/"));
+        const down: FetchFn = () =>
+            Promise.reject(new TypeError("Failed to fetch https://jwks.example/"));
         expect(codeOf(await rejection(make(down).get(URL_OK)))).toBe("UNAVAILABLE");
     });
 });
@@ -289,7 +300,11 @@ describe("criterion 8: every rejection is CapabilityError(code), message === cod
     }
 
     it.each<[string, string, FetchFn]>([
-        ["INVALID_ARGUMENT", `${SECRET_URL}#${SECRET_BODY}`, () => Promise.resolve(new Response(text))],
+        [
+            "INVALID_ARGUMENT",
+            `${SECRET_URL}#${SECRET_BODY}`,
+            () => Promise.resolve(new Response(text)),
+        ],
         [
             "UNAVAILABLE",
             SECRET_URL,
@@ -303,7 +318,10 @@ describe("criterion 8: every rejection is CapabilityError(code), message === cod
         [
             "HTTP_ERROR",
             SECRET_URL,
-            () => Promise.resolve(shaped({ url: `https://evil.example/${SECRET_BODY}` }, new Response(text))),
+            () =>
+                Promise.resolve(
+                    shaped({ url: `https://evil.example/${SECRET_BODY}` }, new Response(text)),
+                ),
         ],
         [
             "INVALID_RESPONSE",
@@ -363,7 +381,11 @@ describe("decision: a malformed Content-Length is INVALID_RESPONSE before readin
 
 describe("edge: a refused redirect releases its body", () => {
     it.each<[string, (body: ReadableStream<Uint8Array>) => Response]>([
-        ["302", (body) => new Response(body, { status: 302, headers: { Location: "https://evil.example/" } })],
+        [
+            "302",
+            (body) =>
+                new Response(body, { status: 302, headers: { Location: "https://evil.example/" } }),
+        ],
         ["opaqueredirect", (body) => shaped({ type: "opaqueredirect" }, new Response(body))],
         ["redirected", (body) => shaped({ redirected: true }, new Response(body))],
         ["url differs", (body) => shaped({ url: "https://evil.example/" }, new Response(body))],
@@ -415,7 +437,11 @@ describe("edge: a cancel that rejects is swallowed, never an unhandled rejection
     }
 
     it.each<[string, string, () => Response]>([
-        ["500", "HTTP_ERROR", () => new Response(hostileBody([new Uint8Array(1)]), { status: 500 })],
+        [
+            "500",
+            "HTTP_ERROR",
+            () => new Response(hostileBody([new Uint8Array(1)]), { status: 500 }),
+        ],
         [
             "Content-Length over the bound",
             "INVALID_RESPONSE",
@@ -437,5 +463,68 @@ describe("edge: a cancel that rejects is swallowed, never an unhandled rejection
         });
         expect(codeOf(error)).toBe(expected);
         expect(unhandled).toEqual([]);
+    });
+});
+
+describe("edge: the timeout also covers body streaming", () => {
+    function stallingBody(probe: Probe, cancelThrows: boolean): ReadableStream<Uint8Array> {
+        return new ReadableStream<Uint8Array>(
+            {
+                pull(controller) {
+                    probe.pulls += 1;
+                    if (probe.pulls === 1) {
+                        controller.enqueue(new Uint8Array(10));
+                        return undefined;
+                    }
+                    return new Promise<void>(() => undefined);
+                },
+                cancel() {
+                    probe.cancelled = true;
+                    if (cancelThrows) {
+                        throw new Error("cancel failed");
+                    }
+                },
+            },
+            { highWaterMark: 0 },
+        );
+    }
+
+    it.each([false, true])(
+        "a body that stalls after one chunk -> UNAVAILABLE at timeoutMs, stream cancelled (cancel throws: %s)",
+        async (cancelThrows) => {
+            vi.useFakeTimers();
+            const probe: Probe = { pulls: 0, cancelled: false };
+            const { fetch } = spy(() => new Response(stallingBody(probe, cancelThrows)));
+            let settled: unknown = "pending";
+            const pending = rejection(make(fetch, 1024, 300).get(URL_OK)).then((error) => {
+                settled = error;
+            });
+            await vi.advanceTimersByTimeAsync(299);
+            expect(settled).toBe("pending");
+            expect(probe.cancelled).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            await pending;
+            expect(codeOf(settled)).toBe("UNAVAILABLE");
+            expect(probe.cancelled).toBe(true);
+        },
+    );
+});
+
+describe("edge: a response that arrives after the deadline is released, not read", () => {
+    it("fetch resolving after timeoutMs (signal ignored) -> UNAVAILABLE and its body cancelled unread", async () => {
+        vi.useFakeTimers();
+        const { body, probe } = probedBody([new Uint8Array(10)]);
+        const late: FetchFn = () =>
+            new Promise<Response>((resolve) => {
+                setTimeout(() => {
+                    resolve(new Response(body));
+                }, 500);
+            });
+        const pending = rejection(make(late, 1024, 100).get(URL_OK));
+        await vi.advanceTimersByTimeAsync(100);
+        expect(codeOf(await pending)).toBe("UNAVAILABLE");
+        await vi.advanceTimersByTimeAsync(400);
+        expect(probe.pulls).toBe(0);
+        expect(probe.cancelled).toBe(true);
     });
 });

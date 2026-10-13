@@ -25,7 +25,12 @@ function isAllowedUrl(url: string): boolean {
     } catch {
         return false;
     }
-    if (parsed.href !== url || parsed.username !== "" || parsed.password !== "" || url.includes("#")) {
+    if (
+        parsed.href !== url ||
+        parsed.username !== "" ||
+        parsed.password !== "" ||
+        url.includes("#")
+    ) {
         return false;
     }
     return (
@@ -35,11 +40,16 @@ function isAllowedUrl(url: string): boolean {
 }
 
 // Releases an unread body without awaiting it; a cancel that rejects is ignored, never left unhandled.
-function refuse(
-    source: { cancel(): Promise<void> } | null,
-    code: CapabilityErrorCode,
-): CapabilityError {
+interface Cancellable {
+    cancel(): Promise<void>;
+}
+
+function release(source: Cancellable | null): void {
     void source?.cancel().catch(() => undefined);
+}
+
+function refuse(source: Cancellable | null, code: CapabilityErrorCode): CapabilityError {
+    release(source);
     return new CapabilityError(code);
 }
 
@@ -62,15 +72,24 @@ function declaredLengthFits(contentLength: string | null, maxBodyBytes: number):
     return /^[0-9]+$/.test(contentLength) && Number(contentLength) <= maxBodyBytes;
 }
 
-// Reads the body chunk by chunk and cancels the stream the moment the running total exceeds the bound.
+// Reads the body chunk by chunk and cancels the stream the moment the running total exceeds the bound or the
+// deadline aborts the exchange.
 async function readBounded(
     body: ReadableStream<Uint8Array> | null,
     maxBodyBytes: number,
+    signal: AbortSignal,
 ): Promise<Uint8Array> {
     if (body === null) {
         return new Uint8Array(0);
     }
     const reader = body.getReader();
+    signal.addEventListener(
+        "abort",
+        () => {
+            release(reader);
+        },
+        { once: true },
+    );
     const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
@@ -110,7 +129,10 @@ export class FetchFetcher implements Fetcher {
 
     // TypeError("INVALID_CONFIG") on bad options
     constructor(options: FetchFetcherOptions) {
-        if (!isPositiveSafeInteger(options.maxBodyBytes) || !isPositiveSafeInteger(options.timeoutMs)) {
+        if (
+            !isPositiveSafeInteger(options.maxBodyBytes) ||
+            !isPositiveSafeInteger(options.timeoutMs)
+        ) {
             throw new TypeError("INVALID_CONFIG");
         }
         this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -126,8 +148,8 @@ export class FetchFetcher implements Fetcher {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const deadline = new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => {
-                controller.abort();
                 reject(new CapabilityError("UNAVAILABLE"));
+                controller.abort();
             }, this.#timeoutMs);
         });
         try {
@@ -151,6 +173,9 @@ export class FetchFetcher implements Fetcher {
         } catch {
             throw new CapabilityError("UNAVAILABLE");
         }
+        if (signal.aborted) {
+            throw refuse(response.body, "UNAVAILABLE");
+        }
         // A 3xx is refused by the 2xx-only rule; it is never followed (D2-14).
         if (isRedirect(response, url) || response.status < 200 || response.status > 299) {
             throw refuse(response.body, "HTTP_ERROR");
@@ -158,6 +183,9 @@ export class FetchFetcher implements Fetcher {
         if (!declaredLengthFits(response.headers.get("Content-Length"), this.#maxBodyBytes)) {
             throw refuse(response.body, "INVALID_RESPONSE");
         }
-        return { status: response.status, body: await readBounded(response.body, this.#maxBodyBytes) };
+        return {
+            status: response.status,
+            body: await readBounded(response.body, this.#maxBodyBytes, signal),
+        };
     }
 }
