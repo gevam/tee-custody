@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final, Literal
 
+from teecustody import wire
 from teecustody.channel.ports import (
     EnrollPayload,
     HandlerError,
@@ -17,7 +18,6 @@ from teecustody.channel.ports import (
     OpenRejected,
     OpenSessionPayload,
 )
-from teecustody import wire
 from teecustody.config import BoundaryLimits
 from teecustody.secrets import Secret
 from teecustody.wire.types import CanonicalValue, DecodeLimits
