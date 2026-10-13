@@ -16,6 +16,14 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 - New contract test: `tests/integration/contracts/test_profile_cli_contract.py`.
 - No Wave-0 contract changed in this pass.
 
+**Amended 2026-10-13 (Wave-0 review fallout, PROCESS §6).**
+- Wave-0 contracts: T-01 A2 (TID253 replaces the blanket `dev.py` TID251 ignore; `GatewayLimits` tests), T-02 A2
+  (copy-on-read bundle keys per INC-2-API §7.1/§7.2; wider C5 ESLint selectors; `source-map-js` override) and
+  T-05 A3 (positional/splat HPKE seams, comment-tolerant import rule, closed exemption, `@hpke/common` direct ban
+  and signed versions, probe rows).
+- Later tasks: T-16 A2, T-26 A2, T-33 A2 (key buffers), T-27 A3 (gateway semgrep coverage) and T-35 (closed
+  exemption).
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -150,7 +158,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - `eslint.config.js`: T-02 W0, T-35 W3.
   - `.semgrep.yml`: T-05 W0, T-33 W1, T-27 W2, T-35 W3.
   - `.semgrep/tests/tc.tc-no-verification-skip.*`: T-05 W0, T-35 W3.
-  - `.github/workflows/ci.yml`: T-05 W0, T-35 W3.
+  - `.github/workflows/ci.yml`: T-05 W0, T-27 W2 (probe rows, A3), T-35 W3.
   - `packages/teecustody-py/pyproject.toml`: T-08 W1.
   - `packages/teecustody-sim/pyproject.toml`: T-25 W2 (T-08 A1).
   - `packages/teecustody-py/tests/test_api_surface.py`: T-04 W0, T-08 W1.
