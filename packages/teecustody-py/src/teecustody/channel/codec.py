@@ -4,6 +4,7 @@ This module holds no keys and performs no AEAD. Constants, errors and dataclasse
 function bodies belong to T-07.
 """
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,6 +12,7 @@ from itertools import pairwise
 from typing import Final, Literal
 
 from teecustody import wire
+from teecustody.attest.claims import IMAGE_DIGEST_PATTERN
 from teecustody.channel.ports import (
     EnrollPayload,
     HandlerError,
@@ -124,6 +126,7 @@ class OpenResultBody:
 
 
 _U32_MAX: Final = 2**32 - 1
+_PREKEY_DOMAIN: Final = b"prekey-v1"
 _KEY_LEN: Final = 32  # enc, pub, IK_pub
 _ID_LEN: Final = 16  # request_id, session_id
 _CT_MIN: Final = 16
@@ -373,7 +376,17 @@ def _parse_open_result(value: CanonicalValue) -> OpenResultBody:
 def prekey_signing_message(
     instance_id: str, prekey_id: int, pub: bytes, not_after: int, image_digest: str
 ) -> bytes:
-    raise NotImplementedError("T-07")
+    preimage = b"".join(
+        (
+            _PREKEY_DOMAIN,
+            _text(instance_id, INSTANCE_ID_PATTERN, "INSTANCE_ID").encode("ascii"),
+            _uint(prekey_id, _U32_MAX, "PREKEY_ID").to_bytes(4, "big"),
+            _sized_bytes(pub, _KEY_LEN, _KEY_LEN, "PUB"),
+            _uint(not_after, MAX_UNIX_S, "NOT_AFTER").to_bytes(8, "big"),
+            _text(image_digest, IMAGE_DIGEST_PATTERN, "IMAGE_DIGEST").encode("ascii"),
+        )
+    )
+    return hashlib.sha256(preimage).digest()
 
 
 def hpke_info(ik_pub: bytes, prekey_id: int) -> bytes:
