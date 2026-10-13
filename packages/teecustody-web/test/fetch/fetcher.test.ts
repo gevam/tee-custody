@@ -51,3 +51,38 @@ describe("criterion 1: a canonical https GET with exactly the CORS-simple Reques
         expect("headers" in init).toBe(false);
     });
 });
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+        () => new Error("expected a rejection"),
+        (error: unknown) => error,
+    );
+}
+
+function codeOf(error: unknown): string {
+    return error instanceof CapabilityError ? error.code : `not a CapabilityError: ${String(error)}`;
+}
+
+describe("criterion 2: only canonical https (or loopback http) URLs are fetched", () => {
+    it.each([
+        ["non-canonical host case", "https://Example.com/x"],
+        ["userinfo", "https://u:p@a.example/"],
+        ["fragment", "https://a.example/#f"],
+        ["plain http", "http://a.example/"],
+        ["ftp", "ftp://a.example/"],
+        ["not a URL", "not a url"],
+    ])("%s -> INVALID_ARGUMENT and fetch is never called", async (_name, url) => {
+        const { fetch, calls } = spy(() => new Response("{}"));
+        expect(codeOf(await rejection(make(fetch).get(url)))).toBe("INVALID_ARGUMENT");
+        expect(calls).toHaveLength(0);
+    });
+
+    it.each(["http://127.0.0.1:8080/x", "http://[::1]:1/x", "http://localhost:1/x"])(
+        "loopback http %s is fetched",
+        async (url) => {
+            const { fetch, calls } = spy(() => new Response("{}"));
+            expect((await make(fetch).get(url)).status).toBe(200);
+            expect(calls.map((c) => c.url)).toEqual([url]);
+        },
+    );
+});
