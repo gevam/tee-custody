@@ -14,6 +14,9 @@ from teecustody.channel.codec import (
     FrameRequestEnvelope,
     OpenAad,
     OpenRequestEnvelope,
+    PreKeyBundle,
+    PreKeyEntry,
+    decode_bundle,
     decode_request,
 )
 from teecustody.config import BoundaryLimits
@@ -25,6 +28,11 @@ INSTANCE_ID = "fedcba9876543210" * 2
 REQUEST_ID = bytes(range(16))
 SESSION_ID = bytes(range(16, 32))
 ENC = bytes(range(32))
+PUB = bytes(range(100, 132))
+IK_PUB = bytes(range(200, 232))
+SIG = bytes(range(64))
+TOKEN = "aaa.bbb.ccc"
+BUNDLE_LIMITS = DecodeLimits(max_bytes=65536, max_depth=4, max_items=4096)
 
 
 def open_aad(**override: Any) -> dict[str, Any]:
@@ -278,5 +286,112 @@ def test_envelope_is_decoded_with_the_envelope_limits() -> None:
 
     with pytest.raises(EnvelopeError) as exc:
         decode_request(body, tight)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+
+
+def prekey(prekey_id: int, **override: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {"id": prekey_id, "pub": PUB, "not_after": 1_900_003_600, "sig": SIG}
+    entry.update(override)
+    return entry
+
+
+def bundle(**override: Any) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "instance_id": INSTANCE_ID,
+        "token": TOKEN,
+        "IK_pub": IK_PUB,
+        "published_at": 1_900_000_000,
+        "prekeys": [prekey(i) for i in (0, 1, 5)],
+    }
+    doc.update(override)
+    return doc
+
+
+def test_bundle_decodes_into_its_dataclass() -> None:
+    decoded = decode_bundle(encode(bundle()), BUNDLE_LIMITS)
+
+    assert decoded == PreKeyBundle(
+        instance_id=INSTANCE_ID,
+        token=TOKEN,
+        ik_pub=IK_PUB,
+        published_at=1_900_000_000,
+        prekeys=tuple(
+            PreKeyEntry(id=i, pub=PUB, not_after=1_900_003_600, sig=SIG) for i in (0, 1, 5)
+        ),
+    )
+
+
+def test_bundle_boundary_values_decode() -> None:
+    doc = bundle(
+        token="t" * 16384,
+        published_at=2**53 - 1,
+        prekeys=[prekey(i, not_after=2**53 - 1) for i in range(255)] + [prekey(2**32 - 1)],
+    )
+
+    decoded = decode_bundle(encode(doc), BUNDLE_LIMITS)
+
+    assert len(decoded.prekeys) == 256
+    assert decoded.prekeys[-1].id == 2**32 - 1
+
+
+def _bundle_without(key: str) -> dict[str, Any]:
+    return {k: v for k, v in bundle().items() if k != key}
+
+
+INVALID_BUNDLES: dict[str, bytes] = {
+    "not-a-map": encode([bundle()]),
+    "unknown-key": encode(bundle(extra=1)),
+    "missing-token": encode(_bundle_without("token")),
+    "missing-prekeys": encode(_bundle_without("prekeys")),
+    "instance-id-uppercase": encode(bundle(instance_id=INSTANCE_ID.upper())),
+    "instance-id-31": encode(bundle(instance_id=INSTANCE_ID[:31])),
+    "instance-id-33": encode(bundle(instance_id=INSTANCE_ID + "0")),
+    "instance-id-newline": encode(bundle(instance_id=INSTANCE_ID + "\n")),
+    "token-empty": encode(bundle(token="")),
+    "token-16385": encode(bundle(token="t" * 16385)),
+    "token-bytes": encode(bundle(token=TOKEN.encode())),
+    "ik-pub-31": encode(bundle(IK_pub=IK_PUB[:31])),
+    "ik-pub-33": encode(bundle(IK_pub=IK_PUB + b"\x00")),
+    "ik-pub-lowercase-key": encode({**_bundle_without("IK_pub"), "ik_pub": IK_PUB}),
+    "published-at-2^53": encode(bundle(published_at=2**53)),
+    "published-at-negative": encode(bundle(published_at=-1)),
+    "published-at-bool": encode(bundle(published_at=True)),
+    "prekeys-empty": encode(bundle(prekeys=[])),
+    "prekeys-257": encode(bundle(prekeys=[prekey(i) for i in range(257)])),
+    "prekeys-map": encode(bundle(prekeys={"0": prekey(0)})),
+    "prekey-not-a-map": encode(bundle(prekeys=[[0, PUB, 1, SIG]])),
+    "prekey-unknown-key": encode(bundle(prekeys=[prekey(0, extra=1)])),
+    "prekey-missing-sig": encode(
+        bundle(prekeys=[{k: v for k, v in prekey(0).items() if k != "sig"}])
+    ),
+    "prekey-id-2^32": encode(bundle(prekeys=[prekey(2**32)])),
+    "prekey-id-negative": encode(bundle(prekeys=[prekey(-1)])),
+    "prekey-id-bool": encode(bundle(prekeys=[prekey(True)])),
+    "pub-31": encode(bundle(prekeys=[prekey(0, pub=PUB[:31])])),
+    "pub-33": encode(bundle(prekeys=[prekey(0, pub=PUB + b"\x00")])),
+    "not-after-2^53": encode(bundle(prekeys=[prekey(0, not_after=2**53)])),
+    "not-after-negative": encode(bundle(prekeys=[prekey(0, not_after=-1)])),
+    "sig-63": encode(bundle(prekeys=[prekey(0, sig=SIG[:63])])),
+    "sig-65": encode(bundle(prekeys=[prekey(0, sig=SIG + b"\x00")])),
+    "ids-unsorted": encode(bundle(prekeys=[prekey(1), prekey(0)])),
+    "ids-duplicate": encode(bundle(prekeys=[prekey(0), prekey(0)])),
+    "ids-duplicate-after-ascending": encode(bundle(prekeys=[prekey(0), prekey(3), prekey(3)])),
+    "trailing-byte": encode(bundle()) + b"\x00",
+}
+
+
+@pytest.mark.parametrize("data", INVALID_BUNDLES.values(), ids=INVALID_BUNDLES.keys())
+def test_bundle_schema_violation_is_invalid(data: bytes) -> None:
+    with pytest.raises(EnvelopeError) as exc:
+        decode_bundle(data, BUNDLE_LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert exc.value.__context__ is None
+
+
+def test_bundle_is_decoded_with_the_given_limits() -> None:
+    with pytest.raises(EnvelopeError) as exc:
+        decode_bundle(encode(bundle()), DecodeLimits(max_bytes=65536, max_depth=3, max_items=4096))
 
     assert exc.value.code is EnvelopeErrorCode.INVALID

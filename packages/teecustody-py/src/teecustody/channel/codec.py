@@ -7,6 +7,7 @@ function bodies belong to T-07.
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import pairwise
 from typing import Final, Literal
 
 from teecustody import wire
@@ -134,6 +135,11 @@ _OPEN_AAD_KEYS: Final = frozenset(
     {"proto", "client_id", "instance_id", "prekey_id", "request_id", "timestamp"}
 )
 _FRAME_AAD_KEYS: Final = frozenset({"session_id", "seq", "op"})
+_BUNDLE_KEYS: Final = frozenset({"instance_id", "token", "IK_pub", "published_at", "prekeys"})
+_PREKEY_KEYS: Final = frozenset({"id", "pub", "not_after", "sig"})
+_SIG_LEN: Final = 64
+_MAX_PREKEYS: Final = 256
+_MAX_TOKEN_BYTES: Final = 16384
 
 
 # Checks shared by every encoder and decoder. Each raises ValueError("<FIELD>_RANGE"); `bool` is
@@ -178,7 +184,57 @@ def encode_bundle(b: PreKeyBundle) -> bytes:
 
 
 def decode_bundle(data: bytes, limits: DecodeLimits) -> PreKeyBundle:
-    raise NotImplementedError("T-07")
+    try:
+        return _parse_bundle(wire.decode(data, limits))
+    except (wire.WireError, ValueError):
+        pass
+    raise EnvelopeError(EnvelopeErrorCode.INVALID)
+
+
+def _parse_bundle(value: CanonicalValue) -> PreKeyBundle:
+    fields = _fields(value, _BUNDLE_KEYS)
+    prekeys = fields["prekeys"]
+    if type(prekeys) is not list:
+        raise ValueError("PREKEYS_RANGE")
+    entries = []
+    for item in prekeys:
+        entry = _fields(item, _PREKEY_KEYS)
+        entries.append(_prekey(entry["id"], entry["pub"], entry["not_after"], entry["sig"]))
+    return _bundle(
+        fields["instance_id"], fields["token"], fields["IK_pub"], fields["published_at"], entries
+    )
+
+
+def _prekey(prekey_id: object, pub: object, not_after: object, sig: object) -> PreKeyEntry:
+    return PreKeyEntry(
+        id=_uint(prekey_id, _U32_MAX, "PREKEY_ID"),
+        pub=_sized_bytes(pub, _KEY_LEN, _KEY_LEN, "PUB"),
+        not_after=_uint(not_after, MAX_UNIX_S, "NOT_AFTER"),
+        sig=_sized_bytes(sig, _SIG_LEN, _SIG_LEN, "SIG"),
+    )
+
+
+def _bundle(
+    instance_id: object,
+    token: object,
+    ik_pub: object,
+    published_at: object,
+    prekeys: list[PreKeyEntry],
+) -> PreKeyBundle:
+    if not 1 <= len(prekeys) <= _MAX_PREKEYS:
+        raise ValueError("PREKEYS_RANGE")
+    for previous, current in pairwise(prekeys):
+        if current.id <= previous.id:
+            raise ValueError("PREKEY_ID_RANGE")  # strictly ascending, hence unique (R-2)
+    if type(token) is not str or not 1 <= len(token.encode()) <= _MAX_TOKEN_BYTES:
+        raise ValueError("TOKEN_RANGE")
+    return PreKeyBundle(
+        instance_id=_text(instance_id, INSTANCE_ID_PATTERN, "INSTANCE_ID"),
+        token=token,
+        ik_pub=_sized_bytes(ik_pub, _KEY_LEN, _KEY_LEN, "IK_PUB"),
+        published_at=_uint(published_at, MAX_UNIX_S, "PUBLISHED_AT"),
+        prekeys=tuple(prekeys),
+    )
 
 
 def decode_request(
