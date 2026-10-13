@@ -488,7 +488,12 @@ function hideGlobalX25519(): { restore: () => void; probes: () => number } {
         }
         return real(...args);
     }) as typeof subtle.generateKey);
-    return { restore: () => spy.mockRestore(), probes: () => probes };
+    return {
+        restore: () => {
+            spy.mockRestore();
+        },
+        probes: () => probes,
+    };
 }
 
 describe("native X25519 only (criterion 5, C3, C3a.3)", () => {
