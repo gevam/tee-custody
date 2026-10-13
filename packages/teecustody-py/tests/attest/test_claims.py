@@ -1,4 +1,4 @@
-"""T-13: the workload's own image digest from its launcher-supplied token (FR-4, SR-3 R-7, SR-11)."""
+"""T-13: the workload's own image digest from its launcher token (FR-4, SR-3 R-7, SR-11)."""
 
 import base64
 import json
@@ -67,3 +67,62 @@ def test_token_one_byte_over_the_limit_is_rejected_before_any_decoding(
 def test_token_exactly_at_the_limit_is_accepted() -> None:
     token = _with_claims(_claims())
     assert own_image_digest(token, max_token_bytes=len(token.value)) == DIGEST
+
+
+PAYLOAD = _payload(_claims())
+HEX = "0123456789abcdef" * 4
+
+
+def _padded(raw: bytes) -> str:
+    segment = base64.urlsafe_b64encode(raw).decode("ascii")
+    assert segment.endswith("=")
+    return segment
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(f"{HEADER}.{PAYLOAD}", id="two-segments"),
+        pytest.param(f"{HEADER}.{PAYLOAD}.{SIGNATURE}.{SIGNATURE}", id="four-segments"),
+        pytest.param(f".{PAYLOAD}.{SIGNATURE}", id="empty-header"),
+        pytest.param(f"{HEADER}..{SIGNATURE}", id="empty-payload"),
+        pytest.param(f"{HEADER}.{PAYLOAD}.", id="empty-signature"),
+        pytest.param(
+            f"{HEADER}.{_padded(json.dumps(_claims()).encode() + b' ')}.{SIGNATURE}",
+            id="padded-payload",
+        ),
+        pytest.param(f"{HEADER}.{PAYLOAD}.{_padded(b'sign')}", id="padded-signature"),
+        pytest.param(f"{HEADER}.{PAYLOAD[:8]}+{PAYLOAD[9:]}.{SIGNATURE}", id="plus-in-payload"),
+        pytest.param(f"{HEADER}.{PAYLOAD[:8]}/{PAYLOAD[9:]}.{SIGNATURE}", id="slash-in-payload"),
+        pytest.param(f"{HEADER}.{PAYLOAD}.c2l!", id="bang-in-signature"),
+        pytest.param(f"{HEADER[:4]}+{HEADER[5:]}.{PAYLOAD}.{SIGNATURE}", id="plus-in-header"),
+        pytest.param(f"{HEADER}.{_b64(b'\xff\xfe{}')}.{SIGNATURE}", id="non-utf8-payload"),
+        pytest.param(f"{HEADER}.{_b64(b'not json')}.{SIGNATURE}", id="non-json-payload"),
+        pytest.param(f"{HEADER}.{_payload([1, 2, 3])}.{SIGNATURE}", id="array-payload"),
+        pytest.param(f"{HEADER}.{_payload({'aud': 'a'})}.{SIGNATURE}", id="submods-missing"),
+        pytest.param(f"{HEADER}.{_payload({'submods': 'x'})}.{SIGNATURE}", id="submods-string"),
+        pytest.param(f"{HEADER}.{_payload({'submods': [1]})}.{SIGNATURE}", id="submods-array"),
+        pytest.param(f"{HEADER}.{_payload({'submods': {}})}.{SIGNATURE}", id="container-missing"),
+        pytest.param(
+            f"{HEADER}.{_payload({'submods': {'container': {}}})}.{SIGNATURE}",
+            id="image-digest-missing",
+        ),
+        pytest.param(
+            f"{HEADER}.{_payload(_claims('sha256:' + HEX.upper()))}.{SIGNATURE}", id="uppercase-hex"
+        ),
+        pytest.param(
+            f"{HEADER}.{_payload(_claims('sha256:' + HEX[:63]))}.{SIGNATURE}", id="63-hex"
+        ),
+        pytest.param(
+            f"{HEADER}.{_payload(_claims('sha512:' + HEX))}.{SIGNATURE}", id="sha512-prefix"
+        ),
+        pytest.param(
+            f"{HEADER}.{_payload(_claims('sha256:' + HEX + chr(10)))}.{SIGNATURE}",
+            id="trailing-newline",
+        ),
+    ],
+)
+def test_malformed_token_or_digest_claim_is_token_rejected_with_no_chained_cause(
+    value: str,
+) -> None:
+    _assert_rejected(_token(value))
