@@ -163,6 +163,48 @@ describe("ESLint policy for packages/teecustody-web/src (NFR-6, SR-13, SR-14 C5)
         expect(await c5Errors(code, CORE_SRC)).toBeGreaterThan(0);
     });
 
+    // Start positions ("line:column", 1-based) of the C5 reports.
+    async function c5Starts(code: string, filePath: string): Promise<string[]> {
+        const [result] = await eslint.lintText(code, { filePath });
+        return (result?.messages ?? [])
+            .filter((m) => m.severity === 2 && m.message === C5_MESSAGE)
+            .map((m) => `${String(m.line)}:${String(m.column)}`);
+    }
+
+    function startOf(code: string, anchor: string): string {
+        const before = code.slice(0, code.indexOf(anchor)).split("\n");
+        return `${String(before.length)}:${String((before.at(-1) ?? "").length + 1)}`;
+    }
+
+    // Each selector reports the node it matches; the anchor is where that node starts.
+    it.each([
+        ['void { "psk": 1 };', '"psk": 1', "Property[key.value]"],
+        ['void { ["psk"]: 1 };', '["psk"]: 1', "Property[key.value]"],
+        [
+            "const opts = {} as Record<string, unknown>;\nvoid String(opts.psk);",
+            "opts.psk",
+            "MemberExpression[property.name]",
+        ],
+        [
+            'const o: Record<string, number> = {};\no["senderKey"] = 1;',
+            'o["senderKey"]',
+            "MemberExpression[property.value]",
+        ],
+        [
+            "export function f(psk: number): number {\n    return psk;\n}",
+            "psk: number",
+            "Identifier[name]",
+        ],
+        [
+            "export function g(senderPublicKey: number): number {\n    return senderPublicKey;\n}",
+            "senderPublicKey: number",
+            "Identifier[name]",
+        ],
+    ])("reports C5 for %s at %s (%s)", async (code, anchor) => {
+        expect(await c5Starts(code, WEB_SRC)).toContain(startOf(code, anchor));
+        expect(await c5Starts(code, CORE_SRC)).toContain(startOf(code, anchor));
+    });
+
     it("does not report C5 for names that merely contain a C5 name", async () => {
         const code = "void { pskIdentity: 1, info: 2 };";
         expect(await c5Errors(code, WEB_SRC)).toBe(0);
