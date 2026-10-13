@@ -1,6 +1,6 @@
 // createWebCrypto (INC-2-API §8.1; T-17 criteria 1–3, 6; ADR 0011).
 import { CapabilityError, type PublicKeyInput } from "@teecustody/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
 
@@ -11,39 +11,47 @@ async function codeOfRejection(promise: Promise<unknown>): Promise<string> {
     try {
         await promise;
     } catch (error: unknown) {
-        return error instanceof CapabilityError ? error.code : `not a CapabilityError: ${String(error)}`;
+        return error instanceof CapabilityError
+            ? error.code
+            : `not a CapabilityError: ${String(error)}`;
     }
     return "no error";
 }
 
-/** The real SubtleCrypto with `importKey` replaced for algorithms named in `refuse`. */
-function refusingImport(refuse: string, error: () => unknown): SubtleCrypto {
+/** The real SubtleCrypto with `importKey` replaced for the algorithm named `refuse`. */
+function refusingImport(refuse: string, failure: () => Error): SubtleCrypto {
     const real = globalThis.crypto.subtle;
+    const realImport = real.importKey.bind(real) as (...args: unknown[]) => Promise<CryptoKey>;
+    const importKey = (...args: unknown[]): Promise<CryptoKey> => {
+        const algorithm = args[2] as AlgorithmIdentifier;
+        const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+        if (name === refuse) {
+            return Promise.reject(failure());
+        }
+        return realImport(...args);
+    };
     return new Proxy(real, {
-        get(target, prop) {
-            const value = Reflect.get(target, prop, target) as unknown;
-            if (prop !== "importKey" || typeof value !== "function") {
-                return typeof value === "function" ? value.bind(target) : value;
+        get(target, prop): unknown {
+            if (prop === "importKey") {
+                return importKey;
             }
-            return (...args: Parameters<SubtleCrypto["importKey"]>) => {
-                const algorithm = args[2];
-                const name = typeof algorithm === "string" ? algorithm : algorithm.name;
-                if (name === refuse) {
-                    return Promise.reject(error());
-                }
-                return target.importKey(...args);
-            };
+            const value: unknown = Reflect.get(target, prop, target);
+            return typeof value === "function" ? (value as () => unknown).bind(target) : value;
         },
     });
 }
 
-async function ed25519KeyPair(): Promise<{ publicKey: Uint8Array; sign: (m: Uint8Array) => Promise<Uint8Array> }> {
+async function ed25519KeyPair(): Promise<{
+    publicKey: Uint8Array;
+    sign: (m: Uint8Array) => Promise<Uint8Array>;
+}> {
     const subtle = globalThis.crypto.subtle;
-    const pair = (await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const pair = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const publicKey = new Uint8Array(await subtle.exportKey("raw", pair.publicKey));
     return {
         publicKey,
-        sign: async (m) => new Uint8Array(await subtle.sign({ name: "Ed25519" }, pair.privateKey, m)),
+        sign: async (m) =>
+            new Uint8Array(await subtle.sign({ name: "Ed25519" }, pair.privateKey, m.slice())),
     };
 }
 
@@ -62,7 +70,8 @@ async function rsaSigner(modulusLength: number): Promise<{
     const jwk = await subtle.exportKey("jwk", pair.publicKey);
     return {
         key: { format: "jwk", jwk: { kty: "RSA", n: jwk.n ?? "", e: jwk.e ?? "" } },
-        sign: async (m) => new Uint8Array(await subtle.sign(RS256.name, pair.privateKey, m)),
+        sign: async (m) =>
+            new Uint8Array(await subtle.sign(RS256.name, pair.privateKey, m.slice())),
     };
 }
 
@@ -70,7 +79,9 @@ function codeOfThrown(fn: () => unknown): string {
     try {
         fn();
     } catch (error: unknown) {
-        return error instanceof CapabilityError ? error.code : `not a CapabilityError: ${String(error)}`;
+        return error instanceof CapabilityError
+            ? error.code
+            : `not a CapabilityError: ${String(error)}`;
     }
     return "no error";
 }
@@ -107,16 +118,19 @@ describe("verifyEd25519 (criterion 2)", () => {
         const crypto = createWebCrypto();
         const { publicKey, sign } = await ed25519KeyPair();
         const signature = await sign(MSG);
-        expect(await codeOfRejection(crypto.verifyEd25519(publicKey.slice(0, 31), MSG, signature))).toBe(
-            "INVALID_ARGUMENT",
-        );
-        expect(await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, signature.slice(0, 63)))).toBe(
-            "INVALID_ARGUMENT",
-        );
+        expect(
+            await codeOfRejection(crypto.verifyEd25519(publicKey.slice(0, 31), MSG, signature)),
+        ).toBe("INVALID_ARGUMENT");
+        expect(
+            await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, signature.slice(0, 63))),
+        ).toBe("INVALID_ARGUMENT");
     });
 
     it("reports UNSUPPORTED when the subtle's Ed25519 import throws NotSupportedError", async () => {
-        const subtle = refusingImport("Ed25519", () => new DOMException("no Ed25519", "NotSupportedError"));
+        const subtle = refusingImport(
+            "Ed25519",
+            () => new DOMException("no Ed25519", "NotSupportedError"),
+        );
         const crypto = createWebCrypto({ subtle });
         const { publicKey, sign } = await ed25519KeyPair();
         expect(await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, await sign(MSG)))).toBe(
@@ -131,7 +145,9 @@ describe("verifySignature (criterion 3, B-06)", () => {
         const { key, sign } = await rsaSigner(1024);
         const signature = await sign(MSG);
         expect(
-            await codeOfRejection(crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)),
+            await codeOfRejection(
+                crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature),
+            ),
         ).toBe("INVALID_ARGUMENT");
     });
 
@@ -139,7 +155,9 @@ describe("verifySignature (criterion 3, B-06)", () => {
         const crypto = createWebCrypto();
         const { key, sign } = await rsaSigner(2048);
         const signature = await sign(MSG);
-        expect(await crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)).toBe(true);
+        expect(await crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)).toBe(
+            true,
+        );
     });
 });
 
@@ -179,5 +197,137 @@ describe("aes256GcmEncrypt / aes256GcmDecrypt (criterion 6)", () => {
         expect(await codeOfRejection(crypto.aes256GcmDecrypt(key, nonce, aad, flipped))).toBe(
             "AUTHENTICATION_FAILED",
         );
+    });
+});
+
+describe("edge cases of the non-HPKE primitives", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("rejects non-integer and negative randomBytes lengths and accepts both bounds", () => {
+        const crypto = createWebCrypto();
+        for (const n of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(codeOfThrown(() => crypto.randomBytes(n))).toBe("INVALID_ARGUMENT");
+        }
+        expect(crypto.randomBytes(1)).toHaveLength(1);
+        expect(crypto.randomBytes(65536)).toHaveLength(65536);
+    });
+
+    it("draws randomness from options.getRandomValues when given", () => {
+        const getRandomValues = vi.fn((a: Uint8Array) => a.fill(0xab));
+        const crypto = createWebCrypto({ getRandomValues });
+        expect(Array.from(crypto.randomBytes(3))).toEqual([0xab, 0xab, 0xab]);
+        expect(getRandomValues).toHaveBeenCalledTimes(1);
+    });
+
+    it("computes SHA-256 with subtle.digest", async () => {
+        const digest = vi.spyOn(globalThis.crypto.subtle, "digest");
+        const crypto = createWebCrypto();
+        const out = await crypto.sha256(enc.encode("abc"));
+        expect(Buffer.from(out).toString("hex")).toBe(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        );
+        expect(digest).toHaveBeenCalledTimes(1);
+        digest.mockRestore();
+    });
+
+    it("maps an Ed25519 import failure other than NotSupportedError to INVALID_ARGUMENT", async () => {
+        for (const failure of [new DOMException("bad key", "DataError"), new TypeError("bad")]) {
+            const crypto = createWebCrypto({ subtle: refusingImport("Ed25519", () => failure) });
+            const error = await crypto
+                .verifyEd25519(new Uint8Array(32), MSG, new Uint8Array(64))
+                .catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(CapabilityError);
+            expect((error as CapabilityError).code).toBe("INVALID_ARGUMENT");
+            expect((error as CapabilityError).cause).toBeUndefined();
+        }
+    });
+
+    it("returns false for an RS256 signature over other data", async () => {
+        const crypto = createWebCrypto();
+        const { key, sign } = await rsaSigner(2048);
+        const signature = await sign(MSG);
+        expect(
+            await crypto.verifySignature(
+                "RSASSA_PKCS1V15_SHA256",
+                key,
+                enc.encode("other"),
+                signature,
+            ),
+        ).toBe(false);
+    });
+
+    it("rejects an RSA JWK the subtle cannot import with INVALID_ARGUMENT and no cause", async () => {
+        const subtle = refusingImport(
+            "RSASSA-PKCS1-v1_5",
+            () => new DOMException("bad", "DataError"),
+        );
+        const crypto = createWebCrypto({ subtle });
+        const { key } = await rsaSigner(2048);
+        const error = await crypto
+            .verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, new Uint8Array(256))
+            .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(CapabilityError);
+        expect((error as CapabilityError).code).toBe("INVALID_ARGUMENT");
+        expect((error as CapabilityError).cause).toBeUndefined();
+    });
+
+    it("rejects any algorithm other than RSASSA_PKCS1V15_SHA256 with UNSUPPORTED_ALGORITHM", async () => {
+        const crypto = createWebCrypto();
+        const { key, sign } = await rsaSigner(2048);
+        const signature = await sign(MSG);
+        const other = "RSASSA_PSS_SHA256" as unknown as "RSASSA_PKCS1V15_SHA256";
+        expect(await codeOfRejection(crypto.verifySignature(other, key, MSG, signature))).toBe(
+            "UNSUPPORTED_ALGORITHM",
+        );
+    });
+
+    it("rejects a ciphertext shorter than the tag with AUTHENTICATION_FAILED and no cause", async () => {
+        const crypto = createWebCrypto();
+        const error = await crypto
+            .aes256GcmDecrypt(new Uint8Array(32), new Uint8Array(12), MSG, new Uint8Array(15))
+            .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(CapabilityError);
+        expect((error as CapabilityError).code).toBe("AUTHENTICATION_FAILED");
+        expect((error as CapabilityError).cause).toBeUndefined();
+    });
+
+    it("rejects a modified aad with AUTHENTICATION_FAILED", async () => {
+        const crypto = createWebCrypto();
+        const key = new Uint8Array(32).fill(1);
+        const nonce = new Uint8Array(12).fill(2);
+        const sealed = await crypto.aes256GcmEncrypt(key, nonce, enc.encode("aad"), MSG);
+        expect(
+            await codeOfRejection(crypto.aes256GcmDecrypt(key, nonce, enc.encode("aaD"), sealed)),
+        ).toBe("AUTHENTICATION_FAILED");
+    });
+
+    it("does not retain or alias the caller's buffers", async () => {
+        const crypto = createWebCrypto();
+        const key = new Uint8Array(32).fill(1);
+        const nonce = new Uint8Array(12).fill(2);
+        const plaintext = enc.encode("plaintext");
+        const sealed = await crypto.aes256GcmEncrypt(key, nonce, MSG, plaintext);
+        expect(sealed.buffer).not.toBe(plaintext.buffer);
+        const opened = await crypto.aes256GcmDecrypt(key, nonce, MSG, sealed);
+        expect(opened.buffer).not.toBe(sealed.buffer);
+    });
+
+    it("constructs without globalThis.crypto and fails closed with UNSUPPORTED", async () => {
+        vi.stubGlobal("crypto", undefined);
+        const crypto = createWebCrypto();
+        expect(codeOfThrown(() => crypto.randomBytes(1))).toBe("UNSUPPORTED");
+        expect(await codeOfRejection(crypto.sha256(MSG))).toBe("UNSUPPORTED");
+        expect(
+            await codeOfRejection(
+                crypto.verifyEd25519(new Uint8Array(32), MSG, new Uint8Array(64)),
+            ),
+        ).toBe("UNSUPPORTED");
+        expect(
+            await codeOfRejection(
+                crypto.aes256GcmEncrypt(new Uint8Array(32), new Uint8Array(12), MSG, MSG),
+            ),
+        ).toBe("UNSUPPORTED");
     });
 });
