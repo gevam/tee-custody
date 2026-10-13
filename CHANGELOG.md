@@ -27,3 +27,8 @@
 - T-24: Canonical development profile URLs (D-02)
 - QA: Acceptance tests for INC-1 (expected red)
 
+### INC-2
+- T-04: Python frozen INC-2 API, Secret hardening, IdentityKey.sign
+- T-03: Channel CDDL, byte layouts and channel vector harness
+- V-01: CFRG RFC 9180 test vectors and ADR 0011 C6 pin evidence
+- V-02: Browser capability facts
