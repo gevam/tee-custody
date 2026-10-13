@@ -75,11 +75,13 @@ async function readBounded(
 export class FetchFetcher implements Fetcher {
     readonly #fetch: FetchFn;
     readonly #maxBodyBytes: number;
+    readonly #timeoutMs: number;
 
     // TypeError("INVALID_CONFIG") on bad options
     constructor(options: FetchFetcherOptions) {
         this.#fetch = options.fetch as FetchFn;
         this.#maxBodyBytes = options.maxBodyBytes;
+        this.#timeoutMs = options.timeoutMs;
     }
 
     async get(url: string): Promise<FetchResponse> {
@@ -87,14 +89,34 @@ export class FetchFetcher implements Fetcher {
             throw new CapabilityError("INVALID_ARGUMENT");
         }
         const controller = new AbortController();
-        const response = await this.#fetch(url, {
-            method: "GET",
-            redirect: "manual",
-            credentials: "omit",
-            cache: "no-store",
-            referrerPolicy: "no-referrer",
-            signal: controller.signal,
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+                controller.abort();
+                reject(new CapabilityError("UNAVAILABLE"));
+            }, this.#timeoutMs);
         });
+        try {
+            return await Promise.race([this.#exchange(url, controller.signal), deadline]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    async #exchange(url: string, signal: AbortSignal): Promise<FetchResponse> {
+        let response: Response;
+        try {
+            response = await this.#fetch(url, {
+                method: "GET",
+                redirect: "manual",
+                credentials: "omit",
+                cache: "no-store",
+                referrerPolicy: "no-referrer",
+                signal,
+            });
+        } catch {
+            throw new CapabilityError("UNAVAILABLE");
+        }
         if (isRedirect(response, url)) {
             throw new CapabilityError("HTTP_ERROR");
         }

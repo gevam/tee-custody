@@ -199,3 +199,30 @@ describe("decision: a null body resolves an empty Uint8Array", () => {
         expect(result.body).toEqual(new Uint8Array(0));
     });
 });
+
+describe("criterion 6: network failure and timeout are UNAVAILABLE", () => {
+    it("a fetch that never resolves -> UNAVAILABLE after timeoutMs, and the request is aborted", async () => {
+        vi.useFakeTimers();
+        const calls: Call[] = [];
+        const never: FetchFn = (url, init) => {
+            calls.push({ url, init });
+            return new Promise<Response>(() => undefined);
+        };
+        let settled: unknown = "pending";
+        const pending = rejection(make(never, 1024, 500).get(URL_OK)).then((error) => {
+            settled = error;
+        });
+        await vi.advanceTimersByTimeAsync(499);
+        expect(settled).toBe("pending");
+        expect(calls[0]?.init.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await pending;
+        expect(codeOf(settled)).toBe("UNAVAILABLE");
+        expect(calls[0]?.init.signal?.aborted).toBe(true);
+    });
+
+    it("a rejecting fetch -> UNAVAILABLE", async () => {
+        const down: FetchFn = () => Promise.reject(new TypeError("Failed to fetch https://jwks.example/"));
+        expect(codeOf(await rejection(make(down).get(URL_OK)))).toBe("UNAVAILABLE");
+    });
+});
