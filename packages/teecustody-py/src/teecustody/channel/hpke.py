@@ -61,9 +61,9 @@ def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: byte
     low-order `enc` surfaces as `cryptography`'s ValueError, not pyhpke's OpenError (D-045).
     """
     if len(private_key) != _PRIVATE_KEY_LENGTH:  # a wiped Secret has length 0
-        raise HpkeError(HpkeErrorCode.INVALID_KEY)
-    recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
+        raise HpkeError(HpkeErrorCode.INVALID_KEY) from None
     try:
+        recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
         context = _SUITE.create_recipient_context(enc, recipient_key, info)
         opened = OpenedHpke(
             plaintext=Secret(context.open(ct, aad=aad)),
