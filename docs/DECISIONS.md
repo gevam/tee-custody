@@ -1001,3 +1001,28 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
 - **Security Architect:** confirm how T-17's provenance items 1–4 map to its sign-off.
 
 **Dissent:** none
+
+## D-049 — Human: scoped SR-9 age exception for h11 in the reference gateway (INC-2, 2026-10-13)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Security Reviewer (T-01)
+
+**Options considered**
+1. A scoped exception in `dependency_policy`, plus a DEBT entry.
+2. Swap the gateway's ASGI server for one that does not use h11.
+3. Declare examples/ out of scope for the age rule.
+
+**Decision:** Option 1, chosen by the human. `framework.yaml` `security.dependency_policy` now admits h11 past the 18-month rule only as uvicorn's required dependency in examples/notes-app/gateway. The package must be OSI-licensed, exactly locked and pip-audit clean. It is re-checked at every lock change and at v1.0.0 release approval. Recorded as DEBT-3, expiring INC-5. (DEBT-2 is reserved for T-33's `maxDiscoveryBytes` entry.)
+
+**Reasoning:**
+- h11 0.16.0 (2025-04-24) leaves the window on 2026-10-24.
+- No newer release exists.
+- uvicorn hard-requires h11; httptools does not remove it from the closure.
+- Only the untrusted example relay is affected. The library and the client packages are not.
+
+**Dissent:** none
+
+**Revisit when:** an h11 release, a uvicorn change that drops h11, or v1.0.0 release approval.
+
+**Follow-ups:** T-05's dependency-policy tool must not flag h11 under this exception. If it does, the Tech Lead amends the tool's age check with an exact allow-list entry scoped to the gateway closure.
