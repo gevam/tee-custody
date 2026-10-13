@@ -32,3 +32,7 @@
 - T-03: Channel CDDL, byte layouts and channel vector harness
 - V-01: CFRG RFC 9180 test vectors and ADR 0011 C6 pin evidence
 - V-02: Browser capability facts
+- T-01: Reference gateway workspace member, pinned deps, frozen stubs
+- T-02: @teecustody/web package, TS tooling, Core/Web stubs, verified-bundle brand with copy-on-read keys
+- T-05: INC-2 static rules, HPKE closure policy, browser CI job
+- QA: INC-2 acceptance tests (expected red)
