@@ -478,3 +478,13 @@ def test_rng_failure_is_500_internal_with_no_queue_call(
     assert (response.status_code, response.content) == (500, b'{"code":"INTERNAL"}')
     assert relay.calls == []
     assert SENTINEL not in response.text + all_logs.text
+
+
+# ---------------------------------------------------------------- criterion 6: D2-13 no route probing
+def test_unknown_client_route_is_an_empty_page_not_an_error() -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(f"/responses/{'e' * 32}")
+
+    assert (response.status_code, response.content) == (200, b'{"responses":[],"next":null}')
+    assert relay.calls == [("pull_responses", "e" * 32, None, 32)]
