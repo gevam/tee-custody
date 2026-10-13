@@ -4,7 +4,7 @@
 import cycle.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
@@ -51,7 +51,7 @@ class OpenRequest:
 @dataclass(frozen=True, slots=True)
 class OpenAccepted:
     client_id: str  # the principal (the minted one for enroll)
-    payload: CanonicalValue
+    payload: CanonicalValue = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +87,7 @@ class SessionOpener(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class HandlerOk:
-    payload: CanonicalValue
+    payload: CanonicalValue = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)

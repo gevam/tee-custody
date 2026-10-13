@@ -117,7 +117,7 @@ class FrameResultEnvelope:
 @dataclass(frozen=True, slots=True)
 class OpenResultBody:
     ok: bool
-    payload: CanonicalValue = None
+    payload: CanonicalValue = field(default=None, repr=False)
     error: str | None = None
 
 

@@ -979,7 +979,7 @@ DATACLASSES: list[tuple[type, _Options, list[_Field]]] = [
         (True, True, False, True),
         [
             ("ok", bool, M, True),
-            ("payload", CanonicalValue, None, True),
+            ("payload", CanonicalValue, None, False),
             ("error", str | None, None, True),
         ],
     ),
@@ -1018,7 +1018,7 @@ DATACLASSES: list[tuple[type, _Options, list[_Field]]] = [
     (
         OpenAccepted,
         (True, True, False, True),
-        [("client_id", str, M, True), ("payload", CanonicalValue, M, True)],
+        [("client_id", str, M, True), ("payload", CanonicalValue, M, False)],
     ),
     (OpenRejected, (True, True, False, True), [("error", RemoteErrorCode, M, True)]),
     (
@@ -1030,7 +1030,7 @@ DATACLASSES: list[tuple[type, _Options, list[_Field]]] = [
             ("instance_id", str, M, True),
         ],
     ),
-    (HandlerOk, (True, True, False, True), [("payload", CanonicalValue, M, True)]),
+    (HandlerOk, (True, True, False, True), [("payload", CanonicalValue, M, False)]),
     (HandlerError, (True, True, False, True), [("error", RemoteErrorCode, M, True)]),
     (
         OutboundResponse,
@@ -1116,6 +1116,23 @@ def test_dataclass_options_and_fields_equal_api(
     actual = [(f.name, hints[f.name], f.default, f.repr) for f in dataclasses.fields(cls)]
     assert actual == fields
     assert all(f.default_factory is M for f in dataclasses.fields(cls))
+
+
+SENTINEL = "SENTINEL-PLAINTEXT-7f3a"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        HandlerOk(payload={"body": SENTINEL}),
+        OpenAccepted(client_id="0" * 32, payload={"body": SENTINEL}),
+        OpenResultBody(ok=True, payload={"body": SENTINEL}),
+    ],
+    ids=["HandlerOk", "OpenAccepted", "OpenResultBody"],
+)
+def test_plaintext_payload_is_not_in_the_default_repr(value: object) -> None:
+    assert SENTINEL not in repr(value)
+    assert SENTINEL not in str(value)
 
 
 def test_frozen_api_module_files_exist() -> None:
