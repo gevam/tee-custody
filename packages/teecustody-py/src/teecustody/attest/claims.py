@@ -16,6 +16,10 @@ IMAGE_DIGEST_PATTERN: Final = re.compile(r"sha256:[0-9a-f]{64}")  # fullmatch on
 
 _BASE64URL: Final = re.compile(r"[A-Za-z0-9_-]+")
 
+# SR-3 configured limit: the deepest JSON nesting the payload may have, counting the top-level
+# object as 1 (matches DecodeLimits.max_depth). Checked on the text before json.loads runs.
+_MAX_JSON_DEPTH: Final = 16
+
 
 def own_image_digest(token: AttestationToken, *, max_token_bytes: int) -> str:
     digest = _read_digest(token.value, max_token_bytes)
@@ -66,9 +70,33 @@ def _b64url_decode(segment: str) -> bytes | None:
 
 def _json_loads(raw: bytes) -> object:
     try:
-        return json.loads(raw.decode("utf-8"))
-    except (ValueError, RecursionError):
+        text = raw.decode("utf-8")
+        return json.loads(text) if _within_depth(text) else None
+    except ValueError:
         return None
+
+
+def _within_depth(text: str) -> bool:
+    """True if no `[`/`{` outside a JSON string opens a level deeper than _MAX_JSON_DEPTH."""
+    depth = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > _MAX_JSON_DEPTH:
+                return False
+        elif char in "]}":
+            depth -= 1
+    return True
 
 
 def _object_at(value: object, *path: str) -> dict[str, object] | None:

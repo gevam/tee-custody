@@ -206,3 +206,37 @@ def test_utf8_bom_before_an_otherwise_valid_payload_is_rejected() -> None:
     raw = json.dumps(_claims()).encode("utf-8")
     assert own_image_digest(_token(f"{HEADER}.{_b64(raw)}.{SIGNATURE}"), max_token_bytes=LIMIT)
     _assert_rejected(_token(f"{HEADER}.{_b64(b'\xef\xbb\xbf' + raw)}.{SIGNATURE}"))
+
+
+def _nested_sibling(depth: int, *, prefix: str = "") -> dict[str, object]:
+    """Valid claims whose deepest structure, counting the top-level object, is `depth`."""
+    inner: object = []
+    for _ in range(depth - 2):
+        inner = [inner]
+    return {"before": prefix, "eat_nonce": [["ab"]], **_claims(), "deep": inner}
+
+
+def test_payload_at_the_json_depth_cap_is_accepted() -> None:
+    assert own_image_digest(_with_claims(_nested_sibling(16)), max_token_bytes=LIMIT) == DIGEST
+
+
+def test_payload_one_level_beyond_the_json_depth_cap_is_rejected_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = _with_claims(_nested_sibling(17))
+    calls: list[object] = []
+    monkeypatch.setattr(json, "loads", lambda *a, **k: calls.append(a))
+
+    _assert_rejected(token)
+
+    assert calls == []
+
+
+def test_brackets_inside_json_strings_do_not_count_towards_the_depth_cap() -> None:
+    claims = _claims()
+    claims["text"] = "[{" * 40 + '\\"[{' * 40
+    assert own_image_digest(_with_claims(claims), max_token_bytes=LIMIT) == DIGEST
+
+
+def test_an_escaped_backslash_ends_before_the_closing_quote_so_later_depth_counts() -> None:
+    _assert_rejected(_with_claims(_nested_sibling(17, prefix="\\")))
