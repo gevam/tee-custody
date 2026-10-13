@@ -1,4 +1,4 @@
-// Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions stub → T-15.
+// Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions by T-15.
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import {
     CapabilityError,
@@ -215,11 +215,14 @@ export function encodeOpenAad(aad: OpenAadFields): Bytes {
     });
 }
 
-// RangeError: cs ≠ 32, keyId ≠ 16, epoch ∉ uint32
+// RangeError: op not enroll/open_session, cs ≠ 32, keyId ≠ 16, epoch ∉ uint32
 export function encodeOpenPlaintext(payload: OpenPayload): Bytes {
     if (payload.op === "enroll") {
         return encodeMap({ op: "enroll" });
     }
+    // Widened from the narrowed type: a caller can still pass any op at runtime.
+    const op: string = payload.op;
+    check(op === "open_session", "OP_RANGE");
     check(hasLength(payload.cs, KEY_BYTES), "CS_RANGE");
     check(hasLength(payload.keyId, ID_BYTES), "KEY_ID_RANGE");
     check(isUint(payload.epoch, MAX_UINT32), "EPOCH_RANGE");

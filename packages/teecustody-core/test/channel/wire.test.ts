@@ -289,6 +289,17 @@ describe("criterion 2: builders reject out-of-range input before encoding (SR-3,
         expect(cbor.encodeCanonical).not.toHaveBeenCalled();
     });
 
+    it.each(["close", "Open_session", "open_session ", "", undefined, 1])(
+        "encodeOpenPlaintext: OP_RANGE for op %o, even with valid open_session fields",
+        (op) => {
+            expectRangeError(
+                () => encodeOpenPlaintext(forced({ ...OPEN_SESSION, op })),
+                "OP_RANGE",
+            );
+            expect(cbor.encodeCanonical).not.toHaveBeenCalled();
+        },
+    );
+
     it("the enroll plaintext needs no range checks and is encoded", () => {
         encodeOpenPlaintext({ op: "enroll" });
         expect(cbor.encodeCanonical).toHaveBeenCalledOnce();
