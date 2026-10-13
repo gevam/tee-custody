@@ -47,7 +47,7 @@ def _backoff_world(rs: RunningSim) -> Any:
         rs,
         params=ChannelParams(refresh_margin_s=3599),
         limits=BoundaryLimits(
-            pull_wait_s=0.001, attestation_retry_min_s=RETRY_MIN, attestation_retry_max_s=RETRY_MAX
+            pull_wait_s=0.01, attestation_retry_min_s=RETRY_MIN, attestation_retry_max_s=RETRY_MAX
         ),
     )
 
