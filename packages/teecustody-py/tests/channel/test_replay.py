@@ -119,3 +119,29 @@ def test_the_smallest_valid_values_are_accepted() -> None:
     cache.record(CLIENT, RID, T0)
 
     assert cache.seen(CLIENT, RID)
+
+
+def test_recording_a_present_key_with_a_later_timestamp_extends_its_life() -> None:
+    clock = Clock()
+    cache = ReplayCache(skew_s=300, max_entries=10, clock=clock)
+    cache.record(CLIENT, RID, T0)
+    cache.record(CLIENT, RID, T0 + 100)
+
+    clock.now = T0 + 300 + 1
+    assert cache.seen(CLIENT, RID)
+    clock.now = T0 + 100 + 300
+    assert cache.seen(CLIENT, RID)
+    clock.now = T0 + 100 + 300 + 1
+    assert not cache.seen(CLIENT, RID)
+    assert cache._size() == 0
+
+
+def test_recording_a_present_key_with_an_earlier_timestamp_keeps_the_later_expiry() -> None:
+    clock = Clock()
+    cache = ReplayCache(skew_s=300, max_entries=10, clock=clock)
+    cache.record(CLIENT, RID, T0 + 100)
+    cache.record(CLIENT, RID, T0)
+
+    clock.now = T0 + 100 + 300
+    assert cache.seen(CLIENT, RID)
+    assert cache._size() == 1

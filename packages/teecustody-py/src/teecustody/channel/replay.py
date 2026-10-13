@@ -28,14 +28,18 @@ class ReplayCache:
             raise OverflowError("REPLAY_CACHE_FULL")
         key = (aad_client_id, request_id)
         expires_at = timestamp + self._skew_s
+        current = self._expires.get(key)
+        if current is not None and current >= expires_at:
+            return
         self._expires[key] = expires_at
         heapq.heappush(self._by_expiry, (expires_at, key))
 
     def _purge(self) -> None:
         now = self._clock()
         while self._by_expiry and self._by_expiry[0][0] < now:
-            _, key = heapq.heappop(self._by_expiry)
-            del self._expires[key]
+            expires_at, key = heapq.heappop(self._by_expiry)
+            if self._expires[key] == expires_at:
+                del self._expires[key]
 
     def _size(self) -> int:
         return len(self._expires)
