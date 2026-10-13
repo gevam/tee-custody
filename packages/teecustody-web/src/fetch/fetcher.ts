@@ -40,6 +40,15 @@ function isRedirect(response: Response, url: string): boolean {
     );
 }
 
+// An absent Content-Length defers to the streaming bound; a present one must be a non-negative decimal integer
+// no larger than the bound.
+function declaredLengthFits(contentLength: string | null, maxBodyBytes: number): boolean {
+    if (contentLength === null) {
+        return true;
+    }
+    return /^[0-9]+$/.test(contentLength) && Number(contentLength) <= maxBodyBytes;
+}
+
 // Reads the body chunk by chunk and cancels the stream the moment the running total exceeds the bound.
 async function readBounded(
     body: ReadableStream<Uint8Array> | null,
@@ -137,7 +146,7 @@ export class FetchFetcher implements Fetcher {
             void response.body?.cancel();
             throw new CapabilityError("HTTP_ERROR");
         }
-        if (Number(response.headers.get("Content-Length")) > this.#maxBodyBytes) {
+        if (!declaredLengthFits(response.headers.get("Content-Length"), this.#maxBodyBytes)) {
             void response.body?.cancel();
             throw new CapabilityError("INVALID_RESPONSE");
         }

@@ -336,3 +336,27 @@ describe("edge: the default fetch is globalThis.fetch", () => {
         expect(receivers[0] === undefined || receivers[0] === globalThis).toBe(true);
     });
 });
+
+describe("decision: a malformed Content-Length is INVALID_RESPONSE before reading", () => {
+    it.each(["abc", "-1", "1.5", "1e2", "0x10", "", "10, 10", "+10"])(
+        "Content-Length %j -> INVALID_RESPONSE, body cancelled unread",
+        async (value) => {
+            const { body, probe } = probedBody([new Uint8Array(10)]);
+            const { fetch } = spy(
+                () => new Response(body, { status: 200, headers: { "Content-Length": value } }),
+            );
+            expect(codeOf(await rejection(make(fetch, 1024).get(URL_OK)))).toBe("INVALID_RESPONSE");
+            expect(probe.pulls).toBe(0);
+            expect(probe.cancelled).toBe(true);
+        },
+    );
+
+    it("a valid Content-Length that understates the body is still caught by the streaming bound", async () => {
+        const { body, probe } = probedBody([new Uint8Array(1000), new Uint8Array(1000)]);
+        const { fetch } = spy(
+            () => new Response(body, { status: 200, headers: { "Content-Length": "10" } }),
+        );
+        expect(codeOf(await rejection(make(fetch, 1024).get(URL_OK)))).toBe("INVALID_RESPONSE");
+        expect(probe.cancelled).toBe(true);
+    });
+});
