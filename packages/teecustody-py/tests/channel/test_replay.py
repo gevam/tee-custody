@@ -1,5 +1,7 @@
 """T-10: the open-request replay cache (INC-2-API §4.9; R-6; SR-4, SR-14)."""
 
+import time
+
 import pytest
 
 from teecustody.channel import ReplayCache
@@ -61,7 +63,7 @@ def _full_cache(clock: Clock) -> ReplayCache:
 def test_full_cache_refuses_a_new_entry_and_keeps_every_live_one() -> None:
     cache = _full_cache(Clock())
 
-    with pytest.raises(OverflowError, match="^REPLAY_CACHE_FULL$"):
+    with pytest.raises(OverflowError, match=r"^REPLAY_CACHE_FULL$"):
         cache.record(CLIENT, b"\x09" * 16, T0)
 
     assert all(cache.seen(CLIENT, bytes([n]) * 16) for n in range(3))
@@ -78,3 +80,22 @@ def test_full_cache_accepts_a_new_entry_once_every_entry_has_expired() -> None:
 
     assert cache.seen(CLIENT, b"\x09" * 16)
     assert cache._size() == 1
+
+
+def test_a_long_run_with_a_moving_clock_is_fast_and_stays_within_max_entries() -> None:
+    skew, max_entries = 1_000, 20_000
+    clock = Clock()
+    cache = ReplayCache(skew_s=skew, max_entries=max_entries, clock=clock)
+    largest = 0
+
+    started = time.perf_counter()
+    for n in range(100_000):
+        clock.now = T0 + n // 10
+        cache.record(CLIENT, n.to_bytes(16, "big"), T0 + n // 10)
+        largest = max(largest, cache._size())
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 2.0
+    assert largest <= max_entries
+    assert cache.seen(CLIENT, (99_999).to_bytes(16, "big"))
+    assert not cache.seen(CLIENT, (0).to_bytes(16, "big"))
