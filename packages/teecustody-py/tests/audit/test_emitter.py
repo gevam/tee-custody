@@ -3,6 +3,7 @@
 import re
 
 from teecustody.audit import (
+    MAX_COUNT,
     AggregateOutcome,
     AppendResult,
     AuditClass,
@@ -121,3 +122,14 @@ def test_one_aggregate_per_outcome_with_exact_count_after_interval_ends() -> Non
         assert record.subject_client_id is None
         assert record.request_id is None
     assert len({k.id for k, _ in aggregates}) == len(aggregates)
+
+
+def test_count_saturates_at_max_count() -> None:
+    emitter, sink, clock, _ = _make()
+    emitter._counts[AggregateOutcome.OPEN_FAILED.value] = MAX_COUNT - 5  # private seed
+    for _ in range(10):
+        emitter.count(AggregateOutcome.OPEN_FAILED)
+    clock.now += INTERVAL_S
+    emitter.tick()
+    [(_, record)] = sink.of(AuditClass.AGGREGATE)
+    assert record.count == MAX_COUNT

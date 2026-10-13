@@ -6,7 +6,7 @@
 from collections.abc import Callable
 from enum import StrEnum
 
-from teecustody.audit.ports import AuditClass, AuditKey, AuditRecord, AuditSink
+from teecustody.audit.ports import MAX_COUNT, AuditClass, AuditKey, AuditRecord, AuditSink
 from teecustody.obs.types import AllowListedLogger
 
 
@@ -47,7 +47,7 @@ class AuditEmitter:
         return int(self._clock() * 1000)
 
     def count(self, outcome: AggregateOutcome) -> None:
-        self._counts[outcome.value] = self._counts.get(outcome.value, 0) + 1
+        self._counts[outcome.value] = min(self._counts.get(outcome.value, 0) + 1, MAX_COUNT)
 
     def pre_principal_alert(
         self,
