@@ -59,7 +59,9 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
    §6.1 row (D-047), and T-33 records DEBT-2.
 5. **QA**: author INC-2 acceptance tests after Wave 0 merges (D-018: G4 per wave). Before T-25 merges, update
    `tests/acceptance/test_FR03_cli.py::test_FR03_vectors_are_written_to_requested_directory` (it asserts two output
-   lines; A-4 makes it three: attestation, corpus, channel).
+   lines; A-4 makes it three: attestation, corpus, channel). QA has also updated
+   `tests/acceptance/test_WAVE4_sim_defects.py::test_vectors_with_force_regenerates` from two output lines to three
+   (A-4). Both files are red until T-25 merges, and both are in the expected-red table.
 6. **Architect**: ARCHITECTURE text alignment listed in INC-2-API §13 (not a task here).
 7. **D-039 Q4 ruling recorded as TL-7**: Playwright suites run in the new required `browser` CI job, not in `test_command`.
 8. **framework.yaml commands: no change for D-043/D-045** beyond action 1. The new semgrep rules (T-33, T-27,
@@ -100,6 +102,7 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 1 | T-21 | Simulator Google parity (Origin echo), attacker path, v2 profile/state, rows 38–39 (A-8; L-1) — **MU-1** | STRONG | V-02, CI-2-4 ruling (done) | |
 | 1 | T-33 | Core trust profile v2 + pinned `jwks_uri` (A-6, A-7, A-9); semgrep `tc-core-no-oidc-discovery`; DEBT-2 — **MU-1** | STRONG | T-02, T-05 | |
 | 1 | T-36 | QA: INC-1 acceptance tests for D-043 — **MU-1** | MID (QA) | INC-2-API §16 | |
+| 1 | T-37 | D-049 h11 age exception in `tools/dependency_policy.py` (exact, gateway-only); **merge before 2026-10-24** | STRONG | T-05, T-01 | |
 | 1 (MU-1 tail) | T-34 | Regenerate attestation vectors v2 + rows 38–39 — **MU-1** | FAST | T-21, T-33 (DONE; combined branch), T-03 | **YES** — `spec/vectors` |
 | 2 | T-22 | Pre-keys + bundle build | STRONG | T-04, T-07, T-08 | |
 | 2 | T-23 | Sessions, `T2cSealer`, session table (R-5, R-8) | STRONG | T-04, T-07 | |
@@ -114,14 +117,14 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 4 | T-31 | End-to-end harness, Node/Python e2e, `dev.py`; N1–N3 | STRONG | T-14, T-17, T-18, T-19, T-24, T-26, T-28, T-29, MU-1, T-35 | |
 | 5 | T-32 | Playwright CSP harness (SR-13, V-2.2); B1–B3, favicon, exact CSP header | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02, MU-1 | |
 
-Counts: 38 items (36 tasks T-01..T-36, plus V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL). Wave 1 has 18:
-T-07..T-21, T-33, T-36, and T-34 as the MU-1 tail. Wave 2 has 6, Wave 3 has 4, and Waves 4–5 have one each.
+Counts: 39 items (37 tasks T-01..T-37, plus V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL). Wave 1 has 19:
+T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6, Wave 3 has 4, and Waves 4–5 have one each.
 The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
-- B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-11.
-- B2: T-10, T-12, T-09, T-13, T-14, T-18, T-19, T-20.
-- B3: T-34, once T-21 and T-33 report DONE. T-36 is the QA Engineer's work and does not use an engineer slot;
+- B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
+- B2: T-11, T-10, T-12, T-09, T-13, T-14, T-18, T-19.
+- B3: T-20, plus T-34 once T-21 and T-33 report DONE. T-36 is the QA Engineer's work and does not use an engineer slot;
   it starts with B1.
 
 Critical paths:
@@ -166,6 +169,8 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - sim `cli.py`, `tests/test_cli.py`: T-21 W1, T-25 W2.
   - Core `attestation/types.ts`, `test/api-surface.test.ts`: T-02 W0, T-33 W1.
   - `spec/vectors/README.md`: T-03 W0, T-34 W1.
+  - `tools/dependency_policy.py`, `tests/tooling/test_dependency_policy.py`: T-05 W0, T-37 W1.
+  - Core `src/bundle/types.ts`: T-02 W0 (final), T-16 W1 (A3: the one-line `new Uint8Array(bytes)` copy only).
   - `tests/integration/contracts/test_sim_cli_contract.py`: TL W0, T-21 W1.
   - `tests/acceptance/test_FR03_cli.py`: T-36 W1, QA action 5 W2.
   - `docs/adr/0011-…md`: V-01 W0, T-17 W1 (append-only).
@@ -248,6 +253,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `tests/integration/contracts/test_run_loop_contract.py` | T-07..T-13, T-22, T-23, T-24, T-28, T-29 |
 | `tests/integration/contracts/test_sim_cli_contract.py::test_vectors_writes_a_canonical_suite` | T-25 |
 | `tests/integration/contracts/test_profile_cli_contract.py` | T-35 (after MU-1) |
+| `tests/acceptance/test_FR03_cli.py::test_FR03_vectors_are_written_to_requested_directory`, `tests/acceptance/test_WAVE4_sim_defects.py::test_vectors_with_force_regenerates` (three output lines, A-4) | T-25 |
 | `tests/integration/contracts/channel-client.contract.test.ts` | T-15, T-16, T-17, T-26 |
 | `tests/integration/contracts/web-adapters.contract.test.ts` | T-17, T-18, T-19, T-20 |
 | `tests/integration/contracts/channel-vectors.contract.test.ts` | T-30 (after T-15, T-16, T-17, T-26) |
@@ -266,6 +272,18 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 `tests/e2e/channel_harness.py` (TL-8, from Wave 4). Doubles: `tests.support.channel_doubles`.
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
+
+## G4 conditions (Wave 1, provisional, 2026-10-13)
+
+Checked against `main` ffbba1f (only T-01 of Wave 0 merged) and the QA mapping on `inc-2/QA-acceptance`
+(`docs/qa/INC-2.md`). This must be re-run when the Release Engineer reports Wave 0 merged.
+
+| Condition | Status |
+|---|---|
+| Same-wave file overlap | Met. T-37 is the only W1 owner of `tools/dependency_policy.py`, and T-16 the only W1 owner of `bundle/types.ts`. |
+| Inputs from earlier waves | Pending: T-02 and T-05 are not yet on trunk. |
+| Acceptance tests exist and fail for the right reason | **Not met yet.** Mapped and red on a stub or missing pin: T-07, T-08, T-10, T-11, T-12, T-14, T-16, T-17, T-18, T-19, T-20. T-21, T-33 and T-34 are covered by T-36 inside MU-1 plus N1/N2 (red: harness missing), which is acceptable. **No mapping:** T-09 (config bounds), T-13 (own image digest, spec §5.1 step 3), T-15 (Core channel wire, public through `ChannelClient`) and T-37 (SR-9 D-049). QA must map or add tests for these four. The QA test for an identical open replay must also expect exactly `PREKEY_UNKNOWN`: §4.10 checks the pre-key before the replay cache, so `REQUEST_REPLAYED` happens only for a reused `request_id` sealed to another live pre-key. |
+| Contract stubs | Met (the Wave-0 TL set plus `test_profile_cli_contract.py`). |
 
 ## G4 conditions (D-043/D-045 pass, 2026-10-12)
 

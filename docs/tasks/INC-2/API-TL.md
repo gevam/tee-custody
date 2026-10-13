@@ -95,7 +95,9 @@ def _nonce(seq: int) -> bytes: ...   # module-private (INC-2-API §4.9); ValueEr
 ```ts
 // bundle/types.ts (final): the runtime brand registry for VerifiedBundle (B-13)
 export function createVerifiedBundle(f: Omit<VerifiedBundle, typeof verifiedBundle>): VerifiedBundle;
-// copies key bytes once into a module-private WeakMap; identityPublicKey and prekeys[i].publicKey are
+// copies key bytes once into private storage (as merged: a per-field getter closure, accepted by Code and
+// Security Review on T-02 in place of §7.2's WeakMap wording; T-16 A3 makes the copy `new Uint8Array(bytes)`);
+// identityPublicKey and prekeys[i].publicKey are
 // copy-on-read getters (fresh slice() per read, no setter); then freezes and registers (INC-2-API §7.1/§7.2, 2026-10-13)
 export function isVerifiedBundle(v: unknown): v is VerifiedBundle;
 
