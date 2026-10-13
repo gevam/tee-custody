@@ -1,4 +1,7 @@
 // FetchTransport (INC-2-API §8.3, §6; FR-5; SR-1, SR-3/R-7, SR-5, SR-11). Synthetic values only.
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { CapabilityError } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -714,5 +717,108 @@ describe("FetchTransport criterion 8: errors carry only their code (SR-11)", () 
         const error = configError({ baseUrl: "http://secret-host.example/" }) as TypeError;
         expect(error.message).toBe("INVALID_CONFIG");
         expect(String(error.stack)).not.toContain("secret-host");
+    });
+});
+
+describe("FetchTransport edge cases", () => {
+    it("never retries: a failed call makes exactly one request and re-sends nothing", async () => {
+        const calls: Call[] = [];
+        const fetch: FetchFn = (url, init) => {
+            calls.push({ url, init });
+            return Promise.reject(new TypeError("reset"));
+        };
+        expect(await codeOf(make(fetch).postRequest(IID, new Uint8Array([1])))).toBe("UNAVAILABLE");
+        expect(calls).toHaveLength(1);
+    });
+
+    it("gives concurrent calls independent timers and results", async () => {
+        const { fetch } = spy(
+            json(`{"request_id":"${RID}"}`, 202),
+            json(`{"responses":[],"next":"n"}`),
+        );
+        const transport = make(fetch);
+        const [id, page] = await Promise.all([
+            transport.postRequest(IID, new Uint8Array([1])),
+            transport.getResponses(CID),
+        ]);
+        expect(id).toBe(RID);
+        expect(page.next).toBe("n");
+    });
+});
+
+describe("FetchTransport against a real loopback HTTP server", () => {
+    let server: Server | undefined;
+
+    afterEach(async () => {
+        const running = server;
+        server = undefined;
+        if (running !== undefined) {
+            running.closeAllConnections();
+            await new Promise((done) => running.close(done));
+        }
+    });
+
+    async function serve(
+        handler: (req: IncomingMessage, res: ServerResponse) => void,
+    ): Promise<string> {
+        const created = createServer(handler);
+        server = created;
+        await new Promise<void>((ready) => created.listen(0, "127.0.0.1", ready));
+        return `http://127.0.0.1:${String((created.address() as AddressInfo).port)}/gw`;
+    }
+
+    function real(baseUrl: string, timeoutMs = 2000): FetchTransport {
+        return new FetchTransport({ baseUrl, maxResponseBytes: 1024, timeoutMs });
+    }
+
+    it("relays the body byte for byte with the octet-stream type and no cookies", async () => {
+        const seen: { url?: string; type?: string; cookie?: string; body: Buffer[] } = { body: [] };
+        const origin = await serve((req, res) => {
+            seen.url = req.url;
+            seen.type = req.headers["content-type"];
+            seen.cookie = req.headers.cookie;
+            req.on("data", (chunk: Buffer) => seen.body.push(chunk));
+            req.on("end", () => {
+                res.writeHead(202, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ request_id: RID }));
+            });
+        });
+        const body = new Uint8Array([0, 255, 13, 10, 34]);
+        expect(await real(origin).postRequest(IID, body)).toBe(RID);
+        expect(seen.url).toBe(`/gw/requests/${IID}`);
+        expect(seen.type).toBe("application/octet-stream");
+        expect(seen.cookie).toBeUndefined();
+        expect(Array.from(Buffer.concat(seen.body))).toEqual(Array.from(body));
+    });
+
+    it("does not follow a redirect", async () => {
+        let hits = 0;
+        const origin = await serve((_req, res) => {
+            hits += 1;
+            res.writeHead(307, { Location: "/gw/bundles-elsewhere" });
+            res.end();
+        });
+        expect(await codeOf(real(origin).listBundles())).toBe("INVALID_RESPONSE");
+        expect(hits).toBe(1);
+    });
+
+    it("cuts off a body that keeps growing past the limit", async () => {
+        const origin = await serve((_req, res) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.write('{"bundles":[],"pad":"');
+            const timer = setInterval(() => res.write("x".repeat(512)), 2);
+            res.on("close", () => {
+                clearInterval(timer);
+            });
+        });
+        expect(await codeOf(real(origin).listBundles())).toBe("INVALID_RESPONSE");
+    });
+
+    it("times out a body that stalls after the headers", async () => {
+        const origin = await serve((_req, res) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.write('{"bundles":');
+        });
+        expect(await codeOf(real(origin, 50).listBundles())).toBe("UNAVAILABLE");
     });
 });
