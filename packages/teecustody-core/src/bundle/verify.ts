@@ -7,6 +7,7 @@ import {
     type VerifiedAttestation,
 } from "../attestation/types.js";
 import { verifyAttestation } from "../attestation/verify.js";
+import { utf8Encode } from "../encoding.js";
 import { decodeCanonical } from "../wire/cbor.js";
 import {
     BundleError,
@@ -137,6 +138,19 @@ export async function verifyBundle(
     if (!isVerifiedAttestation(attestation)) {
         throw new BundleError("ATTESTATION_FAILED");
     }
+    for (const e of decoded.prekeys) {
+        const m = await prekeySigningMessage(
+            deps.crypto,
+            decoded.instanceId,
+            e.id,
+            e.pub,
+            e.notAfter,
+            attestation.imageDigest,
+        );
+        if (!(await deps.crypto.verifyEd25519(decoded.ikPub, m, e.sig))) {
+            throw new BundleError("PREKEY_SIGNATURE_INVALID");
+        }
+    }
     const nowMs = deps.now();
     const prekeys = decoded.prekeys
         .filter((e) => e.notAfter * 1000 > nowMs)
@@ -150,7 +164,32 @@ export async function verifyBundle(
     });
 }
 
-// INC-2-API §2 pre-key signing message m
+const PREKEY_PREFIX = utf8Encode("prekey-v1");
+
+function u32be(value: number): Bytes {
+    const out = new Uint8Array(4);
+    new DataView(out.buffer).setUint32(0, value);
+    return out;
+}
+
+function u64be(value: number): Bytes {
+    const out = new Uint8Array(8);
+    new DataView(out.buffer).setBigUint64(0, BigInt(value));
+    return out;
+}
+
+function concat(parts: readonly Bytes[]): Bytes {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+        out.set(part, offset);
+        offset += part.length;
+    }
+    return out;
+}
+
+// INC-2-API §2 pre-key signing message m:
+// H( ascii("prekey-v1") ‖ ascii(instance_id) ‖ u32be(id) ‖ pub ‖ u64be(not_after) ‖ ascii(image_digest) )
 export function prekeySigningMessage(
     crypto: Pick<Crypto, "sha256">,
     instanceId: string,
@@ -159,5 +198,14 @@ export function prekeySigningMessage(
     notAfter: number,
     imageDigest: string,
 ): Promise<Bytes> {
-    throw new Error("NOT_IMPLEMENTED: T-16");
+    return crypto.sha256(
+        concat([
+            PREKEY_PREFIX,
+            utf8Encode(instanceId),
+            u32be(id),
+            pub,
+            u64be(notAfter),
+            utf8Encode(imageDigest),
+        ]),
+    );
 }

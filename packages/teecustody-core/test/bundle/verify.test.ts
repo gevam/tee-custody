@@ -17,6 +17,7 @@ import {
     BUNDLE_LIMITS,
     INSTANCE,
     NOW_S,
+    OTHER_DIGEST,
     attestation,
     bundleBytes,
     bundleMap,
@@ -26,6 +27,7 @@ import {
     pubFor,
     sha256,
     standardEntries,
+    type EntrySpec,
     type Identity,
 } from "./support.js";
 
@@ -196,5 +198,25 @@ describe("verifyBundle", () => {
         mockedVerifyAttestation.mockResolvedValue(copy);
         const bytes = await bundleBytes({ ik, entries: standardEntries() });
         await expectBundleError(verifyBytes(bytes), "ATTESTATION_FAILED");
+    });
+
+    describe("(6) every pre-key signature is checked before expiry filtering (Q3)", () => {
+        const cases: [string, Partial<EntrySpec>, number][] = [
+            ["a corrupted signature on an unexpired entry", { corruptSig: true }, 1],
+            ["a corrupted signature on an expired entry", { corruptSig: true }, 2],
+            ["a signature over a different image digest", { signedDigest: OTHER_DIGEST }, 5],
+            ["a signature over a different instance id", { signedInstance: "c3".repeat(16) }, 9],
+        ];
+        it.each(cases)("%s", async (_name, change, id) => {
+            const entries = standardEntries().map((e) => (e.id === id ? { ...e, ...change } : e));
+            const bytes = await bundleBytes({ ik, entries });
+            await expectBundleError(verifyBytes(bytes), "PREKEY_SIGNATURE_INVALID");
+        });
+
+        it("a signature by a key other than IK_pub", async () => {
+            const map = await bundleMap({ ik, entries: standardEntries() });
+            map.set("IK_pub", (await identity()).publicKey);
+            await expectBundleError(verifyBytes(encodeCanonical(map)), "PREKEY_SIGNATURE_INVALID");
+        });
     });
 });
