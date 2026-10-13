@@ -136,7 +136,8 @@ function decodeBundle(bytes: Bytes, deps: BundleDeps): DecodedBundle {
     };
 }
 
-// spec §5.2 step 2: the §6 checks with the H(IK_pub) nonce; any AttestationError keeps its check id.
+// spec §5.2 step 2: the §6 checks with the H(IK_pub) nonce; any AttestationError keeps its check id, and any
+// other failure fails closed without one.
 async function attest(
     token: string,
     profile: TrustProfile,
@@ -152,10 +153,10 @@ async function attest(
             limits: deps.verifierLimits,
         });
     } catch (error) {
-        if (error instanceof AttestationError) {
-            throw new BundleError("ATTESTATION_FAILED", error.check);
-        }
-        throw error;
+        throw new BundleError(
+            "ATTESTATION_FAILED",
+            error instanceof AttestationError ? error.check : undefined,
+        );
     }
 }
 
@@ -167,7 +168,7 @@ async function verifyPreKeySignature(
     sig: Bytes,
 ): Promise<boolean> {
     try {
-        return await deps.crypto.verifyEd25519(ikPub, m, sig);
+        return await deps.crypto.verifyEd25519(ikPub.slice(), m, sig);
     } catch (error) {
         if (error instanceof CapabilityError && error.code === "UNSUPPORTED") {
             throw new BundleError("UNSUPPORTED");
@@ -210,7 +211,9 @@ export async function verifyBundle(
     if (decoded.instanceId !== published.instanceId) {
         throw new BundleError("INSTANCE_MISMATCH");
     }
-    const identityNonce = await deps.crypto.sha256(decoded.ikPub);
+    // Capabilities only ever receive copies: the decoded key buffers are handed to createVerifiedBundle
+    // exactly as they were verified (INC-2-API §7.1 ruling).
+    const identityNonce = await deps.crypto.sha256(decoded.ikPub.slice());
     const attestation = await attest(decoded.token, profile, identityNonce, events, deps);
     if (!isVerifiedAttestation(attestation)) {
         throw new BundleError("ATTESTATION_FAILED");

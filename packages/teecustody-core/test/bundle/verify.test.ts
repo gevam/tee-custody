@@ -412,4 +412,134 @@ describe("verifyBundle", () => {
         expect(vb.identityPublicKey).toEqual(ik.publicKey);
         expect(vb.prekeys.map((p) => p.publicKey)).toEqual([pubFor(1), pubFor(5), pubFor(9)]);
     });
+
+    describe("edge cases", () => {
+        it("a non-AttestationError from verifyAttestation fails closed as ATTESTATION_FAILED", async () => {
+            mockedVerifyAttestation.mockRejectedValue(new TypeError("boom"));
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(verifyBytes(bytes), "ATTESTATION_FAILED");
+        });
+
+        it("a sha256 failure while building a signing message propagates and yields no bundle", async () => {
+            const failure = new CapabilityError("UNAVAILABLE");
+            let calls = 0;
+            const crypto = {
+                ...bundleCrypto(),
+                sha256: (data: Uint8Array) =>
+                    ++calls === 1 ? sha256(data) : Promise.reject(failure),
+            };
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expect(verifyBytes(bytes, bundleDeps({ crypto }))).rejects.toBe(failure);
+        });
+
+        it("a crypto adapter that mutates its key arguments cannot change the bytes that are branded", async () => {
+            const inner = bundleCrypto();
+            const crypto = {
+                ...inner,
+                sha256: async (data: Uint8Array) => {
+                    const digest = await inner.sha256(data);
+                    data.fill(0xee);
+                    return digest;
+                },
+                verifyEd25519: async (key: Uint8Array, data: Uint8Array, sig: Uint8Array) => {
+                    const ok = await inner.verifyEd25519(key, data, sig);
+                    key.fill(0xee);
+                    return ok;
+                },
+            };
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            const vb = (await verifyBytes(bytes, bundleDeps({ crypto }))) as VerifiedBundle;
+            expect(vb.identityPublicKey).toEqual(ik.publicKey);
+            expect(vb.prekeys.map((p) => p.publicKey)).toEqual([pubFor(1), pubFor(5), pubFor(9)]);
+        });
+
+        const schema: [string, (m: BundleMap) => void][] = [
+            [
+                "the top level is an array",
+                (m) => {
+                    const top = [...m.values()];
+                    m.clear();
+                    m.set("x", top);
+                },
+            ],
+            ["a missing top-level key", (m) => m.delete("token")],
+            ["a missing entry key", (m) => entriesOf(m)[0]?.delete("sig")],
+            ["an entry that is not a map", (m) => m.set("prekeys", [1])],
+            ["prekeys not an array", (m) => m.set("prekeys", new Map())],
+            ["no prekeys", (m) => m.set("prekeys", [])],
+            ["an upper-case instance_id", (m) => m.set("instance_id", INSTANCE.toUpperCase())],
+            ["a byte-string instance_id", (m) => m.set("instance_id", new Uint8Array(32))],
+            ["an empty token", (m) => m.set("token", "")],
+            ["a token of 16 385 bytes", (m) => m.set("token", "a".repeat(16_385))],
+            ["a token of 8 193 two-byte characters", (m) => m.set("token", "é".repeat(8_193))],
+            ["a byte-string token", (m) => m.set("token", new Uint8Array(4))],
+            ["a text IK_pub", (m) => m.set("IK_pub", "k".repeat(32))],
+            ["IK_pub of 33 bytes", (m) => m.set("IK_pub", new Uint8Array(33))],
+            ["pub of 31 bytes", (m) => entriesOf(m)[0]?.set("pub", new Uint8Array(31))],
+            ["a text sig", (m) => entriesOf(m)[0]?.set("sig", "s".repeat(64))],
+            ["id 2^32", (m) => entriesOf(m)[1]?.set("id", 2 ** 32)],
+            ["a negative id", (m) => entriesOf(m)[0]?.set("id", -1)],
+            ["a text id", (m) => entriesOf(m)[0]?.set("id", "1")],
+            ["a negative published_at", (m) => m.set("published_at", -1)],
+            ["a text not_after", (m) => entriesOf(m)[0]?.set("not_after", "0")],
+            ["a negative not_after", (m) => entriesOf(m)[0]?.set("not_after", -5)],
+        ];
+        it.each(schema)("%s is MALFORMED", async (_name, edit) => {
+            const map = await bundleMap({ ik, entries: standardEntries() });
+            edit(map);
+            await expectBundleError(verifyBytes(encodeCanonical(map)), "MALFORMED");
+            expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ["one byte", "a"],
+            ["16 384 bytes", "a".repeat(16_384)],
+            ["8 192 two-byte characters", "é".repeat(8_192)],
+        ])("accepts a token of %s", async (_name, token) => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries(), token });
+            await expect(verifyBytes(bytes)).resolves.toBeDefined();
+        });
+
+        it("accepts the largest id and not_after", async () => {
+            const entries = [{ id: 2 ** 32 - 1, notAfter: Number.MAX_SAFE_INTEGER }];
+            const vb = (await verifyBytes(await bundleBytes({ ik, entries }))) as VerifiedBundle;
+            expect(vb.prekeys.map((p) => p.id)).toEqual([2 ** 32 - 1]);
+        });
+
+        it.each([
+            ["fewer than the entries", 3],
+            ["zero", 0],
+            ["NaN", Number.NaN],
+        ])("a maxPrekeys of %s is MALFORMED", async (_name, maxPrekeys) => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            const deps = bundleDeps({ bundleLimits: { ...BUNDLE_LIMITS, maxPrekeys } });
+            await expectBundleError(verifyBytes(bytes, deps), "MALFORMED");
+        });
+
+        it("256 entries are accepted even when maxPrekeys is larger, 257 never", async () => {
+            const deps = bundleDeps({ bundleLimits: { ...BUNDLE_LIMITS, maxPrekeys: 1000 } });
+            const many = (n: number) =>
+                Array.from({ length: n }, (_, i) => ({ id: i, notAfter: NOW_S + 60 }));
+            const ok = (await verifyBytes(
+                await bundleBytes({ ik, entries: many(256) }),
+                deps,
+            )) as VerifiedBundle;
+            expect(ok.prekeys).toHaveLength(256);
+            await expectBundleError(
+                verifyBytes(await bundleBytes({ ik, entries: many(257) }), deps),
+                "MALFORMED",
+            );
+        });
+
+        it("invalid decode limits are MALFORMED", async () => {
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            const deps = bundleDeps({
+                bundleLimits: {
+                    ...BUNDLE_LIMITS,
+                    decode: { ...BUNDLE_LIMITS.decode, maxDepth: 0 },
+                },
+            });
+            await expectBundleError(verifyBytes(bytes, deps), "MALFORMED");
+        });
+    });
 });
