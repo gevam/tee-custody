@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChannelError } from "../../src/channel/errors.js";
+import * as wire from "../../src/channel/wire.js";
 import * as cbor from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue, type WireErrorCode } from "../../src/wire/types.js";
 import {
@@ -820,5 +821,51 @@ describe("criterion 7: hpkeInfo (SR-14 layout)", () => {
             new RangeError(code),
         );
         expect(crypto.sha256).not.toHaveBeenCalled();
+    });
+});
+
+// The parameter names of a function, read from its source text (no default values or destructuring here).
+function parameterNames(fn: (...args: never[]) => unknown): string[] {
+    const list = /^[^(]*\(([^)]*)\)/.exec(fn.toString())?.[1] ?? "";
+    return list
+        .split(",")
+        .map((parameter) => parameter.trim())
+        .filter((parameter) => parameter !== "");
+}
+
+describe("criterion 8: no nonce builder and no caller-chosen seq (SR-14, R-5)", () => {
+    const exported = Object.entries(wire);
+
+    it("reads parameter names from function source", () => {
+        expect(parameterNames(wire.encodeFrameRequest)).toEqual(["aadBytes", "ct"]);
+        expect(parameterNames(wire.hpkeInfo)).toEqual(["crypto", "ikPub", "prekeyId"]);
+        expect(parameterNames(() => undefined)).toEqual([]);
+    });
+
+    it("exports no name containing nonce", () => {
+        expect(exported.length).toBeGreaterThan(0);
+        for (const [name] of exported) {
+            expect(name.toLowerCase()).not.toContain("nonce");
+        }
+    });
+
+    it("exports no function with a parameter named seq", () => {
+        const functions = exported.filter(([, value]) => typeof value === "function");
+        expect(functions.map(([name]) => name).sort()).toEqual([
+            "decodeFrameResultPlaintext",
+            "decodeOpenResultPlaintext",
+            "decodeResponse",
+            "encodeFrameAad",
+            "encodeFrameRequest",
+            "encodeOpenAad",
+            "encodeOpenPlaintext",
+            "encodeOpenRequest",
+            "hpkeInfo",
+        ]);
+        for (const [name, value] of functions) {
+            const parameters = parameterNames(value as (...args: never[]) => unknown);
+            expect(parameters, name).not.toContain("seq");
+            expect(parameters.join(",").toLowerCase(), name).not.toContain("nonce");
+        }
     });
 });
