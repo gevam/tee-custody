@@ -29,6 +29,39 @@ const HEX32 = /^[0-9a-f]{32}$/;
 const CURSOR = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_REQUEST_BYTES = 65_536;
 
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+function invalidConfig(): TypeError {
+    return new TypeError("INVALID_CONFIG");
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+// INC-2-API §8.3, T-19 A1: a canonical https (or loopback http) URL, with or without a trailing slash,
+// and no userinfo, query or fragment. Returns the resolution base, which always ends with "/".
+function resolutionBase(baseUrl: string): string {
+    let url: URL;
+    try {
+        url = new URL(baseUrl);
+    } catch {
+        throw invalidConfig();
+    }
+    const canonical = url.href === baseUrl || url.href === `${baseUrl}/`;
+    const scheme =
+        url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname));
+    const bare =
+        url.username === "" &&
+        url.password === "" &&
+        !url.href.includes("?") &&
+        !url.href.includes("#");
+    if (!canonical || !scheme || !bare) {
+        throw invalidConfig();
+    }
+    return url.href.endsWith("/") ? url.href : `${url.href}/`;
+}
+
 function matches(pattern: RegExp, value: unknown): value is string {
     return typeof value === "string" && pattern.test(value);
 }
@@ -201,7 +234,13 @@ export class FetchTransport implements Transport {
 
     // TypeError("INVALID_CONFIG")
     constructor(options: FetchTransportOptions) {
-        this.#base = options.baseUrl;
+        if (
+            !isPositiveSafeInteger(options.maxResponseBytes) ||
+            !isPositiveSafeInteger(options.timeoutMs)
+        ) {
+            throw invalidConfig();
+        }
+        this.#base = resolutionBase(options.baseUrl);
         this.#maxResponseBytes = options.maxResponseBytes;
         this.#timeoutMs = options.timeoutMs;
         this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));

@@ -1,6 +1,6 @@
 // FetchTransport (INC-2-API §8.3, §6; FR-5; SR-1, SR-3/R-7, SR-5, SR-11). Synthetic values only.
 import { CapabilityError } from "@teecustody/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { FetchFn } from "../../src/fetch/fetcher.js";
 import { FetchTransport, type FetchTransportOptions } from "../../src/transport/fetch-transport.js";
@@ -539,5 +539,98 @@ describe("FetchTransport criterion 6: network failures and timeouts are UNAVAILA
         await make(fetch, { timeoutMs: 10 }).listBundles();
         await new Promise((resolve) => setTimeout(resolve, 40));
         expect((calls[0]?.init.signal as AbortSignal).aborted).toBe(false);
+    });
+});
+
+function configError(options: Partial<FetchTransportOptions>): unknown {
+    try {
+        make(() => Promise.reject(new Error("unused")), options);
+    } catch (error) {
+        return error;
+    }
+    return undefined;
+}
+
+describe("FetchTransport criterion 7: configuration is validated at construction", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it.each([
+        "http://a.example/",
+        "http://a.example",
+        "https://A.example",
+        "https://a.example/#f",
+        "https://a.example/#",
+        "https://a.example/?q=1",
+        "https://a.example/?",
+        "https://a.example/gw?x",
+        "https://u@a.example/",
+        "https://u:p@a.example/",
+        "https://:p@a.example/",
+        "https://a.example/gw/../x",
+        " https://a.example/",
+        "not a url",
+        "/relative",
+        "",
+        "ftp://127.0.0.1/",
+        "ws://127.0.0.1/",
+        "http://127.0.0.2/",
+        "http://localhost.a.example/",
+        "http://[::2]/",
+    ])("refuses baseUrl %j with TypeError(INVALID_CONFIG)", (baseUrl) => {
+        const error = configError({ baseUrl });
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as TypeError).message).toBe("INVALID_CONFIG");
+    });
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53, "1024"])(
+        "refuses maxResponseBytes and timeoutMs of %s",
+        (value) => {
+            const bad = value as number;
+            for (const options of [{ maxResponseBytes: bad }, { timeoutMs: bad }]) {
+                const error = configError(options);
+                expect(error).toBeInstanceOf(TypeError);
+                expect((error as TypeError).message).toBe("INVALID_CONFIG");
+            }
+        },
+    );
+
+    it("refuses a baseUrl that is not a string", () => {
+        const error = configError({ baseUrl: new URL(BASE) as unknown as string });
+        expect((error as TypeError).message).toBe("INVALID_CONFIG");
+    });
+
+    it.each([
+        ["https://a.example", "https://a.example/bundles"],
+        ["https://a.example/", "https://a.example/bundles"],
+        ["https://a.example/gw", "https://a.example/gw/bundles"],
+        ["https://a.example/gw/", "https://a.example/gw/bundles"],
+        ["https://a.example:8443/a/b", "https://a.example:8443/a/b/bundles"],
+        ["http://127.0.0.1:8080", "http://127.0.0.1:8080/bundles"],
+        ["http://[::1]:8080", "http://[::1]:8080/bundles"],
+        ["http://localhost:8080/", "http://localhost:8080/bundles"],
+    ])("accepts baseUrl %j and requests %j", async (baseUrl, expected) => {
+        const { fetch, calls } = spy(json('{"bundles":[]}'));
+        await make(fetch, { baseUrl }).listBundles();
+        expect(calls[0]?.url).toBe(expected);
+    });
+
+    it("accepts the smallest limits", async () => {
+        const { fetch } = spy(json("{}", 503));
+        const transport = make(fetch, { maxResponseBytes: 1, timeoutMs: 1 });
+        expect(await codeOf(transport.listBundles())).toBe("UNAVAILABLE");
+    });
+
+    it("defaults to globalThis.fetch, looked up at call time", async () => {
+        const { fetch, calls } = spy(json('{"bundles":[]}'));
+        const transport = new FetchTransport({
+            baseUrl: BASE,
+            maxResponseBytes: 64,
+            timeoutMs: 1000,
+        });
+        vi.stubGlobal("fetch", fetch);
+        expect(await transport.listBundles()).toEqual([]);
+        expect(calls[0]?.url).toBe(`${BASE}bundles`);
     });
 });
