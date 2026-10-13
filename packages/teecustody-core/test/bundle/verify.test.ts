@@ -235,6 +235,23 @@ describe("verifyBundle", () => {
             await expectBundleError(verifyBytes(bytes), "PREKEY_SIGNATURE_INVALID");
         });
 
+        it("signatures over IMAGE_DIGEST when the attested digest is OTHER_DIGEST", async () => {
+            mockedVerifyAttestation.mockResolvedValue(attestation(OTHER_DIGEST));
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(verifyBytes(bytes), "PREKEY_SIGNATURE_INVALID");
+        });
+
+        it.each([
+            ["an object", {}],
+            ["the number 1", 1],
+            ["a string", "true"],
+        ])("an adapter result of %s that is not boolean true", async (_name, result) => {
+            const verifyEd25519 = (): Promise<boolean> => Promise.resolve(result as boolean);
+            const deps = bundleDeps({ crypto: { ...bundleCrypto(), verifyEd25519 } });
+            const bytes = await bundleBytes({ ik, entries: standardEntries() });
+            await expectBundleError(verifyBytes(bytes, deps), "PREKEY_SIGNATURE_INVALID");
+        });
+
         it("a signature by a key other than IK_pub", async () => {
             const map = await bundleMap({ ik, entries: standardEntries() });
             map.set("IK_pub", (await identity()).publicKey);

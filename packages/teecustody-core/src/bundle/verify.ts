@@ -161,6 +161,7 @@ async function attest(
 }
 
 // spec §5.2 step 5; CapabilityError(UNSUPPORTED) fails closed as UNSUPPORTED, any other rejection is a bad signature.
+// The adapter is outside this module's control, so only a boolean true verifies (as attestation/checks/signature.ts).
 async function verifyPreKeySignature(
     deps: BundleDeps,
     ikPub: Bytes,
@@ -168,7 +169,8 @@ async function verifyPreKeySignature(
     sig: Bytes,
 ): Promise<boolean> {
     try {
-        return await deps.crypto.verifyEd25519(ikPub.slice(), m, sig);
+        const valid: unknown = await deps.crypto.verifyEd25519(ikPub.slice(), m, sig);
+        return valid === true;
     } catch (error) {
         if (error instanceof CapabilityError && error.code === "UNSUPPORTED") {
             throw new BundleError("UNSUPPORTED");
