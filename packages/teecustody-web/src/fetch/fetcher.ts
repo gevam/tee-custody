@@ -72,6 +72,10 @@ async function readBounded(
     return out;
 }
 
+function isPositiveSafeInteger(value: number): boolean {
+    return Number.isSafeInteger(value) && value > 0;
+}
+
 export class FetchFetcher implements Fetcher {
     readonly #fetch: FetchFn;
     readonly #maxBodyBytes: number;
@@ -79,6 +83,9 @@ export class FetchFetcher implements Fetcher {
 
     // TypeError("INVALID_CONFIG") on bad options
     constructor(options: FetchFetcherOptions) {
+        if (!isPositiveSafeInteger(options.maxBodyBytes) || !isPositiveSafeInteger(options.timeoutMs)) {
+            throw new TypeError("INVALID_CONFIG");
+        }
         this.#fetch = options.fetch as FetchFn;
         this.#maxBodyBytes = options.maxBodyBytes;
         this.#timeoutMs = options.timeoutMs;

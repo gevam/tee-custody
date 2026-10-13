@@ -226,3 +226,45 @@ describe("criterion 6: network failure and timeout are UNAVAILABLE", () => {
         expect(codeOf(await rejection(make(down).get(URL_OK)))).toBe("UNAVAILABLE");
     });
 });
+
+function constructionError(make: () => unknown): unknown {
+    try {
+        make();
+    } catch (error) {
+        return error;
+    }
+    return new Error("expected a throw");
+}
+
+describe("criterion 7: both numeric options must be positive safe integers", () => {
+    const fetch: FetchFn = () => Promise.resolve(new Response("{}"));
+    const bad = [0, -1, 1.5, Number.NaN, 2 ** 53];
+
+    it.each(bad)("maxBodyBytes %s -> TypeError(INVALID_CONFIG)", (value) => {
+        const error = constructionError(
+            () => new FetchFetcher({ maxBodyBytes: value, timeoutMs: 1000, fetch }),
+        );
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as Error).message).toBe("INVALID_CONFIG");
+    });
+
+    it.each(bad)("timeoutMs %s -> TypeError(INVALID_CONFIG)", (value) => {
+        const error = constructionError(
+            () => new FetchFetcher({ maxBodyBytes: 1024, timeoutMs: value, fetch }),
+        );
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as Error).message).toBe("INVALID_CONFIG");
+    });
+
+    it("accepts 1 and Number.MAX_SAFE_INTEGER (boundaries)", () => {
+        expect(() => new FetchFetcher({ maxBodyBytes: 1, timeoutMs: 1, fetch })).not.toThrow();
+        expect(
+            () =>
+                new FetchFetcher({
+                    maxBodyBytes: Number.MAX_SAFE_INTEGER,
+                    timeoutMs: Number.MAX_SAFE_INTEGER,
+                    fetch,
+                }),
+        ).not.toThrow();
+    });
+});
