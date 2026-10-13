@@ -167,12 +167,15 @@ def test_FR03_vectors_are_written_to_requested_directory(
     out_dir = tmp_path / "vec"
     # When generating vectors
     code, out, err = cli("vectors", "--out", str(out_dir))
-    # Then the suite and the corpus exist in the requested directory, printed in that order
+    # Then the suites and the corpus exist in the requested directory, printed in the order
+    # attestation, corpus, channel (INC-2-API A-4; channel suite owned by T-25)
     assert code == 0, err
     suite = out_dir / "attestation" / "suite.cbor"
     corpus = out_dir / "wire" / "differential-corpus.json"
-    assert out.splitlines() == [str(suite), str(corpus)]
+    channel = out_dir / "channel" / "suite.cbor"
+    assert out.splitlines() == [str(suite), str(corpus), str(channel)]
     assert suite.stat().st_size > 0
+    assert channel.stat().st_size > 0
     doc = json.loads(corpus.read_text())
     assert doc["format"] == "teecustody-cbor-differential-corpus" and doc["version"] == 1
     assert doc["seed"] == 1 and len(doc["cases"]) >= 500
