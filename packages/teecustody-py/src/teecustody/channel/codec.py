@@ -130,30 +130,32 @@ _U32_MAX: Final = 2**32 - 1
 _PREKEY_DOMAIN: Final = b"prekey-v1"
 _KEY_LEN: Final = 32  # enc, pub, IK_pub, cs
 _ID_LEN: Final = 16  # request_id, session_id, key_id
+_SIG_LEN: Final = 64
 _CT_MIN: Final = 16
 _OPEN_CT_MAX: Final = 2048
 _FRAME_CT_MAX: Final = 32784  # frame request and both results
+_MAX_PREKEYS: Final = 256
+_MAX_TOKEN_BYTES: Final = 16384
+_RESPONSE_KINDS: Final = ("open_result", "frame_result")
+# Encoders re-check the aad they wrap under the default aad bounds; decoders take theirs from the
+# caller's BoundaryLimits.
+_ENCODER_AAD_LIMITS: Final = BoundaryLimits().aad_decode
+
+# Exact key sets (spec/wire/channel.cddl): no unknown and no missing key.
+_BUNDLE_KEYS: Final = frozenset({"instance_id", "token", "IK_pub", "published_at", "prekeys"})
+_PREKEY_KEYS: Final = frozenset({"id", "pub", "not_after", "sig"})
 _OPEN_REQUEST_KEYS: Final = frozenset({"kind", "aad", "enc", "ct"})
 _FRAME_REQUEST_KEYS: Final = frozenset({"kind", "aad", "ct"})
+_RESPONSE_KEYS: Final = frozenset({"kind", "aad", "ct"})
 _OPEN_AAD_KEYS: Final = frozenset(
     {"proto", "client_id", "instance_id", "prekey_id", "request_id", "timestamp"}
 )
 _FRAME_AAD_KEYS: Final = frozenset({"session_id", "seq", "op"})
-_BUNDLE_KEYS: Final = frozenset({"instance_id", "token", "IK_pub", "published_at", "prekeys"})
-_PREKEY_KEYS: Final = frozenset({"id", "pub", "not_after", "sig"})
 _OPEN_RESULT_AAD_KEYS: Final = frozenset({"session_id", "request_id", "seq"})
-_RESPONSE_KEYS: Final = frozenset({"kind", "aad", "ct"})
-_RESPONSE_KINDS: Final = ("open_result", "frame_result")
-# Encoders re-check the aad they wrap with the default aad bounds (the decoders take theirs from
-# BoundaryLimits).
-_ENCODER_AAD_LIMITS: Final = BoundaryLimits().aad_decode
 _OPEN_SESSION_KEYS: Final = frozenset({"op", "cs", "key_id", "epoch"})
 _ENROLL_KEYS: Final = frozenset({"op"})
 _RESULT_OK_KEYS: Final = frozenset({"ok", "payload"})
 _RESULT_ERROR_KEYS: Final = frozenset({"ok", "error"})
-_SIG_LEN: Final = 64
-_MAX_PREKEYS: Final = 256
-_MAX_TOKEN_BYTES: Final = 16384
 
 
 # Checks shared by every encoder and decoder. Each raises ValueError("<FIELD>_RANGE"); `bool` is
