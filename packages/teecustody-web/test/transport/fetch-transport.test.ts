@@ -788,7 +788,12 @@ describe("FetchTransport against a real loopback HTTP server", () => {
     }
 
     it("relays the body byte for byte with the octet-stream type and no cookies", async () => {
-        const seen: { url?: string; type?: string; cookie?: string; body: Buffer[] } = { body: [] };
+        const seen: {
+            url?: string | undefined;
+            type?: string | undefined;
+            cookie?: string | undefined;
+            body: Buffer[];
+        } = { body: [] };
         const origin = await serve((req, res) => {
             seen.url = req.url;
             seen.type = req.headers["content-type"];
