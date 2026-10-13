@@ -1026,3 +1026,32 @@ Participants: Orchestrator, Security Reviewer (T-01)
 **Revisit when:** an h11 release, a uvicorn change that drops h11, or v1.0.0 release approval.
 
 **Follow-ups:** T-05's dependency-policy tool must not flag h11 under this exception. If it does, the Tech Lead amends the tool's age check with an exact allow-list entry scoped to the gateway closure.
+
+## D-050 — Wave 0 merged; G4 passes for INC-2 Wave 1 batch B1 (part) (INC-2, 2026-10-13)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead, Release Engineer, QA
+
+**Decision:** Wave 0 is complete on main c38d7fa:
+
+| Item | Commit |
+|---|---|
+| T-04 | 7dc4f7f |
+| T-03 | ac707fc |
+| V-01 | a37d7d7 |
+| V-02 | 94a2b40 |
+| T-01 | ffbba1f |
+| T-02 | 89e508b |
+| T-05 | 9c657ec |
+| QA acceptance tests | 5a853ee |
+
+T-06 was satisfied on trunk (D-044). Every branch had Code and Security APPROVE.
+
+G4 now passes for T-07, T-08, T-16 and T-17, and they start now. T-17 keeps its C6 hold point: the provenance evidence and the SA follow-up sign-off come before the lock change. T-21 and T-33 pass under the MU-1 exception and start once T-36 is authored on its branch. T-09, T-13, T-15 and T-37 wait for QA-acceptance-2.
+
+**Reasoning:** The Orchestrator verified on main that ruff, mypy --strict (including the gateway), semgrep, pnpm typecheck and pnpm audit are green. The test suites fail only on expected-red rows. The Tech Lead re-ran the acceptance suites: 188 Python and 169 TS tests are red for the right reasons, as mapped in docs/qa/INC-2.md.
+
+**Known red on trunk:** `pnpm -r lint` fails only on prettier for the vendored, hash-pinned tests/fixtures/rfc9180/test-vectors.json. The fix is assigned to T-37 A1 (`tests/.prettierignore` plus a hash test). Until T-37 merges, this one failure is expected in every task.
+
+**Dissent:** none

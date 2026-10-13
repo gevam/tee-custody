@@ -263,6 +263,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 "Full suite green" in every DoD means: every test outside this table passes, and each red test fails only with
 `NotImplementedError('T-nn')` / `NOT_IMPLEMENTED: T-nn` or a missing vector file.
 
+**Expected lint failure (until T-37 merges).** On main c38d7fa, `pnpm -r lint` fails only because the `tests`
+package's `prettier --check` flags `tests/fixtures/rfc9180/test-vectors.json`, a vendored, hash-pinned file
+(V-01). T-37 A1 adds `tests/.prettierignore`. Until then, a lint failure caused by that file alone does not count
+against any task's "lint clean" DoD.
+
 ## Public API fixed by Wave 0 (for QA acceptance authoring)
 
 Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.runtime`, `.secrets`, `.config`,
@@ -273,17 +278,22 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
 
-## G4 conditions (Wave 1, provisional, 2026-10-13)
+## G4 conditions (Wave 1, against main c38d7fa, 2026-10-13)
 
-Checked against `main` ffbba1f (only T-01 of Wave 0 merged) and the QA mapping on `inc-2/QA-acceptance`
-(`docs/qa/INC-2.md`). This must be re-run when the Release Engineer reports Wave 0 merged.
+Wave 0 is fully merged. Checked by running `uv run pytest -q tests/acceptance` (188 red, 122 green) and
+`vitest run acceptance` in `tests/` (169 red, 269 green). Every red test fails on a stub, a missing deliverable or
+a missing pin, as `docs/qa/INC-2.md` maps. There are no import or fixture errors.
 
 | Condition | Status |
 |---|---|
-| Same-wave file overlap | Met. T-37 is the only W1 owner of `tools/dependency_policy.py`, and T-16 the only W1 owner of `bundle/types.ts`. |
-| Inputs from earlier waves | Pending: T-02 and T-05 are not yet on trunk. |
-| Acceptance tests exist and fail for the right reason | **Not met yet.** Mapped and red on a stub or missing pin: T-07, T-08, T-10, T-11, T-12, T-14, T-16, T-17, T-18, T-19, T-20. T-21, T-33 and T-34 are covered by T-36 inside MU-1 plus N1/N2 (red: harness missing), which is acceptable. **No mapping:** T-09 (config bounds), T-13 (own image digest, spec §5.1 step 3), T-15 (Core channel wire, public through `ChannelClient`) and T-37 (SR-9 D-049). QA must map or add tests for these four. The QA test for an identical open replay must also expect exactly `PREKEY_UNKNOWN`: §4.10 checks the pre-key before the replay cache, so `REQUEST_REPLAYED` happens only for a reused `request_id` sealed to another live pre-key. |
-| Contract stubs | Met (the Wave-0 TL set plus `test_profile_cli_contract.py`). |
+| Same-wave file overlap | Met |
+| Inputs from earlier waves | Met (T-01, T-02, T-05, T-03, T-04, V-01 and V-02 are merged; the pyhpke C6 sign-off is D-045) |
+| Acceptance red for the right reason | **Met for:** T-07 (38 × `NotImplementedError: T-07`), T-08 (pin assertions), T-16 (chain via `NOT_IMPLEMENTED: T-26`, plus `channel-client.contract`), T-17 (30 × `NOT_IMPLEMENTED: T-17`, plus 2 pin assertions), T-10, T-11, T-12, T-14, T-18, T-19 and T-20. T-21 and T-33 meet it under the MU-1 exception: N1/N2 are red with `HARNESS_MISSING`, and they start only once QA has authored T-36 on its branch. **Pending QA (`inc-2/QA-acceptance-2`):** T-09, T-13, T-15 and T-37. The replay acceptance must expect `PREKEY_UNKNOWN` only. |
+| Contract stubs | Met |
+| Lint | Expected failure from the vendored CFRG file only, until T-37 A1 |
+
+**Verdict:** G4 passes for T-07, T-08, T-16 and T-17 now, and for T-21 and T-33 once T-36 is authored. T-09, T-13,
+T-15 and T-37 pass once QA-acceptance-2 lands with red tests.
 
 ## G4 conditions (D-043/D-045 pass, 2026-10-12)
 
