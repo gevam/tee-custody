@@ -133,6 +133,18 @@ def decode_bundle(data: bytes, limits: DecodeLimits) -> PreKeyBundle:
 def decode_request(
     body: bytes, limits: BoundaryLimits
 ) -> OpenRequestEnvelope | FrameRequestEnvelope:
+    if len(body) > limits.max_request_bytes:
+        raise EnvelopeError(EnvelopeErrorCode.TOO_LARGE)
+    try:
+        return _parse_request(body, limits)
+    except wire.WireError:
+        pass
+    raise EnvelopeError(EnvelopeErrorCode.INVALID)
+
+
+def _parse_request(
+    body: bytes, limits: BoundaryLimits
+) -> OpenRequestEnvelope | FrameRequestEnvelope:
     envelope: Any = wire.decode(body, limits.envelope_decode)
     aad_bytes = envelope["aad"]
     aad: Any = wire.decode(aad_bytes, limits.aad_decode)

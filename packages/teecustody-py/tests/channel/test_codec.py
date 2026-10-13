@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from teecustody import wire
 from teecustody.channel.codec import (
+    EnvelopeError,
+    EnvelopeErrorCode,
     FrameAad,
     FrameRequestEnvelope,
     OpenAad,
@@ -90,3 +95,36 @@ def test_frame_request_decodes_with_the_exact_nested_aad_bytes() -> None:
     assert envelope.aad_bytes == aad_bytes
     assert envelope.aad == FrameAad(session_id=SESSION_ID, seq=3, op="notes.put")
     assert envelope.ct == b"f" * 40
+
+
+# ---------------------------------------------------------------- criterion 2
+def test_oversize_request_is_too_large_and_never_reaches_the_wire_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bytes] = []
+    monkeypatch.setattr(wire, "decode", lambda data, limits: calls.append(data))
+
+    with pytest.raises(EnvelopeError) as exc:
+        decode_request(b"\x00" * (LIMITS.max_request_bytes + 1), LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.TOO_LARGE
+    assert str(exc.value) == "TOO_LARGE"
+    assert calls == []
+
+
+def test_request_of_exactly_max_request_bytes_reaches_the_wire_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def spy(data: bytes, limits: wire.DecodeLimits) -> None:
+        calls.append(len(data))
+        raise wire.WireError(wire.WireErrorCode.MALFORMED)
+
+    monkeypatch.setattr(wire, "decode", spy)
+
+    with pytest.raises(EnvelopeError) as exc:
+        decode_request(b"\x00" * LIMITS.max_request_bytes, LIMITS)
+
+    assert exc.value.code is EnvelopeErrorCode.INVALID
+    assert calls == [LIMITS.max_request_bytes]
