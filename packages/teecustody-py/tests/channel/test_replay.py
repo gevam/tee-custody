@@ -159,8 +159,9 @@ def test_a_full_cache_still_extends_a_present_key_without_growing() -> None:
     assert cache._size() == 1
 
 
-def test_repeatedly_extending_one_key_does_not_grow_memory() -> None:
-    cache = ReplayCache(skew_s=300, max_entries=1, clock=Clock())
+def test_repeatedly_extending_one_key_does_not_grow_memory_and_still_expires() -> None:
+    clock = Clock()
+    cache = ReplayCache(skew_s=300, max_entries=1, clock=clock)
     cache.record(CLIENT, RID, T0)
 
     tracemalloc.start()
@@ -174,3 +175,8 @@ def test_repeatedly_extending_one_key_does_not_grow_memory() -> None:
 
     assert after - before < 64 * 1024
     assert cache._size() == 1
+    clock.now = T0 + 100_000 + 300
+    assert cache.seen(CLIENT, RID)
+    clock.now = T0 + 100_000 + 300 + 1
+    assert not cache.seen(CLIENT, RID)
+    assert cache._size() == 0
