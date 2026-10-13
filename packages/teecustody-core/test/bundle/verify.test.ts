@@ -9,7 +9,12 @@ import {
 } from "../../src/attestation/types.js";
 import { verifyAttestation } from "../../src/attestation/verify.js";
 import { CapabilityError, type SecurityEventSink } from "../../src/capabilities.js";
-import { BundleError, isVerifiedBundle, type BundleErrorCode } from "../../src/bundle/types.js";
+import {
+    BundleError,
+    isVerifiedBundle,
+    type BundleErrorCode,
+    type VerifiedBundle,
+} from "../../src/bundle/types.js";
 import { encodeCanonical } from "../../src/wire/cbor.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
@@ -251,6 +256,29 @@ describe("verifyBundle", () => {
                 verifyBytes(bytes, rejectingDeps(error)),
                 "PREKEY_SIGNATURE_INVALID",
             );
+        });
+    });
+
+    describe("(8) expiry filtering", () => {
+        it("all entries expired is NO_USABLE_PREKEY", async () => {
+            const entries = [
+                { id: 3, notAfter: NOW_S - 3600 },
+                { id: 4, notAfter: NOW_S },
+            ];
+            await expectBundleError(
+                verifyBytes(await bundleBytes({ ik, entries })),
+                "NO_USABLE_PREKEY",
+            );
+        });
+
+        it("some entries expired returns only the unexpired ids", async () => {
+            const entries = [
+                { id: 3, notAfter: NOW_S - 3600 },
+                { id: 4, notAfter: NOW_S + 1 },
+                { id: 6, notAfter: NOW_S },
+            ];
+            const vb = (await verifyBytes(await bundleBytes({ ik, entries }))) as VerifiedBundle;
+            expect(vb.prekeys.map((p) => [p.id, p.notAfterMs])).toEqual([[4, (NOW_S + 1) * 1000]]);
         });
     });
 });

@@ -178,6 +178,9 @@ export async function verifyBundle(
     const prekeys = decoded.prekeys
         .filter((e) => e.notAfter * 1000 > nowMs)
         .map((e) => ({ id: e.id, publicKey: e.pub, notAfterMs: e.notAfter * 1000 }));
+    if (prekeys.length === 0) {
+        throw new BundleError("NO_USABLE_PREKEY");
+    }
     return createVerifiedBundle({
         instanceId: decoded.instanceId,
         identityPublicKey: decoded.ikPub,
