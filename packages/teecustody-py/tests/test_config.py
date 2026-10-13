@@ -115,3 +115,62 @@ def test_cross_field_rule_is_checked_after_every_single_field_rule() -> None:
 
 def test_first_failing_field_in_declaration_order_is_reported() -> None:
     _assert_rejected(ChannelParams, PARAMS, "prekey_ttl_s", prekey_ttl_s=0, prekey_batch=0)
+
+
+# --- criteria 2-3: BoundaryLimits int fields and pull_wait_s ----------------------------------
+
+LIMIT_INT_FIELDS: tuple[str, ...] = (
+    "max_token_bytes",
+    "max_request_bytes",
+    "pull_max_messages",
+    "max_sessions",
+    "session_evict_min_idle_s",
+    "replay_cache_max_entries",
+    "audit_aggregate_interval_s",
+    "audit_alert_cap",
+    "prekey_burn_alert_threshold",
+    "attestation_retry_min_s",
+    "attestation_retry_max_s",
+    "bundle_republish_min_interval_s",
+)
+
+# attestation_retry_min_s is capped at the default retry max (300) by the cross-field rule.
+_LIMIT_INT_HIGH: dict[str, int] = {"attestation_retry_min_s": 300}
+
+
+@pytest.mark.parametrize("field", LIMIT_INT_FIELDS)
+def test_boundary_limit_int_fields_accept_range_edges(field: str) -> None:
+    low = 30 if field == "attestation_retry_max_s" else 1  # >= default retry min
+    high = _LIMIT_INT_HIGH.get(field, 2**63)
+    for value in (low, high):
+        assert getattr(BoundaryLimits(**{field: value}), field) == value
+
+
+@pytest.mark.parametrize(
+    "value", [5e-324, 0.001, 1, 1.0, 29.999, 30, 30.0], ids=lambda v: f"{type(v).__name__}-{v}"
+)
+def test_pull_wait_accepts_int_or_float_in_half_open_range(value: float) -> None:
+    assert BoundaryLimits(pull_wait_s=value).pull_wait_s == value
+
+
+LIMIT_INT_INVALID: list[tuple[str, Any]] = [
+    (field, bad) for field in LIMIT_INT_FIELDS for bad in [0, -1, *_NOT_INT]
+]
+
+
+@pytest.mark.parametrize(("field", "bad"), LIMIT_INT_INVALID)
+def test_boundary_limit_int_fields_reject_invalid_value(field: str, bad: Any) -> None:
+    _assert_rejected(BoundaryLimits, LIMITS, field, **{field: bad})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        *(0, 0.0, -0.0, -1, -1.0, 30.000001, 31),
+        *(float("nan"), float("inf"), float("-inf")),
+        *(True, False, "1.0", None),
+    ],
+    ids=repr,
+)
+def test_pull_wait_rejects_invalid_value(bad: Any) -> None:
+    _assert_rejected(BoundaryLimits, LIMITS, "pull_wait_s", pull_wait_s=bad)

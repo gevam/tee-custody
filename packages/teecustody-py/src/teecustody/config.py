@@ -33,6 +33,11 @@ class ConfigError(Exception):
         self.field = field
 
 
+_MAX_PULL_WAIT_S: Final = 30
+_DECODE_FIELDS: Final = frozenset(
+    {"envelope_decode", "aad_decode", "open_payload_decode", "payload_decode"}
+)
+
 # Inclusive (low, high) per ChannelParams field; None is unbounded. prekey_low_water's upper
 # bound is the cross-field rule `prekey_low_water < prekey_batch`.
 _CHANNEL_RANGES: Final[dict[str, tuple[int, int | None]]] = {
@@ -48,6 +53,13 @@ _CHANNEL_RANGES: Final[dict[str, tuple[int, int | None]]] = {
 def _int_in_range(value: object, low: int, high: int | None) -> bool:
     """True iff `value` is an exact `int` (not `bool`) in [low, high]; `high=None` is unbounded."""
     return type(value) is int and low <= value and (high is None or value <= high)
+
+
+def _valid_wait(value: object) -> bool:
+    """True iff `value` is an exact `int` or `float` (not `bool`) in (0, 30]; nan and inf fail."""
+    if type(value) is not int and type(value) is not float:
+        return False
+    return 0 < value <= _MAX_PULL_WAIT_S
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,3 +98,12 @@ class BoundaryLimits:
     attestation_retry_min_s: int = 30  # B-08
     attestation_retry_max_s: int = 300  # B-08; >= retry_min
     bundle_republish_min_interval_s: int = 5
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            if f.name in _DECODE_FIELDS:
+                continue
+            value = getattr(self, f.name)
+            valid = _valid_wait(value) if f.name == "pull_wait_s" else _int_in_range(value, 1, None)
+            if not valid:
+                raise ConfigError(ConfigErrorCode.INVALID_LIMITS, f.name)
