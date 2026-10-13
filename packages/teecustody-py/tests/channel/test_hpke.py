@@ -1,5 +1,6 @@
 """T-08: workload HPKE Base-mode receiver (`teecustody.channel.hpke`; INC-2-API §4.6, ADR 0011)."""
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -142,3 +143,20 @@ def test_wiped_or_short_private_key_fails_with_invalid_key(make_key: Callable[[]
     assert str(err.value) == "INVALID_KEY"
     assert err.value.__cause__ is None
     assert err.value.__context__ is None
+
+
+# ---------------------------------------------------------------- criterion 6 (ADR 0011 C5)
+SEAM_PARAMETERS = {"eks", "psk", "psk_id", "sks", "pks"}
+
+
+@pytest.mark.parametrize("function", [open_base, generate_keypair], ids=lambda f: f.__name__)
+def test_no_hpke_seam_parameter_exists(function: Callable[..., object]) -> None:
+    names = set(inspect.signature(function).parameters)
+
+    assert names.isdisjoint(SEAM_PARAMETERS)
+
+
+def test_open_base_parameters_are_exactly_the_contract() -> None:
+    names = list(inspect.signature(open_base).parameters)
+
+    assert names == ["private_key", "enc", "info", "aad", "ct"]
