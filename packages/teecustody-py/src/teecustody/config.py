@@ -107,3 +107,5 @@ class BoundaryLimits:
             valid = _valid_wait(value) if f.name == "pull_wait_s" else _int_in_range(value, 1, None)
             if not valid:
                 raise ConfigError(ConfigErrorCode.INVALID_LIMITS, f.name)
+        if self.attestation_retry_max_s < self.attestation_retry_min_s:
+            raise ConfigError(ConfigErrorCode.INVALID_LIMITS, "attestation_retry_max_s")
