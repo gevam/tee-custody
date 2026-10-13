@@ -15,9 +15,10 @@ from typing import TYPE_CHECKING
 
 import fastapi
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from notes_gateway.limits import GatewayLimits
 from teecustody.queue import CURSOR_PATTERN, QueueError, QueueErrorCode
@@ -150,18 +151,23 @@ class _Limiter:
 
 
 class _Guard:
-    """Outer ASGI layer: concurrency limit, then rate limits, before any route runs."""
+    """Outer ASGI layer: response headers, concurrency, rate limits and CORS preflight."""
 
     def __init__(self, app: ASGIApp, *, limits: GatewayLimits, clock: Callable[[], float]) -> None:
         self._app = app
         self._max_concurrency = limits.max_concurrency
         self._in_flight = 0
         self._limiter = _Limiter(limits, clock)
+        self._cors_origins = frozenset(limits.cors_origins)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
+        headers = Headers(scope=scope)
+        origins = headers.getlist("origin")
+        cors = len(origins) == 1 and origins[0] in self._cors_origins
+        send = _with_headers(send, _cors_headers(origins[0]) if cors else [])
         if self._in_flight >= self._max_concurrency:
             await _rate_limited(1)(scope, receive, send)
             return
@@ -170,11 +176,38 @@ class _Guard:
         if retry is not None:
             await _rate_limited(retry)(scope, receive, send)
             return
+        if cors and scope["method"] == "OPTIONS" and "access-control-request-method" in headers:
+            await _PREFLIGHT(scope, receive, send)
+            return
         self._in_flight += 1
         try:
             await self._app(scope, receive, send)
         finally:
             self._in_flight -= 1
+
+
+def _cors_headers(origin: str) -> list[tuple[bytes, bytes]]:
+    return [(b"access-control-allow-origin", origin.encode("latin-1")), (b"vary", b"Origin")]
+
+
+def _with_headers(send: Send, extra: list[tuple[bytes, bytes]]) -> Send:
+    """Wrap `send` so the response start message also carries `extra` headers."""
+
+    async def wrapped(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            message = {**message, "headers": [*message["headers"], *extra]}
+        await send(message)
+
+    return wrapped
+
+
+_PREFLIGHT = Response(
+    status_code=200,
+    headers={
+        "Access-Control-Allow-Methods": "GET, POST",
+        "Access-Control-Allow-Headers": "Content-Type",
+    },
+)
 
 
 def _rate_limited(retry_after: int) -> Response:
