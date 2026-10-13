@@ -63,7 +63,7 @@ const verifiedBundles = new WeakSet();
 // INC-2-API §7.1 ruling: key bytes are copied once into private storage (this closure) and exposed only as
 // an enumerable, setter-less getter that returns a fresh copy, so a host cannot change verified bytes.
 function defineKeyBytes(owner: object, name: string, bytes: Bytes): void {
-    const stored = bytes.slice();
+    const stored = new Uint8Array(bytes);
     Object.defineProperty(owner, name, { get: () => stored.slice(), enumerable: true });
 }
 
