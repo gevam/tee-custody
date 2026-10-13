@@ -22,6 +22,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from notes_gateway.limits import GatewayLimits
+from teecustody.obs import get_logger
 from teecustody.queue import CURSOR_PATTERN, QueueError, QueueErrorCode
 
 if TYPE_CHECKING:
@@ -42,6 +43,8 @@ _HTTP_ERRORS: dict[int, tuple[int, str]] = {
     404: (404, "NOT_FOUND"),
     405: (405, "METHOD_NOT_ALLOWED"),
 }
+_OUTCOME_KEY = "notes_gateway.outcome"
+_LOG = get_logger("gateway")
 _SECURITY_HEADERS = [(b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]
 
 Endpoint = Callable[[Request], Awaitable[Response]]
@@ -100,8 +103,23 @@ def _json(status: int, obj: object) -> Response:
     return Response(body, status_code=status, media_type="application/json")
 
 
-def _invalid() -> Response:
-    return _json(400, {"code": "INVALID_ARGUMENT"})
+class _Outcome:
+    """The request's log outcome; INTERNAL unless a layer records another."""
+
+    __slots__ = ("code",)
+
+    def __init__(self) -> None:
+        self.code = "INTERNAL"
+
+
+def _refuse(scope: Scope, status: int, code: str) -> Response:
+    """Record `code` as the request outcome and answer the §6 error body."""
+    scope[_OUTCOME_KEY].code = code
+    return _json(status, {"code": code})
+
+
+class _Invalid(Exception):
+    """A route argument or body broke the §6 rules (400 INVALID_ARGUMENT)."""
 
 
 def _guarded(endpoint: Endpoint) -> Endpoint:
@@ -110,35 +128,48 @@ def _guarded(endpoint: Endpoint) -> Endpoint:
     @functools.wraps(endpoint)
     async def wrapper(request: Request) -> Response:
         try:
-            return await endpoint(request)
+            response = await endpoint(request)
+        except _Invalid:
+            status, code = 400, "INVALID_ARGUMENT"
         except QueueError as exc:
             status, code = _QUEUE_ERRORS.get(exc.code, _INTERNAL)
         except Exception:  # noqa: BLE001 - the relay answers INTERNAL for any other failure
             status, code = _INTERNAL
-        return _json(status, {"code": code})
+        else:
+            request.scope[_OUTCOME_KEY].code = "OK"
+            return response
+        return _refuse(request.scope, status, code)
 
     return wrapper
 
 
-async def _read_body(request: Request, max_bytes: int) -> bytes | None:
-    """The raw body, or None if its headers or length break the §6 rules; never decoded."""
+def _check(pattern: re.Pattern[str], value: str) -> str:
+    if not pattern.fullmatch(value):
+        raise _Invalid
+    return value
+
+
+async def _read_body(request: Request, max_bytes: int) -> bytes:
+    """The raw body; _Invalid if its headers or length break the §6 rules. Never decoded."""
     if request.headers.getlist("content-type") != [_OCTET_STREAM]:
-        return None
+        raise _Invalid
     lengths = request.headers.getlist("content-length")
-    if len(lengths) != 1 or not _CONTENT_LENGTH_PATTERN.fullmatch(lengths[0]):
-        return None
-    declared = int(lengths[0])
+    if len(lengths) != 1:
+        raise _Invalid
+    declared = int(_check(_CONTENT_LENGTH_PATTERN, lengths[0]))
     if not 1 <= declared <= max_bytes:
-        return None
+        raise _Invalid
     body = bytearray()
     try:
         async for chunk in request.stream():
             body += chunk
             if len(body) > declared:
-                return None
+                raise _Invalid
     except ClientDisconnect:
-        return None
-    return bytes(body) if len(body) == declared else None
+        raise _Invalid from None
+    if len(body) != declared:
+        raise _Invalid
+    return bytes(body)
 
 
 class _Bucket:
@@ -214,20 +245,29 @@ class _Guard:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
+        outcome = _Outcome()
+        scope = {**scope, _OUTCOME_KEY: outcome}
+        try:
+            await self._handle(scope, receive, send)
+        finally:
+            _LOG.info("GATEWAY_" + outcome.code)
+
+    async def _handle(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers = Headers(scope=scope)
         origins = headers.getlist("origin")
         cors = len(origins) == 1 and origins[0] in self._cors_origins
         cors_headers = _cors_headers(origins[0]) if cors else []
         send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
         if self._in_flight >= self._max_concurrency:
-            await _rate_limited(1)(scope, receive, send)
+            await _rate_limited(scope, 1)(scope, receive, send)
             return
         client = scope.get("client")
         retry = self._limiter.admit(client[0] if client else "unknown")
         if retry is not None:
-            await _rate_limited(retry)(scope, receive, send)
+            await _rate_limited(scope, retry)(scope, receive, send)
             return
         if cors and scope["method"] == "OPTIONS" and "access-control-request-method" in headers:
+            scope[_OUTCOME_KEY].code = "OK"
             await _PREFLIGHT(scope, receive, send)
             return
         self._in_flight += 1
@@ -261,8 +301,8 @@ _PREFLIGHT = Response(
 )
 
 
-def _rate_limited(retry_after: int) -> Response:
-    response = _json(429, {"code": "RATE_LIMITED"})
+def _rate_limited(scope: Scope, retry_after: int) -> Response:
+    response = _refuse(scope, 429, "RATE_LIMITED")
     response.headers["Retry-After"] = str(retry_after)
     return response
 
@@ -283,7 +323,7 @@ def create_app(
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> Response:
         status, code = _HTTP_ERRORS.get(exc.status_code, _INTERNAL)
-        return _json(status, {"code": code})
+        return _refuse(request.scope, status, code)
 
     @app.get("/bundles")
     @_guarded
@@ -298,12 +338,8 @@ def create_app(
     @app.post("/requests/{instance}")
     @_guarded
     async def publish_request(request: Request) -> Response:
-        instance: str = request.path_params["instance"]
-        if not _HEX32_PATTERN.fullmatch(instance):
-            return _invalid()
+        instance = _check(_HEX32_PATTERN, request.path_params["instance"])
         body = await _read_body(request, limits.max_request_bytes)
-        if body is None:
-            return _invalid()
         request_id = rng(16).hex()
         await run_in_threadpool(queue.publish_request, instance, request_id, body)
         return _json(202, {"request_id": request_id})
@@ -311,12 +347,10 @@ def create_app(
     @app.get("/responses/{client}")
     @_guarded
     async def pull_responses(request: Request) -> Response:
-        client: str = request.path_params["client"]
+        client = _check(_HEX32_PATTERN, request.path_params["client"])
         after = request.query_params.get("after")
-        if not _HEX32_PATTERN.fullmatch(client):
-            return _invalid()
-        if after is not None and not CURSOR_PATTERN.fullmatch(after):
-            return _invalid()
+        if after is not None:
+            _check(CURSOR_PATTERN, after)
         page = await run_in_threadpool(queue.pull_responses, client, after, limits.max_page)
         items = [
             {"request_id": r.request_id, "body": _b64url(r.body)}

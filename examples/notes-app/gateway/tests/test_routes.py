@@ -558,3 +558,83 @@ def test_every_response_kind_carries_the_security_headers() -> None:
     assert [r.status_code for r in responses] == [200, 202, 200, 400, 200, 500, 500, 429]
     for response in responses:
         _assert_security_headers(response)
+
+
+# ---------------------------------------------------------------- logging (§6; SR-11)
+def _gateway_lines(caplog: pytest.LogCaptureFixture) -> list[tuple[str, int, str, object]]:
+    return [
+        (r.name, r.levelno, r.getMessage(), getattr(r, "tc_fields", None))
+        for r in caplog.records
+        if r.name.startswith("teecustody")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "error", "outcome"),
+    [
+        ("GET", "/bundles", b"", None, "GATEWAY_OK"),
+        ("POST", f"/requests/{INSTANCE}", b"x", None, "GATEWAY_OK"),
+        ("GET", f"/responses/{CLIENT}", b"", None, "GATEWAY_OK"),
+        ("POST", f"/requests/{INSTANCE}", b"", None, "GATEWAY_INVALID_ARGUMENT"),
+        ("GET", f"/responses/{CLIENT.upper()}", b"", None, "GATEWAY_INVALID_ARGUMENT"),
+        (
+            "POST",
+            f"/requests/{INSTANCE}",
+            b"x",
+            QueueError(QueueErrorCode.NOT_FOUND),
+            "GATEWAY_UNKNOWN_INSTANCE",
+        ),
+        ("GET", "/bundles", b"", QueueError(QueueErrorCode.UNAVAILABLE), "GATEWAY_UNAVAILABLE"),
+        ("GET", "/bundles", b"", RuntimeError(SENTINEL), "GATEWAY_INTERNAL"),
+        ("GET", "/nothing", b"", None, "GATEWAY_NOT_FOUND"),
+        ("DELETE", "/bundles", b"", None, "GATEWAY_METHOD_NOT_ALLOWED"),
+    ],
+)
+def test_each_request_logs_exactly_one_info_line_with_its_outcome_and_no_fields(
+    method: str,
+    path: str,
+    body: bytes,
+    error: Exception | None,
+    outcome: str,
+    all_logs: pytest.LogCaptureFixture,
+) -> None:
+    relay = RecordingRelay()
+    relay.error = error
+    client = TestClient(create_app(relay), raise_server_exceptions=False)
+
+    client.request(method, path, content=body, headers=OCTET if body else None)
+
+    assert _gateway_lines(all_logs) == [("teecustody.gateway", logging.INFO, outcome, {})]
+
+
+def test_rate_limited_and_preflight_requests_are_logged_once_each(
+    all_logs: pytest.LogCaptureFixture,
+) -> None:
+    origins = ("https://app.example",)
+    limits = GatewayLimits(per_source_burst=1, per_source_rate=0.001, cors_origins=origins)
+    client = TestClient(create_app(RecordingRelay(), limits=limits))
+    preflight = {"Origin": origins[0], "Access-Control-Request-Method": "POST"}
+
+    client.options("/bundles", headers=preflight)
+    client.get("/bundles")
+
+    assert [line[2] for line in _gateway_lines(all_logs)] == [
+        "GATEWAY_OK",
+        "GATEWAY_RATE_LIMITED",
+    ]
+
+
+def test_request_bodies_never_appear_in_logs_or_responses(
+    all_logs: pytest.LogCaptureFixture,
+) -> None:
+    client = TestClient(create_app(RecordingRelay()), raise_server_exceptions=False)
+    body = SENTINEL.encode()
+
+    accepted = client.post(f"/requests/{INSTANCE}", content=body, headers=OCTET)
+    oversize = client.post(f"/requests/{INSTANCE}", content=body * 10_000, headers=OCTET)
+    wrong_type = client.post(f"/requests/{INSTANCE}", content=body, headers={"X": SENTINEL})
+
+    assert [r.status_code for r in (accepted, oversize, wrong_type)] == [202, 400, 400]
+    for text in (accepted.text, oversize.text, wrong_type.text, all_logs.text):
+        assert SENTINEL not in text
+        assert SENTINEL.encode().hex() not in text
