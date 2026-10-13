@@ -823,3 +823,58 @@ describe("verifyAttestation: limits are validated at entry, before any fetch", (
         },
     );
 });
+
+// T-33 criterion 9 (A2; INC-2-API §7.1 ruling): identityNonce is caller-owned; verifyAttestation copies it at
+// entry, before its first await, and reads only the copy.
+describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33 A2)", () => {
+    function mutatingDeps(nonce: Uint8Array): VerifierDeps {
+        const h = harness();
+        return {
+            ...h.deps,
+            fetcher: {
+                get(url: string): Promise<FetchResponse> {
+                    nonce.fill(0xee);
+                    return h.fetcher.get(url);
+                },
+            },
+        };
+    }
+
+    it("a token for the original nonce passes although a Fetcher overwrote the buffer", async () => {
+        const nonce = IDENTITY_NONCE.slice();
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: nonce },
+            new MemorySink(),
+            mutatingDeps(nonce),
+        );
+        expect(result.issuer).toBe(ISSUER);
+        expect(nonce).toEqual(new Uint8Array(32).fill(0xee));
+    });
+
+    it("a token for the overwritten value is rejected at nonce", async () => {
+        const nonce = IDENTITY_NONCE.slice();
+        const token = await mint((c) => (c.eat_nonce = "ee".repeat(32)));
+        const err = await verifyWith(token, {
+            expected: { identityNonce: nonce },
+            deps: mutatingDeps(nonce),
+        });
+        expect([err.check, err.code]).toEqual(["nonce", "CLAIM_MISMATCH"]);
+    });
+
+    it("an identityNonce whose slice throws is nonce/MALFORMED, after signature and issuer", async () => {
+        const h = harness();
+        const hostile = Object.assign(IDENTITY_NONCE.slice(), {
+            slice(): Uint8Array {
+                throw new Error("no copy");
+            },
+        });
+        const err = await verifyWith(await mint(), {
+            expected: { identityNonce: hostile },
+            deps: h.deps,
+        });
+        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+    });
+});

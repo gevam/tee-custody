@@ -1,5 +1,5 @@
 // Full attestation verification [CI-1]: spec §6 checks as one fixed code path, parameterised by the profile.
-import type { SecurityEventSink } from "../capabilities.js";
+import type { Bytes, SecurityEventSink } from "../capabilities.js";
 import { getPath } from "../json.js";
 import {
     checkAudience,
@@ -51,6 +51,16 @@ async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Pr
     }
 }
 
+// INC-2-API §7.1 (A2): the caller owns identityNonce, so it is copied before the first await and only the copy is
+// read. A value that cannot be copied is undefined here and fails the nonce step as MALFORMED.
+function copyIdentityNonce(expected: ExpectedAttestation): Bytes | undefined {
+    try {
+        return expected.identityNonce.slice();
+    } catch {
+        return undefined;
+    }
+}
+
 // VerifierLimits.maxDiscoveryBytes without its @deprecated tag (INC-2-API §16.2, DEBT-2).
 interface LegacyLimits {
     readonly maxDiscoveryBytes?: number;
@@ -71,6 +81,7 @@ export async function verifyAttestation(
     events: SecurityEventSink,
     deps: VerifierDeps,
 ): Promise<VerifiedAttestation> {
+    const identityNonce = copyIdentityNonce(expected);
     // (0) The TrustProfile brand is compile-time only; provenance is established before anything runs.
     if (!isBrandedTrustProfile(profile)) {
         throw new AttestationError("MALFORMED", "profile");
@@ -104,7 +115,10 @@ export async function verifyAttestation(
         checkTime(t, profile, deps.now());
     });
     await step("nonce", () => {
-        checkNonce(t, expected);
+        if (identityNonce === undefined) {
+            throw new AttestationError("MALFORMED", "nonce");
+        }
+        checkNonce(t, { identityNonce });
     });
     await step("platform", () => {
         checkPlatform(t, profile);
