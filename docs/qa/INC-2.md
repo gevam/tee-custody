@@ -119,6 +119,15 @@ reason is the first stub reached.
 | SR-14 principal binding R-4 (enrol with victim route, mismatching opener, repeated enrols) | `test_SR14_channel_integrity` (3) | T-28 | S: T-24 |
 | SR-14 replay window R-6 (exact boundaries) | `test_SR14_replay_entry_lives_exactly…`, `…replay_key_is_the_pair…` | T-10 | S: T-10 |
 
+### Wave-1 gap tests (QA follow-up 2, G4 for Wave 1)
+
+| Criterion | Test id(s) | Owning tasks | Current red reason |
+|---|---|---|---|
+| T-09 config: defaults, every §4.4 range edge, bool/float/NaN/inf/str refused, retry max ≥ min, `DecodeLimits` bounds, `ConfigError` code/field/str | `test_FR04_config_validation` (41) | T-09 | assertion: `DID NOT RAISE ConfigError` (validation is the deliverable) |
+| T-13 own image digest from the launcher token; simulator token; signature not checked; malformed token/claim/size → `LauncherError(TOKEN_REJECTED)` | `test_FR04_own_image_digest` (21) | T-13 | `NotImplementedError('T-13')` |
+| T-15 Core channel wire: request encoders vs independent CDDL bytes, range errors, `hpkeInfo`, `decodeResponse`, R-3, frame plaintext | TS `FR04.core-channel-wire` (47; imports the internal `channel/wire.ts` by path, signatures from API-TL §3) | T-15 | `NOT_IMPLEMENTED: T-15` |
+| T-37 / SR-9 / D-049: h11 0.16.0 exempt only via uvicorn in notes-gateway; other version, library closure, direct gateway dep still stale; other stale package still reported; licence still checked (`--today 2026-10-25`, recorded registry, fixtures built in `tmp_path`) | `test_SR09_h11_age_exception` (6) | T-37 | assertion: `VIOLATION stale h11` reported (the 3 narrowing tests carry a positive control so they are red too) |
+
 ## 3. Updated INC-1 tests (Orchestrator action 5)
 
 | Test | Change | Red until |
@@ -180,8 +189,8 @@ These need a browser or concurrent load and run in the required `browser` CI job
    - FR-4 AC-2 says "rejects" without saying what the client observes. D2-8 settles it (silent drop, no response);
      tests assert no response and, in the client, a `TIMEOUT`.
    - `ProcessResult.outcome` is typed `str` and mixes `ChannelOutcome` and `AggregateOutcome` values. Tests compare
-     the string value. An identical open replay may be `PREKEY_UNKNOWN` or `REQUEST_REPLAYED`; both are accepted
-     because the pre-key is spent first.
+     the string value. An identical open replay is always `PREKEY_UNKNOWN` (INC-2-API §4.10 checks the pre-key first);
+     the test no longer accepts `REQUEST_REPLAYED` there (QA follow-up 2).
    - SR-4 "concurrency limit" has no stated observable beyond `429`; see §4 item 4.
    - SR-4 "enrol flood" is INC-3 (T-06 B-24..B-27) and is not tested here.
    - A retry of a failed `publish_response` is "may" in §4.11. The nonce test accepts both a retry and no retry,

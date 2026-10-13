@@ -240,7 +240,7 @@ def test_FR04_open_replayed_verbatim_is_rejected_before_the_opener() -> None:
     # When the identical bytes arrive again
     again = world.server.process(sent.body)
     # Then they are rejected silently (the pre-key is spent; the request id is recorded)
-    assert outcome(again) in {"PREKEY_UNKNOWN", "REQUEST_REPLAYED"}
+    assert outcome(again) == "PREKEY_UNKNOWN"  # INC-2-API §4.10 step 2 checks the pre-key first
     assert again.response is None
     assert len(world.opener.requests) == 1  # type: ignore[attr-defined]
 
