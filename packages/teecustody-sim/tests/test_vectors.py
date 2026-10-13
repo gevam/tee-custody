@@ -43,17 +43,16 @@ SUITE_KEYS = {
 CASE_KEYS = {"id", "token", "expect", "check", "error_code", "altered", "debug_event"}
 AUDIENCE = "https://vectors.teecustody.test/tee"
 UNSIGNED_CASES = {"alg_none", "token_signature_corrupted", "debug_bad_signature"}
+ATTACKER_CASES = {"jwks_other_path", "jwks_other_path_same_kid"}  # INC-2-API §16.3 rows 38, 39
 VECTOR_LAUNCH = LaunchConfig(
     "localhost/teecustody-vectors:1",
     "sha256:" + hashlib.sha256(b"teecustody-sim vector image").hexdigest(),
     ("/app/workload",),
     (("PYTHONUNBUFFERED", "1"),),
 )
-DEV_DISCOVERY_URL = "http://127.0.0.1:8791/.well-known/openid-configuration"
-DEV_JWKS_ORIGIN = "http://127.0.0.1:8791"
 DEV_JWKS_URL = "http://127.0.0.1:8791/jwks"
+DEV_ATTACKER_JWKS_URL = "http://127.0.0.1:8791/attacker/jwks"
 GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com"
-GOOGLE_DISCOVERY_URL = GOOGLE_ISSUER + "/.well-known/openid-configuration"
 GOOGLE_JWKS_URI = (
     "https://www.googleapis.com/service_accounts/v1/metadata/jwk/"
     "signer@confidentialspace-sign.iam.gserviceaccount.com"
@@ -99,10 +98,9 @@ def _served_json(suite: dict[str, Any], url: str) -> dict[str, Any]:
 
 
 def _issuer_jwks(suite: dict[str, Any]) -> list[dict[str, Any]]:
-    """The JWKS keys a client reaches via the development profile: discovery URL -> jwks_uri."""
+    """The JWKS keys a client reaches via the development profile's pinned `jwks_uri`."""
     profile = json.loads(suite["profile_json"])
-    discovery = _served_json(suite, profile["discovery_url"])
-    keys = _served_json(suite, discovery["jwks_uri"])["keys"]
+    keys = _served_json(suite, profile["jwks_uri"])["keys"]
     assert isinstance(keys, list)
     return keys
 
@@ -261,7 +259,49 @@ def test_token_signatures_verify_under_the_suite_jwks_except_the_signature_cases
 ) -> None:
     verifying = {case["id"] for case in suite["cases"] if _signature_verifies(suite, case["token"])}
 
-    assert verifying == {case["id"] for case in suite["cases"]} - UNSIGNED_CASES
+    assert verifying == {case["id"] for case in suite["cases"]} - UNSIGNED_CASES - ATTACKER_CASES
+
+
+def _verifies_under_kid(token: str, jwks: list[dict[str, Any]]) -> bool:
+    """RS256 under the JWKS entry the token header's `kid` names (S3 positive control)."""
+    header_segment, payload_segment, signature_segment = token.split(".")
+    named = [jwk for jwk in jwks if jwk["kid"] == _jws_part(token, 0)["kid"]]
+    if not named:
+        return False
+    public = rsa.RSAPublicNumbers(
+        int.from_bytes(_b64url_decode(named[0]["e"]), "big"),
+        int.from_bytes(_b64url_decode(named[0]["n"]), "big"),
+    ).public_key()
+    try:
+        public.verify(
+            _b64url_decode(signature_segment),
+            f"{header_segment}.{payload_segment}".encode("ascii"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except InvalidSignature:
+        return False
+    return True
+
+
+def test_attacker_rows_verify_only_under_the_attacker_jwks_by_header_kid(
+    suite: dict[str, Any], cases_by_id: dict[str, dict[str, Any]]
+) -> None:
+    """S3 (T-29): rows 38 and 39 verify under `/attacker/jwks` and never under `/jwks`."""
+    attacker_jwks = _served_json(suite, DEV_ATTACKER_JWKS_URL)["keys"]
+    issuer_jwks = _issuer_jwks(suite)
+    valid = cases_by_id["valid"]["token"]
+    for case_id in sorted(ATTACKER_CASES):
+        token = cases_by_id[case_id]["token"]
+        assert _verifies_under_kid(token, attacker_jwks), case_id
+        assert not _verifies_under_kid(token, issuer_jwks), case_id
+        assert token.split(".")[1] == valid.split(".")[1]
+    assert _verifies_under_kid(valid, issuer_jwks)
+    assert not _verifies_under_kid(valid, attacker_jwks)
+    assert cases_by_id["jwks_other_path_same_kid"]["token"].split(".")[0] == valid.split(".")[0]
+    row_38_header = _jws_part(cases_by_id["jwks_other_path"]["token"], 0)
+    assert row_38_header["kid"] != _jws_part(valid, 0)["kid"]
+    assert row_38_header == {**_jws_part(valid, 0), "kid": row_38_header["kid"]}
 
 
 def test_valid_token_is_bound_to_the_suite_identity_key_audience_and_time(
@@ -296,8 +336,7 @@ def test_profile_json_is_the_development_profile_for_the_suite_keys_and_launch(
     observed: GeneratedSuite,
 ) -> None:
     expected = build_trust_profile(
-        discovery_url=DEV_DISCOVERY_URL,
-        jwks_origin=DEV_JWKS_ORIGIN,
+        jwks_uri=DEV_JWKS_URL,
         expected_audience=AUDIENCE,
         launch=VECTOR_LAUNCH,
         signers=observed.keys[0].signers,
@@ -319,24 +358,48 @@ def test_development_profile_pins_the_signers_the_valid_token_lists(
     ]
 
 
-def test_http_serves_the_simulator_discovery_document_and_issuer_jwks(
+def test_http_is_exactly_the_three_jwks_urls_and_never_a_discovery_url(
+    observed: GeneratedSuite,
+) -> None:
+    """Criterion 8 (INC-2-API §16.4): a verifier that fetches discovery fails `valid`."""
+    http = observed.suite["http"]
+
+    assert set(http) == {DEV_JWKS_URL, DEV_ATTACKER_JWKS_URL, GOOGLE_JWKS_URI}
+    assert not [url for url in http if url.endswith("/.well-known/openid-configuration")]
+    assert json.loads(observed.suite["profile_json"])["jwks_uri"] in http
+
+
+def test_http_serves_the_issuer_and_attacker_jwks_of_the_suite_keys(
     observed: GeneratedSuite,
 ) -> None:
     http = observed.suite["http"]
+    keys = observed.keys[0]
 
-    assert http[DEV_DISCOVERY_URL] == (
-        b'{"claims_supported":["aud","dbgstat","eat_nonce","exp","hwmodel","iat","iss","nbf",'
-        b'"secboot","submods","swname"],"id_token_signing_alg_values_supported":["RS256"],'
-        b'"issuer":"https://tee-sim.localhost","jwks_uri":"http://127.0.0.1:8791/jwks",'
-        b'"response_types_supported":["id_token"],"scopes_supported":["openid"],'
-        b'"subject_types_supported":["public"]}'
-    )
     assert (
         http[DEV_JWKS_URL]
-        == json.dumps(
-            observed.keys[0].issuer_jwks(), sort_keys=True, separators=(",", ":")
-        ).encode()
+        == json.dumps(keys.issuer_jwks(), sort_keys=True, separators=(",", ":")).encode()
     )
+    assert (
+        http[DEV_ATTACKER_JWKS_URL]
+        == json.dumps(keys.attacker_jwks(), sort_keys=True, separators=(",", ":")).encode()
+    )
+
+
+def test_generate_suite_never_reads_a_state_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L-1 (D-047): vectors use fresh keys only; the attacker key of a state dir never leaks."""
+
+    def refuse(*args: object, **kwargs: object) -> SimKeys:
+        raise AssertionError("generate_suite read a state directory")
+
+    monkeypatch.setattr(SimKeys, "load_or_create", refuse)
+    monkeypatch.chdir(tmp_path)
+
+    suite = _load(generate_suite(tmp_path / "out", now=NOW))
+
+    assert len(suite["cases"]) == 1 + len(NEGATIVE_CASES)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
 
 
 def test_production_profile_is_the_production_shaped_fixture(observed: GeneratedSuite) -> None:
@@ -344,12 +407,11 @@ def test_production_profile_is_the_production_shaped_fixture(observed: Generated
     fixture_signers = observed.keys[1].signers
 
     assert json.loads(observed.suite["production_profile_json"]) == {
-        "profile_version": 1,
+        "profile_version": 2,
         "profile_kind": "production",
         "token_type": "OIDC",
         "issuer": GOOGLE_ISSUER,
-        "discovery_url": GOOGLE_DISCOVERY_URL,
-        "jwks_origin": "https://www.googleapis.com",
+        "jwks_uri": GOOGLE_JWKS_URI,
         "expected_audience": AUDIENCE,
         "token_max_age_s": 3600,
         "allowed_hwmodels": ["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"],
@@ -378,20 +440,9 @@ def test_production_profile_contains_no_development_anchor(suite: dict[str, Any]
     assert all(key_id not in text for key_id in development_key_ids)
 
 
-def test_http_serves_the_google_discovery_and_a_public_fixture_jwks(
+def test_http_serves_a_public_fixture_jwks_at_the_google_jwks_uri(
     suite: dict[str, Any],
 ) -> None:
-    http = suite["http"]
-    assert set(http) == {DEV_DISCOVERY_URL, DEV_JWKS_URL, GOOGLE_DISCOVERY_URL, GOOGLE_JWKS_URI}
-    assert (
-        http[GOOGLE_DISCOVERY_URL]
-        == json.dumps(
-            {"issuer": GOOGLE_ISSUER, "jwks_uri": GOOGLE_JWKS_URI},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    )
-
     (jwk,) = _served_json(suite, GOOGLE_JWKS_URI)["keys"]
     assert set(jwk) == {"kty", "alg", "use", "kid", "n", "e"}
     assert (jwk["kty"], jwk["alg"], jwk["use"], jwk["kid"]) == (
@@ -449,6 +500,7 @@ def test_two_runs_differ_in_keys_but_share_structure_and_case_metadata(
     assert other["profile_json"] != suite["profile_json"]
     assert other["production_profile_json"] != suite["production_profile_json"]
     assert other["http"][DEV_JWKS_URL] != suite["http"][DEV_JWKS_URL]
+    assert other["http"][DEV_ATTACKER_JWKS_URL] != suite["http"][DEV_ATTACKER_JWKS_URL]
     assert other["http"][GOOGLE_JWKS_URI] != suite["http"][GOOGLE_JWKS_URI]
     assert all(
         mine["token"] != theirs["token"]
@@ -502,11 +554,12 @@ def test_suite_contains_no_private_key_material_of_the_keys_it_used(
         for keys in observed.keys
         for key in (
             keys._issuer_key,
+            keys._attacker_key,
             keys.unknown_signer._private_key,
             *(signer._private_key for signer in keys.signers),
         )
     ]
-    assert len(private_keys) == 8
+    assert len(private_keys) == 10
     for key in private_keys:
         d = key.private_numbers().d
         d_bytes = d.to_bytes((d.bit_length() + 7) // 8, "big")

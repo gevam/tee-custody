@@ -26,7 +26,7 @@ from teecustody_sim.constants import (
     MAX_SIGNERS,
     SIM_ISSUER,
 )
-from teecustody_sim.issuer import IssuerServer
+from teecustody_sim.issuer import ATTACKER_JWKS_PATH, IssuerServer
 from teecustody_sim.keys import SimKeys
 from teecustody_sim.launcher import LauncherServer
 from teecustody_sim.token import TokenMinter
@@ -66,9 +66,10 @@ _JSON_SHORT_ESCAPES: Final = {
 _SIM_QUEUE_PROJECT: Final = "teecustody-sim.invalid"
 _ADC_FILE_NAME: Final = "application_default_credentials.json"
 _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
+_JWKS_PATH: Final = "/jwks"
 _LOGGER_NAME: Final = "sim"
 _STATE_FILE_NAME: Final = "sim-state.json"
-_STATE_VERSION: Final = 1
+_STATE_VERSION: Final = 2  # INC-2-API §16.3: pinned `jwks_uri`, no discovery_url/jwks_origin
 _STATE_FILE_MODE: Final = 0o600
 _TOKEN_FILE_MODE: Final = 0o644
 
@@ -229,8 +230,7 @@ def _state_document(config: SimulatorConfig, origin: str) -> dict[str, JsonValue
         "state_version": _STATE_VERSION,
         "audience": config.audience,
         "issuer": SIM_ISSUER,
-        "discovery_url": origin + _DISCOVERY_PATH,
-        "jwks_origin": origin,
+        "jwks_uri": origin + _JWKS_PATH,
         "signers_required": config.signers_required,
         "token_ttl_s": config.token_ttl_s,
         "launch": {
@@ -291,6 +291,7 @@ class Simulator:
             issuer=SIM_ISSUER,
             jwks=keys.issuer_jwks(),
             limits=config.limits,
+            attacker_jwks=keys.attacker_jwks(),
         )
         with _os_error_as(SimConfigErrorCode.BIND_FAILED):
             self._issuer.start()
@@ -329,6 +330,14 @@ class Simulator:
     @property
     def discovery_url(self) -> str:
         return self.issuer_origin + _DISCOVERY_PATH
+
+    @property
+    def jwks_uri(self) -> str:
+        return self.issuer_origin + _JWKS_PATH
+
+    @property
+    def attacker_jwks_uri(self) -> str:
+        return self.issuer_origin + ATTACKER_JWKS_PATH
 
     @property
     def keys(self) -> SimKeys:

@@ -1,4 +1,5 @@
-"""Negative-case catalog (API.md §G rows 2..37, in table order; spec §13.2, §15.3; SR-12)."""
+"""Negative-case catalog (API.md §G rows 2..37 and INC-2-API §16.3 rows 38, 39, in table order;
+spec §13.2, §15.3; SR-12; T-29)."""
 
 from dataclasses import dataclass
 from typing import Final
@@ -80,4 +81,6 @@ NEGATIVE_CASES: Final[tuple[NegativeCase, ...]] = (
         "env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False
     ),
     NegativeCase("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
+    NegativeCase("jwks_other_path", "signature", "UNTRUSTED_SIGNER", (), False),
+    NegativeCase("jwks_other_path_same_kid", "signature", "UNTRUSTED_SIGNER", (), False),
 )

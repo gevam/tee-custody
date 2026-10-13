@@ -24,8 +24,7 @@ from teecustody_sim import (
     launch_config_hashes,
 )
 
-DISCOVERY_URL = "http://127.0.0.1:8791/.well-known/openid-configuration"
-JWKS_ORIGIN = "http://127.0.0.1:8791"
+JWKS_URI = "http://127.0.0.1:8791/jwks"
 AUDIENCE = "https://example.test/tee"
 IMAGE_DIGEST = "sha256:" + hashlib.sha256(b"teecustody-sim profile test image").hexdigest()
 LAUNCH = LaunchConfig(
@@ -86,8 +85,7 @@ def _same_modulus(key: rsa.RSAPrivateKey, public_exponent: int) -> rsa.RSAPublic
 
 def _profile(signers: Sequence[SignerKeyMaterial], signers_required: int) -> dict[str, object]:
     return build_trust_profile(
-        discovery_url=DISCOVERY_URL,
-        jwks_origin=JWKS_ORIGIN,
+        jwks_uri=JWKS_URI,
         expected_audience=AUDIENCE,
         launch=LAUNCH,
         signers=signers,
@@ -104,8 +102,7 @@ def test_launch_config_hashes_are_sha256_of_canonical_cbor_args_and_env() -> Non
 
 def test_build_trust_profile_has_exactly_the_documented_keys_and_values(keys: SimKeys) -> None:
     profile = build_trust_profile(
-        discovery_url=DISCOVERY_URL,
-        jwks_origin=JWKS_ORIGIN,
+        jwks_uri=JWKS_URI,
         expected_audience=AUDIENCE,
         launch=LAUNCH,
         signers=keys.signers,
@@ -114,12 +111,11 @@ def test_build_trust_profile_has_exactly_the_documented_keys_and_values(keys: Si
     )
 
     assert profile == {
-        "profile_version": 1,
+        "profile_version": 2,
         "profile_kind": "development",
         "token_type": "OIDC",
         "issuer": SIM_ISSUER,
-        "discovery_url": DISCOVERY_URL,
-        "jwks_origin": JWKS_ORIGIN,
+        "jwks_uri": JWKS_URI,
         "expected_audience": AUDIENCE,
         "token_max_age_s": 1800,
         "allowed_hwmodels": [SIM_HWMODEL],
@@ -137,10 +133,80 @@ def test_build_trust_profile_has_exactly_the_documented_keys_and_values(keys: Si
     }
 
 
+@pytest.mark.parametrize(
+    "jwks_uri",
+    [
+        "http://127.0.0.1:8791/jwks",
+        "http://localhost:1/jwks",
+        "http://[::1]:65535/jwks",
+        "http://127.0.0.1:81/jwks",
+        "http://127.0.0.1:8080/jwks",
+    ],
+)
+def test_every_canonical_loopback_jwks_uri_is_pinned_verbatim(keys: SimKeys, jwks_uri: str) -> None:
+    profile = build_trust_profile(
+        jwks_uri=jwks_uri,
+        expected_audience=AUDIENCE,
+        launch=LAUNCH,
+        signers=keys.signers,
+        signers_required=2,
+    )
+
+    assert profile["jwks_uri"] == jwks_uri
+
+
+NON_CANONICAL_JWKS_URIS = {
+    "port-80": "http://127.0.0.1:80/jwks",
+    "leading-zero-port": "http://127.0.0.1:08791/jwks",
+    "port-0": "http://127.0.0.1:0/jwks",
+    "port-65536": "http://127.0.0.1:65536/jwks",
+    "six-digit-port": "http://127.0.0.1:100000/jwks",
+    "no-port": "http://127.0.0.1/jwks",
+    "empty-port": "http://127.0.0.1:/jwks",
+    "other-path": "http://127.0.0.1:8791/other",
+    "attacker-path": "http://127.0.0.1:8791/attacker/jwks",
+    "upper-path": "http://127.0.0.1:8791/JWKS",
+    "double-slash-path": "http://127.0.0.1:8791//jwks",
+    "trailing-slash": "http://127.0.0.1:8791/jwks/",
+    "discovery": "http://127.0.0.1:8791/.well-known/openid-configuration",
+    "origin-only": "http://127.0.0.1:8791",
+    "non-loopback": "http://192.168.1.5:8791/jwks",
+    "short-loopback": "http://127.1:8791/jwks",
+    "other-loopback-v4": "http://127.0.0.2:8791/jwks",
+    "upper-host": "http://LOCALHOST:8791/jwks",
+    "unbracketed-v6": "http://::1:8791/jwks",
+    "https": "https://127.0.0.1:8791/jwks",
+    "upper-scheme": "HTTP://127.0.0.1:8791/jwks",
+    "query": "http://127.0.0.1:8791/jwks?x=1",
+    "fragment": "http://127.0.0.1:8791/jwks#x",
+    "userinfo": "http://u@127.0.0.1:8791/jwks",
+    "trailing-newline": "http://127.0.0.1:8791/jwks\n",
+    "leading-space": " http://127.0.0.1:8791/jwks",
+    "non-ascii-digit": "http://127.0.0.1:\u0668791/jwks",
+    "empty": "",
+}
+
+
+@pytest.mark.parametrize(
+    "jwks_uri", NON_CANONICAL_JWKS_URIS.values(), ids=NON_CANONICAL_JWKS_URIS.keys()
+)
+def test_a_non_canonical_jwks_uri_is_refused_before_any_other_validation(
+    keys: SimKeys, jwks_uri: str
+) -> None:
+    duplicated = (keys.signers[0], keys.signers[0])
+    with pytest.raises(ValueError, match=r"^INVALID_JWKS_URI$"):
+        build_trust_profile(
+            jwks_uri=jwks_uri,
+            expected_audience=AUDIENCE,
+            launch=LAUNCH,
+            signers=duplicated,
+            signers_required=0,
+        )
+
+
 def test_build_trust_profile_token_max_age_defaults_to_spec_value(keys: SimKeys) -> None:
     profile = build_trust_profile(
-        discovery_url=DISCOVERY_URL,
-        jwks_origin=JWKS_ORIGIN,
+        jwks_uri=JWKS_URI,
         expected_audience=AUDIENCE,
         launch=LAUNCH,
         signers=keys.signers,
@@ -157,8 +223,7 @@ def test_signer_key_id_is_computed_from_spki_never_copied(
         monkeypatch.setattr(signer, "key_id", "0" * 64)
 
     profile = build_trust_profile(
-        discovery_url=DISCOVERY_URL,
-        jwks_origin=JWKS_ORIGIN,
+        jwks_uri=JWKS_URI,
         expected_audience=AUDIENCE,
         launch=LAUNCH,
         signers=keys.signers,

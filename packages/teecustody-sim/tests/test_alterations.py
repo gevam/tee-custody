@@ -114,6 +114,12 @@ def issuer_public_key(keys: SimKeys) -> rsa.RSAPublicKey:
     ).public_key()
 
 
+def canonical_header(kid: str) -> bytes:
+    return json.dumps(
+        {"alg": "RS256", "kid": kid, "typ": "JWT"}, sort_keys=True, separators=(",", ":")
+    ).encode()
+
+
 def issuer_signature(keys: SimKeys, signing_input: str) -> bytes:
     """The correct RS256 signature over `signing_input` (PKCS#1 v1.5 is deterministic)."""
     return keys.sign_jws(signing_input.encode("ascii"))
@@ -230,8 +236,11 @@ CLAIM_EDITS: dict[str, Callable[[Claims, SimKeys], None]] = {
     "args_missing": _drop("submods", "container", "args"),
     "env_missing": _drop("submods", "container", "env"),
     "kid_unknown": _unchanged,
+    "jwks_other_path": _unchanged,
+    "jwks_other_path_same_kid": _unchanged,
 }
 CORRUPTED_SIGNATURE = {"token_signature_corrupted", "debug_bad_signature"}
+ATTACKER_SIGNED = {"jwks_other_path", "jwks_other_path_same_kid"}
 UNKNOWN_KID = "teecustody-sim-unknown-kid"
 CASE_IDS = [case.case_id for case in NEGATIVE_CASES]
 
@@ -291,8 +300,18 @@ def test_named_case_header_and_token_signature_are_as_specified(
         default_kid = f'"kid":"{keys.issuer_kid}"'.encode()
         assert header == default_header.replace(default_kid, f'"kid":"{UNKNOWN_KID}"'.encode())
         assert token.split(".")[1] == minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
+    elif case_id == "jwks_other_path":
+        assert header == canonical_header(keys.attacker_issuer_kid)
     else:
         assert header == default_header
+    if case_id in ATTACKER_SIGNED:
+        assert token.split(".")[1] == minter.mint(AUDIENCE, [NONCE], NOW).split(".")[1]
+        assert signature == keys.sign_jws_attacker(signing_input.encode("ascii"))
+        with pytest.raises(InvalidSignature):
+            issuer_public_key(keys).verify(
+                signature, signing_input.encode(), padding.PKCS1v15(), hashes.SHA256()
+            )
+        return
     correct = issuer_signature(keys, signing_input)
     if case_id in CORRUPTED_SIGNATURE:
         assert signature == bytes([correct[0] ^ 0x01]) + correct[1:]

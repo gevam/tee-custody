@@ -1,6 +1,7 @@
-"""Development trust profile (API.md §E)."""
+"""Development trust profile v2 (INC-2-API §16.1, §16.3; ADR 0012)."""
 
 import hashlib
+import re
 from collections.abc import Sequence
 from typing import Final
 
@@ -23,6 +24,14 @@ _RSA_SIGNER_ALGORITHMS: Final = frozenset({"RSASSA_PSS_SHA256", "RSASSA_PKCS1V15
 _ECDSA_P256_ALGORITHM: Final = "ECDSA_P256_SHA256"
 _MIN_RSA_BITS: Final = 2048
 _RSA_PUBLIC_EXPONENT: Final = 65537
+_PROFILE_VERSION: Final = 2
+# `http://<loopback host>:<port>/jwks`, with no leading-zero port: exactly the strings Core's
+# `new URL(value).href === value` rule accepts (INC-2-API §16.3). Port bounds are checked after.
+_JWKS_URI: Final = re.compile(
+    r"http://(?:127\.0\.0\.1|localhost|\[::1\]):([1-9][0-9]{0,4})/jwks", re.ASCII
+)
+_MAX_PORT: Final = 65535
+_HTTP_DEFAULT_PORT: Final = 80
 
 
 def launch_config_hashes(args: Sequence[str], env: Sequence[tuple[str, str]]) -> tuple[str, str]:
@@ -86,28 +95,34 @@ def _signer_entries(signers: Sequence[SignerKeyMaterial]) -> list[JsonValue]:
     ]
 
 
+def _check_jwks_uri(jwks_uri: str) -> None:
+    match = _JWKS_URI.fullmatch(jwks_uri)
+    port = 0 if match is None else int(match[1])
+    if not 1 <= port <= _MAX_PORT or port == _HTTP_DEFAULT_PORT:
+        raise ValueError("INVALID_JWKS_URI")
+
+
 def build_trust_profile(
     *,
-    discovery_url: str,
-    jwks_origin: str,
+    jwks_uri: str,
     expected_audience: str,
     launch: LaunchConfig,
     signers: Sequence[SignerKeyMaterial],
     signers_required: int,
     token_max_age_s: int = DEFAULT_TOKEN_MAX_AGE_S,
 ) -> dict[str, JsonValue]:
+    _check_jwks_uri(jwks_uri)
     signer_keys = _signer_entries(signers)
     # `type(...) is int` also refuses `bool`, which `isinstance` would accept.
     if type(signers_required) is not int or not 1 <= signers_required <= len(signers):
         raise ValueError("INVALID_SIGNERS_REQUIRED")
     args_hash, env_hash = launch_config_hashes(launch.args, launch.env)
     return {
-        "profile_version": 1,
+        "profile_version": _PROFILE_VERSION,
         "profile_kind": "development",
         "token_type": "OIDC",
         "issuer": SIM_ISSUER,
-        "discovery_url": discovery_url,
-        "jwks_origin": jwks_origin,
+        "jwks_uri": jwks_uri,
         "expected_audience": expected_audience,
         "token_max_age_s": token_max_age_s,
         "allowed_hwmodels": [SIM_HWMODEL],

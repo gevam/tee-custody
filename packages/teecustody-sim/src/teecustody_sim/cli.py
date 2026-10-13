@@ -42,9 +42,9 @@ from teecustody_sim.token import TokenMinter, parse_alteration
 from teecustody_sim.vectors import generate_corpus, generate_suite
 
 _STATE_FILE_NAME: Final = "sim-state.json"
-_STATE_VERSION: Final = 1
+_STATE_VERSION: Final = 2  # INC-2-API §16.3: a v1 state file is STATE_NOT_INITIALISED
 _MAX_STATE_BYTES: Final = 65536
-_STATE_TEXT_KEYS: Final = ("audience", "issuer", "discovery_url", "jwks_origin")
+_STATE_TEXT_KEYS: Final = ("audience", "issuer", "jwks_uri")
 _STATE_KEYS: Final = frozenset(
     {"state_version", *_STATE_TEXT_KEYS, "signers_required", "token_ttl_s", "launch"}
 )
@@ -101,11 +101,10 @@ def _decimal(value: str) -> int:
 
 @dataclass(frozen=True)
 class _State:
-    """`sim-state.json` (API.md §C), validated."""
+    """`sim-state.json` v2 (INC-2-API §16.3), validated."""
 
     audience: str
-    discovery_url: str
-    jwks_origin: str
+    jwks_uri: str
     signers_required: int
     token_ttl_s: int
     launch: LaunchConfig
@@ -151,8 +150,7 @@ def _parse_state(document: object) -> _State:
         raise SimConfigError(SimConfigErrorCode.STATE_NOT_INITIALISED)
     return _State(
         audience=document["audience"],
-        discovery_url=document["discovery_url"],
-        jwks_origin=document["jwks_origin"],
+        jwks_uri=document["jwks_uri"],
         signers_required=document["signers_required"],
         token_ttl_s=document["token_ttl_s"],
         launch=_parse_launch(document["launch"]),
@@ -217,8 +215,7 @@ def _write_public_file(path: Path, text: str) -> None:
 def _profile(options: argparse.Namespace) -> int:
     state, keys = _load_state(options.state_dir)
     profile = build_trust_profile(
-        discovery_url=state.discovery_url,
-        jwks_origin=state.jwks_origin,
+        jwks_uri=state.jwks_uri,
         expected_audience=state.audience,
         launch=state.launch,
         signers=keys.signers,

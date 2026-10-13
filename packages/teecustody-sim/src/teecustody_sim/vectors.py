@@ -21,9 +21,9 @@ from teecustody_sim.constants import (
     DEFAULT_SIGNERS_REQUIRED,
     DEFAULT_TOKEN_MAX_AGE_S,
     JWS_ALG,
-    SIM_ISSUER,
     SIM_TOKEN_TTL_S,
 )
+from teecustody_sim.issuer import ATTACKER_JWKS_PATH
 from teecustody_sim.keys import SimKeys
 from teecustody_sim.profile import build_trust_profile, launch_config_hashes
 from teecustody_sim.token import TokenMinter
@@ -35,40 +35,20 @@ _LAUNCH: Final = LaunchConfig(
     (("PYTHONUNBUFFERED", "1"),),
 )
 _AUDIENCE: Final = "https://vectors.teecustody.test/tee"
+# INC-2-API §16.4: the `http` map holds JWKS URLs only, never a discovery URL, so a verifier that
+# fetches discovery fails `valid`.
 _JWKS_ORIGIN: Final = "http://127.0.0.1:8791"
-_DISCOVERY_URL: Final = _JWKS_ORIGIN + "/.well-known/openid-configuration"
 _JWKS_URL: Final = _JWKS_ORIGIN + "/jwks"
-_DISCOVERY_DOCUMENT: Final[dict[str, JsonValue]] = {
-    "claims_supported": [
-        "aud",
-        "dbgstat",
-        "eat_nonce",
-        "exp",
-        "hwmodel",
-        "iat",
-        "iss",
-        "nbf",
-        "secboot",
-        "submods",
-        "swname",
-    ],
-    "id_token_signing_alg_values_supported": ["RS256"],
-    "issuer": SIM_ISSUER,
-    "jwks_uri": _JWKS_URL,
-    "response_types_supported": ["id_token"],
-    "scopes_supported": ["openid"],
-    "subject_types_supported": ["public"],
-}
+_ATTACKER_JWKS_URL: Final = _JWKS_ORIGIN + ATTACKER_JWKS_PATH
 
 # Production-shaped fixture (FACTS F-07, F-09 as amended). Its signer entries and JWKS key are
 # throwaway fixture keys: the profile only has to look like production, never to trust anything.
 _GOOGLE_ISSUER: Final = "https://confidentialcomputing.googleapis.com"
-_GOOGLE_DISCOVERY_URL: Final = _GOOGLE_ISSUER + "/.well-known/openid-configuration"
-_GOOGLE_JWKS_ORIGIN: Final = "https://www.googleapis.com"
 _GOOGLE_JWKS_URI: Final = (
-    _GOOGLE_JWKS_ORIGIN
-    + "/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
+    "https://www.googleapis.com"
+    "/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
 )
+_PROFILE_VERSION: Final = 2
 _PRODUCTION_HWMODELS: Final = ("GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX")
 _FIXTURE_KID: Final = "production-fixture"
 _FIXTURE_RSA_BITS: Final = 2048
@@ -112,7 +92,7 @@ def _fixture_jwks() -> dict[str, JsonValue]:
 
 
 def _production_profile() -> dict[str, JsonValue]:
-    """The production-shaped fixture (API.md §E fields); no development anchor appears in it."""
+    """The production-shaped v2 fixture (INC-2-API §16.1); no development anchor appears in it."""
     fixture_signers = SimKeys.generate(DEFAULT_SIGNERS_REQUIRED).signers
     args_hash, env_hash = launch_config_hashes(_LAUNCH.args, _LAUNCH.env)
     signer_keys: list[JsonValue] = [
@@ -120,12 +100,11 @@ def _production_profile() -> dict[str, JsonValue]:
         for signer in fixture_signers
     ]
     return {
-        "profile_version": 1,
+        "profile_version": _PROFILE_VERSION,
         "profile_kind": "production",
         "token_type": "OIDC",
         "issuer": _GOOGLE_ISSUER,
-        "discovery_url": _GOOGLE_DISCOVERY_URL,
-        "jwks_origin": _GOOGLE_JWKS_ORIGIN,
+        "jwks_uri": _GOOGLE_JWKS_URI,
         "expected_audience": _AUDIENCE,
         "token_max_age_s": DEFAULT_TOKEN_MAX_AGE_S,
         "allowed_hwmodels": list(_PRODUCTION_HWMODELS),
@@ -178,8 +157,7 @@ def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
         keys, _LAUNCH, ttl_s=SIM_TOKEN_TTL_S, token_max_age_s=DEFAULT_TOKEN_MAX_AGE_S
     )
     profile = build_trust_profile(
-        discovery_url=_DISCOVERY_URL,
-        jwks_origin=_JWKS_ORIGIN,
+        jwks_uri=_JWKS_URL,
         expected_audience=_AUDIENCE,
         launch=_LAUNCH,
         signers=keys.signers,
@@ -195,11 +173,8 @@ def generate_suite(out_dir: Path, *, now: int | None = None) -> Path:
         "profile_json": _json_text(profile),
         "production_profile_json": _json_text(_production_profile()),
         "http": {
-            _DISCOVERY_URL: _json_bytes(_DISCOVERY_DOCUMENT),
             _JWKS_URL: _json_bytes(keys.issuer_jwks()),
-            _GOOGLE_DISCOVERY_URL: _json_bytes(
-                {"issuer": _GOOGLE_ISSUER, "jwks_uri": _GOOGLE_JWKS_URI}
-            ),
+            _ATTACKER_JWKS_URL: _json_bytes(keys.attacker_jwks()),
             _GOOGLE_JWKS_URI: _json_bytes(_fixture_jwks()),
         },
         "cases": _cases(minter, nonce, now),
