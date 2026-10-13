@@ -36,3 +36,6 @@
 - T-02: @teecustody/web package, TS tooling, Core/Web stubs, verified-bundle brand with copy-on-read keys
 - T-05: INC-2 static rules, HPKE closure policy, browser CI job
 - QA: INC-2 acceptance tests (expected red)
+- T-07: Python channel codec and byte layouts
+- T-16: Core bundle verification and pre-key selection
+- T-15: Core channel wire codec and byte layouts
