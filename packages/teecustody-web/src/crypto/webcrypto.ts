@@ -28,10 +28,10 @@ const ED25519_SIGNATURE_BYTES = 64;
 const RS256: RsaHashedImportParams = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
 const RSA_MIN_MODULUS_BITS = 2048;
 const AES_KEY_BYTES = 32;
+const GCM_NONCE_BYTES = 12;
 const X25519_KEY_BYTES = 32;
 const MAX_EXPORT_LABEL_BYTES = 64;
 const MAX_EXPORT_BYTES = 64;
-const GCM_NONCE_BYTES = 12;
 
 function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
     return { name: "AES-GCM", iv: nonce.slice(), additionalData: aad.slice() };
