@@ -9,7 +9,7 @@ import {
     type FrameResultEnvelope,
     type OpenResultEnvelope,
 } from "../../src/channel/wire.js";
-import { encodeCanonical } from "../../src/wire/cbor.js";
+import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue } from "../../src/wire/types.js";
 
 const SEED = 0x7015;
@@ -106,13 +106,67 @@ const BYTE_MUTATIONS: readonly (readonly [string, ByteMutation])[] = [
     ],
 ];
 
-// Mutating the whole envelope stresses the outer decode; mutating only the nested aad and re-wrapping
-// it in a canonical envelope stresses the aad decode and the schema checks behind it.
+// Values a field (or the whole aad) is replaced with: right and wrong types, bounds, R-1 bigints.
+const SUBSTITUTES: readonly CanonicalValue[] = [
+    0,
+    1,
+    -1,
+    2 ** 53 - 1,
+    2n ** 53n,
+    "",
+    "a",
+    "test.echo",
+    "Test",
+    null,
+    true,
+    new Uint8Array(15),
+    new Uint8Array(16),
+    new Uint8Array(17),
+    [],
+    [0],
+    new Map(),
+];
+
+type StructuralMutation = (fields: Map<string, CanonicalValue>, pick: Pick) => CanonicalValue;
+
+const substitute = (pick: Pick): CanonicalValue => SUBSTITUTES[pick(SUBSTITUTES.length)] ?? null;
+const someKey = (fields: Map<string, CanonicalValue>, pick: Pick): string =>
+    [...fields.keys()][pick(fields.size)] ?? "";
+
+const STRUCTURAL_MUTATIONS: readonly (readonly [string, StructuralMutation])[] = [
+    ["aad not a map", (_fields, pick) => substitute(pick)],
+    ["field replaced", (fields, pick) => fields.set(someKey(fields, pick), substitute(pick))],
+    [
+        "field removed",
+        (fields, pick) => {
+            fields.delete(someKey(fields, pick));
+            return fields;
+        },
+    ],
+    [
+        "key added",
+        (fields, pick) =>
+            fields.set(["x", "op", "request_id", "kind"][pick(4)] ?? "", substitute(pick)),
+    ],
+];
+
+// Three modes: byte mutations of the whole envelope (outer decode); byte mutations of the nested aad
+// re-wrapped in a canonical envelope (aad decode); structural changes to a canonical aad (schema checks).
 function mutate(seed: Seed, pick: Pick): { readonly name: string; readonly input: Uint8Array } {
+    const mode = pick(3);
+    if (mode === 2) {
+        const [name, mutation] = STRUCTURAL_MUTATIONS[
+            pick(STRUCTURAL_MUTATIONS.length)
+        ] as (typeof STRUCTURAL_MUTATIONS)[number];
+        const fields = new Map(
+            decodeCanonical(seed.aad, AAD_LIMITS) as ReadonlyMap<string, CanonicalValue>,
+        );
+        return { name, input: envelope(seed, encodeCanonical(mutation(fields, pick))) };
+    }
     const [name, mutation] = BYTE_MUTATIONS[
         pick(BYTE_MUTATIONS.length)
     ] as (typeof BYTE_MUTATIONS)[number];
-    if (pick(2) === 0) {
+    if (mode === 0) {
         return { name: `envelope ${name}`, input: mutation(envelope(seed), pick) };
     }
     return { name: `aad ${name}`, input: envelope(seed, mutation(seed.aad, pick)) };
@@ -165,8 +219,8 @@ describe("criterion 9: decodeResponse mutation fuzz (SR-3)", () => {
                 outcomes.decoded++;
             }
         }
-        expect(used.size).toBe(2 * BYTE_MUTATIONS.length);
-        expect(outcomes.decoded).toBeGreaterThan(0);
+        expect(used.size).toBe(2 * BYTE_MUTATIONS.length + STRUCTURAL_MUTATIONS.length);
+        expect(outcomes.decoded).toBeGreaterThan(CASES / 20);
         expect(outcomes.rejected).toBeGreaterThan(CASES / 2);
     });
 });
