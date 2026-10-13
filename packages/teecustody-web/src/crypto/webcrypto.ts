@@ -8,6 +8,9 @@ export interface WebCryptoOptions {
 }
 
 const MAX_RANDOM_BYTES = 65536;
+const ED25519 = { name: "Ed25519" } as const;
+const ED25519_PUBLIC_KEY_BYTES = 32;
+const ED25519_SIGNATURE_BYTES = 64;
 
 function notImplemented(): never {
     throw new Error("NOT_IMPLEMENTED: T-17");
@@ -17,6 +20,7 @@ function notImplemented(): never {
 export function createWebCrypto(options?: WebCryptoOptions): Crypto {
     const getRandomValues =
         options?.getRandomValues ?? ((a: Uint8Array) => globalThis.crypto.getRandomValues(a));
+    const subtle = options?.subtle ?? globalThis.crypto.subtle;
     return {
         randomBytes(length: number): Uint8Array {
             if (length < 1 || length > MAX_RANDOM_BYTES) {
@@ -25,7 +29,21 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
             return getRandomValues(new Uint8Array(length));
         },
         sha256: notImplemented,
-        verifyEd25519: notImplemented,
+        async verifyEd25519(publicKey, data, signature): Promise<boolean> {
+            if (
+                publicKey.length !== ED25519_PUBLIC_KEY_BYTES ||
+                signature.length !== ED25519_SIGNATURE_BYTES
+            ) {
+                throw new CapabilityError("INVALID_ARGUMENT");
+            }
+            let key: CryptoKey;
+            try {
+                key = await subtle.importKey("raw", publicKey.slice(), ED25519, false, ["verify"]);
+            } catch {
+                throw new CapabilityError("UNSUPPORTED");
+            }
+            return subtle.verify(ED25519, key, signature.slice(), data.slice());
+        },
         verifySignature: notImplemented,
         setupHpkeSender: notImplemented,
         setupHpkeReceiver: notImplemented,

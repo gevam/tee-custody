@@ -4,6 +4,49 @@ import { describe, expect, it } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
 
+const enc = new TextEncoder();
+const MSG = enc.encode("signed message");
+
+async function codeOfRejection(promise: Promise<unknown>): Promise<string> {
+    try {
+        await promise;
+    } catch (error: unknown) {
+        return error instanceof CapabilityError ? error.code : `not a CapabilityError: ${String(error)}`;
+    }
+    return "no error";
+}
+
+/** The real SubtleCrypto with `importKey` replaced for algorithms named in `refuse`. */
+function refusingImport(refuse: string, error: () => unknown): SubtleCrypto {
+    const real = globalThis.crypto.subtle;
+    return new Proxy(real, {
+        get(target, prop) {
+            const value = Reflect.get(target, prop, target) as unknown;
+            if (prop !== "importKey" || typeof value !== "function") {
+                return typeof value === "function" ? value.bind(target) : value;
+            }
+            return (...args: Parameters<SubtleCrypto["importKey"]>) => {
+                const algorithm = args[2];
+                const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+                if (name === refuse) {
+                    return Promise.reject(error());
+                }
+                return target.importKey(...args);
+            };
+        },
+    });
+}
+
+async function ed25519KeyPair(): Promise<{ publicKey: Uint8Array; sign: (m: Uint8Array) => Promise<Uint8Array> }> {
+    const subtle = globalThis.crypto.subtle;
+    const pair = (await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const publicKey = new Uint8Array(await subtle.exportKey("raw", pair.publicKey));
+    return {
+        publicKey,
+        sign: async (m) => new Uint8Array(await subtle.sign({ name: "Ed25519" }, pair.privateKey, m)),
+    };
+}
+
 function codeOfThrown(fn: () => unknown): string {
     try {
         fn();
@@ -27,5 +70,38 @@ describe("randomBytes (criterion 1)", () => {
         expect(a).toHaveLength(32);
         expect(b).toHaveLength(32);
         expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
+    });
+});
+
+describe("verifyEd25519 (criterion 2)", () => {
+    it("returns true for a valid signature and false for a bit-flipped one", async () => {
+        const crypto = createWebCrypto();
+        const { publicKey, sign } = await ed25519KeyPair();
+        const signature = await sign(MSG);
+        expect(await crypto.verifyEd25519(publicKey, MSG, signature)).toBe(true);
+        const flipped = signature.slice();
+        flipped[10] = (flipped[10] ?? 0) ^ 0x01;
+        expect(await crypto.verifyEd25519(publicKey, MSG, flipped)).toBe(false);
+    });
+
+    it("rejects a 31-byte key or a 63-byte signature with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { publicKey, sign } = await ed25519KeyPair();
+        const signature = await sign(MSG);
+        expect(await codeOfRejection(crypto.verifyEd25519(publicKey.slice(0, 31), MSG, signature))).toBe(
+            "INVALID_ARGUMENT",
+        );
+        expect(await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, signature.slice(0, 63)))).toBe(
+            "INVALID_ARGUMENT",
+        );
+    });
+
+    it("reports UNSUPPORTED when the subtle's Ed25519 import throws NotSupportedError", async () => {
+        const subtle = refusingImport("Ed25519", () => new DOMException("no Ed25519", "NotSupportedError"));
+        const crypto = createWebCrypto({ subtle });
+        const { publicKey, sign } = await ed25519KeyPair();
+        expect(await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, await sign(MSG)))).toBe(
+            "UNSUPPORTED",
+        );
     });
 });
