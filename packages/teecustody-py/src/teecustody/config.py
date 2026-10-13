@@ -34,6 +34,7 @@ class ConfigError(Exception):
 
 
 _MAX_PULL_WAIT_S: Final = 30
+_MAX_DECODE_DEPTH: Final = 16
 _DECODE_FIELDS: Final = frozenset(
     {"envelope_decode", "aad_decode", "open_payload_decode", "payload_decode"}
 )
@@ -60,6 +61,24 @@ def _valid_wait(value: object) -> bool:
     if type(value) is not int and type(value) is not float:
         return False
     return 0 < value <= _MAX_PULL_WAIT_S
+
+
+def _valid_decode(value: object) -> bool:
+    """True iff `value` is a `DecodeLimits` whose fields are exact `int` >= 1, depth <= 16."""
+    return (
+        isinstance(value, DecodeLimits)
+        and _int_in_range(value.max_bytes, 1, None)
+        and _int_in_range(value.max_depth, 1, _MAX_DECODE_DEPTH)
+        and _int_in_range(value.max_items, 1, None)
+    )
+
+
+def _valid_limit(name: str, value: object) -> bool:
+    if name in _DECODE_FIELDS:
+        return _valid_decode(value)
+    if name == "pull_wait_s":
+        return _valid_wait(value)
+    return _int_in_range(value, 1, None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -101,11 +120,7 @@ class BoundaryLimits:
 
     def __post_init__(self) -> None:
         for f in fields(self):
-            if f.name in _DECODE_FIELDS:
-                continue
-            value = getattr(self, f.name)
-            valid = _valid_wait(value) if f.name == "pull_wait_s" else _int_in_range(value, 1, None)
-            if not valid:
+            if not _valid_limit(f.name, getattr(self, f.name)):
                 raise ConfigError(ConfigErrorCode.INVALID_LIMITS, f.name)
         if self.attestation_retry_max_s < self.attestation_retry_min_s:
             raise ConfigError(ConfigErrorCode.INVALID_LIMITS, "attestation_retry_max_s")

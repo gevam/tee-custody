@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from teecustody.config import BoundaryLimits, ChannelParams, ConfigError, ConfigErrorCode
+from teecustody.wire import DecodeLimits
 
 PARAMS = ConfigErrorCode.INVALID_PARAMS
 LIMITS = ConfigErrorCode.INVALID_LIMITS
@@ -207,3 +208,51 @@ def test_retry_rule_is_checked_after_every_single_field_rule() -> None:
 
 def test_first_failing_limit_in_declaration_order_is_reported() -> None:
     _assert_rejected(BoundaryLimits, LIMITS, "max_token_bytes", max_token_bytes=0, max_sessions=0)
+
+
+# --- criterion 6: DecodeLimits fields -----------------------------------------------------------
+
+DECODE_FIELDS: tuple[str, ...] = (
+    "envelope_decode",
+    "aad_decode",
+    "open_payload_decode",
+    "payload_decode",
+)
+
+
+def _decode(**overrides: Any) -> DecodeLimits:
+    values: dict[str, Any] = {"max_bytes": 1024, "max_depth": 2, "max_items": 16}
+    values.update(overrides)
+    return DecodeLimits(**values)
+
+
+@pytest.mark.parametrize("field", DECODE_FIELDS)
+@pytest.mark.parametrize(
+    "limits",
+    [
+        _decode(max_bytes=1, max_depth=1, max_items=1),
+        _decode(max_bytes=2**63, max_depth=16, max_items=2**63),
+    ],
+    ids=["lowest", "highest"],
+)
+def test_decode_limit_fields_accept_range_edges(field: str, limits: DecodeLimits) -> None:
+    assert getattr(BoundaryLimits(**{field: limits}), field) == limits
+
+
+_BAD_DECODE: list[DecodeLimits] = [
+    _decode(**{name: bad})
+    for name in ("max_bytes", "max_depth", "max_items")
+    for bad in [0, -1, *_NOT_INT]
+] + [_decode(max_depth=17)]
+
+
+@pytest.mark.parametrize("field", DECODE_FIELDS)
+@pytest.mark.parametrize("bad", _BAD_DECODE, ids=repr)
+def test_decode_limit_fields_reject_invalid_limits(field: str, bad: DecodeLimits) -> None:
+    _assert_rejected(BoundaryLimits, LIMITS, field, **{field: bad})
+
+
+@pytest.mark.parametrize("field", DECODE_FIELDS)
+@pytest.mark.parametrize("bad", [None, 1024, {"max_bytes": 1, "max_depth": 1, "max_items": 1}])
+def test_decode_limit_fields_reject_values_that_are_not_decode_limits(field: str, bad: Any) -> None:
+    _assert_rejected(BoundaryLimits, LIMITS, field, **{field: bad})
