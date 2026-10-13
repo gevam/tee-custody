@@ -199,7 +199,10 @@ export function readFrameResult(crypto: Pick<Crypto, "aes256GcmDecrypt">, keyT2c
 - **TL-8 e2e harness CLI** (INC-2-API §9.4 + CI-2-1 proposal): `uv run python tests/e2e/channel_harness.py
   [--cors-origin ORIGIN]...`; ready line `gateway=<origin> issuer=<origin> profile=<path>`; the profile's
   directory also holds `fixture.json` = `{"client_id": "<32 hex>", "cs": "<64 hex>", "key_id": "<32 hex>",
-  "epoch": 0}`, written mode 0600, generated per run, never committed.
+  "epoch": 0, "discovery_url": "<simulator discovery URL>", "attacker_jwks_url": "<simulator attacker JWKS URL>",
+  "attacker_token": "<compact JWS, case jwks_other_path>"}` (the last three keys were added by the D-043
+  amendment, INC-2-API §9.4 rev 3). It is written mode 0600, generated per run and never committed. The profile
+  is v2 (`build_trust_profile(jwks_uri=simulator.jwks_uri, ...)`).
 - **TL-9 vector conformance split** (who checks which `spec/vectors/channel/suite.cbor` arrays):
   Python (`spec/vectors/test_channel_suite.py`): `opens` (all), `frames` with `direction == "c2t"`, `results`
   (schema via the `plaintext` field), `layouts` (all), `bundles` (schema: `MALFORMED` cases fail
@@ -207,3 +210,57 @@ export function readFrameResult(crypto: Pick<Crypto, "aes256GcmDecrypt">, keyT2c
   `bundles` (all, `verifyBundle`), `frames` with `direction == "t2c"`, `results` (all), `layouts` of kinds
   `prekey_preimage` and `hpke_info`, `opens` with `expect == "accept"` or `error_code == "OPEN_FAILED"`
   (through `createWebCrypto().setupHpkeReceiver`).
+
+## 6. D-043 / D-045 amendment pins (Tech Lead, 2026-10-12)
+
+`docs/INC-2-API.md` revision 3 (§16 and the 2026-10-12 addendum) and ADR 0011 C3a/C7a (D-045) are the sources.
+Changing anything below is a contract amendment.
+
+- **TL-10 profile CLI** (T-35; INC-2-API §16.5, §16.6).
+  - `packages/teecustody-web/src/profile/cli.ts` (Node only):
+    `export interface CliIo { readonly stdout: (line: string) => void; readonly stderr: (line: string) => void }`
+    and `export function main(argv: readonly string[], io: CliIo): Promise<number>`.
+    - `argv` excludes `node` and the script path. `argv[0]` must be `check-discovery`; none or any other value →
+      `INVALID_ARGUMENT`, 2.
+    - Each `io` call receives one line without its newline. `main` never calls `process.exit` or writes to
+      `process.stdout` directly.
+    - Its first action is the `process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"` check.
+  - `src/profile/bin.ts` contains exactly this, and nothing else (plus the `main` import):
+    ```ts
+    process.exitCode = await main(process.argv.slice(2), {
+        stdout: (l) => { process.stdout.write(`${l}\n`); },
+        stderr: (l) => { process.stderr.write(`${l}\n`); },
+    });
+    ```
+  - Web script `build:cli`: `esbuild src/profile/bin.ts --bundle --platform=node --format=esm --target=node22
+    --outfile=dist/profile/bin.js --alias:@teecustody/core=../teecustody-core/src/index.ts
+    "--banner:js=#!/usr/bin/env node"`. `bin`: `{"teecustody-profile": "./dist/profile/bin.js"}`.
+  - **Invocation.** The contract test and T-31 N3 run `pnpm --filter @teecustody/web run build:cli`, then
+    `node packages/teecustody-web/dist/profile/bin.js check-discovery …` from the repository root. The `ci.yml`
+    `discovery-binding` run lines are `pnpm --filter @teecustody/web run build:cli` and
+    `pnpm --filter @teecustody/web exec node dist/profile/bin.js check-discovery --profile
+    test/fixtures/binding-check-production-profile.json --probe-cors https://ci.teecustody.invalid`.
+  - Reason (CI-2-5): pnpm does not link a workspace package's own `bin` for `pnpm --filter <pkg> exec`.
+    Verified with pnpm 11.5.0: `Command "teecustody-profile" not found`. §16.6's run line cannot work as written.
+  - Hosts that install `@teecustody/web` get the `teecustody-profile` bin normally.
+- **TL-11 merge unit MU-1** (INC-2-API §16.10). T-21, T-33, T-34 and T-36 merge as one unit:
+  - T-34's branch is created from the merge of T-21's and T-33's branches, and T-36 rebases onto it.
+  - The full suite runs on the combined state, and the Release Engineer merges the four branches consecutively
+    with no other merge between them.
+  - Neither T-21 nor T-33 merges alone: either one alone turns trunk red (v2 Core against v1 vectors and
+    simulator profiles).
+- **TL-12 profiles in Core package tests** (adapts the INC-2-API §16.2 test rule). `buildFixture` lives in
+  `tests/support/` and cannot be imported from `packages/teecustody-core/test/**` (no `@teecustody/core` alias,
+  `rootDir`).
+  - T-16 and T-26 tests never write trust-profile JSON, an HTTP map or a discovery/JWKS URL. They module-mock
+    `verifyAttestation` / `verifyBundle` and pass an opaque profile object.
+  - Every test under `tests/` (contract, acceptance, e2e) obtains profiles only from `buildFixture`, from
+    `build_trust_profile`, or from the simulator CLI.
+  - Only T-33's own tests and the rejection inputs of T-33/T-36 contain profile JSON literals.
+- **TL-13 semgrep narrowing for the CLI** (T-35). Two rules are narrowed, each verified with semgrep 1.178.0:
+  - `tc-no-verification-skip` exempts exactly the standalone upper-case token `INSECURE_TLS_ENVIRONMENT`, the way
+    D-046 exempts `NO_VERIFIED_BUNDLE`.
+  - `tc-no-tls-override` excludes `src/profile/cli.ts`, which the new rule `tc-no-tls-override-cli` covers with
+    the other five patterns unchanged. In that rule, `NODE_TLS_REJECT_UNAUTHORIZED` may appear only as
+    `process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"`.
+

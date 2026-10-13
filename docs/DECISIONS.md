@@ -971,3 +971,33 @@ The Security Architect updated SR-1 (pin tests and build-time binding tests), SR
 **Follow-ups:**
 - Tech Lead D-043/D-045 pass: L-1/S6; C3a.2 (import-confinement lint rule) assigned to a task; the T-17 provenance evidence items 1–4.
 - Add a DEBT entry for `maxDiscoveryBytes` when the Core task lands.
+
+## D-048 — Human approves the T-03 spec/wire and spec/vectors content; Tech Lead D-043/D-045 pass recorded (INC-2, 2026-10-13)
+
+Type: human-escalation + contract-amendment
+Chair / decider: Human (T-03); Tech Lead (contracts)
+Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
+
+**Decision:**
+1. **T-03 approved by the human** for merge at inc-2/T-03-channel-wire 56ff7e9: spec/wire channel.cddl, channel-vectors.cddl and README; spec/vectors README, conftest.py and test_channel_suite.py.
+   - Code Review: REQUEST_CHANGES (one Medium, negative cases unpinned), then APPROVE after 538e35d.
+   - Security Review: APPROVE.
+   - 56ff7e9 applies exactly the two pins both reviewers recommended: opens `aad_modified` → OPEN_FAILED and both directions' `aad_op_modified` → AUTH_FAILED. The Orchestrator verified the diff (2 files, +6/−5), so it is covered by both APPROVEs.
+   - Merge after T-04 (WAVES).
+2. **Tech Lead D-043/D-045 pass:**
+   - New tasks:
+     - T-33: Core trust profile v2 and pinned jwks_uri.
+     - T-34: regenerate attestation vectors (FAST, human-gated).
+     - T-35: `check-discovery` and the scheduled job; its fixture profile is human-gated.
+     - T-36: QA updates to the INC-1 acceptance tests.
+     - A new contract stub, test_profile_cli_contract.py.
+   - Amended: T-08, T-16, T-17, T-18, T-20, T-21 (rewritten), T-25, T-26, T-27, T-30, T-31, T-32, API-TL and WAVES.
+   - Merge unit MU-1 = T-33 + T-21 + T-34 + T-36: one combined green run, then consecutive merges.
+   - Wave 1 now has 18 tasks in three batches.
+
+**Open items:**
+- **CI-2-4 (Architect):** Google's JWKS echoes the request Origin instead of `*`, and INC-2-API §16.3 says to stop in that case. It blocks T-21 and therefore MU-1, T-25, T-30, T-31, T-32 and T-35. The Tech Lead recommends `*`.
+- **CI-2-5 (Architect):** the §16.6 run line cannot work under pnpm 11.5; TL-10 replaces it.
+- **Security Architect:** confirm how T-17's provenance items 1–4 map to its sign-off.
+
+**Dissent:** none

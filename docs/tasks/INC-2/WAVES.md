@@ -4,13 +4,28 @@ Tech Lead, 2026-10-06, against trunk `main` @ 72fe8cc (tag `inc-1` + INC-2 desig
 `docs/INCREMENTS.md` INC-2 (FR-4, FR-5, FR-6; SR-6/SR-12 workload aggregates; SR-13 libraries; SR-14;
 Required carry-overs B-06, B-08, B-13; V-2.2). Sources every contract cites: `docs/INC-2-API.md` (revision 2,
 approved; §3 CDDL human-approved D-041), `docs/tasks/INC-2/API-TL.md` (Tech Lead pins: file owners,
-internal signatures, TL-1..TL-9), `docs/tasks/INC-2/FACTS.md` (V-02, Wave 0).
+internal signatures, TL-1..TL-13), `docs/tasks/INC-2/FACTS.md` (V-02, Wave 0).
+
+**Amended 2026-10-12 (Tech Lead, D-043/D-045 pass)** against `main` @ 780920d. Sources: INC-2-API revision 3
+(§16 and the 2026-10-12 addendum), ADR 0012, ADR 0011 C3a/C7a with the Security Architect sign-off, D-043..D-047,
+REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
+- New tasks: T-33 (Core v2), T-34 (attestation vectors, FAST, human-gated), T-35 (`check-discovery` and the
+  scheduled job) and T-36 (QA acceptance updates).
+- T-21 is rewritten.
+- Amended: T-08, T-16, T-17, T-18, T-20, T-25, T-26, T-27, T-30, T-31, T-32 and API-TL (TL-8, TL-10..TL-13).
+- New contract test: `tests/integration/contracts/test_profile_cli_contract.py`.
+- No Wave-0 contract changed in this pass.
 
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
 |---|---|---|---|
-| **CI-2-1** | Browser fetches are cross-origin and need CORS, which §9.3/§9.4 do not provide: (a) the CSP harness page (serve origin) calls the gateway on another port, but the harness has no way to set `GatewayLimits.cors_origins`; (b) the simulator issuer sends no `Access-Control-Allow-Origin`, so `FetchFetcher` in a browser cannot read discovery/JWKS and every bundle fails verification; (c) unverified for production: whether Google's discovery/JWKS endpoints allow cross-origin GETs. If they do not, browser clients cannot verify attestation at all (design-level). | T-21, T-32 only (and the production browser path) | (a) harness option `--cors-origin` (API-TL TL-8, adopted in T-31/T-32); (b) the simulator emulates exactly the production CORS header (T-21); (c) V-02 verifies it as V-2.7. Architect rules on (b)/(c) before T-21 starts; if production sends no CORS header, Architect + human decide. |
+| CI-2-1 (resolved: D-043) | Browser CORS on discovery/JWKS. Production discovery sends no CORS. | — | Resolved: pinned `jwks_uri`, no runtime discovery (D-043, ADR 0012, INC-2-API §16). (a) `--cors-origin` adopted (TL-8). |
+| **CI-2-4** | V-2.7 records that Google's JWKS **echoes** the request `Origin` (with `Vary: Origin`), and that its preflight answers 200 with a broad `Allow-Methods` and `Max-Age`. INC-2-API §16.3 fixes `Access-Control-Allow-Origin: *` with a 204 preflight, and it says to stop if V-2.7 is not `*`. | **Yes**: T-21's start, and therefore MU-1 and everything after it | Architect rules before T-21 starts. Tech Lead recommendation: keep `*`. For the credential-less simple GETs every client makes (§16.8), `*` and an echo behave identically. `*` avoids origin-reflection logic in the simulator, and the CLI probe accepts either value (§16.5). If an echo is chosen, the Tech Lead amends T-21, T-31 (N3 line) and T-32 first. |
+| CI-2-5 (resolved by TL, for the Architect's text) | §16.6's run line `pnpm --filter @teecustody/web exec teecustody-profile …` cannot work: pnpm does not link a workspace package's own `bin` (verified with pnpm 11.5.0). | No | TL-10: `build:cli` plus `pnpm --filter @teecustody/web exec node dist/profile/bin.js check-discovery …`. The Architect aligns the §16.6 text. |
+| CI-2-6 (resolved by TL) | `tc-no-tls-override` bans the text `NODE_TLS_REJECT_UNAUTHORIZED` in every `.ts` file, and `tc-no-verification-skip` matches `INSECURE_TLS_ENVIRONMENT`. §16.5 requires both in `cli.ts`. | No | TL-13: exact narrowings in T-35 (D-046 pattern), verified with semgrep 1.178.0. |
+| CI-2-7 (resolved by TL) | The §16.2 rule "T-16/T-26 profiles only from `buildFixture`" cannot be met from Core package tests, which cannot import `tests/support`. | No | TL-12: those tests module-mock attestation and never write profiles. Real verification is covered by the contract tests and vectors. |
+| CI-2-8 (resolved by TL) | T-08/T-21 conflict on sim `tests/test_api_surface.py` in Wave 1. A new pins file alone does not resolve it, because the existing exact-list test in that file must change once the sim requires `pyhpke`. | No | T-08 A1: the sim `pyhpke` pin moves to T-25 (Wave 2), the sim's first `pyhpke` importer. The version and hashes are unchanged. |
 | CI-2-2 (resolved by TL) | TS `channel/wire.ts`/`session.ts` internals and Python `OpenResultEnvelope`/`FrameResultEnvelope`/`OpenResultBody` were "mirror"/prose only; vector conformance needed decrypt-side helpers | No | Pinned in API-TL §2–§3 (`open_frame`, `openT2cFrame`, `readOpenResult`, `readFrameResult`; TL-1, TL-9). Internal only; no public API change |
 | CI-2-3 (resolved by TL) | `SessionTable` has no logger, yet `SESSION_EVICTED`/`SESSION_CLOSED` must be logged; `publish_bundle(expires_at)` value unspecified; `PublicKeyCredential` "absent" undefined | No | TL-2, TL-3, TL-6 |
 
@@ -22,13 +37,32 @@ internal signatures, TL-1..TL-9), `docs/tasks/INC-2/FACTS.md` (V-02, Wave 0).
    - `lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off"`
    - `coverage_command: "uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway --cov-report=term-missing packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway && pnpm -r coverage"`
 2. **Security Architect scoped sign-off** of V-01's C6 amendment (ADR 0011) before T-08 and T-17 merge.
-3. **Human gates**: T-03 (`spec/wire`, `spec/vectors` harness) and T-30 (`spec/vectors/channel/suite.cbor`).
-4. **Architect ruling on CI-2-1** after V-02 reports V-2.7; T-21 starts only then.
+3. **Human gates**:
+   - T-03 (`spec/wire`, `spec/vectors` harness);
+   - T-30 (`spec/vectors/channel/suite.cbor`);
+   - T-34 (`spec/vectors/attestation/suite.cbor`, the harness and the README; INC-2-API §15 Q11);
+   - T-35 (the inert production fixture profile, Q11).
+4. **Architect ruling on CI-2-4** (V-2.7 origin echo vs `*`). T-21 starts only after it. The Architect also
+   aligns the §16.6 run line (CI-2-5) and the §11 `httpx` → `httpx2` row (D-046).
+4a. **Security Architect sign-off of T-17's C6 follow-up section** (ADR 0011, items 1–4 in T-17). T-17's lock change
+   and its criteria 4, 5 and 7–10, then T-27's C3a constants and criterion 6, wait for it. The Tech Lead
+   inferred items 1–4 from the sign-off's §2(c), the C7 guard quote and the C3a list. The Security Architect
+   confirms them, or adds to them, when signing.
+4b. **Merge unit MU-1** (TL-11): T-21, T-33, T-34 and T-36 merge consecutively after one full-suite run on the
+   combined branch, and after the human approves T-34. When MU-1 lands, the Architect updates the traceability
+   §6.1 row (D-047), and T-33 records DEBT-2.
 5. **QA**: author INC-2 acceptance tests after Wave 0 merges (D-018: G4 per wave). Before T-25 merges, update
    `tests/acceptance/test_FR03_cli.py::test_FR03_vectors_are_written_to_requested_directory` (it asserts two output
    lines; A-4 makes it three: attestation, corpus, channel).
 6. **Architect**: ARCHITECTURE text alignment listed in INC-2-API §13 (not a task here).
 7. **D-039 Q4 ruling recorded as TL-7**: Playwright suites run in the new required `browser` CI job, not in `test_command`.
+8. **framework.yaml commands: no change for D-043/D-045** beyond action 1. The new semgrep rules (T-33, T-27,
+   T-35) run through `.semgrep.yml`, which is already in `lint_command`. T-27's metafile checks run in the
+   packages' `lint` scripts. T-35's tests run in `pnpm -r test`, and `test_profile_cli_contract.py` runs in the
+   `tests` path of `test_command`. The scheduled `discovery-binding` job is outside every command by design (it
+   needs the network).
+9. **INC-5 README items** (BACKLOG, Orchestrator): ADR 0011 C7a.4 (never polyfill Node `crypto` into a browser
+   build) and INC-2-API §16.8 (a host `Fetcher` must not add request headers).
 
 ## Waves
 
@@ -44,7 +78,7 @@ internal signatures, TL-1..TL-9), `docs/tasks/INC-2/FACTS.md` (V-02, Wave 0).
 | 0 | V-02 | Verify browsers (V-2.2, V-2.5, V-2.6, V-2.7) → FACTS.md | STRONG | — | |
 | 0 | TL | Contract tests `tests/integration/contracts/*` (INC-2 files + CLI amendment), `tests/support/channel_doubles.py` (written; merge after T-01, T-02, T-04) | — | T-01, T-02, T-04 | |
 | 1 | T-07 | Python channel codec + layouts | STRONG | T-04 | |
-| 1 | T-08 | `pyhpke` adoption + `open_base` + KATs | STRONG | T-04, V-01 (signed) | |
+| 1 | T-08 | `pyhpke` adoption + `open_base` + KATs (teecustody pin only, A1) | STRONG | T-04, V-01 (signed) | |
 | 1 | T-09 | Config validation | STRONG | T-04 | |
 | 1 | T-10 | Replay cache (R-6) | STRONG | T-04 | |
 | 1 | T-11 | Audit validation | STRONG | T-04 | |
@@ -52,31 +86,52 @@ internal signatures, TL-1..TL-9), `docs/tasks/INC-2/FACTS.md` (V-02, Wave 0).
 | 1 | T-13 | Own image digest | STRONG | T-04 | |
 | 1 | T-14 | Reference gateway | STRONG | T-01, T-04 | |
 | 1 | T-15 | Core channel wire | STRONG | T-02 | |
-| 1 | T-16 | Core bundle verify/select (B-13, Q3) | STRONG | T-02 | |
-| 1 | T-17 | `@hpke/core` adoption + WebCrypto adapter + KATs | STRONG | T-02, V-01 (signed), V-02 | |
-| 1 | T-18 | `FetchFetcher` (B-06) | STRONG | T-02 | |
+| 1 | T-16 | Core bundle verify/select (B-13, Q3); attestation mocked (TL-12) | STRONG | T-02 | |
+| 1 | T-17 | `@hpke/core` adoption + WebCrypto adapter + KATs; C7a.3, C3a.3; C6 follow-up evidence | STRONG | T-02, V-01 (signed), V-02; lock change after SA sign-off of its C6 section | SA sign-off |
+| 1 | T-18 | `FetchFetcher` (B-06); no `headers` (§16.8) | STRONG | T-02 | |
 | 1 | T-19 | `FetchTransport` | STRONG | T-02 | |
-| 1 | T-20 | `PrfShareVault` | STRONG | T-02, V-02 | |
-| 1 | T-21 | Simulator issuer CORS emulation (conditional, CI-2-1) | STRONG | V-02, CI-2-1 ruling | |
+| 1 | T-20 | `PrfShareVault`; no capability hints (§8.4 a–d) | STRONG | T-02, V-02 | |
+| 1 | T-21 | Simulator Google parity, attacker path, v2 profile/state, rows 38–39 (A-8; L-1) — **MU-1** | STRONG | V-02, CI-2-4 ruling | |
+| 1 | T-33 | Core trust profile v2 + pinned `jwks_uri` (A-6, A-7, A-9); semgrep `tc-core-no-oidc-discovery`; DEBT-2 — **MU-1** | STRONG | T-02, T-05 | |
+| 1 | T-36 | QA: INC-1 acceptance tests for D-043 — **MU-1** | MID (QA) | INC-2-API §16 | |
+| 1 (MU-1 tail) | T-34 | Regenerate attestation vectors v2 + rows 38–39 — **MU-1** | FAST | T-21, T-33 (DONE; combined branch), T-03 | **YES** — `spec/vectors` |
 | 2 | T-22 | Pre-keys + bundle build | STRONG | T-04, T-07, T-08 | |
 | 2 | T-23 | Sessions, `T2cSealer`, session table (R-5, R-8) | STRONG | T-04, T-07 | |
 | 2 | T-24 | In-memory queue + audit sink | STRONG | T-04, T-11 | |
-| 2 | T-25 | Channel vector generator + CLI (A-4, B-23) | STRONG | T-03, T-04, T-07, T-08 | |
-| 2 | T-26 | Core `ChannelClient`/`Session` (R-4, R-5, B-13) | STRONG | T-02, T-15, T-16 | |
-| 2 | T-27 | SR-13 bundle scan in `lint` | STRONG | T-02, T-17 | |
+| 2 | T-25 | Channel vector generator + CLI (A-4, B-23); sim `pyhpke` pin | STRONG | T-03, T-04, T-07, T-08, T-21 (MU-1 merged) | |
+| 2 | T-26 | Core `ChannelClient`/`Session` (R-4, R-5, B-13); bundles mocked (TL-12) | STRONG | T-02, T-15, T-16 | |
+| 2 | T-27 | SR-13 bundle scan in `lint`; C7a.1–2, C3a.1 metafile checks; C3a.2 semgrep rules | STRONG | T-02, T-17 (merged, C6 follow-up signed) | |
 | 3 | T-28 | `ChannelServer` (R-4, R-5) | STRONG | T-07, T-08, T-10, T-12, T-22, T-23 | |
 | 3 | T-29 | `RunLoop` (B-08) | STRONG | T-09, T-12, T-13, T-22, T-23 | |
-| 3 | T-30 | Generate and commit `channel/suite.cbor` | FAST | T-03, T-07, T-08, T-15, T-16, T-17, T-23, T-25, T-26 | **YES** — `spec/vectors` |
-| 4 | T-31 | End-to-end harness, Node/Python e2e, `dev.py` | STRONG | T-14, T-17, T-18, T-19, T-24, T-26, T-28, T-29 (T-21 if kept) | |
-| 5 | T-32 | Playwright CSP harness (SR-13, V-2.2) | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02 (T-21 if kept) | |
+| 3 | T-30 | Generate and commit `channel/suite.cbor` (v2 profile) | FAST | T-03, T-07, T-08, T-15, T-16, T-17, T-23, T-25, T-26, MU-1 | **YES** — `spec/vectors` |
+| 3 | T-35 | `teecustody-profile check-discovery` + scheduled `discovery-binding` job (§16.5, §16.6) | STRONG | MU-1, T-18, T-27, T-05 | **YES** — inert production fixture profile (Q11) |
+| 4 | T-31 | End-to-end harness, Node/Python e2e, `dev.py`; N1–N3 | STRONG | T-14, T-17, T-18, T-19, T-24, T-26, T-28, T-29, MU-1, T-35 | |
+| 5 | T-32 | Playwright CSP harness (SR-13, V-2.2); B1–B3, favicon, exact CSP header | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02, MU-1 | |
 
-Counts: 34 items (32 tasks T-01..T-32, T-21 conditional, plus V-01 and V-02), 6 waves. Largest wave:
-Wave 1 with 15 tasks; Wave 0 has 8 (+ TL), Wave 2 has 6, Wave 3 has 3, Waves 4–5 one each.
-`parallelism.max_engineers` = 8, so Wave 1 runs in two batches, critical path first:
-B1 T-07, T-08, T-15, T-16, T-17, T-11, T-10, T-12 · B2 T-09, T-13, T-14, T-18, T-19, T-20, T-21.
-Critical path: T-04 → T-07 → T-23 → T-28 → T-31 → T-32 (and V-01 sign-off → T-08 → T-22 → T-28).
-Early starts are safe on these edges only: T-22/T-25 once T-07 and T-08 merge; T-23 once T-07 merges; T-24
-once T-11 merges; T-26 once T-15 and T-16 merge; T-27 once T-17 merges.
+Counts: 38 items (36 tasks T-01..T-36, plus V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL). Wave 1 has 18:
+T-07..T-21, T-33, T-36, and T-34 as the MU-1 tail. Wave 2 has 6, Wave 3 has 4, and Waves 4–5 have one each.
+The largest wave is Wave 1.
+
+`parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
+- B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-11.
+- B2: T-10, T-12, T-09, T-13, T-14, T-18, T-19, T-20.
+- B3: T-34, once T-21 and T-33 report DONE. T-36 is the QA Engineer's work and does not use an engineer slot;
+  it starts with B1.
+
+Critical paths:
+- T-04 → T-07 → T-23 → T-28 → T-31 → T-32.
+- V-01 sign-off → T-08 → T-22 → T-28.
+- CI-2-4 → T-21 → MU-1 (with T-34 and human approval) → T-25 → T-30, and MU-1 → T-35 → T-31.
+- SA C6 follow-up sign-off → T-17 lock change → T-27 → T-35.
+
+Early starts are safe on these edges only:
+- T-22 and T-25 once T-07 and T-08 merge (T-25 also needs MU-1).
+- T-23 once T-07 merges.
+- T-24 once T-11 merges.
+- T-26 once T-15 and T-16 merge.
+- T-27 criteria 1–5 and 7–11 any time in Wave 2; its C3a constants and criterion 6 once T-17 merges.
+- T-34 once T-21 and T-33 report DONE.
+- T-35 once MU-1, T-18 and T-27 merge.
 
 T-29 consumes the same-wave `ChannelServer` (T-28) only through a monkeypatched fake in its unit tests; the
 real wiring is proven by `test_run_loop_contract.py` and T-31.
@@ -88,17 +143,43 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 - Stub hand-off (API-TL §1): Wave 0 creates each stub with its frozen signature; the named owner changes bodies
   and private helpers only. No test asserts a stub is unimplemented (D-038). Every Wave-0 test stays green after
   any later implementation.
-- Files touched in more than one wave (always by exactly one task per wave): `uv.lock` (T-01 W0, T-08 W1);
-  `pnpm-lock.yaml` (T-02 W0, T-17 W1); `packages/teecustody-web/package.json` (T-02 W0, T-17 W1, T-27 W2);
-  `packages/teecustody-core/package.json` (T-27 W2); `packages/teecustody-py/pyproject.toml`,
-  `packages/teecustody-sim/pyproject.toml`, both `test_api_surface.py` (T-04 W0 root-exports test, T-08 W1
-  requirement pins); `packages/teecustody-web/playwright.config.ts` (T-02 W0, T-32 W5); `notes_gateway/dev.py`
-  (T-01 W0 stub, T-31 W4).
-- INC-1 frozen files changed (D-039 A-1..A-5 only, plus test files): `channel/identity.py` (T-04),
-  `channel/__init__.py` (T-04), Core `attestation/types.ts` and `index.ts` (T-02), sim `cli.py` (T-25). Test-side:
-  `test_api_surface.py` ×2 (T-04, T-08), Core `test/api-surface.test.ts` (T-02), sim `tests/test_cli.py` (T-25),
-  `tests/integration/contracts/test_sim_cli_contract.py` (TL). Sim `issuer.py` (T-21) only under the CI-2-1 ruling.
-- `spec/wire/**` and `spec/vectors/**` belong to T-03 and T-30 only; both diffs go to the human before merge.
+- Files touched in more than one wave (always by exactly one task per wave):
+  - `uv.lock`: T-01 W0, T-08 W1, T-25 W2.
+  - `pnpm-lock.yaml`: T-02 W0, T-17 W1.
+  - `packages/teecustody-web/package.json`: T-02 W0, T-17 W1, T-27 W2, T-35 W3.
+  - `packages/teecustody-core/package.json`: T-27 W2.
+  - `packages/teecustody-web/{tsconfig.json,tsconfig.test.json,vitest.config.ts}`: T-02 W0, T-35 W3.
+  - `eslint.config.js`: T-02 W0, T-35 W3.
+  - `.semgrep.yml`: T-05 W0, T-33 W1, T-27 W2, T-35 W3.
+  - `.semgrep/tests/tc.tc-no-verification-skip.*`: T-05 W0, T-35 W3.
+  - `.github/workflows/ci.yml`: T-05 W0, T-35 W3.
+  - `packages/teecustody-py/pyproject.toml`: T-08 W1.
+  - `packages/teecustody-sim/pyproject.toml`: T-25 W2 (T-08 A1).
+  - `packages/teecustody-py/tests/test_api_surface.py`: T-04 W0, T-08 W1.
+  - `packages/teecustody-sim/tests/test_api_surface.py`: T-21 W1, T-25 W2.
+  - sim `cli.py`, `tests/test_cli.py`: T-21 W1, T-25 W2.
+  - Core `attestation/types.ts`, `test/api-surface.test.ts`: T-02 W0, T-33 W1.
+  - `spec/vectors/README.md`: T-03 W0, T-34 W1.
+  - `tests/integration/contracts/test_sim_cli_contract.py`: TL W0, T-21 W1.
+  - `tests/acceptance/test_FR03_cli.py`: T-36 W1, QA action 5 W2.
+  - `docs/adr/0011-…md`: V-01 W0, T-17 W1 (append-only).
+  - `packages/teecustody-web/playwright.config.ts`: T-02 W0, T-32 W5.
+  - `notes_gateway/dev.py`: T-01 W0 stub, T-31 W4.
+- INC-1 frozen files changed:
+  - Additive, D-039 A-1..A-5: `channel/identity.py` and `channel/__init__.py` (T-04); Core `attestation/types.ts`
+    and `index.ts` (T-02); sim `cli.py` (T-25).
+  - Non-additive, D-043 A-6..A-9: Core `attestation/{types,profile,verify}.ts` and `checks/signature.ts` (T-33);
+    sim `issuer.py`, `keys.py`, `token.py`, `cases.py`, `simulator.py`, `profile.py`, `cli.py`, `vectors.py`
+    (T-21); `tests/support/token-factory.ts` (T-33).
+  - Test-side:
+    - `test_api_surface.py`: T-04, T-08, T-21, T-25;
+    - Core `test/api-surface.test.ts` and attestation tests: T-02, T-33;
+    - sim tests: T-21, T-25;
+    - contract files: TL, T-21, T-33, T-34;
+    - INC-1 acceptance files: T-36.
+- `spec/wire/**` and `spec/vectors/**` belong to T-03, T-30 and T-34 only. Every diff goes to the human before merge.
+- **Merge unit MU-1** (TL-11): T-21, T-33, T-34 and T-36 merge consecutively on one green combined run. No other
+  merge lands between them.
 
 ## Frozen types: member and row ownership (D-038 #2)
 
@@ -112,7 +193,14 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | Log outcome strings | — | `SESSION_OPENED` (T-28); `SESSION_CLOSED`, `SESSION_EVICTED` (T-29, TL-2); `RESPONSE_PUBLISH_FAILED`, `QUEUE_PULL_FAILED`, `BUNDLE_PUBLISHED` (T-29); `AUDIT_PENDING_DROPPED`, `AUDIT_WRITE_FAILED` (T-12); `GATEWAY_<CODE>` (T-14) |
 | Gateway error bodies (§6: 5 codes + `NOT_FOUND`, `METHOD_NOT_ALLOWED`) | T-14 | none |
 | Channel vector named cases (§3.2) | T-03 (README list), T-25 (generator) | none outside T-25 |
-| Semgrep rule ids (§9.5) | T-05 | none |
+| Semgrep rule ids (§9.5) | T-05 | `tc-core-no-oidc-discovery` (T-33); `tc-ts-hpke-common-banned`, `tc-ts-hpke-core-names` (T-27, C3a.2); `tc-no-tls-override-cli` (T-35). No others |
+| `TrustProfile` v2 (13 keys), `VerifierLimits.maxDiscoveryBytes?` (A-6) | T-33 (W1) | none |
+| Sim `NEGATIVE_CASES` (rows 2..39), `SimKeys` attacker members, `sim-state.json` v2, `ATTACKER_JWKS_PATH` | T-21 (W1) | none |
+| Attestation vector `http` map (exactly 3 JWKS URLs), `CATALOG` rows 38–39 | T-21 (generator), T-34 (committed) | none |
+| `DiscoveryBindingErrorCode` (7), CLI codes (`INSECURE_TLS_ENVIRONMENT`, `INVALID_ARGUMENT`, `INVALID_PROFILE`, `CORS_MISSING`) | T-35 (W3) | none |
+| Bundle-scan check ids (`external-import`, `external-allowance`, `hpke-curve-bytes`, `hpke-input-unlisted`, `hpke-fragment-grew`, `profile-input`), `HPKE_INPUT_ALLOWLIST` | T-27 (W2), list from T-17's signed C6 item 4 | none without a new C6 sign-off |
+| Browser harness step names (9) | T-32 | none |
+| e2e `fixture.json` keys (TL-8: 7) | T-31 | none |
 | Channel ops | `close` (T-28, channel-handled); `test.echo` (test double only) | none in the library |
 
 ## Carry-overs and Security Architect items → owning task
@@ -135,6 +223,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | Q3 expired pre-keys after all signatures | T-16, T-25 (`expired_prekey_sig_corrupted`) |
 | Q6, Q7, Q8 (INC-3) | T-06 (B-25..B-27) |
 | ADR 0011 C1–C7 | V-01 (C1–C4, C6, C7 evidence), T-08 (C1, C4, C5 Python), T-17 (C3–C5 web), T-05 (C2, C3, C5 rules), T-27 (C7) |
+| ADR 0011 C3a/C7a (D-045) | T-17 (C7a.3, C3a.3, C6 follow-up evidence items 1–4), T-27 (C7a.1, C7a.2, C3a.1, C3a.2), INC-5 README (C7a.4, Orchestrator action 9) |
+| D-043 / ADR 0012 (INC-2-API §16) | T-33 (rules 1–2, C1–C7), T-21 (rule 5, S1–S6, L-1), T-34 (rule 6), T-35 (rules 3–4, D1–D4), T-32 (rule 7, B1–B3), T-31 (N1–N3), T-18 (§16.8), T-25/T-30 (channel suite v2), T-36 (acceptance) |
+| D-047 L-1 (attacker key) and DEBT-2 (`maxDiscoveryBytes`, expires INC-5) | T-21; T-33 |
+| V-02 rulings 2026-10-12 (§8.4 capability hints; §9.3 favicon/`img-src 'self'`) | T-20 (criteria 13–16), T-32 |
+| T-03 security Low (schema-valid `aad_modified`/`aad_op_modified`) | T-03 (harness pins), T-25 (generator) |
 | SR-3 fuzz seeded from channel vectors | T-03 (Python, in `test_channel_suite.py`); TS seeded fuzz in T-15/T-16 (local seeds) |
 | SR-13 libraries | T-02/T-05 (lint bans), T-27 (bundle scan), T-32 (CSP harness) |
 | INC-2-API §14 e2e (FR-4/FR-5) | T-31 (Node), T-32 (browser) |
@@ -148,6 +241,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `tests/integration/contracts/test_gateway_contract.py` | T-14, T-24 |
 | `tests/integration/contracts/test_run_loop_contract.py` | T-07..T-13, T-22, T-23, T-24, T-28, T-29 |
 | `tests/integration/contracts/test_sim_cli_contract.py::test_vectors_writes_a_canonical_suite` | T-25 |
+| `tests/integration/contracts/test_profile_cli_contract.py` | T-35 (after MU-1) |
 | `tests/integration/contracts/channel-client.contract.test.ts` | T-15, T-16, T-17, T-26 |
 | `tests/integration/contracts/web-adapters.contract.test.ts` | T-17, T-18, T-19, T-20 |
 | `tests/integration/contracts/channel-vectors.contract.test.ts` | T-30 (after T-15, T-16, T-17, T-26) |
@@ -167,6 +261,17 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
 
+## G4 conditions (D-043/D-045 pass, 2026-10-12)
+
+| Condition | Status |
+|---|---|
+| No two tasks in the same wave touch the same file | Met. The owned-file sets of all 38 contracts, brace-expanded, were checked per wave; the only W1 conflict (sim `test_api_surface.py`) is resolved by T-08 A1 |
+| Inputs exist or come from earlier waves | Met, with the documented exception: T-34 is the MU-1 tail built on T-21 and T-33 (TL-11). Gates: CI-2-4 before T-21; SA C6 follow-up sign-off before T-17's lock change and T-27's constants |
+| Contract test stubs for every new boundary | Met. `test_profile_cli_contract.py` (new; red until T-35). The changed boundaries are amended inside MU-1 to the exact §16.9 lists: trust profile and verifier (T-33), sim OIDC and CLI (T-21), attestation vectors (T-34) |
+| New scanner or static rules in `lint_command` in the same merge | Met. Every new semgrep rule lands in `.semgrep.yml` (already in `lint_command`) in the same merge as its code. No `framework.yaml` change (Orchestrator action 8) |
+| Frozen-type ownership (D-038) | Met (table above) |
+| Acceptance tests exist and fail on trunk | T-36 (QA) inside MU-1. QA authors the Wave-2+ acceptance tests per D-018 |
+
 ## G4 conditions (Wave 0)
 
 | Condition | Status |
@@ -180,8 +285,12 @@ TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test s
 
 ## G4 risks
 
-- **R-1 CI-2-1 (browser CORS).** May block T-21/T-32; if production endpoints send no CORS header, the browser
-  attestation path itself needs an Architect/human decision.
+- **R-1 CI-2-1** is resolved by D-043. **R-1a CI-2-4 (origin echo vs `*`)** now blocks T-21, and through it MU-1,
+  T-25, T-30, T-31, T-32 and T-35. It needs an Architect ruling before Wave 1 batch B1 starts T-21.
+- **R-1b MU-1 coordination.** Four branches, one of them human-gated (T-34), must be green together. A defect
+  in any one of them holds back all four. Keep T-34 FAST and mechanical, and report BLOCKED instead of editing.
+- **R-1c T-17 hold point.** The `@hpke/core` provenance gap (Medium) must be explained before the lock change.
+  If it cannot be explained, T-17, T-27, T-30, T-31 and T-32 stall, and the human decides (D-045 revisit).
 - **R-2 Crypto sign-off on the critical path.** V-01 → Security Architect → T-08 → T-22 → T-28. A `pyhpke` C1
   failure (age, KAT, closure) goes to the human (constraint-deviation for `cryptography` HPKE).
 - **R-3 Wave 1 is 15 tasks** for 8 engineers: two batches (above).
@@ -203,5 +312,6 @@ TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test s
 
 Wave 0: T-04, T-01, T-02 → TL contract tests → T-05 → T-03 (after human approval) → T-06; V-01 and V-02 record
 results whenever ready (V-01's amendment goes to the Security Architect immediately). Waves 1–5: any order within
-a wave subject to the gates above; T-30 merges only after human approval. Every merge: rebase, full suite,
+a wave subject to the gates above. MU-1 (T-33, T-21, T-34 after human approval, T-36) merges as one consecutive
+block (TL-11). T-30 and T-35 merge only after human approval. Every merge: rebase, full suite,
 expected-red table unchanged except rows the merge turns green.
