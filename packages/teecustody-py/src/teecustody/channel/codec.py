@@ -7,7 +7,7 @@ function bodies belong to T-07.
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from teecustody.channel.ports import (
     EnrollPayload,
@@ -17,6 +17,7 @@ from teecustody.channel.ports import (
     OpenRejected,
     OpenSessionPayload,
 )
+from teecustody import wire
 from teecustody.config import BoundaryLimits
 from teecustody.secrets import Secret
 from teecustody.wire.types import CanonicalValue, DecodeLimits
@@ -132,7 +133,27 @@ def decode_bundle(data: bytes, limits: DecodeLimits) -> PreKeyBundle:
 def decode_request(
     body: bytes, limits: BoundaryLimits
 ) -> OpenRequestEnvelope | FrameRequestEnvelope:
-    raise NotImplementedError("T-07")
+    envelope: Any = wire.decode(body, limits.envelope_decode)
+    aad_bytes = envelope["aad"]
+    aad: Any = wire.decode(aad_bytes, limits.aad_decode)
+    if envelope["kind"] == "open":
+        return OpenRequestEnvelope(
+            aad_bytes=aad_bytes,
+            aad=OpenAad(
+                client_id=aad["client_id"],
+                instance_id=aad["instance_id"],
+                prekey_id=aad["prekey_id"],
+                request_id=aad["request_id"],
+                timestamp=aad["timestamp"],
+            ),
+            enc=envelope["enc"],
+            ct=envelope["ct"],
+        )
+    return FrameRequestEnvelope(
+        aad_bytes=aad_bytes,
+        aad=FrameAad(session_id=aad["session_id"], seq=aad["seq"], op=aad["op"]),
+        ct=envelope["ct"],
+    )
 
 
 def decode_open_payload(pt: Secret, limits: DecodeLimits) -> OpenSessionPayload | EnrollPayload:
