@@ -955,3 +955,25 @@ def test_h11_outside_the_exact_exception_is_still_stale(
 ) -> None:
     _apply_overlay(gateway_tree, case)
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_other_stale_packages_in_the_gateway_closure_are_still_reported(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (gateway_tree / "uv.lock").read_text()
+    lock = lock.replace('    { name = "uvicorn" },\n', '    { name = "oldpkg" },\n    { name = "uvicorn" },\n', 1)
+    lock = lock.replace(
+        '[[package]]\nname = "pytest"',
+        _uv_entry("oldpkg", "0.1.0", '{ registry = "https://pypi.org/simple" }', [])
+        + '[[package]]\nname = "pytest"',
+        1,
+    )
+    _write(gateway_tree, "uv.lock", lock)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale oldpkg"]
+
+
+def test_the_h11_exception_covers_age_only_not_the_licence(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lines = _h11_violations(tool, gateway_tree, capsys, h11_licence="GPL-3.0-only")
+    assert lines == ["VIOLATION licence h11"]
