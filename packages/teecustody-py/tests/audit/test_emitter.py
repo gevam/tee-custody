@@ -165,3 +165,30 @@ def test_pre_principal_alert_first_per_subject_alerts_and_repeats_fold() -> None
     [(_, aggregate)] = sink.of(AuditClass.AGGREGATE)
     assert aggregate.outcome == "KCV_MISMATCH"
     assert aggregate.count == 1
+
+
+def _subject(i: int) -> str:
+    return f"{i:032x}"
+
+
+def test_alert_cap_writes_one_cap_reached_then_folds_and_resets_next_interval() -> None:
+    emitter, sink, clock, _ = _make(cap=2)
+    for i in range(5):
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(i))
+    outcomes = [r.outcome for _, r in sink.of(AuditClass.ALERT)]
+    assert outcomes == ["KCV_MISMATCH", "KCV_MISMATCH", "ALERT_CAP_REACHED"]
+    [(cap_key, cap_record)] = sink.of(AuditClass.ALERT)[2:]
+    assert ALERT_ID.fullmatch(cap_key.id) is not None
+    assert cap_record.subject_client_id is None
+    assert cap_record.count is None
+    clock.now += INTERVAL_S
+    emitter.tick()
+    [(_, aggregate)] = sink.of(AuditClass.AGGREGATE)
+    assert aggregate.count == 3
+    for i in (0, 5, 6):
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(i))
+    outcomes = [r.outcome for _, r in sink.of(AuditClass.ALERT)]
+    assert outcomes == ["KCV_MISMATCH"] * 2 + ["ALERT_CAP_REACHED"] + ["KCV_MISMATCH"] * 2 + [
+        "ALERT_CAP_REACHED"
+    ]
+    assert sink.of(AuditClass.ALERT)[3][1].subject_client_id == _subject(0)

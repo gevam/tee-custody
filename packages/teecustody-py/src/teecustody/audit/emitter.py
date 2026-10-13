@@ -38,11 +38,13 @@ class AuditEmitter:
     ) -> None:
         self._sink = sink
         self._interval_ms = interval_s * 1000
+        self._alert_cap = alert_cap
         self._clock = clock
         self._rng = rng
         self._start = self._now_ms()
         self._counts: dict[str, int] = {}
         self._alerted: set[tuple[str, str]] = set()
+        self._cap_reached = False
 
     def _now_ms(self) -> int:
         return int(self._clock() * 1000)
@@ -65,6 +67,15 @@ class AuditEmitter:
         if (outcome, subject_client_id) in self._alerted:
             self._fold(outcome)
             return
+        if len(self._alerted) >= self._alert_cap:
+            if not self._cap_reached:
+                self._cap_reached = True
+                self._write(
+                    AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/ALERT_CAP_REACHED"),
+                    AuditRecord(outcome="ALERT_CAP_REACHED", ts=self._now_ms()),
+                )
+            self._fold(outcome)
+            return
         self._alerted.add((outcome, subject_client_id))
         key = AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
         record = AuditRecord(
@@ -75,6 +86,9 @@ class AuditEmitter:
             epoch=epoch,
             recovery_id=recovery_id,
         )
+        self._write(key, record)
+
+    def _write(self, key: AuditKey, record: AuditRecord) -> None:
         self._sink.append(key, record)
 
     def alert(
@@ -96,8 +110,10 @@ class AuditEmitter:
             record = AuditRecord(
                 outcome=outcome, ts=now, interval_start=self._start, interval_end=end, count=n
             )
-            self._sink.append(key, record)
+            self._write(key, record)
         self._counts = {}
+        self._alerted = set()
+        self._cap_reached = False
         self._start = end
 
     def close(self) -> None:
