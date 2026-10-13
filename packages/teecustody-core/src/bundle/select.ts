@@ -23,7 +23,8 @@ export function selectPreKey(
     // remainder below is unbiased.
     const limit = RANGE - (RANGE % candidates.length);
     for (;;) {
-        const r = new DataView(crypto.randomBytes(4).buffer).getUint32(0);
+        const draw = crypto.randomBytes(4);
+        const r = new DataView(draw.buffer, draw.byteOffset, draw.byteLength).getUint32(0);
         if (r < limit) {
             return candidates[r % candidates.length];
         }

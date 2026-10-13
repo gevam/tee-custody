@@ -107,4 +107,22 @@ describe("selectPreKey", () => {
         expect(selectPreKey(bundle, new Set([1]), NOW_MS, crypto)).toBeUndefined();
         expect(crypto.randomBytes).not.toHaveBeenCalled();
     });
+
+    it("reads the drawn bytes from a randomBytes view with a non-zero byteOffset", () => {
+        const bundle = bundleWith([1, 2, 3, 4, 5].map((id) => ({ id, notAfterMs: FAR })));
+        let calls = 0;
+        const randomBytes = (length: number): Bytes => {
+            if (++calls > 10) throw new Error("draw loop never accepted a value");
+            const backing = new Uint8Array(16).fill(0xff); // a pooled buffer: 0xffffffff would be rejected
+            backing.set([0, 0, 0, 3], 8);
+            return backing.subarray(8, 8 + length);
+        };
+        expect(selectPreKey(bundle, new Set(), NOW_MS, { randomBytes })).toBe(bundle.prekeys[3]);
+    });
+
+    it("ignores used ids that are not in the bundle", () => {
+        const bundle = bundleWith([{ id: 1, notAfterMs: FAR }]);
+        const crypto = { randomBytes: scriptedRandomBytes([7]) };
+        expect(selectPreKey(bundle, new Set([42]), NOW_MS, crypto)).toBe(bundle.prekeys[0]);
+    });
 });
