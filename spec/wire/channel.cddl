@@ -1,0 +1,87 @@
+; Channel messages (spec §5). Canonical CBOR per spec/wire/README.md; unknown keys are rejected.
+instance-id  = tstr .regexp "[0-9a-f]{32}"
+client-id    = tstr .regexp "[0-9a-f]{32}"
+prekey-id    = uint .le 4294967295
+request-id   = bstr .size 16
+session-id   = bstr .size 16
+seq          = uint .le 9007199254740991            ; MAX_SEQ = 2^53 - 1 (D2-15)
+unix-s       = uint .le 9007199254740991            ; Unix seconds; every time field (D2-17, R-1)
+op-name      = tstr .regexp "[a-z][a-z0-9_.]{0,63}"
+error-code   = tstr .regexp "[A-Z][A-Z0-9_]{0,63}"  ; open set; known codes in INC-2-API §7.5
+value        = nil / bool / int / bstr / tstr / [* value] / { * tstr => value }
+
+; 1. Pre-key bundle (spec §5.1 step 3). Published on the bundles topic.
+prekey-bundle = {
+  "instance_id":  instance-id,
+  "token":        tstr .size (1..16384),             ; compact JWS from the launcher
+  "IK_pub":       bstr .size 32,                      ; raw Ed25519
+  "published_at": unix-s,
+  "prekeys":      [1*256 prekey-entry],               ; "id" strictly ascending, hence unique (R-2)
+}
+prekey-entry = {
+  "id":        prekey-id,
+  "pub":       bstr .size 32,                         ; raw X25519
+  "not_after": unix-s,
+  "sig":       bstr .size 64,                         ; Ed25519 over the pre-key signing message (README)
+}
+
+; 2. Requests (topic requests/{instance_id}).
+request-envelope = open-request / frame-request
+open-request = {
+  "kind": "open",
+  "aad":  bstr .cbor open-aad,                        ; exactly these bytes are the HPKE aad
+  "enc":  bstr .size 32,
+  "ct":   bstr .size (16..2048),
+}
+open-aad = {                                          ; spec §5.3 step 8
+  "proto":       "tee-chan-v1",
+  "client_id":   client-id,
+  "instance_id": instance-id,
+  "prekey_id":   prekey-id,
+  "request_id":  request-id,
+  "timestamp":   unix-s,                              ; client clock
+}
+; For "enroll", client_id is a fresh random reply route, never an identity (D2-7, R-4).
+open-plaintext = open-session-payload / enroll-payload   ; spec §5.3 step 7
+open-session-payload = {
+  "op":     "open_session",
+  "cs":     bstr .size 32,
+  "key_id": bstr .size 16,
+  "epoch":  uint .le 4294967295,
+}
+enroll-payload = { "op": "enroll" }
+
+frame-request = {
+  "kind": "frame",
+  "aad":  bstr .cbor frame-aad,                       ; exactly these bytes are the AEAD aad
+  "ct":   bstr .size (16..32784),
+}
+frame-aad = {                                         ; spec §5.5 step 17
+  "session_id": session-id,
+  "seq":        seq,
+  "op":         op-name,
+}
+; c2t frame plaintext = canonical CBOR of exactly one `value` (the operation payload).
+
+; 3. Responses (topic responses/{client_id}).
+response-envelope = open-result-envelope / frame-result-envelope
+open-result-envelope = {
+  "kind": "open_result",
+  "aad":  bstr .cbor open-result-aad,
+  "ct":   bstr .size (16..32784),
+}
+open-result-aad = {                                   ; spec §5.4 step 16 aad_r
+  "session_id": session-id / nil,
+  "request_id": request-id,
+  "seq":        0,                                    ; the only use of t2c nonce 0 (D2-16)
+}
+open-result = { "ok": true, "payload": value } / { "ok": false, "error": error-code }
+; Cross-field rule (R-3): open-result "ok" is true  <=>  open-result-aad "session_id" is not nil.
+; A violation after successful AEAD is INVALID_RESPONSE at the client; the workload never produces one.
+
+frame-result-envelope = {
+  "kind": "frame_result",
+  "aad":  bstr .cbor frame-aad,                       ; op echoes the request's op
+  "ct":   bstr .size (16..32784),
+}
+frame-result = { "re": seq, "ok": true, "payload": value } / { "re": seq, "ok": false, "error": error-code }

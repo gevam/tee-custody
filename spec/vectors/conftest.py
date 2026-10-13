@@ -21,6 +21,8 @@ CANONICAL_CBOR_PATH = VECTORS_DIR / "wire" / "canonical-cbor.json"
 DIFFERENTIAL_CORPUS_PATH = VECTORS_DIR / "wire" / "differential-corpus.json"
 ATTESTATION_SUITE_PATH = VECTORS_DIR / "attestation" / "suite.cbor"
 SUITE_LIMITS = DecodeLimits(max_bytes=1_048_576, max_depth=8, max_items=16_384)
+CHANNEL_SUITE_PATH = VECTORS_DIR / "channel" / "suite.cbor"
+CHANNEL_SUITE_LIMITS = DecodeLimits(max_bytes=4_194_304, max_depth=8, max_items=65_536)
 
 
 def require_int(value: object) -> int:

@@ -1,0 +1,56 @@
+channel-vector-suite = {
+  "suite": "teecustody-channel-vectors", "suite_version": 1, "proto": "tee-chan-v1",
+  "generated_at": uint, "verify_at_ms": uint,         ; verify_at_ms = generated_at * 1000
+  "profile_json": tstr,                               ; development trust profile (API.md §E shape)
+  "http": { + tstr => bstr },                         ; exact URL -> 200 body for the test Fetcher
+  "bundles": [+ bundle-case],
+  "opens":   [+ open-case],
+  "frames":  [+ frame-case],
+  "results": [+ result-case],                         ; open_result / frame_result as the client sees them
+  "layouts": [+ layout-case],                         ; derived byte strings (§2), for diagnosability
+}
+result-case = {
+  "id": tstr, "key": bstr .size 32,                   ; sk_t2c
+  "request_id": bstr .size 16 / nil,                  ; expected request_id (open_result) or nil
+  "session_id": bstr .size 16 / nil,                  ; expected session (frame_result) or nil
+  "re": int, "last_seq": int,                         ; expected re and last accepted t2c seq (-1 for open)
+  "envelope": bstr,
+  "expect": "accept" / "ignore" / "reject",           ; ignore = unauthenticated or unmatched, keep polling
+  "plaintext": bstr / nil,
+  "error_code": result-error / "none",
+}
+result-error = "INVALID_RESPONSE"
+layout-case = {
+  "id": tstr, "kind": "prekey_preimage" / "hpke_info" / "session_nonce",
+  "inputs": { * tstr => int / tstr / bstr },          ; named builder inputs
+  "expect": "accept" / "reject",
+  "bytes": bstr / nil,                                ; exact output iff accept
+}
+bundle-case = {
+  "id": tstr, "instance_id": tstr, "bundle": bstr,
+  "expect": "accept" / "reject",
+  "error_code": bundle-error / "none",                ; "none" iff accept
+  "usable_prekey_ids": [* uint],                      ; sorted; empty iff reject
+}
+bundle-error = "MALFORMED" / "ATTESTATION_FAILED" / "INSTANCE_MISMATCH" / "PREKEY_SIGNATURE_INVALID"
+             / "NO_USABLE_PREKEY"
+open-case = {
+  "id": tstr,
+  "recipient_private_key": bstr .size 32,             ; synthetic test key, generated per run
+  "ik_pub": bstr .size 32, "prekey_id": uint,
+  "envelope": bstr,                                    ; canonical request-envelope
+  "expect": "accept" / "reject",
+  "plaintext": bstr / nil,                             ; canonical open-plaintext iff accept
+  "sk_c2t": bstr .size 32 / nil, "sk_t2c": bstr .size 32 / nil,
+  "error_code": open-error / "none",
+}
+open-error = "INVALID_ENVELOPE" / "OPEN_FAILED"
+frame-case = {
+  "id": tstr, "direction": "c2t" / "t2c",
+  "key": bstr .size 32, "last_seq": int,              ; -1 = nothing accepted yet
+  "envelope": bstr,
+  "expect": "accept" / "reject",
+  "plaintext": bstr / nil,
+  "error_code": frame-error / "none",
+}
+frame-error = "INVALID_ENVELOPE" / "SEQ_REJECTED" / "AUTH_FAILED"
