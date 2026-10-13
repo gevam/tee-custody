@@ -40,6 +40,50 @@ _INTERNAL = (500, "INTERNAL")
 
 Endpoint = Callable[[Request], Awaitable[Response]]
 
+_INT_LIMITS = (
+    "max_request_bytes",
+    "max_bundles",
+    "max_page",
+    "per_source_burst",
+    "global_burst",
+    "max_concurrency",
+    "max_sources_tracked",
+)
+_RATE_LIMITS = ("per_source_rate", "global_rate")
+_DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_PORT = r"(?::(?P<port>[1-9][0-9]{0,4}))?"
+# Browser-serialised origins (RFC 6454): https with a lowercase DNS host, or loopback http.
+# fullmatch only (R-7).
+_HTTPS_ORIGIN_PATTERN = re.compile(rf"https://{_DNS_LABEL}(?:\.{_DNS_LABEL})*{_PORT}")
+_LOOPBACK_ORIGIN_PATTERN = re.compile(rf"http://(?:localhost|127\.0\.0\.1|\[::1\]){_PORT}")
+_DEFAULT_PORTS = {"https": "443", "http": "80"}
+
+
+def _validate(limits: GatewayLimits) -> None:
+    """API-TL TL-4: numeric limits first, then the CORS allow-list."""
+    for name in _INT_LIMITS:
+        value = getattr(limits, name)
+        if type(value) is not int or value <= 0:
+            raise ValueError("INVALID_LIMITS")
+    for name in _RATE_LIMITS:
+        value = getattr(limits, name)
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("INVALID_LIMITS")
+    origins: object = limits.cors_origins
+    if type(origins) is not tuple or not all(_valid_origin(o) for o in origins):
+        raise ValueError("INVALID_CORS_ORIGIN")
+
+
+def _valid_origin(origin: object) -> bool:
+    if type(origin) is not str:
+        return False
+    match = _HTTPS_ORIGIN_PATTERN.fullmatch(origin) or _LOOPBACK_ORIGIN_PATTERN.fullmatch(origin)
+    if match is None:
+        return False
+    port = match.group("port")
+    scheme = origin.split(":", 1)[0]
+    return port is None or (int(port) <= 65535 and port != _DEFAULT_PORTS[scheme])
+
 
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -224,6 +268,7 @@ def create_app(
     clock: Callable[[], float] = time.monotonic,
 ) -> fastapi.FastAPI:
     """Build the gateway ASGI app over `queue` (routes: INC-2-API §6)."""
+    _validate(limits)
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(_Guard, limits=limits, clock=clock)
 

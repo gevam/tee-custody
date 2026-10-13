@@ -147,3 +147,76 @@ def test_preflight_spends_rate_budget() -> None:
     assert client.options(f"/requests/{INSTANCE}", headers=preflight).status_code == 200
 
     assert client.options(f"/requests/{INSTANCE}", headers=preflight).status_code == 429
+
+
+# ---------------------------------------------------------------- criterion 10: allow-list syntax
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "*",
+        "null",
+        "",
+        "http://example.com",
+        "https://a.example/path",
+        "https://a.example/",
+        "https://a.example ",
+        " https://a.example",
+        "https://a.example\n",
+        "https://A.example",
+        "https://a.example:443",
+        "http://localhost:80",
+        "https://a.example:0",
+        "https://a.example:65536",
+        "https://a.example:08080",
+        "https://a.example:",
+        "https://user@a.example",
+        "https://a.example?x",
+        "https://a.example#x",
+        "https://-a.example",
+        "https://a-.example",
+        "https://a..example",
+        "https://.example",
+        "https://*.example",
+        "ftp://a.example",
+        "https:a.example",
+        "http://127.0.0.2",
+        "http://localhost.evil.example",
+        "https://" + "a" * 64 + ".example",
+    ],
+)
+def test_an_invalid_allow_list_entry_is_refused_at_create_app(origin: str) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_CORS_ORIGIN$"):
+        create_app(StaticRelay(), limits=GatewayLimits(cors_origins=(APP_ORIGIN, origin)))
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [["https://a.example"], "https://a.example", (b"https://a.example",), (None,)],
+    ids=["list", "str", "bytes-entry", "none-entry"],
+)
+def test_an_allow_list_that_is_not_a_tuple_of_str_is_refused(origins: object) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_CORS_ORIGIN$"):
+        create_app(StaticRelay(), limits=GatewayLimits(cors_origins=origins))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://a.example",
+        "https://a.example:8443",
+        "https://a-b.c-d.example:65535",
+        "https://" + "a" * 63 + ".example",
+        "https://10.0.0.1:1",
+        "https://localhost",
+        "http://127.0.0.1:5173",
+        "http://localhost:8080",
+        "http://localhost",
+        "http://[::1]:3000",
+    ],
+)
+def test_https_and_loopback_http_origins_are_accepted_and_echoed(origin: str) -> None:
+    client = TestClient(create_app(StaticRelay(), limits=GatewayLimits(cors_origins=(origin,))))
+
+    response = client.get("/bundles", headers={"Origin": origin})
+
+    assert response.headers["access-control-allow-origin"] == origin

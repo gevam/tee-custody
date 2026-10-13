@@ -301,3 +301,49 @@ def test_the_least_recently_used_source_bucket_is_evicted() -> None:
     assert b.get("/bundles").status_code == 200  # B starts a fresh bucket; A is evicted
     assert c.get("/bundles").status_code == 429  # C is still tracked
     assert a.get("/bundles").status_code == 200  # A was evicted
+
+
+# ---------------------------------------------------------------- criterion 10: TL-4 numeric limits
+INT_FIELDS = [
+    "max_request_bytes",
+    "max_bundles",
+    "max_page",
+    "per_source_burst",
+    "global_burst",
+    "max_concurrency",
+    "max_sources_tracked",
+]
+FLOAT_FIELDS = ["per_source_rate", "global_rate"]
+
+
+@pytest.mark.parametrize("field", INT_FIELDS)
+@pytest.mark.parametrize("value", [0, -1, True, 1.0, "1", None], ids=repr)
+def test_an_int_limit_that_is_not_a_positive_int_is_refused(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        create_app(CountingRelay(), limits=GatewayLimits(**{field: value}))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", FLOAT_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [0.0, -0.5, 0, float("nan"), float("inf"), True, "1.0", None],
+    ids=repr,
+)
+def test_a_rate_that_is_not_finite_and_positive_is_refused(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        create_app(CountingRelay(), limits=GatewayLimits(**{field: value}))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", FLOAT_FIELDS)
+@pytest.mark.parametrize("value", [1, 0.001, 1e9], ids=repr)
+def test_a_finite_positive_int_or_float_rate_is_accepted(field: str, value: float) -> None:
+    app = create_app(CountingRelay(), limits=GatewayLimits(**{field: value}))
+
+    assert TestClient(app).get("/bundles").status_code == 200
+
+
+def test_limits_are_checked_before_cors_origins() -> None:
+    limits = GatewayLimits(max_page=0, cors_origins=("*",))
+
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        create_app(CountingRelay(), limits=limits)
