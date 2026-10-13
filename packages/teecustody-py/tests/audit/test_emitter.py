@@ -301,3 +301,19 @@ def test_retry_stops_at_the_first_unavailable_and_keeps_order() -> None:
     assert outcomes == ["AUDIT_WRITE_CONFLICT"] * 3 + ["OPEN_FAILED"]
     [(_, aggregate)] = sink.of(AuditClass.AGGREGATE)
     assert aggregate.count == 1
+
+
+def test_close_flushes_the_partial_interval_ending_now() -> None:
+    emitter, sink, clock, _ = _make()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A)
+    clock.now += 12.345
+    emitter.close()
+    aggregates = {r.outcome: r for _, r in sink.of(AuditClass.AGGREGATE)}
+    assert {k: r.count for k, r in aggregates.items()} == {"OPEN_FAILED": 2, "KCV_MISMATCH": 1}
+    for record in aggregates.values():
+        assert record.interval_start == START_MS
+        assert record.interval_end == START_MS + 12_345
+        assert record.ts == START_MS + 12_345

@@ -158,8 +158,15 @@ class AuditEmitter:
         self._retry_pending()
         now = self._now_ms()
         end = self._start + self._interval_ms
-        if now < end:
-            return
+        if now >= end:
+            self._flush(end, now)
+
+    def close(self) -> None:
+        self.tick()
+        now = self._now_ms()
+        self._flush(now, now)
+
+    def _flush(self, end: int, now: int) -> None:
         for outcome, n in self._counts.items():
             key = AuditKey(AuditClass.AGGREGATE, f"{self._start}/{outcome}/{self._rng(8).hex()}")
             record = AuditRecord(
@@ -170,6 +177,3 @@ class AuditEmitter:
         self._alerted = set()
         self._cap_reached = False
         self._start = end
-
-    def close(self) -> None:
-        raise NotImplementedError("T-12")
