@@ -852,24 +852,27 @@ def _licence_targets(repo: Repo) -> dict[Node, str]:
 
 
 def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
+    """True only on the exact path a human decision admits (AGE_EXCEPTIONS); never for the licence."""
     exception = AGE_EXCEPTIONS.get(name)
     if exception is None:
         return False
+    graph = repo.uv_runtime_graph
     versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
+    members = {member for member in repo.workspace if member in graph}
+    shipped = members | {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
     return (
         versions == {exception.version}
-        and name in _closure(repo.uv_runtime_graph, [exception.member])
-        and name not in _reached_avoiding(repo, exception.via)
+        and name in _closure(graph, [exception.member])
+        and name not in _reachable_avoiding(graph, shipped, exception.via)
+        and exception.via not in _reachable_avoiding(graph, members, exception.member)
     )
 
 
-def _reached_avoiding(repo: Repo, avoided: str) -> set[str]:
-    """Python runtime nodes reachable from the shipped roots when ``avoided`` is not in the graph."""
-    members = {name for name in repo.workspace if name in repo.uv_runtime_graph}
-    direct = {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
-    roots = (members | direct) - {avoided}
-    pruned = {n: edges - {avoided} for n, edges in repo.uv_runtime_graph.items() if n != avoided}
-    return roots | _closure(pruned, roots)
+def _reachable_avoiding(graph: dict[str, set[str]], roots: set[str], avoided: str) -> set[str]:
+    """``roots`` and every node reachable from them in ``graph`` with ``avoided`` taken out."""
+    pruned = {node: edges - {avoided} for node, edges in graph.items() if node != avoided}
+    starts = roots - {avoided}
+    return starts | _closure(pruned, starts)
 
 
 def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterable[Violation]:

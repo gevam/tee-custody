@@ -993,3 +993,12 @@ def test_h11_through_uvicorn_is_stale_when_the_gateway_member_is_not_locked(
         '[project]\nname = "notes-gateway"\nversion = "0.1.0"\ndependencies = ["uvicorn==0.54.0"]\n',
     )
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_h11_through_uvicorn_in_the_library_closure_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    library = '    { name = "cbor2" },\n    { name = "cryptography" },\n'
+    lock = (gateway_tree / "uv.lock").read_text()
+    _write(gateway_tree, "uv.lock", lock.replace(library, library + '    { name = "uvicorn" },\n', 1))
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
