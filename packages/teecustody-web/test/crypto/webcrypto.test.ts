@@ -1,5 +1,5 @@
 // createWebCrypto (INC-2-API §8.1; T-17 criteria 1–3, 6; ADR 0011).
-import { CapabilityError } from "@teecustody/core";
+import { CapabilityError, type PublicKeyInput } from "@teecustody/core";
 import { describe, expect, it } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
@@ -44,6 +44,25 @@ async function ed25519KeyPair(): Promise<{ publicKey: Uint8Array; sign: (m: Uint
     return {
         publicKey,
         sign: async (m) => new Uint8Array(await subtle.sign({ name: "Ed25519" }, pair.privateKey, m)),
+    };
+}
+
+const RS256: RsaHashedImportParams = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+
+async function rsaSigner(modulusLength: number): Promise<{
+    key: PublicKeyInput;
+    sign: (m: Uint8Array) => Promise<Uint8Array>;
+}> {
+    const subtle = globalThis.crypto.subtle;
+    const pair = await subtle.generateKey(
+        { ...RS256, modulusLength, publicExponent: new Uint8Array([1, 0, 1]) },
+        true,
+        ["sign", "verify"],
+    );
+    const jwk = await subtle.exportKey("jwk", pair.publicKey);
+    return {
+        key: { format: "jwk", jwk: { kty: "RSA", n: jwk.n ?? "", e: jwk.e ?? "" } },
+        sign: async (m) => new Uint8Array(await subtle.sign(RS256.name, pair.privateKey, m)),
     };
 }
 
@@ -103,5 +122,23 @@ describe("verifyEd25519 (criterion 2)", () => {
         expect(await codeOfRejection(crypto.verifyEd25519(publicKey, MSG, await sign(MSG)))).toBe(
             "UNSUPPORTED",
         );
+    });
+});
+
+describe("verifySignature (criterion 3, B-06)", () => {
+    it("rejects a 1024-bit RS256 key with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { key, sign } = await rsaSigner(1024);
+        const signature = await sign(MSG);
+        expect(
+            await codeOfRejection(crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)),
+        ).toBe("INVALID_ARGUMENT");
+    });
+
+    it("accepts a valid 2048-bit RS256 signature", async () => {
+        const crypto = createWebCrypto();
+        const { key, sign } = await rsaSigner(2048);
+        const signature = await sign(MSG);
+        expect(await crypto.verifySignature("RSASSA_PKCS1V15_SHA256", key, MSG, signature)).toBe(true);
     });
 });

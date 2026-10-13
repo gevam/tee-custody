@@ -11,6 +11,8 @@ const MAX_RANDOM_BYTES = 65536;
 const ED25519 = { name: "Ed25519" } as const;
 const ED25519_PUBLIC_KEY_BYTES = 32;
 const ED25519_SIGNATURE_BYTES = 64;
+const RS256: RsaHashedImportParams = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+const RSA_MIN_MODULUS_BITS = 2048;
 
 function notImplemented(): never {
     throw new Error("NOT_IMPLEMENTED: T-17");
@@ -44,7 +46,20 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
             }
             return subtle.verify(ED25519, key, signature.slice(), data.slice());
         },
-        verifySignature: notImplemented,
+        async verifySignature(algorithm, key, data, signature): Promise<boolean> {
+            const cryptoKey = await subtle.importKey(
+                "jwk",
+                { kty: "RSA", n: key.jwk.n, e: key.jwk.e },
+                RS256,
+                false,
+                ["verify"],
+            );
+            const { modulusLength } = cryptoKey.algorithm as RsaHashedKeyAlgorithm;
+            if (modulusLength < RSA_MIN_MODULUS_BITS) {
+                throw new CapabilityError("INVALID_ARGUMENT");
+            }
+            return subtle.verify(RS256.name, cryptoKey, signature.slice(), data.slice());
+        },
         setupHpkeSender: notImplemented,
         setupHpkeReceiver: notImplemented,
         aes256GcmEncrypt: notImplemented,
