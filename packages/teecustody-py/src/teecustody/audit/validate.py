@@ -3,7 +3,9 @@
 Errors carry only `AuditErrorCode.INVALID_ARGUMENT`; no field value reaches the exception (SR-11).
 """
 
+import json
 import re
+from dataclasses import fields
 from typing import Final
 
 from teecustody.audit.ports import (
@@ -95,4 +97,8 @@ def validate_audit(key: AuditKey, record: AuditRecord) -> None:
 
 
 def audit_json(record: AuditRecord) -> bytes:
-    raise NotImplementedError("T-11")
+    body = {f.name: getattr(record, f.name) for f in fields(record)}
+    present = {name: value for name, value in body.items() if value is not None}
+    return json.dumps(present, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "ascii"
+    )

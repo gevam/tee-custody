@@ -1,5 +1,9 @@
 """T-11: audit record validation and canonical JSON (INC-2-API §4.12; SR-6, SR-12, D-007, D-012)."""
 
+import json
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from typing import Any
 
@@ -12,6 +16,7 @@ from teecustody.audit import (
     AuditErrorCode,
     AuditKey,
     AuditRecord,
+    audit_json,
     validate_audit,
 )
 
@@ -166,3 +171,62 @@ def test_identifier_pattern_is_the_channel_hex32_pattern() -> None:
 
     assert validate_module._HEX32_PATTERN.pattern == HEX32_PATTERN.pattern
     assert validate_module._HEX32_PATTERN.flags == HEX32_PATTERN.flags
+
+
+def test_audit_json_is_the_documented_canonical_form() -> None:
+    expected = json.dumps(
+        {
+            "actor_client_id": HEX,
+            "epoch": 0,
+            "outcome": "OPEN_ACCEPTED",
+            "prekey_id": 2**32 - 1,
+            "recovery_id": HEX,
+            "request_id": HEX,
+            "session_id": HEX,
+            "subject_client_id": HEX,
+            "ts": TS,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    assert audit_json(EVENT) == expected
+
+
+def test_audit_json_omits_none_fields_and_sorts_keys() -> None:
+    assert audit_json(AGG) == (
+        b'{"count":1,"interval_end":9007199254740991,"interval_start":0,'
+        b'"outcome":"OPEN_FAILED","ts":9007199254740991}'
+    )
+    assert audit_json(RELEASE) == b'{"outcome":"RELEASE_SIGNED","ts":1800000000000}'
+
+
+def test_audit_json_escapes_non_ascii_and_returns_bytes() -> None:
+    body = audit_json(AuditRecord(outcome="\u00e9", ts=1))
+    assert body == b'{"outcome":"\\u00e9","ts":1}'
+    assert type(body) is bytes
+
+
+def test_audit_json_is_stable_across_runs() -> None:
+    script = (
+        "from teecustody.audit import AuditRecord, audit_json;"
+        "import sys;"
+        f"sys.stdout.buffer.write(audit_json(AuditRecord(outcome='X', ts=1, epoch=2, "
+        f"session_id='{HEX}', request_id='{HEX}', count=3)))"
+    )
+    runs = {
+        subprocess.run(  # noqa: S603 - fixed argv, no untrusted input
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        ).stdout
+        for seed in ("0", "1", "random")
+    }
+    assert runs == {
+        b'{"count":3,"epoch":2,"outcome":"X","request_id":"'
+        + HEX.encode()
+        + b'","session_id":"'
+        + HEX.encode()
+        + b'","ts":1}'
+    }
