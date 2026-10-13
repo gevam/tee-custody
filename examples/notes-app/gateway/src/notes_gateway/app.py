@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import fastapi
 from starlette.concurrency import run_in_threadpool
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 
 from notes_gateway.limits import GatewayLimits
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 # Equal to teecustody.channel.codec.HEX32_PATTERN; not imported from there so that the
 # gateway's import graph never contains the CBOR codec. fullmatch only (R-7).
 _HEX32_PATTERN = re.compile(r"[0-9a-f]{32}")
+_CONTENT_LENGTH_PATTERN = re.compile(r"[0-9]{1,19}")
+_OCTET_STREAM = "application/octet-stream"
 
 
 def _b64url(raw: bytes) -> str:
@@ -37,6 +39,27 @@ def _json(status: int, obj: object) -> Response:
 
 def _invalid() -> Response:
     return _json(400, {"code": "INVALID_ARGUMENT"})
+
+
+async def _read_body(request: Request, max_bytes: int) -> bytes | None:
+    """The raw body, or None if its headers or length break the §6 rules; never decoded."""
+    if request.headers.getlist("content-type") != [_OCTET_STREAM]:
+        return None
+    lengths = request.headers.getlist("content-length")
+    if len(lengths) != 1 or not _CONTENT_LENGTH_PATTERN.fullmatch(lengths[0]):
+        return None
+    declared = int(lengths[0])
+    if not 1 <= declared <= max_bytes:
+        return None
+    body = bytearray()
+    try:
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > declared:
+                return None
+    except ClientDisconnect:
+        return None
+    return bytes(body) if len(body) == declared else None
 
 
 def create_app(
@@ -63,7 +86,9 @@ def create_app(
         instance: str = request.path_params["instance"]
         if not _HEX32_PATTERN.fullmatch(instance):
             return _invalid()
-        body = await request.body()
+        body = await _read_body(request, limits.max_request_bytes)
+        if body is None:
+            return _invalid()
         request_id = rng(16).hex()
         await run_in_threadpool(queue.publish_request, instance, request_id, body)
         return _json(202, {"request_id": request_id})

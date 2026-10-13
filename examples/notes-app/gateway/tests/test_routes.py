@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import typing
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.types import ASGIApp
 
 from notes_gateway import GatewayLimits, create_app
 from teecustody.queue import PublishedBundle, PublishedResponse, ResponsePage
@@ -193,3 +197,196 @@ def test_responses_never_exceed_max_page_even_if_the_queue_returns_more() -> Non
         f"{i:032x}" for i in range(2)
     ]
     assert relay.calls == [("pull_responses", CLIENT, None, 2)]
+
+
+# ---------------------------------------------------------------- criterion 4: body rules
+Message = dict[str, object]
+
+
+@dataclass
+class Exchange:
+    status: int
+    headers: dict[str, str]
+    body: bytes
+    receives: int
+
+
+def _drive(
+    app: ASGIApp,
+    method: str,
+    path: str,
+    headers: list[tuple[bytes, bytes]],
+    messages: list[Message],
+    query: bytes = b"",
+    client: tuple[str, int] | None = ("198.51.100.7", 40000),
+) -> Exchange:
+    """Run one HTTP exchange through the raw ASGI interface, feeding `messages` to `receive`."""
+    pending = list(messages)
+    sent: list[Message] = []
+    receives = 0
+
+    async def receive() -> Message:
+        nonlocal receives
+        receives += 1
+        if pending:
+            return pending.pop(0)
+        await asyncio.Event().wait()  # pragma: no cover - a well-behaved app never gets here
+        raise AssertionError  # pragma: no cover
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": query,
+        "root_path": "",
+        "headers": headers,
+        "client": client,
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))  # type: ignore[arg-type]
+    start, *rest = sent
+    raw_headers = typing.cast("list[tuple[bytes, bytes]]", start["headers"])
+    return Exchange(
+        status=typing.cast("int", start["status"]),
+        headers={k.decode().lower(): v.decode() for k, v in raw_headers},
+        body=b"".join(typing.cast("bytes", m.get("body", b"")) for m in rest),
+        receives=receives,
+    )
+
+
+def _chunk(data: bytes, more: bool) -> Message:
+    return {"type": "http.request", "body": data, "more_body": more}
+
+
+def _octet(length: int | str) -> list[tuple[bytes, bytes]]:
+    return [
+        (b"content-type", b"application/octet-stream"),
+        (b"content-length", str(length).encode()),
+    ]
+
+
+def test_body_of_exactly_max_request_bytes_is_relayed() -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay, GatewayLimits(max_request_bytes=8)).post(
+        f"/requests/{INSTANCE}", content=b"12345678", headers=OCTET
+    )
+
+    assert response.status_code == 202
+    assert relay.calls[0][3] == b"12345678"
+
+
+@pytest.mark.parametrize(
+    ("content", "headers"),
+    [
+        pytest.param(b"", OCTET, id="empty"),
+        pytest.param(b"123456789", OCTET, id="max-plus-one"),
+        pytest.param(b"x", {}, id="no-content-type"),
+        pytest.param(b"x", {"Content-Type": "application/json"}, id="wrong-type"),
+        pytest.param(b"x", {"Content-Type": "application/octet-stream; a=b"}, id="parameterised"),
+        pytest.param(b"x", {"Content-Type": "Application/Octet-Stream"}, id="other-case"),
+        pytest.param(b"x", {"Content-Type": "application/octet-stream "}, id="trailing-space"),
+        pytest.param(iter([b"x"]), OCTET, id="chunked-no-content-length"),
+    ],
+)
+def test_invalid_body_is_400_with_no_queue_call(
+    content: bytes | typing.Iterator[bytes], headers: dict[str, str]
+) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay, GatewayLimits(max_request_bytes=8)).post(
+        f"/requests/{INSTANCE}", content=content, headers=headers
+    )
+
+    assert (response.status_code, response.content) == (400, INVALID)
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize(
+    "length", ["abc", "-1", "+1", "0x1", "1.0", " 1", "1" * 20, "99999999999999999999999"]
+)
+def test_malformed_content_length_is_400_without_reading_the_body(length: str) -> None:
+    relay = RecordingRelay()
+    app = create_app(relay)
+
+    result = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(length), [_chunk(b"x", False)])
+
+    assert (result.status, result.body, result.receives) == (400, INVALID, 0)
+    assert relay.calls == []
+
+
+def test_repeated_content_length_or_content_type_is_400() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay)
+    two_lengths = [*_octet(1), (b"content-length", b"1")]
+    two_types = [*_octet(1), (b"content-type", b"application/octet-stream")]
+
+    for headers in (two_lengths, two_types):
+        result = _drive(app, "POST", f"/requests/{INSTANCE}", headers, [_chunk(b"x", False)])
+        assert (result.status, result.body) == (400, INVALID)
+    assert relay.calls == []
+
+
+def test_declared_length_above_the_limit_is_400_without_reading_the_body() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay, limits=GatewayLimits(max_request_bytes=8))
+
+    result = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(9), [_chunk(b"x" * 9, False)])
+
+    assert (result.status, result.body, result.receives) == (400, INVALID, 0)
+    assert relay.calls == []
+
+
+def test_body_longer_than_content_length_is_rejected_at_the_first_excess_chunk() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay, limits=GatewayLimits(max_request_bytes=8))
+    chunks = [_chunk(b"ab", True), _chunk(b"cde", True), _chunk(b"f" * 100, False)]
+
+    result = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(4), chunks)
+
+    assert (result.status, result.body, result.receives) == (400, INVALID, 2)
+    assert relay.calls == []
+
+
+def test_body_shorter_than_content_length_is_400() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay)
+
+    result = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(5), [_chunk(b"abc", False)])
+
+    assert (result.status, result.body) == (400, INVALID)
+    assert relay.calls == []
+
+
+def test_client_disconnect_mid_body_is_400_with_no_queue_call() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay)
+
+    result = _drive(
+        app,
+        "POST",
+        f"/requests/{INSTANCE}",
+        _octet(5),
+        [_chunk(b"ab", True), {"type": "http.disconnect"}],
+    )
+
+    assert (result.status, result.body) == (400, INVALID)
+    assert relay.calls == []
+
+
+def test_chunked_body_matching_content_length_is_relayed_whole() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay, rng=lambda n: b"\x00" * n)
+    chunks = [_chunk(b"ab", True), _chunk(b"", True), _chunk(b"cde", False)]
+
+    result = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(5), chunks)
+
+    assert result.status == 202
+    assert relay.calls == [("publish_request", INSTANCE, "00" * 16, b"abcde")]
