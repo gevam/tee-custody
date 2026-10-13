@@ -17,7 +17,7 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -120,6 +120,22 @@ CLASSIFIER_LICENCES = {
     "License :: OSI Approved :: The Unlicense (Unlicense)": "Unlicense",
 }
 STALE_MONTHS = 18
+
+
+@dataclass(frozen=True)
+class AgeException:
+    """A human-decided admission of one exact version past the age rule, on one path only."""
+
+    version: str
+    member: str  # the workspace member whose runtime closure may contain the package
+    via: str  # the package through which every path from a shipped root must pass
+    decision: str
+
+
+# D-049 (human, 2026-10-13); DEBT-3, expires INC-5. Re-checked at every lock change.
+AGE_EXCEPTIONS: Final = {
+    "h11": AgeException(version="0.16.0", member="notes-gateway", via="uvicorn", decision="D-049"),
+}
 
 
 @dataclass(frozen=True)
@@ -835,6 +851,10 @@ def _licence_targets(repo: Repo) -> dict[Node, str]:
     return {node: v for node, v in targets.items() if node[1] not in repo.workspace}
 
 
+def _age_exempt(ecosystem: str, name: str) -> bool:
+    return name in AGE_EXCEPTIONS
+
+
 def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterable[Violation]:
     """Licence for every package (D-019: dev tooling included); age for shipped packages only."""
     cutoff = _months_before(today, STALE_MONTHS)
@@ -846,7 +866,7 @@ def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterabl
             yield "licence", name
     for ecosystem, name in sorted(repo.runtime):
         released = _released(ecosystem, name, fetch_json)
-        if released is None or released < cutoff:
+        if (released is None or released < cutoff) and not _age_exempt(ecosystem, name):
             yield "stale", name
 
 

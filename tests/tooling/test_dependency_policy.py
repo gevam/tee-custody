@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -857,3 +858,90 @@ def test_pyhpke_is_accepted_only_at_its_signed_version(
     lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "pyhpke", version, "cbor2")
     _write(clean_tree, "uv.lock", lock)
     assert _violations(tool, clean_tree, capsys) == expected
+
+
+# T-37 (D-049, DEBT-3): h11 0.16.0 is admitted past the age rule only as uvicorn's dependency in the
+# notes-gateway member. `--today 2026-10-25` puts h11's 2025-04-24 release outside the window.
+
+H11_TODAY = "2026-10-25"
+H11_RELEASED = "2025-04-24T00:00:00.000000Z"
+UVICORN_RELEASED = "2026-09-25T00:00:00.000000Z"
+
+
+def _pypi_document(licence: str, released: str, version: str) -> dict[str, object]:
+    info = {"license_expression": licence, "license": None, "classifiers": [], "version": version}
+    return {"info": info, "urls": [{"upload_time_iso_8601": released}]}
+
+
+def _h11_fetch(h11_licence: str = "MIT") -> Callable[[str], object]:
+    """The recorded registry plus h11 (2025-04-24) and uvicorn (recent)."""
+    documents = {
+        "h11": _pypi_document(h11_licence, H11_RELEASED, "0.16.0"),
+        "uvicorn": _pypi_document("BSD-3-Clause", UVICORN_RELEASED, "0.54.0"),
+    }
+
+    def fetch(url: str) -> object:
+        name = url.removeprefix("https://pypi.org/pypi/").split("/", 1)[0]
+        if url.startswith("https://pypi.org/pypi/") and name in documents:
+            return documents[name]
+        return recorded_fetch(url)
+
+    return fetch
+
+
+def _uv_entry(name: str, version: str, source: str, dependencies: list[str]) -> str:
+    entry = f'[[package]]\nname = "{name}"\nversion = "{version}"\nsource = {source}\n'
+    if source.startswith("{ registry"):
+        url = f"https://files.pythonhosted.org/packages/{name}-{version}.tar.gz"
+        entry += f'sdist = {{ url = "{url}", hash = "sha256:{"a" * 64}", size = 1 }}\n'
+    if dependencies:
+        entry += "dependencies = [\n" + "".join(f'    {{ name = "{d}" }},\n' for d in dependencies)
+        entry += "]\n"
+    return entry + "\n"
+
+
+def _gateway_lock(clean_lock: str) -> str:
+    """The clean lock plus notes-gateway -> uvicorn -> h11 0.16.0, shaped like the real uv.lock."""
+    registry = '{ registry = "https://pypi.org/simple" }'
+    lock = clean_lock.replace("members = [\n", 'members = [\n    "notes-gateway",\n', 1)
+    lock = lock.replace(
+        '    { name = "teecustody" },\n    { name = "teecustody-sim" },\n',
+        '    { name = "notes-gateway" },\n    { name = "teecustody" },\n'
+        '    { name = "teecustody-sim" },\n',
+        1,
+    )
+    lock = lock.replace(
+        '[[package]]\nname = "pytest"',
+        _uv_entry("h11", "0.16.0", registry, [])
+        + _uv_entry(
+            "notes-gateway",
+            "0.1.0",
+            '{ editable = "examples/notes-app/gateway" }',
+            ["teecustody", "uvicorn"],
+        )
+        + '[[package]]\nname = "pytest"',
+        1,
+    )
+    return lock + "\n" + _uv_entry("uvicorn", "0.54.0", registry, ["h11"]).rstrip("\n") + "\n"
+
+
+@pytest.fixture
+def gateway_tree(clean_tree: Path) -> Path:
+    _write(clean_tree, "uv.lock", _gateway_lock((clean_tree / "uv.lock").read_text()))
+    return clean_tree
+
+
+def _h11_violations(
+    tool: ModuleType, root: Path, capsys: pytest.CaptureFixture[str], h11_licence: str = "MIT"
+) -> list[str]:
+    argv = ["--root", str(root), "--today", H11_TODAY]
+    status = tool.main(argv, fetch_json=_h11_fetch(h11_licence))
+    lines = capsys.readouterr().out.splitlines()
+    assert status == (1 if lines else 0)
+    return lines
+
+
+def test_h11_0_16_0_reached_only_through_uvicorn_in_the_gateway_is_not_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _h11_violations(tool, gateway_tree, capsys) == []
