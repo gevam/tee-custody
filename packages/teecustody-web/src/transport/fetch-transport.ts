@@ -134,7 +134,9 @@ async function readBounded(response: Response, limit: number): Promise<Uint8Arra
     if (response.body !== null) {
         const reader = response.body.getReader();
         for (;;) {
-            const step = await reader.read();
+            const step = await reader.read().catch(() => {
+                throw new CapabilityError("UNAVAILABLE");
+            });
             if (step.done) {
                 break;
             }
@@ -195,11 +197,13 @@ export class FetchTransport implements Transport {
     readonly #base: string;
     readonly #fetch: FetchFn;
     readonly #maxResponseBytes: number;
+    readonly #timeoutMs: number;
 
     // TypeError("INVALID_CONFIG")
     constructor(options: FetchTransportOptions) {
         this.#base = options.baseUrl;
         this.#maxResponseBytes = options.maxResponseBytes;
+        this.#timeoutMs = options.timeoutMs;
         this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     }
 
@@ -254,21 +258,35 @@ export class FetchTransport implements Transport {
 
     async #exchange(path: string, init: RequestInit, expected: number): Promise<unknown> {
         const url = new URL(path, this.#base).href;
-        const response = await this.#fetch(url, {
-            ...init,
-            redirect: "manual",
-            credentials: "omit",
-            cache: "no-store",
-            referrerPolicy: "no-referrer",
-        });
-        if (isRedirect(response, url)) {
-            await discard(response);
-            throw invalidResponse();
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+            controller.abort();
+        }, this.#timeoutMs);
+        try {
+            let response: Response;
+            try {
+                response = await this.#fetch(url, {
+                    ...init,
+                    redirect: "manual",
+                    credentials: "omit",
+                    cache: "no-store",
+                    referrerPolicy: "no-referrer",
+                    signal: controller.signal,
+                });
+            } catch {
+                throw new CapabilityError("UNAVAILABLE");
+            }
+            if (isRedirect(response, url)) {
+                await discard(response);
+                throw invalidResponse();
+            }
+            if (response.status !== expected) {
+                await discard(response);
+                throw new CapabilityError(STATUS_CODES.get(response.status) ?? "INTERNAL");
+            }
+            return parseStrictJson(await readBounded(response, this.#maxResponseBytes));
+        } finally {
+            clearTimeout(timer);
         }
-        if (response.status !== expected) {
-            await discard(response);
-            throw new CapabilityError(STATUS_CODES.get(response.status) ?? "INTERNAL");
-        }
-        return parseStrictJson(await readBounded(response, this.#maxResponseBytes));
     }
 }

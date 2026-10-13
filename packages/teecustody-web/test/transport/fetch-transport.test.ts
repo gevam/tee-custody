@@ -468,3 +468,76 @@ describe("FetchTransport criterion 5: response bodies are bounded while streamin
         expect(await codeOf(make(fetch).listBundles())).toBe("INVALID_RESPONSE");
     });
 });
+
+describe("FetchTransport criterion 6: network failures and timeouts are UNAVAILABLE", () => {
+    function hanging(): { fetch: FetchFn; signals: AbortSignal[] } {
+        const signals: AbortSignal[] = [];
+        return {
+            signals,
+            fetch: (_url, init) => {
+                const signal = init.signal as AbortSignal;
+                signals.push(signal);
+                return new Promise((_resolve, reject) => {
+                    signal.addEventListener("abort", () => {
+                        reject(new DOMException("The operation was aborted", "AbortError"));
+                    });
+                });
+            },
+        };
+    }
+
+    it("maps a rejected fetch to UNAVAILABLE", async () => {
+        const down: FetchFn = () => Promise.reject(new TypeError("fetch failed: ECONNREFUSED"));
+        expect(await codeOf(make(down).listBundles())).toBe("UNAVAILABLE");
+    });
+
+    it("maps a fetch that throws synchronously to UNAVAILABLE", async () => {
+        const broken: FetchFn = () => {
+            throw new TypeError("bad init");
+        };
+        expect(await codeOf(make(broken).getResponses(CID))).toBe("UNAVAILABLE");
+    });
+
+    it("aborts a request that outlives timeoutMs and reports UNAVAILABLE", async () => {
+        const { fetch, signals } = hanging();
+        const started = Date.now();
+        expect(await codeOf(make(fetch, { timeoutMs: 30 }).listBundles())).toBe("UNAVAILABLE");
+        expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+        expect(signals[0]?.aborted).toBe(true);
+    });
+
+    it("keeps the timeout armed while the body streams", async () => {
+        let signal: AbortSignal | undefined;
+        const fetch: FetchFn = (_url, init) => {
+            signal = init.signal as AbortSignal;
+            const stalled = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"bundles":'));
+                    signal?.addEventListener("abort", () => {
+                        controller.error(new DOMException("aborted", "AbortError"));
+                    });
+                },
+            });
+            return Promise.resolve(new Response(stalled, { status: 200 }));
+        };
+        expect(await codeOf(make(fetch, { timeoutMs: 30 }).listBundles())).toBe("UNAVAILABLE");
+        expect(signal?.aborted).toBe(true);
+    });
+
+    it("maps a body stream error to UNAVAILABLE", async () => {
+        const failing = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                controller.error(new Error("connection reset"));
+            },
+        });
+        const { fetch } = spy(new Response(failing, { status: 200 }));
+        expect(await codeOf(make(fetch).listBundles())).toBe("UNAVAILABLE");
+    });
+
+    it("disarms the timer once the exchange completes", async () => {
+        const { fetch, calls } = spy(json('{"bundles":[]}'));
+        await make(fetch, { timeoutMs: 10 }).listBundles();
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect((calls[0]?.init.signal as AbortSignal).aborted).toBe(false);
+    });
+});
