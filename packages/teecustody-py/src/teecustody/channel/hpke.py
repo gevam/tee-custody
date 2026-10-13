@@ -54,12 +54,22 @@ class OpenedHpke:
 
 
 def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: bytes) -> OpenedHpke:
-    """Base-mode receiver: Open once, then export both session keys from the same context."""
+    """Base-mode receiver: Open once, then export both session keys from the same context.
+
+    Every library failure becomes `HpkeError(OPEN_FAILED)` with no cause and no context: a
+    low-order `enc` surfaces as `cryptography`'s ValueError, not pyhpke's OpenError (D-045).
+    """
     recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
-    context = _SUITE.create_recipient_context(enc, recipient_key, info)
-    plaintext = context.open(ct, aad=aad)
-    return OpenedHpke(
-        plaintext=Secret(plaintext),
-        sk_c2t=Secret(context.export(EXPORT_C2T, EXPORT_LENGTH)),
-        sk_t2c=Secret(context.export(EXPORT_T2C, EXPORT_LENGTH)),
-    )
+    try:
+        context = _SUITE.create_recipient_context(enc, recipient_key, info)
+        opened = OpenedHpke(
+            plaintext=Secret(context.open(ct, aad=aad)),
+            sk_c2t=Secret(context.export(EXPORT_C2T, EXPORT_LENGTH)),
+            sk_t2c=Secret(context.export(EXPORT_T2C, EXPORT_LENGTH)),
+        )
+    except Exception:  # noqa: BLE001 - fail closed on anything the HPKE library raises
+        opened = None
+    if opened is None:
+        # Raised outside the handler so neither __cause__ nor __context__ carries the library error.
+        raise HpkeError(HpkeErrorCode.OPEN_FAILED) from None
+    return opened
