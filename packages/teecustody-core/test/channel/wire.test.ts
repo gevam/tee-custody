@@ -395,10 +395,6 @@ describe("criterion 4: decodeResponse rejects schema violations with WireError (
         ["missing ct", () => response({ kind: "open_result", aad: openAad })],
         ["missing aad", () => response({ kind: "frame_result", ct: CT })],
         ["missing kind", () => response({ aad: openAad, ct: CT })],
-        ["kind open (a request)", () => response({ kind: "open", aad: openAad, ct: CT })],
-        ["kind frame (a request)", () => response({ kind: "frame", aad: frameAad, ct: CT })],
-        ["kind not text", () => response({ kind: 1, aad: openAad, ct: CT })],
-        ["kind with different case", () => response({ kind: "Open_result", aad: openAad, ct: CT })],
         ["aad text", () => response({ kind: "open_result", aad: "text", ct: CT })],
         ["ct text", () => response({ kind: "open_result", aad: openAad, ct: "text" })],
         ["ct 15 bytes", () => response({ kind: "open_result", aad: openAad, ct: CT.subarray(1) })],
@@ -549,6 +545,25 @@ describe("criterion 4: decodeResponse rejects schema violations with WireError (
             () => Uint8Array.of(...response({ kind: "open_result", aad: openAad, ct: CT }), 0),
         ],
     ];
+
+    // Each aad here is valid for its own kind, so only the kind check can reject the envelope.
+    const wrongKinds: readonly CanonicalValue[] = [
+        "open",
+        "frame",
+        "Open_result",
+        "Frame_result",
+        "open_result ",
+        "frame-result",
+        "",
+        1,
+        null,
+        true,
+        SID,
+    ];
+    it.each(wrongKinds)("kind %o with a valid aad of either kind → MALFORMED", (kind) => {
+        expectWireError(() => decode(response({ kind, aad: openAad, ct: CT })), "MALFORMED");
+        expectWireError(() => decode(response({ kind, aad: frameAad, ct: CT })), "MALFORMED");
+    });
 
     it.each(malformed)("%s → MALFORMED", (_name, make) => {
         expectWireError(() => decode(make()), "MALFORMED");
