@@ -488,3 +488,73 @@ def test_unknown_client_route_is_an_empty_page_not_an_error() -> None:
 
     assert (response.status_code, response.content) == (200, b'{"responses":[],"next":null}')
     assert relay.calls == [("pull_responses", "e" * 32, None, 32)]
+
+
+# ------------------------------------------------------------- criterion 11: other paths, headers
+SECURITY_HEADERS = {"cache-control": "no-store", "x-content-type-options": "nosniff"}
+
+
+def _assert_security_headers(response: httpx.Response) -> None:
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers.get_list(name) == [value], name
+
+
+@pytest.mark.parametrize(
+    "path", ["/nothing", "/", "/docs", "/redoc", "/openapi.json", "/bundles/", "/requests/"]
+)
+def test_unknown_path_is_404_not_found_with_security_headers(path: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(path, follow_redirects=False)
+
+    assert (response.status_code, response.content) == (404, b'{"code":"NOT_FOUND"}')
+    assert response.headers["content-type"] == "application/json"
+    _assert_security_headers(response)
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/bundles"),
+        ("DELETE", "/bundles"),
+        ("PUT", f"/requests/{INSTANCE}"),
+        ("GET", f"/requests/{INSTANCE}"),
+        ("POST", f"/responses/{CLIENT}"),
+        ("OPTIONS", "/bundles"),
+    ],
+)
+def test_unknown_method_is_405_method_not_allowed_with_security_headers(
+    method: str, path: str
+) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).request(method, path, content=b"x", headers=OCTET)
+
+    assert (response.status_code, response.content) == (405, b'{"code":"METHOD_NOT_ALLOWED"}')
+    assert response.headers["content-type"] == "application/json"
+    _assert_security_headers(response)
+    assert relay.calls == []
+
+
+def test_every_response_kind_carries_the_security_headers() -> None:
+    relay = RecordingRelay()
+    relay.pages[CLIENT] = ResponsePage((), None)
+    origins = ("https://app.example",)
+    app = create_app(relay, limits=GatewayLimits(per_source_burst=7, cors_origins=origins))
+    client = TestClient(app, raise_server_exceptions=False)
+    preflight = {"Origin": origins[0], "Access-Control-Request-Method": "POST"}
+
+    responses = [
+        client.get("/bundles"),
+        client.post(f"/requests/{INSTANCE}", content=b"x", headers=OCTET),
+        client.get(f"/responses/{CLIENT}"),
+        client.post(f"/requests/{INSTANCE}", content=b"", headers=OCTET),
+        client.options("/bundles", headers=preflight),
+    ]
+    relay.error = RuntimeError(SENTINEL)
+    responses += [client.get("/bundles"), client.get("/bundles"), client.get("/bundles")]
+
+    assert [r.status_code for r in responses] == [200, 202, 200, 400, 200, 500, 500, 429]
+    for response in responses:
+        _assert_security_headers(response)

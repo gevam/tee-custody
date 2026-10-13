@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import fastapi
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -37,6 +38,11 @@ _QUEUE_ERRORS: dict[QueueErrorCode, tuple[int, str]] = {
     QueueErrorCode.UNAVAILABLE: (503, "UNAVAILABLE"),
 }
 _INTERNAL = (500, "INTERNAL")
+_HTTP_ERRORS: dict[int, tuple[int, str]] = {
+    404: (404, "NOT_FOUND"),
+    405: (405, "METHOD_NOT_ALLOWED"),
+}
+_SECURITY_HEADERS = [(b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff")]
 
 Endpoint = Callable[[Request], Awaitable[Response]]
 
@@ -211,7 +217,8 @@ class _Guard:
         headers = Headers(scope=scope)
         origins = headers.getlist("origin")
         cors = len(origins) == 1 and origins[0] in self._cors_origins
-        send = _with_headers(send, _cors_headers(origins[0]) if cors else [])
+        cors_headers = _cors_headers(origins[0]) if cors else []
+        send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
         if self._in_flight >= self._max_concurrency:
             await _rate_limited(1)(scope, receive, send)
             return
@@ -271,6 +278,12 @@ def create_app(
     _validate(limits)
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(_Guard, limits=limits, clock=clock)
+    app.router.redirect_slashes = False
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> Response:
+        status, code = _HTTP_ERRORS.get(exc.status_code, _INTERNAL)
+        return _json(status, {"code": code})
 
     @app.get("/bundles")
     @_guarded
