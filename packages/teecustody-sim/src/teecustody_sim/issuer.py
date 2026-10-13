@@ -3,11 +3,12 @@
 import contextlib
 import io
 import json
+import re
 import socket
 import socketserver
 import threading
 import time
-from collections.abc import Buffer, Callable, Mapping
+from collections.abc import Buffer, Callable, Mapping, Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import ClassVar, Final, cast
@@ -18,6 +19,13 @@ from teecustody_sim.config import SimConfigError, SimConfigErrorCode, SimLimits
 
 _DISCOVERY_PATH: Final = "/.well-known/openid-configuration"
 _JWKS_PATH: Final = "/jwks"
+ATTACKER_JWKS_PATH: Final = "/attacker/jwks"
+# CI-2-4 echo rule (INC-2-API §16.3). The pattern admits only 0x21-0x7E, so together with the
+# length bound it is the whole validity test; a valid value is echoed byte for byte.
+_ECHO_ORIGIN: Final = re.compile(
+    r"(?:https?://(?:[a-z0-9.-]+|\[[0-9a-f:]+\])(?::[0-9]{1,5})?|null)", re.ASCII
+)
+_MAX_ORIGIN_BYTES: Final = 256
 _POLL_INTERVAL_S: Final = 0.05
 # One total deadline per connection for reading the request (SR-4): a slow or stalled client
 # cannot hold a handler thread, however it paces its bytes.
@@ -133,6 +141,7 @@ class _BoundedServer(socketserver.BaseServer):
 
 class _IssuerHTTPServer(_BoundedServer, HTTPServer):
     routes: dict[str, bytes]
+    cors_routes: dict[str, bytes]  # JWKS routes: Google CORS parity (ADR 0012 rule 5)
 
     def server_bind(self) -> None:
         # HTTPServer.server_bind resolves the host name; the simulator never needs it.
@@ -211,10 +220,19 @@ class _SimRequestHandler(BaseHTTPRequestHandler):
         except _HeadTooLarge:
             self.reply(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, b"REQUEST_HEAD_TOO_LARGE")
 
-    def reply(self, status: HTTPStatus, body: bytes, content_type: str = "text/plain") -> None:
+    def reply(
+        self,
+        status: HTTPStatus,
+        body: bytes,
+        content_type: str | None = "text/plain",
+        headers: Sequence[tuple[str, str]] = (),
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in headers:
+            self.send_header(name, value)
         if status is HTTPStatus.METHOD_NOT_ALLOWED:
             self.send_header("Allow", self.allowed_methods)
         self.end_headers()
@@ -246,11 +264,50 @@ class _IssuerHandler(_SimRequestHandler):
         if self.over_capacity:
             self.reply(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
             return
-        body = cast(_IssuerHTTPServer, self.server).routes.get(self.path)
-        if body is None:
+        server = cast(_IssuerHTTPServer, self.server)
+        if self.path in server.cors_routes:
+            body = server.cors_routes[self.path]
+            self.reply(HTTPStatus.OK, body, "application/json", self._cors_headers())
+        elif self.path in server.routes:
+            self.reply(HTTPStatus.OK, server.routes[self.path], "application/json")
+        else:
             self.reply(HTTPStatus.NOT_FOUND, b"NOT_FOUND")
+
+    def do_OPTIONS(self) -> None:
+        """A preflight on a JWKS route; any other path keeps the 405 every other method gets."""
+        if self.path not in cast(_IssuerHTTPServer, self.server).cors_routes:
+            self._method_not_allowed()
             return
-        self.reply(HTTPStatus.OK, body, "application/json")
+        if self.over_capacity:
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, b"SERVICE_UNAVAILABLE")
+            return
+        self.reply(HTTPStatus.OK, b"", None, self._cors_headers(preflight=True))
+
+    def _cors_headers(self, *, preflight: bool = False) -> list[tuple[str, str]]:
+        """`Vary: Origin`; with one valid `Origin`, its exact echo (and, on a preflight, `GET`)."""
+        headers = [("Vary", "Origin")]
+        origin = self._echoable_origin()
+        if origin is not None:
+            headers.append(("Access-Control-Allow-Origin", origin))
+            if preflight:
+                headers.append(("Access-Control-Allow-Methods", "GET"))
+        return headers
+
+    def _echoable_origin(self) -> str | None:
+        """The request's only `Origin` value if it passes the CI-2-4 rule; nothing else is read.
+
+        A bare CR splits a header line in the stdlib parser and is recorded only as a defect: the
+        value it leaves behind is not the value the client sent, so nothing is echoed.
+        """
+        origins = self.headers.get_all("Origin") or []
+        if (
+            self.headers.defects
+            or len(origins) != 1
+            or len(origins[0].encode("latin-1")) > _MAX_ORIGIN_BYTES
+            or _ECHO_ORIGIN.fullmatch(origins[0]) is None
+        ):
+            return None
+        return origins[0]
 
 
 class IssuerServer:
@@ -262,11 +319,13 @@ class IssuerServer:
         issuer: str,
         jwks: Mapping[str, JsonValue],
         limits: SimLimits,
+        attacker_jwks: Mapping[str, JsonValue] | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._issuer = issuer
         self._jwks = _public_jwks(jwks)
+        self._attacker_jwks = None if attacker_jwks is None else _public_jwks(attacker_jwks)
         self._limits = limits
         self._server: _IssuerHTTPServer | None = None
         self._origin: str | None = None
@@ -287,10 +346,10 @@ class IssuerServer:
             "scopes_supported": ["openid"],
             "claims_supported": list(_CLAIMS_SUPPORTED),
         }
-        server.routes = {
-            _DISCOVERY_PATH: json.dumps(discovery).encode(),
-            _JWKS_PATH: json.dumps(self._jwks).encode(),
-        }
+        server.routes = {_DISCOVERY_PATH: json.dumps(discovery).encode()}
+        server.cors_routes = {_JWKS_PATH: json.dumps(self._jwks).encode()}
+        if self._attacker_jwks is not None:
+            server.cors_routes[ATTACKER_JWKS_PATH] = json.dumps(self._attacker_jwks).encode()
         self._server = server
         self._origin = origin
         threading.Thread(

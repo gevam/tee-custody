@@ -31,6 +31,7 @@ PUBLIC_JWK: dict[str, JsonValue] = {
 }
 JWKS: dict[str, JsonValue] = {"keys": [PUBLIC_JWK]}
 DISCOVERY_PATH = "/.well-known/openid-configuration"
+OTHER_METHODS = ("POST", "PUT", "DELETE", "PATCH", "HEAD", "BREW")
 
 
 @pytest.fixture
@@ -131,8 +132,15 @@ def test_unknown_path_is_404(issuer: IssuerServer, path: str) -> None:
     assert status == 404
 
 
-@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "BREW"])
-@pytest.mark.parametrize("path", ["/jwks", "/elsewhere"])
+# OPTIONS on a JWKS route is a 200 preflight (T-21; test_issuer_cors.py).
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        *((method, path) for method in OTHER_METHODS for path in ("/jwks", "/elsewhere")),
+        ("OPTIONS", "/elsewhere"),
+        ("OPTIONS", DISCOVERY_PATH),
+    ],
+)
 def test_other_method_is_405(issuer: IssuerServer, method: str, path: str) -> None:
     status, _, _ = _request(issuer.origin, method, path)
     assert status == 405
