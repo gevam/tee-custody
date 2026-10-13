@@ -355,3 +355,12 @@ def test_no_method_raises_and_failures_are_logged_without_fields(error: Exceptio
     assert SENTINEL not in repr(logger.lines)
     emitter.tick()
     assert sink.attempts == 6
+
+
+def test_close_at_the_interval_start_still_writes_a_non_empty_interval() -> None:
+    emitter, sink, _, _ = _make()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    emitter.close()
+    [(_, record)] = sink.of(AuditClass.AGGREGATE)
+    assert record.interval_start == START_MS
+    assert record.interval_end == START_MS + 1

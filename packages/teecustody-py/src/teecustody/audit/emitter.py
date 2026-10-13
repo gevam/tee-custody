@@ -165,7 +165,7 @@ class AuditEmitter:
     def close(self) -> None:
         self.tick()
         now = self._now_ms()
-        self._flush(now, now)
+        self._flush(max(now, self._start + 1), now)  # interval_start < interval_end always
 
     def _flush(self, end: int, now: int) -> None:
         for outcome, n in self._counts.items():
