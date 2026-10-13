@@ -1,6 +1,7 @@
 // FetchTransport: the Core Transport over the reference gateway HTTP contract (INC-2-API §8.3, §6; FR-5).
 import {
     base64UrlDecode,
+    CapabilityError,
     type CanonicalEnvelope,
     type ClientId,
     type InstanceId,
@@ -22,6 +23,20 @@ export interface FetchTransportOptions {
 
 type Json = Record<string, unknown>;
 
+const HEX32 = /^[0-9a-f]{32}$/;
+const CURSOR = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_REQUEST_BYTES = 65_536;
+
+function matches(pattern: RegExp, value: unknown): value is string {
+    return typeof value === "string" && pattern.test(value);
+}
+
+function requireArgument(ok: boolean): void {
+    if (!ok) {
+        throw new CapabilityError("INVALID_ARGUMENT");
+    }
+}
+
 export class FetchTransport implements Transport {
     readonly #base: string;
     readonly #fetch: FetchFn;
@@ -41,6 +56,9 @@ export class FetchTransport implements Transport {
     }
 
     async postRequest(instance: InstanceId, body: CanonicalEnvelope): Promise<RequestId> {
+        requireArgument(matches(HEX32, instance));
+        requireArgument(body instanceof Uint8Array);
+        requireArgument(body.byteLength >= 1 && body.byteLength <= MAX_REQUEST_BYTES);
         const value = await this.#exchange(`requests/${instance}`, {
             method: "POST",
             headers: { "Content-Type": "application/octet-stream" },
@@ -50,6 +68,8 @@ export class FetchTransport implements Transport {
     }
 
     async getResponses(client: ClientId, after?: ResponseCursor): Promise<ResponsePage> {
+        requireArgument(matches(HEX32, client));
+        requireArgument(after === undefined || matches(CURSOR, after));
         const query = after === undefined ? "" : `?after=${after}`;
         const value = await this.#exchange(`responses/${client}${query}`, { method: "GET" });
         return {

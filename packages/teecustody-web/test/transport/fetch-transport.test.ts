@@ -108,3 +108,52 @@ describe("FetchTransport criterion 1: typed values over credential-less, no-redi
         }
     });
 });
+
+describe("FetchTransport criterion 2: arguments outside the §6 patterns never reach fetch", () => {
+    const one = new Uint8Array(1);
+    const asString = (value: unknown): string => value as string;
+    const asBytes = (value: unknown): Uint8Array => value as Uint8Array;
+    const cases: [string, (t: FetchTransport) => Promise<unknown>][] = [
+        ["instance 31 chars", (t) => t.postRequest(IID.slice(1), one)],
+        ["instance 33 chars", (t) => t.postRequest(`${IID}0`, one)],
+        ["instance uppercase", (t) => t.postRequest(IID.toUpperCase(), one)],
+        ["instance trailing newline", (t) => t.postRequest(`${IID}\n`, one)],
+        ["instance not a string", (t) => t.postRequest(asString([IID]), one)],
+        ["client 31 chars", (t) => t.getResponses(CID.slice(1))],
+        ["client uppercase", (t) => t.getResponses(CID.toUpperCase())],
+        ["client trailing newline", (t) => t.getResponses(`${CID}\n`)],
+        ["client traversal", (t) => t.getResponses("../../../../bundles")],
+        ["client not a string", (t) => t.getResponses(asString([CID]))],
+        ["cursor with slash", (t) => t.getResponses(CID, "a/b")],
+        ["cursor with query", (t) => t.getResponses(CID, "a&after=b")],
+        ["cursor 129 chars", (t) => t.getResponses(CID, "a".repeat(129))],
+        ["cursor empty", (t) => t.getResponses(CID, "")],
+        ["cursor trailing newline", (t) => t.getResponses(CID, "a\n")],
+        ["cursor not a string", (t) => t.getResponses(CID, asString(["a"]))],
+        ["body 0 bytes", (t) => t.postRequest(IID, new Uint8Array(0))],
+        ["body 65537 bytes", (t) => t.postRequest(IID, new Uint8Array(65_537))],
+        ["body not bytes", (t) => t.postRequest(IID, asBytes("abc"))],
+    ];
+
+    it.each(cases)("%s → INVALID_ARGUMENT", async (_name, call) => {
+        const { fetch, calls } = spy(json("{}"));
+        expect(await codeOf(call(make(fetch)))).toBe("INVALID_ARGUMENT");
+        expect(calls).toHaveLength(0);
+    });
+
+    it("accepts the boundary values: 1- and 65536-byte bodies, 1- and 128-char cursors", async () => {
+        const { fetch, calls } = spy(
+            json(`{"request_id":"${RID}"}`, 202),
+            json(`{"request_id":"${RID}"}`, 202),
+            json(`{"responses":[],"next":null}`),
+            json(`{"responses":[],"next":null}`),
+        );
+        const transport = make(fetch);
+        await transport.postRequest(IID, one);
+        await transport.postRequest(IID, new Uint8Array(65_536));
+        await transport.getResponses(CID, "-");
+        await transport.getResponses(CID, "_".repeat(128));
+        expect(calls).toHaveLength(4);
+        expect((calls[1]?.init.body as ArrayBuffer).byteLength).toBe(65_536);
+    });
+});
