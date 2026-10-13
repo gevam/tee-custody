@@ -1044,3 +1044,62 @@ def test_h11_declared_directly_in_the_gateway_manifest_is_still_stale(
     manifest = _gateway_manifest("teecustody==0.1.0", "uvicorn==0.54.0", "h11==0.16.0")
     _write(gateway_tree, GATEWAY_MANIFEST, manifest)
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def _add_lock_edge(lock: str, depender: str, dependency: str) -> str:
+    start = lock.index(f'[[package]]\nname = "{depender}"\nversion')
+    at = lock.index("dependencies = [\n", start) + len("dependencies = [\n")
+    assert "[[package]]" not in lock[start + 1 : at]
+    return lock[:at] + f'    {{ name = "{dependency}" }},\n' + lock[at:]
+
+
+@pytest.mark.parametrize(
+    ("library", "dependency"),
+    [
+        ("teecustody", "notes-gateway"),
+        ("teecustody-sim", "notes-gateway"),
+        ("teecustody-sim", "uvicorn"),
+    ],
+)
+def test_h11_in_the_full_runtime_closure_of_a_library_is_still_stale(
+    tool: ModuleType,
+    gateway_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    library: str,
+    dependency: str,
+) -> None:
+    lock = _add_lock_edge((gateway_tree / "uv.lock").read_text(), library, dependency)
+    _write(gateway_tree, "uv.lock", lock)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_a_registry_package_named_like_the_gateway_member_gets_no_exception(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (gateway_tree / "uv.lock").read_text()
+    lock = lock.replace('    "notes-gateway",\n', '    "relay",\n', 1)
+    lock = lock.replace('    { name = "notes-gateway" },\n', '    { name = "relay" },\n', 1)
+    member = '[[package]]\nname = "notes-gateway"\nversion = "0.1.0"\n'
+    lock = lock.replace(member, '[[package]]\nname = "relay"\nversion = "0.1.0"\n', 1)
+    lock = lock.replace('    { name = "uvicorn" },\n', '    { name = "notes-gateway" },\n', 1)
+    registry = '{ registry = "https://pypi.org/simple" }'
+    impostor = _uv_entry("notes-gateway", "9.9.9", registry, ["uvicorn"])
+    lock = lock.replace('[[package]]\nname = "pytest"', impostor + '[[package]]\nname = "pytest"')
+    _write(gateway_tree, "uv.lock", lock)
+    manifest = _gateway_manifest("teecustody==0.1.0", "notes-gateway==9.9.9")
+    _write(gateway_tree, GATEWAY_MANIFEST, manifest.replace('"notes-gateway"\n', '"relay"\n', 1))
+    repo = tool.load_repo(gateway_tree)
+    assert "relay" in repo.workspace
+    assert "notes-gateway" not in repo.workspace
+    assert ("pypi", "h11") in repo.runtime
+    assert not tool._age_exempt(repo, "pypi", "h11")
+
+
+def test_uvicorn_declared_by_a_library_manifest_but_not_locked_still_makes_h11_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = gateway_tree / "packages" / "teecustody-py" / "pyproject.toml"
+    text = manifest.read_text().replace('"cbor2==6.1.4"]', '"cbor2==6.1.4", "uvicorn==0.54.0"]')
+    assert "uvicorn" in text
+    _write(gateway_tree, "packages/teecustody-py/pyproject.toml", text)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
