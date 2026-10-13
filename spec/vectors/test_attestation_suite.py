@@ -14,6 +14,9 @@ from collections.abc import Callable
 from typing import Any, NamedTuple
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody.wire import encode
 
@@ -371,3 +374,44 @@ def test_rows_38_39_share_valid_payload(cases_by_id: dict[str, dict[str, Any]]) 
         assert _jws_payload(cases_by_id[case_id]["token"]) == valid_payload, case_id
     assert _jws_segment(cases_by_id["jwks_other_path_same_kid"]["token"], 0) == valid_header
     assert _jws_segment(cases_by_id["jwks_other_path"]["token"], 0)["kid"] != valid_header["kid"]
+
+
+def _jwks(suite: dict[str, Any], url: str) -> dict[str, Any]:
+    jwks = json.loads(suite["http"][url])
+    assert isinstance(jwks, dict)
+    return jwks
+
+
+def _b64url_int(value: str) -> int:
+    return int.from_bytes(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)), "big")
+
+
+def _verifies_under(token: str, jwks: dict[str, Any]) -> bool:
+    """True iff the JWS is RS256-signed by the key of `jwks` whose `kid` matches the header."""
+    kid = _jws_segment(token, 0)["kid"]
+    keys = [key for key in jwks["keys"] if key["kid"] == kid]
+    if not keys:
+        return False
+    key = keys[0]
+    public_key = rsa.RSAPublicNumbers(_b64url_int(key["e"]), _b64url_int(key["n"])).public_key()
+    signing_input, signature = token.rsplit(".", 1)
+    signature_bytes = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+    try:
+        public_key.verify(
+            signature_bytes, signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256()
+        )
+    except InvalidSignature:
+        return False
+    return True
+
+
+def test_rows_38_39_are_signed_by_the_attacker_key_only(
+    suite: dict[str, Any], cases_by_id: dict[str, dict[str, Any]]
+) -> None:
+    dev = _jwks(suite, DEV_JWKS_URL)
+    attacker = _jwks(suite, ATTACKER_JWKS_URL)
+    assert _verifies_under(cases_by_id["valid"]["token"], dev)
+    for case_id in ("jwks_other_path", "jwks_other_path_same_kid"):
+        token = cases_by_id[case_id]["token"]
+        assert _verifies_under(token, attacker), case_id
+        assert not _verifies_under(token, dev), case_id

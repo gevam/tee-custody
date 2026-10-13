@@ -47,13 +47,12 @@ TypeScript codec must produce the same outcome for every case.
 ### `attestation/suite.cbor`
 
 One canonical-CBOR map conforming to `spec/wire/attestation-vectors.cddl`, decoded with limits
-`max_bytes` 1 048 576, `max_depth` 8, `max_items` 16 384. `cases` follow the negative-case catalog of
-`docs/tasks/INC-1/API.md` §G in order, then rows 38
-`jwks_other_path` and 39 `jwks_other_path_same_kid` (`docs/INC-2-API.md` §16.3; D-043). `profile_json` and
-`production_profile_json` are trust profile v2 (`docs/INC-2-API.md` §16.1). `http` holds JWKS URLs only: the
-development JWKS, the same-origin attacker JWKS and the Google JWKS fixture. It never holds a discovery URL
-(D-043). The
-suite holds public keys only.
+`max_bytes` 1 048 576, `max_depth` 8, `max_items` 16 384. `cases` follow the negative-case catalog
+of `docs/tasks/INC-1/API.md` §G in order, then rows 38 `jwks_other_path` and 39
+`jwks_other_path_same_kid` (`docs/INC-2-API.md` §16.3; D-043). `profile_json` and
+`production_profile_json` are trust profile v2 (`docs/INC-2-API.md` §16.1). `http` holds JWKS URLs
+only: the development JWKS, the same-origin attacker JWKS and the Google JWKS fixture. It never
+holds a discovery URL (D-043). The suite holds public keys only.
 
 ### `channel/suite.cbor`
 
@@ -109,8 +108,7 @@ uv run pytest -q spec/vectors
 | Test module | Checks |
 |---|---|
 | `test_canonical_cbor.py` | `teecustody.wire` against `wire/canonical-cbor.json` |
-| `test_attestation_suite.py` | `attestation/suite.cbor` against the CDDL, the §G catalog plus rows 38–39, the v2 profile shape (INC-2-API
-§16.1) and the JWKS-only `http` map |
+| `test_attestation_suite.py` | `attestation/suite.cbor` against the CDDL, the §G catalog plus rows 38–39, the v2 profile shape (INC-2-API §16.1) and the JWKS-only `http` map |
 | `test_differential_corpus.py` | the corpus shape and `teecustody.wire` against every recorded outcome |
 | `test_channel_suite.py` | the approved `spec/wire` channel CDDL hashes and byte-layout text; `channel/suite.cbor` against the CDDL, the named cases and the Python column of TL-9; a seeded mutation fuzz (seed 1, 2 000 mutations per request/response envelope, each decode < 50 ms, only `EnvelopeError`) |
 
