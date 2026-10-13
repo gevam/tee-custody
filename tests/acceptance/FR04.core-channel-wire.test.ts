@@ -337,13 +337,20 @@ describe("T-15 response decoding", () => {
             { ok: true, payload: null },
             { re: -1, ok: true, payload: null },
             { re: 2n ** 53n, ok: true, payload: null },
-            { re: 1.5, ok: true, payload: null },
             { re: 1, ok: false, error: "lower" },
             { re: 1, ok: true, payload: null, x: 1 },
         ]) {
             invalidResponse(() => decodeFrameResultPlaintext(encodeCanonical(m(bad)), PAYLOAD));
         }
         invalidResponse(() => decodeFrameResultPlaintext(new Uint8Array([0xff]), PAYLOAD));
+        // canonical CBOR has no floats, so the encoder cannot build this; hand-encode {ok: true,
+        // re: 1.5 (half-float f9 3e00), payload: null} in canonical key order (ok, re, payload)
+        const withFloat = Buffer.concat([
+            Buffer.from([0xa3, 0x62, 0x6f, 0x6b, 0xf5, 0x62, 0x72, 0x65, 0xf9, 0x3e, 0x00, 0x67]),
+            Buffer.from("payload"),
+            Buffer.from([0xf6]),
+        ]);
+        invalidResponse(() => decodeFrameResultPlaintext(new Uint8Array(withFloat), PAYLOAD));
     });
 });
 
