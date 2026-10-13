@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from notes_gateway import GatewayLimits, create_app
@@ -96,3 +97,99 @@ def test_request_is_relayed_unchanged_with_the_relay_id_from_rng() -> None:
     assert response.content == b'{"request_id":"' + bytes(range(16)).hex().encode() + b'"}'
     assert sizes == [16]
     assert relay.calls == [("publish_request", INSTANCE, bytes(range(16)).hex(), body)]
+
+
+# ---------------------------------------------------------------- criterion 3: R-7 route syntax
+CLIENT = "c3" * 16
+BAD_IDS = [
+    pytest.param(INSTANCE + "%0A", id="trailing-newline"),
+    pytest.param("%0A" + INSTANCE[1:], id="leading-newline"),
+    pytest.param(INSTANCE.upper(), id="uppercase"),
+    pytest.param(INSTANCE[:-1], id="31-chars"),
+    pytest.param(INSTANCE + "a", id="33-chars"),
+    pytest.param("g" * 32, id="non-hex"),
+]
+INVALID = b'{"code":"INVALID_ARGUMENT"}'
+
+
+@pytest.mark.parametrize("bad", BAD_IDS)
+def test_malformed_instance_is_400_with_no_queue_call(bad: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).post(f"/requests/{bad}", content=b"x", headers=OCTET)
+
+    assert (response.status_code, response.content) == (400, INVALID)
+    assert response.headers["content-type"] == "application/json"
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize("bad", BAD_IDS)
+def test_malformed_client_is_400_with_no_queue_call(bad: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(f"/responses/{bad}")
+
+    assert (response.status_code, response.content) == (400, INVALID)
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param("after=", id="empty"),
+        pytest.param("after=" + "a" * 129, id="129-chars"),
+        pytest.param("after=bad%20cursor", id="space"),
+        pytest.param("after=abc%0A", id="trailing-newline"),
+        pytest.param("after=%0Aabc", id="leading-newline"),
+        pytest.param("after=abc%2B", id="plus"),
+        pytest.param("after=abc=", id="padding"),
+    ],
+)
+def test_malformed_cursor_is_400_with_no_queue_call(query: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(f"/responses/{CLIENT}?{query}")
+
+    assert (response.status_code, response.content) == (400, INVALID)
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize("cursor", ["a", "A-z_09", "x" * 128])
+def test_well_formed_cursor_reaches_the_queue_unchanged(cursor: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(f"/responses/{CLIENT}", params={"after": cursor})
+
+    assert response.status_code == 200
+    assert relay.calls == [("pull_responses", CLIENT, cursor, 32)]
+
+
+def test_responses_are_paged_as_compact_json_with_unpadded_base64url() -> None:
+    relay = RecordingRelay()
+    relay.pages[CLIENT] = ResponsePage(
+        (PublishedResponse("aa" * 16, b"\xfb\xff"), PublishedResponse("bb" * 16, b"b")), "cur-1"
+    )
+
+    response = _client(relay).get(f"/responses/{CLIENT}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.content == (
+        b'{"responses":[{"request_id":"' + b"aa" * 16 + b'","body":"-_8"},'
+        b'{"request_id":"' + b"bb" * 16 + b'","body":"Yg"}],"next":"cur-1"}'
+    )
+    assert relay.calls == [("pull_responses", CLIENT, None, 32)]
+
+
+def test_responses_never_exceed_max_page_even_if_the_queue_returns_more() -> None:
+    relay = RecordingRelay()
+    relay.pages[CLIENT] = ResponsePage(
+        tuple(PublishedResponse(f"{i:032x}", b"b") for i in range(3)), None
+    )
+
+    response = _client(relay, GatewayLimits(max_page=2)).get(f"/responses/{CLIENT}")
+
+    assert [r["request_id"] for r in json.loads(response.content)["responses"]] == [
+        f"{i:032x}" for i in range(2)
+    ]
+    assert relay.calls == [("pull_responses", CLIENT, None, 2)]

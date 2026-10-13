@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -15,9 +16,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from notes_gateway.limits import GatewayLimits
+from teecustody.queue import CURSOR_PATTERN
 
 if TYPE_CHECKING:
     from teecustody.queue.ports import RelayQueue
+
+# Equal to teecustody.channel.codec.HEX32_PATTERN; not imported from there so that the
+# gateway's import graph never contains the CBOR codec. fullmatch only (R-7).
+_HEX32_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 def _b64url(raw: bytes) -> str:
@@ -27,6 +33,10 @@ def _b64url(raw: bytes) -> str:
 def _json(status: int, obj: object) -> Response:
     body = json.dumps(obj, separators=(",", ":"))
     return Response(body, status_code=status, media_type="application/json")
+
+
+def _invalid() -> Response:
+    return _json(400, {"code": "INVALID_ARGUMENT"})
 
 
 def create_app(
@@ -51,9 +61,26 @@ def create_app(
     @app.post("/requests/{instance}")
     async def publish_request(request: Request) -> Response:
         instance: str = request.path_params["instance"]
+        if not _HEX32_PATTERN.fullmatch(instance):
+            return _invalid()
         body = await request.body()
         request_id = rng(16).hex()
         await run_in_threadpool(queue.publish_request, instance, request_id, body)
         return _json(202, {"request_id": request_id})
+
+    @app.get("/responses/{client}")
+    async def pull_responses(request: Request) -> Response:
+        client: str = request.path_params["client"]
+        after = request.query_params.get("after")
+        if not _HEX32_PATTERN.fullmatch(client):
+            return _invalid()
+        if after is not None and not CURSOR_PATTERN.fullmatch(after):
+            return _invalid()
+        page = await run_in_threadpool(queue.pull_responses, client, after, limits.max_page)
+        items = [
+            {"request_id": r.request_id, "body": _b64url(r.body)}
+            for r in page.responses[: limits.max_page]
+        ]
+        return _json(200, {"responses": items, "next": page.next})
 
     return app
