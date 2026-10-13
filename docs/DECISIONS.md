@@ -1055,3 +1055,26 @@ G4 now passes for T-07, T-08, T-16 and T-17, and they start now. T-17 keeps its 
 **Known red on trunk:** `pnpm -r lint` fails only on prettier for the vendored, hash-pinned tests/fixtures/rfc9180/test-vectors.json. The fix is assigned to T-37 A1 (`tests/.prettierignore` plus a hash test). Until T-37 merges, this one failure is expected in every task.
 
 **Dissent:** none
+
+## D-051 — Security Architect signs the T-17 C6 follow-up for @hpke/core 1.9.0 and @hpke/common 1.10.1 (INC-2, 2026-10-13)
+
+Type: gate-routing
+Chair / decider: Security Architect (C6, ADR 0011)
+Participants: Orchestrator, Software Engineer (T-17)
+
+**Decision:** Signed at the recorded integrities. The provenance gap is closed:
+- the provenance ref `refs/tags/hpke-js@1.8.0` is the monorepo umbrella tag, at commit f9fbe3d;
+- one workflow run published core 1.9.0, common 1.10.0 and hpke-js 1.8.0, and `packages/core/deno.jsonc` at that commit reads 1.9.0;
+- the recomputed sha512, `dist.integrity` and the SLSA subject digests agree;
+- `npm audit signatures` verifies both packages.
+
+**Conditions:**
+1. Before merge, T-17 re-runs evidence item 4 (bundle composition) on its final branch. Any difference goes back to the Security Architect.
+2. `HPKE_INPUT_ALLOWLIST` lists only inputs with more than 0 bytes. Every `hash/**` input is capped at its recorded size.
+3. The lock-file integrities equal the two recorded values.
+
+**Rulings:**
+- (a) C7a.1 is defined on bundle output: `outputs[…].imports` holds exactly one external, `crypto`/`dynamic-import`. Per-input attribution must be exactly algorithm.js ×1 and utils/misc.js ×2. Anything else exits 2. The Tech Lead amends T-27.
+- (b) C3a.3 governs: HPKE uses only `globalThis.crypto.subtle`. QA changes the two SR14 acceptance tests that use `options.subtle`.
+
+**Dissent:** none
