@@ -14,6 +14,7 @@ import sys
 import time
 import tomllib
 import types
+import typing
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -96,6 +97,40 @@ def test_gateway_limits_is_frozen() -> None:
     limits = GatewayLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_page = 1  # type: ignore[misc]
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class _SpecGatewayLimits:
+    max_request_bytes: int = 65536
+    max_bundles: int = 16
+    max_page: int = 32
+    per_source_rate: float = 20.0
+    per_source_burst: int = 40
+    global_rate: float = 500.0
+    global_burst: int = 1000
+    max_concurrency: int = 64
+    max_sources_tracked: int = 10_000
+    cors_origins: tuple[str, ...] = ()
+
+
+def test_gateway_limits_signature_equals_spec_dataclass() -> None:
+    assert inspect.signature(GatewayLimits, eval_str=True) == inspect.signature(
+        _SpecGatewayLimits, eval_str=True
+    )
+
+
+def test_gateway_limits_annotation_types_equal_spec_dataclass() -> None:
+    assert typing.get_type_hints(GatewayLimits) == typing.get_type_hints(_SpecGatewayLimits)
+
+
+def test_gateway_limits_uses_slots_and_has_no_instance_dict() -> None:
+    assert "__slots__" in vars(GatewayLimits)
+    assert not hasattr(GatewayLimits(), "__dict__")
+
+
+def test_gateway_limits_rejects_positional_arguments() -> None:
+    with pytest.raises(TypeError):
+        GatewayLimits(1)  # type: ignore[misc]
 
 
 def test_distribution_requires_exactly_pinned_fastapi_teecustody_uvicorn() -> None:
