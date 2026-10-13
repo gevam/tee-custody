@@ -62,7 +62,7 @@ function member(parent: string, key: string): string {
     return parent === "" ? key : `${parent}.${key}`;
 }
 
-function readPlainObject(value: unknown, field: string): object {
+function readPlainObject(value: unknown, field: string): Readonly<Record<string, unknown>> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw fail(field);
     }
@@ -70,11 +70,11 @@ function readPlainObject(value: unknown, field: string): object {
     if (prototype !== Object.prototype && prototype !== null) {
         throw fail(field);
     }
-    return value;
+    return value as Readonly<Record<string, unknown>>;
 }
 
 function requireKeys<K extends string>(
-    value: object,
+    value: Readonly<Record<string, unknown>>,
     field: string,
     keys: readonly K[],
 ): Readonly<Record<K, unknown>> {
@@ -89,7 +89,7 @@ function requireKeys<K extends string>(
             throw fail(member(field, key));
         }
     }
-    return value as Readonly<Record<K, unknown>>;
+    return value;
 }
 
 function readObject<K extends string>(
@@ -248,7 +248,7 @@ function readJwksUri(value: unknown, kind: ProfileKind): string {
 export function parseTrustProfile(input: unknown): TrustProfile {
     const root = readPlainObject(input, "");
     // INC-2-API §16.1 step 2: before the key set, so every v1 profile fails here.
-    if (!Object.hasOwn(root, "profile_version") || Reflect.get(root, "profile_version") !== 2) {
+    if (!Object.hasOwn(root, "profile_version") || root.profile_version !== 2) {
         throw fail("profile_version");
     }
     const source = requireKeys(root, "", PROFILE_KEYS);
