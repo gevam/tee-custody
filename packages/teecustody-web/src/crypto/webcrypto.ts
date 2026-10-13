@@ -1,6 +1,20 @@
 // WebCrypto Crypto adapter (INC-2-API §8.1; spec §10.2; ADR 0009 rule 5, ADR 0011).
 // This file is the only @hpke/* import site in the packages (SR-14).
-import { CapabilityError, type Crypto } from "@teecustody/core";
+import {
+    Aes256Gcm,
+    CipherSuite,
+    DhkemX25519HkdfSha256,
+    HkdfSha256,
+    type RecipientContext,
+    type SenderContext,
+} from "@hpke/core";
+import {
+    CapabilityError,
+    type Bytes,
+    type Crypto,
+    type HpkeReceiverContext,
+    type HpkeSenderContext,
+} from "@teecustody/core";
 
 export interface WebCryptoOptions {
     readonly subtle?: SubtleCrypto; // default globalThis.crypto.subtle
@@ -14,6 +28,9 @@ const ED25519_SIGNATURE_BYTES = 64;
 const RS256: RsaHashedImportParams = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
 const RSA_MIN_MODULUS_BITS = 2048;
 const AES_KEY_BYTES = 32;
+const X25519_KEY_BYTES = 32;
+const MAX_EXPORT_LABEL_BYTES = 64;
+const MAX_EXPORT_BYTES = 64;
 const GCM_NONCE_BYTES = 12;
 
 function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
@@ -34,8 +51,43 @@ function isNotSupported(error: unknown): boolean {
     return error instanceof DOMException && error.name === "NotSupportedError";
 }
 
-function notImplemented(): never {
-    throw new Error("NOT_IMPLEMENTED: T-17");
+function requireKeyLength(key: Bytes): void {
+    if (key.length !== X25519_KEY_BYTES) {
+        throw new CapabilityError("INVALID_ARGUMENT");
+    }
+}
+
+/** A live @hpke/core context until destroy(); afterwards every call rejects INVALID_ARGUMENT. */
+class ContextHandle<T extends SenderContext | RecipientContext> {
+    #context: T | undefined;
+
+    constructor(context: T) {
+        this.#context = context;
+    }
+
+    use(): T {
+        if (this.#context === undefined) {
+            throw new CapabilityError("INVALID_ARGUMENT");
+        }
+        return this.#context;
+    }
+
+    async export(label: Bytes, length: number): Promise<Bytes> {
+        const context = this.use();
+        if (
+            label.length > MAX_EXPORT_LABEL_BYTES ||
+            !Number.isInteger(length) ||
+            length < 1 ||
+            length > MAX_EXPORT_BYTES
+        ) {
+            throw new CapabilityError("INVALID_ARGUMENT");
+        }
+        return new Uint8Array(await context.export(label.slice(), length));
+    }
+
+    destroy(): void {
+        this.#context = undefined;
+    }
 }
 
 // works in browsers and Node >= 22
@@ -49,6 +101,17 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
             throw new CapabilityError("UNSUPPORTED");
         }
         return resolvedSubtle;
+    }
+
+    let suite: CipherSuite | undefined;
+
+    function hpkeSuite(): CipherSuite {
+        suite ??= new CipherSuite({
+            kem: new DhkemX25519HkdfSha256(),
+            kdf: new HkdfSha256(),
+            aead: new Aes256Gcm(),
+        });
+        return suite;
     }
 
     async function aesGcmKey(key: Uint8Array, nonce: Uint8Array): Promise<CryptoKey> {
@@ -114,8 +177,64 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
             }
             return platformSubtle.verify(RS256.name, cryptoKey, signature.slice(), data.slice());
         },
-        setupHpkeSender: notImplemented,
-        setupHpkeReceiver: notImplemented,
+        async setupHpkeSender(recipientPublicKey, info): Promise<HpkeSenderContext> {
+            requireKeyLength(recipientPublicKey);
+            const hpke = hpkeSuite();
+            const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
+            const context = await hpke.createSenderContext({
+                recipientPublicKey: publicKey,
+                info: info.slice(),
+            });
+            const handle = new ContextHandle(context);
+            return {
+                encapsulatedKey: new Uint8Array(context.enc),
+                async seal(aad, plaintext): Promise<Bytes> {
+                    const live = handle.use();
+                    return new Uint8Array(await live.seal(plaintext.slice(), aad.slice()));
+                },
+                export: (label, length) => handle.export(label, length),
+                destroy: () => {
+                    handle.destroy();
+                },
+            };
+        },
+        async setupHpkeReceiver(
+            recipientPrivateKey,
+            encapsulatedKey,
+            info,
+        ): Promise<HpkeReceiverContext> {
+            requireKeyLength(recipientPrivateKey);
+            requireKeyLength(encapsulatedKey);
+            const hpke = hpkeSuite();
+            let context: RecipientContext;
+            try {
+                const privateKey = await hpke.kem.deserializePrivateKey(
+                    recipientPrivateKey.slice(),
+                );
+                context = await hpke.createRecipientContext({
+                    recipientKey: privateKey,
+                    enc: encapsulatedKey.slice(),
+                    info: info.slice(),
+                });
+            } catch {
+                throw new CapabilityError("AUTHENTICATION_FAILED");
+            }
+            const handle = new ContextHandle(context);
+            return {
+                async open(aad, ciphertext): Promise<Bytes> {
+                    const live = handle.use();
+                    try {
+                        return new Uint8Array(await live.open(ciphertext.slice(), aad.slice()));
+                    } catch {
+                        throw new CapabilityError("AUTHENTICATION_FAILED");
+                    }
+                },
+                export: (label, length) => handle.export(label, length),
+                destroy: () => {
+                    handle.destroy();
+                },
+            };
+        },
         async aes256GcmEncrypt(key, nonce, aad, plaintext): Promise<Uint8Array> {
             const cryptoKey = await aesGcmKey(key, nonce);
             return new Uint8Array(

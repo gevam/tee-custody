@@ -1,4 +1,4 @@
-// createWebCrypto (INC-2-API §8.1; T-17 criteria 1–3, 6; ADR 0011).
+// createWebCrypto (INC-2-API §8.1; T-17 criteria 1–6, 8–10; ADR 0011). KATs: hpke-kat.test.ts.
 import { CapabilityError, type PublicKeyInput } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -73,6 +73,37 @@ async function rsaSigner(modulusLength: number): Promise<{
         sign: async (m) =>
             new Uint8Array(await subtle.sign(RS256.name, pair.privateKey, m.slice())),
     };
+}
+
+const INFO = enc.encode("tee-chan-v1 info");
+const AAD = enc.encode("open aad");
+const PT = enc.encode("open_session payload");
+const C2T = enc.encode("c2t");
+const T2C = enc.encode("t2c");
+
+/** RFC 7748 §5 / cr.yp.to low-order u-coordinates (the all-zero point first). */
+const LOW_ORDER_ENC = [
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+    "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+].map((hex) => new Uint8Array(Buffer.from(hex, "hex")));
+
+async function x25519KeyPair(): Promise<{ sk: Uint8Array; pk: Uint8Array }> {
+    const subtle = globalThis.crypto.subtle;
+    const pair = (await subtle.generateKey({ name: "X25519" }, true, [
+        "deriveBits",
+    ])) as CryptoKeyPair;
+    const jwk = await subtle.exportKey("jwk", pair.privateKey);
+    return {
+        sk: new Uint8Array(Buffer.from(jwk.d ?? "", "base64url")),
+        pk: new Uint8Array(await subtle.exportKey("raw", pair.publicKey)),
+    };
+}
+
+function hex(bytes: Uint8Array): string {
+    return Buffer.from(bytes).toString("hex");
 }
 
 function codeOfThrown(fn: () => unknown): string {
@@ -345,5 +376,98 @@ describe("edge cases of the non-HPKE primitives", () => {
                 crypto.aes256GcmEncrypt(new Uint8Array(32), new Uint8Array(12), MSG, MSG),
             ),
         ).toBe("UNSUPPORTED");
+    });
+});
+
+describe("HPKE Base mode (criterion 4)", () => {
+    it("round-trips seal/open and agrees on both 32-byte exports", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+        const ct = await sender.seal(AAD, PT);
+        expect(ct).toHaveLength(PT.length + 16);
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        expect(hex(await receiver.open(AAD, ct))).toBe(hex(PT));
+        const c2t = await sender.export(C2T, 32);
+        const t2c = await sender.export(T2C, 32);
+        expect(c2t).toHaveLength(32);
+        expect(hex(c2t)).not.toBe(hex(t2c));
+        expect(hex(await receiver.export(C2T, 32))).toBe(hex(c2t));
+        expect(hex(await receiver.export(T2C, 32))).toBe(hex(t2c));
+    });
+
+    it("rejects a wrong info, a modified aad or a flipped ciphertext with AUTHENTICATION_FAILED", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        const ct = await sender.seal(AAD, PT);
+        const wrongInfo = await crypto.setupHpkeReceiver(
+            sk,
+            sender.encapsulatedKey,
+            enc.encode("x"),
+        );
+        expect(await codeOfRejection(wrongInfo.open(AAD, ct))).toBe("AUTHENTICATION_FAILED");
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        expect(await codeOfRejection(receiver.open(enc.encode("open aaD"), ct))).toBe(
+            "AUTHENTICATION_FAILED",
+        );
+        const flipped = ct.slice();
+        flipped[0] = (flipped[0] ?? 0) ^ 0x01;
+        expect(await codeOfRejection(receiver.open(AAD, flipped))).toBe("AUTHENTICATION_FAILED");
+        expect(hex(await receiver.open(AAD, ct))).toBe(hex(PT));
+    });
+
+    it("rejects a 31-byte pkR, skR or enc with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const { encapsulatedKey } = await crypto.setupHpkeSender(pk, INFO);
+        expect(await codeOfRejection(crypto.setupHpkeSender(pk.slice(0, 31), INFO))).toBe(
+            "INVALID_ARGUMENT",
+        );
+        expect(
+            await codeOfRejection(crypto.setupHpkeReceiver(sk.slice(0, 31), encapsulatedKey, INFO)),
+        ).toBe("INVALID_ARGUMENT");
+        expect(
+            await codeOfRejection(crypto.setupHpkeReceiver(sk, encapsulatedKey.slice(0, 31), INFO)),
+        ).toBe("INVALID_ARGUMENT");
+    });
+
+    it("rejects an all-zero or low-order enc with AUTHENTICATION_FAILED", async () => {
+        const crypto = createWebCrypto();
+        const { sk } = await x25519KeyPair();
+        for (const lowOrder of LOW_ORDER_ENC) {
+            expect(await codeOfRejection(crypto.setupHpkeReceiver(sk, lowOrder, INFO))).toBe(
+                "AUTHENTICATION_FAILED",
+            );
+        }
+    });
+
+    it("refuses every call after destroy() with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        const ct = await sender.seal(AAD, PT);
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        sender.destroy();
+        receiver.destroy();
+        expect(await codeOfRejection(sender.seal(AAD, PT))).toBe("INVALID_ARGUMENT");
+        expect(await codeOfRejection(sender.export(C2T, 32))).toBe("INVALID_ARGUMENT");
+        expect(await codeOfRejection(receiver.open(AAD, ct))).toBe("INVALID_ARGUMENT");
+        expect(await codeOfRejection(receiver.export(C2T, 32))).toBe("INVALID_ARGUMENT");
+    });
+
+    it("rejects an export length of 0 or 65, or a 65-byte label, with INVALID_ARGUMENT", async () => {
+        const crypto = createWebCrypto();
+        const { sk, pk } = await x25519KeyPair();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        for (const context of [sender, receiver]) {
+            expect(await codeOfRejection(context.export(C2T, 0))).toBe("INVALID_ARGUMENT");
+            expect(await codeOfRejection(context.export(C2T, 65))).toBe("INVALID_ARGUMENT");
+            expect(await codeOfRejection(context.export(new Uint8Array(65), 32))).toBe(
+                "INVALID_ARGUMENT",
+            );
+        }
     });
 });
