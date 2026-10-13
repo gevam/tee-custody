@@ -869,8 +869,8 @@ def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
 
 
 def _reachable_avoiding(graph: dict[str, set[str]], roots: set[str], avoided: str) -> set[str]:
-    """``roots`` and every node reachable from them in ``graph`` with ``avoided`` taken out."""
-    pruned = {node: edges - {avoided} for node, edges in graph.items() if node != avoided}
+    """``roots`` and every node reachable from them without passing through ``avoided``."""
+    pruned = {node: edges for node, edges in graph.items() if node != avoided}
     starts = roots - {avoided}
     return starts | _closure(pruned, starts)
 
