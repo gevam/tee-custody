@@ -34,11 +34,33 @@ class ConfigError(Exception):
         self.field = field
 
 
+_MIN_PULL_WAIT_S: Final = 0.01
 _MAX_PULL_WAIT_S: Final = 30
 _MAX_DECODE_DEPTH: Final = 16
-_DECODE_FIELDS: Final = frozenset(
-    {"envelope_decode", "aad_decode", "open_payload_decode", "payload_decode"}
-)
+
+# Fixed max_bytes cap per DecodeLimits field; None means only `<= max_request_bytes` applies.
+_DECODE_MAX_BYTES: Final[dict[str, int | None]] = {
+    "envelope_decode": None,
+    "aad_decode": 1024,
+    "open_payload_decode": 2048,
+    "payload_decode": 32768,
+}
+
+# Inclusive (low, high) per BoundaryLimits int field (INC-2-API §4.4 bounds table).
+_LIMIT_RANGES: Final[dict[str, tuple[int, int]]] = {
+    "max_token_bytes": (1024, 16384),
+    "max_request_bytes": (1024, 65536),
+    "pull_max_messages": (1, 1000),
+    "max_sessions": (1, 65536),
+    "session_evict_min_idle_s": (1, 86400),
+    "replay_cache_max_entries": (1, 1_000_000),
+    "audit_aggregate_interval_s": (10, 900),
+    "audit_alert_cap": (1, 10_000),
+    "prekey_burn_alert_threshold": (1, 10_000),
+    "attestation_retry_min_s": (1, 300),
+    "attestation_retry_max_s": (1, 3600),
+    "bundle_republish_min_interval_s": (1, 300),
+}
 
 # Inclusive (low, high) per ChannelParams field; None is unbounded. prekey_low_water's upper
 # bound is the cross-field rule `prekey_low_water < prekey_batch`.
@@ -58,28 +80,28 @@ def _int_in_range(value: object, low: int, high: int | None) -> bool:
 
 
 def _valid_wait(value: object) -> bool:
-    """True iff `value` is an exact `int` or `float` (not `bool`) in (0, 30]; nan and inf fail."""
+    """True iff `value` is an exact `int` or `float` (not `bool`) in [0.01, 30]; nan, inf fail."""
     if type(value) is not int and type(value) is not float:
         return False
-    return 0 < value <= _MAX_PULL_WAIT_S
+    return _MIN_PULL_WAIT_S <= value <= _MAX_PULL_WAIT_S
 
 
-def _valid_decode(value: object) -> bool:
-    """True iff `value` is a `DecodeLimits` whose fields are exact `int` >= 1, depth <= 16."""
+def _valid_decode(name: str, value: object) -> bool:
+    """True iff `value` is exactly a `DecodeLimits` (no subclass) within the §4.4 bounds."""
     return (
-        isinstance(value, DecodeLimits)
-        and _int_in_range(value.max_bytes, 1, None)
+        type(value) is DecodeLimits
+        and _int_in_range(value.max_bytes, 1, _DECODE_MAX_BYTES[name])
         and _int_in_range(value.max_depth, 1, _MAX_DECODE_DEPTH)
-        and _int_in_range(value.max_items, 1, None)
+        and _int_in_range(value.max_items, 1, value.max_bytes)
     )
 
 
 def _valid_limit(name: str, value: object) -> bool:
-    if name in _DECODE_FIELDS:
-        return _valid_decode(value)
+    if name in _DECODE_MAX_BYTES:
+        return _valid_decode(name, value)
     if name == "pull_wait_s":
         return _valid_wait(value)
-    return _int_in_range(value, 1, None)
+    return _int_in_range(value, *_LIMIT_RANGES[name])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -108,7 +130,7 @@ class BoundaryLimits:
     open_payload_decode: DecodeLimits = _OPEN_PAYLOAD_DECODE
     payload_decode: DecodeLimits = _PAYLOAD_DECODE
     pull_max_messages: int = 32
-    pull_wait_s: float = 1.0  # 0 < x <= 30
+    pull_wait_s: float = 1.0  # 0.01 <= x <= 30
     max_sessions: int = 1024
     session_evict_min_idle_s: int = 60  # R-8; 1 <= x <= ChannelParams.idle_timeout_s (RunLoop)
     replay_cache_max_entries: int = 100_000
@@ -123,5 +145,9 @@ class BoundaryLimits:
         for f in fields(self):
             if not _valid_limit(f.name, getattr(self, f.name)):
                 raise ConfigError(ConfigErrorCode.INVALID_LIMITS, f.name)
+        for name in _DECODE_MAX_BYTES:
+            decode_limits: DecodeLimits = getattr(self, name)
+            if decode_limits.max_bytes > self.max_request_bytes:
+                raise ConfigError(ConfigErrorCode.INVALID_LIMITS, name)
         if self.attestation_retry_max_s < self.attestation_retry_min_s:
             raise ConfigError(ConfigErrorCode.INVALID_LIMITS, "attestation_retry_max_s")
