@@ -2,9 +2,11 @@
 // Expected bytes are hex literals computed independently with the Python canonical codec.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ChannelError } from "../../src/channel/errors.js";
 import * as cbor from "../../src/wire/cbor.js";
 import { WireError, type CanonicalValue, type WireErrorCode } from "../../src/wire/types.js";
 import {
+    decodeOpenResultPlaintext,
     decodeResponse,
     encodeFrameAad,
     encodeFrameRequest,
@@ -607,5 +609,111 @@ describe("criterion 4: decodeResponse rejects schema violations with WireError (
                 ]),
         );
         expectWireError(() => decode(response({ kind: "frame_result", aad, ct: CT })), "MALFORMED");
+    });
+});
+
+const PAYLOAD_LIMITS = { maxBytes: 32_768, maxDepth: 16, maxItems: 4096 };
+
+function expectInvalidResponse(fn: () => unknown): void {
+    let thrown: unknown;
+    try {
+        fn();
+    } catch (error) {
+        thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ChannelError);
+    expect((thrown as ChannelError).code).toBe("INVALID_RESPONSE");
+    expect((thrown as ChannelError).detail).toBeUndefined();
+}
+
+describe("criterion 5: decodeOpenResultPlaintext (SR-3, R-3)", () => {
+    const accepted = { sessionId: SID, requestId: RID };
+    const refused = { sessionId: null, requestId: RID };
+    const payload = new Map<string, CanonicalValue>([
+        ["client_id", CLIENT],
+        ["n", [1, 2n ** 64n - 1n]],
+    ]);
+
+    it("decodes ok:true with a session id and keeps the payload", () => {
+        expect(
+            decodeOpenResultPlaintext(cborMap({ ok: true, payload }), accepted, PAYLOAD_LIMITS),
+        ).toEqual({ ok: true, payload });
+        expect(
+            decodeOpenResultPlaintext(
+                cborMap({ ok: true, payload: null }),
+                accepted,
+                PAYLOAD_LIMITS,
+            ),
+        ).toEqual({ ok: true, payload: null });
+    });
+
+    it("decodes ok:false with a nil session id, keeping any well-formed error code as received", () => {
+        for (const error of ["INTERNAL", "X", "SOME_FUTURE_CODE_9", `A${"B".repeat(63)}`]) {
+            expect(
+                decodeOpenResultPlaintext(cborMap({ ok: false, error }), refused, PAYLOAD_LIMITS),
+            ).toEqual({ ok: false, error });
+        }
+    });
+
+    it("rejects ok:true with a nil session id and ok:false with a session id (R-3)", () => {
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(
+                cborMap({ ok: true, payload: null }),
+                refused,
+                PAYLOAD_LIMITS,
+            ),
+        );
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(
+                cborMap({ ok: false, error: "INTERNAL" }),
+                accepted,
+                PAYLOAD_LIMITS,
+            ),
+        );
+    });
+
+    const invalid: readonly (readonly [string, Record<string, CanonicalValue>])[] = [
+        ["ok missing", { payload: null }],
+        ["ok not boolean", { ok: 1, payload: null }],
+        ["error lower case", { ok: false, error: "internal" }],
+        ["error leading digit", { ok: false, error: "1NTERNAL" }],
+        ["error empty", { ok: false, error: "" }],
+        ["error 65 chars", { ok: false, error: `A${"B".repeat(64)}` }],
+        ["error with newline", { ok: false, error: "INTERNAL\n" }],
+        ["error not text", { ok: false, error: 3 }],
+        ["payload missing on success", { ok: true }],
+        ["error missing on failure", { ok: false }],
+        ["payload on failure", { ok: false, payload: null }],
+        ["error on success", { ok: true, error: "INTERNAL" }],
+        ["extra key", { ok: true, payload: null, x: 1 }],
+        ["error and payload together", { ok: false, error: "X", payload: null }],
+    ];
+
+    it.each(invalid)("rejects %s as INVALID_RESPONSE", (_name, body) => {
+        const aad = body["ok"] === true ? accepted : refused;
+        expectInvalidResponse(() => decodeOpenResultPlaintext(cborMap(body), aad, PAYLOAD_LIMITS));
+    });
+
+    it("rejects a plaintext that is not a map, not canonical CBOR, or over the limits", () => {
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(cbor.encodeCanonical([true]), refused, PAYLOAD_LIMITS),
+        );
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(new Uint8Array([0xff]), refused, PAYLOAD_LIMITS),
+        );
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(new Uint8Array(0), refused, PAYLOAD_LIMITS),
+        );
+        expectInvalidResponse(() =>
+            decodeOpenResultPlaintext(cborMap({ ok: true, payload: "x".repeat(64) }), accepted, {
+                ...PAYLOAD_LIMITS,
+                maxBytes: 32,
+            }),
+        );
+    });
+
+    it("decodes the plaintext with the given limits", () => {
+        decodeOpenResultPlaintext(cborMap({ ok: false, error: "X" }), refused, PAYLOAD_LIMITS);
+        expect(cbor.decodeCanonical).toHaveBeenCalledWith(expect.any(Uint8Array), PAYLOAD_LIMITS);
     });
 });

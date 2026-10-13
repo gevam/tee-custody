@@ -2,6 +2,7 @@
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
 import { decodeCanonical, encodeCanonical } from "../wire/cbor.js";
+import { ChannelError } from "./errors.js";
 import { PROTO, WireError, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
 import type { OpenPayload } from "./types.js";
 
@@ -108,6 +109,22 @@ function encodeMap(entries: Record<string, CanonicalValue>): Bytes {
 const ENVELOPE_KEYS = ["aad", "ct", "kind"];
 const OPEN_RESULT_AAD_KEYS = ["request_id", "seq", "session_id"];
 const FRAME_AAD_KEYS = ["op", "seq", "session_id"];
+
+const SUCCESS_KEYS = ["ok", "payload"];
+const FAILURE_KEYS = ["error", "ok"];
+
+function invalidResponse(): never {
+    throw new ChannelError("INVALID_RESPONSE");
+}
+
+// Every decode failure, whatever its cause, is INVALID_RESPONSE: the plaintext has already authenticated.
+function decodePlaintext(pt: Bytes, limits: DecodeLimits): CanonicalValue {
+    try {
+        return decodeCanonical(pt, limits);
+    } catch {
+        return invalidResponse();
+    }
+}
 
 function malformed(): never {
     throw new WireError("MALFORMED");
@@ -234,7 +251,21 @@ export function decodeOpenResultPlaintext(
     aad: OpenResultAadFields,
     limits: DecodeLimits,
 ): OpenResultBody {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    const value = decodePlaintext(pt, limits);
+    const success = exactMap(value, SUCCESS_KEYS);
+    if (success?.get("ok") === true && aad.sessionId !== null) {
+        return { ok: true, payload: success.get("payload") as CanonicalValue };
+    }
+    const failure = exactMap(value, FAILURE_KEYS);
+    const error = failure?.get("error");
+    if (
+        failure?.get("ok") === false &&
+        matches(error, ERROR_CODE_PATTERN) &&
+        aad.sessionId === null
+    ) {
+        return { ok: false, error };
+    }
+    return invalidResponse();
 }
 
 // ChannelError("INVALID_RESPONSE")
