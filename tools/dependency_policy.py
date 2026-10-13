@@ -90,6 +90,9 @@ HPKE_CLOSURE_BANNED = frozenset(
 )
 HPKE_CLOSURE_BANNED_PREFIXES = ("@noble/",)
 EXACT_PIN_REQUIRED = frozenset({"@hpke/core", "@hpke/common", PYHPKE})
+HPKE_COMMON = "@hpke/common"  # admitted only transitively, through @hpke/core (D-045)
+# Versions signed in ADR 0011's C6 amendments (D-045); a change lands only with its new C6 sign-off.
+C6_SIGNED_VERSIONS = {"@hpke/core": "1.9.0", HPKE_COMMON: "1.10.1", PYHPKE: "0.6.5"}
 PYHPKE_RUNTIME_ALLOWED = frozenset({"cryptography"})
 
 LICENCES = frozenset(
@@ -146,11 +149,13 @@ RULE_ORDER = (
     "crypto-unapproved",
     "crypto-unpinned",
     "crypto-unpinned-range",
+    "crypto-unsigned-version",
     "sim-in-library",
     "core-runtime-deps",
     "web-runtime-closure",
     "hpke-closure",
     "pyhpke-runtime-deps",
+    "hpke-common-direct",
     "cbor-x-unused",
     "licence",
     "stale",
@@ -228,6 +233,7 @@ class Repo:
     runtime: frozenset[Node]
     library_closures: dict[str, frozenset[str]]  # library package -> names in its runtime closure
     npm_manifests: tuple[dict[str, Any], ...]
+    npm_manifest_paths: tuple[str, ...]  # repository-relative, aligned with npm_manifests
     workspace: frozenset[str]
     lock_errors: frozenset[Violation]
 
@@ -534,6 +540,7 @@ def load_repo(root: Path) -> Repo:
             **_npm_library_closures(root, manifests, pnpm),
         },
         npm_manifests=npm_manifests,
+        npm_manifest_paths=tuple(path.relative_to(root).as_posix() for path in manifests),
         workspace=frozenset(workspace),
         lock_errors=frozenset(errors),
     )
@@ -587,6 +594,13 @@ def check_crypto_unpinned_range(repo: Repo) -> Iterable[Violation]:
             yield "crypto-unpinned-range", dependency.name
 
 
+def check_crypto_unsigned_version(repo: Repo) -> Iterable[Violation]:
+    for package in repo.locked:
+        signed = C6_SIGNED_VERSIONS.get(package.name)
+        if signed is not None and package.version != signed:
+            yield "crypto-unsigned-version", package.name
+
+
 def check_sim_in_library(repo: Repo) -> Iterable[Violation]:
     if SIM_PACKAGE in _closure(repo.uv_graph, [LIBRARY_PACKAGE]):
         yield "sim-in-library", SIM_PACKAGE
@@ -623,6 +637,12 @@ def check_hpke_closure(repo: Repo) -> Iterable[Violation]:
 def check_pyhpke_runtime_deps(repo: Repo) -> Iterable[Violation]:
     for name in repo.uv_runtime_graph.get(PYHPKE, set()) - PYHPKE_RUNTIME_ALLOWED:
         yield "pyhpke-runtime-deps", name
+
+
+def check_hpke_common_direct(repo: Repo) -> Iterable[Violation]:
+    for path, manifest in zip(repo.npm_manifest_paths, repo.npm_manifests, strict=True):
+        if any(HPKE_COMMON in manifest.get(group, {}) for group in NPM_ALL_FIELDS):
+            yield "hpke-common-direct", path
 
 
 def check_cbor_x_unused(repo: Repo) -> Iterable[Violation]:
@@ -839,11 +859,13 @@ def evaluate(root: Path, offline: bool, fetch_json: FetchJson, today: dt.date) -
         check_crypto_unapproved,
         check_crypto_unpinned,
         check_crypto_unpinned_range,
+        check_crypto_unsigned_version,
         check_sim_in_library,
         check_core_runtime_deps,
         check_web_runtime_closure,
         check_hpke_closure,
         check_pyhpke_runtime_deps,
+        check_hpke_common_direct,
         check_cbor_x_unused,
     ):
         found.update(check(repo))

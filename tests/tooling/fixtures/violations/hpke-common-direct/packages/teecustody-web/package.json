@@ -1,0 +1,8 @@
+{
+    "name": "@teecustody/web",
+    "version": "0.0.0",
+    "dependencies": {
+        "@hpke/common": "1.10.1",
+        "@hpke/core": "1.9.0"
+    }
+}

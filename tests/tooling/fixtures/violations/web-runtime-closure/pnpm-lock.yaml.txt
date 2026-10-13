@@ -25,7 +25,7 @@ importers:
 
 packages:
 
-  '@hpke/common@1.9.0':
+  '@hpke/common@1.10.1':
     resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
 
   '@hpke/core@1.9.0':
@@ -42,13 +42,13 @@ packages:
 
 snapshots:
 
-  '@hpke/common@1.9.0':
+  '@hpke/common@1.10.1':
     dependencies:
       rogue-shim: 1.0.0
 
   '@hpke/core@1.9.0':
     dependencies:
-      '@hpke/common': 1.9.0
+      '@hpke/common': 1.10.1
 
   rogue-shim@1.0.0: {}
 

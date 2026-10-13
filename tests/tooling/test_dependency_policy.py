@@ -89,6 +89,8 @@ VIOLATION_CASES = [
     ("cbor-x-unused", "cbor-x-unused", "cbor-x", True),
     ("licence", "licence", "gplpkg", False),
     ("stale", "stale", "oldpkg", False),
+    ("hpke-common-direct", "hpke-common-direct", "packages/teecustody-web/package.json", True),
+    ("crypto-unsigned-version", "crypto-unsigned-version", "@hpke/common", True),
 ]
 
 
@@ -641,6 +643,7 @@ def test_web_manifest_is_discovered(
     assert _violations(tool, clean_tree, capsys) == [
         "VIOLATION crypto-unpinned @hpke/common",
         "VIOLATION crypto-unpinned-range @hpke/common",
+        "VIOLATION hpke-common-direct packages/teecustody-web/package.json",
     ]
 
 
@@ -805,3 +808,52 @@ def test_core_has_no_runtime_dependencies_not_even_hpke(
         '{"name": "@teecustody/core", "dependencies": {"@hpke/core": "1.9.0"}}',
     )
     assert _violations(tool, clean_tree, capsys) == ["VIOLATION core-runtime-deps @hpke/core"]
+
+
+# A3 (D-045, ADR 0011 C6): @hpke/common only through @hpke/core; HPKE only at signed versions.
+
+
+def test_hpke_common_in_any_manifest_group_is_reported_with_its_manifest_path(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = json.loads((clean_tree / "package.json").read_text())
+    manifest["devDependencies"]["@hpke/common"] = "1.10.1"
+    _write(clean_tree, "package.json", json.dumps(manifest))
+    core = json.loads((clean_tree / "packages/teecustody-core/package.json").read_text())
+    core["optionalDependencies"] = {"@hpke/common": "1.10.1"}
+    _write(clean_tree, "packages/teecustody-core/package.json", json.dumps(core))
+    lines = _violations(tool, clean_tree, capsys)
+    assert "VIOLATION hpke-common-direct package.json" in lines
+    assert "VIOLATION hpke-common-direct packages/teecustody-core/package.json" in lines
+
+
+@pytest.mark.parametrize(("name", "signed"), [("@hpke/core", "1.9.0"), ("@hpke/common", "1.10.1")])
+def test_npm_hpke_package_at_an_unsigned_version_is_reported(
+    tool: ModuleType, clean_tree: Path, capsys: pytest.CaptureFixture[str], name: str, signed: str
+) -> None:
+    assert tool.C6_SIGNED_VERSIONS[name] == signed
+    lock = (clean_tree / "pnpm-lock.yaml").read_text()
+    entry = f"  '{name}@9.9.9':\n    resolution: {{integrity: sha512-{'B' * 86}==}}\n\n"
+    _write(clean_tree, "pnpm-lock.yaml", lock.replace("packages:\n\n", "packages:\n\n" + entry, 1))
+    assert _violations(tool, clean_tree, capsys) == [f"VIOLATION crypto-unsigned-version {name}"]
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [("0.6.5", []), ("0.6.4", ["VIOLATION crypto-unsigned-version pyhpke"])],
+)
+def test_pyhpke_is_accepted_only_at_its_signed_version(
+    tool: ModuleType,
+    clean_tree: Path,
+    capsys: pytest.CaptureFixture[str],
+    version: str,
+    expected: list[str],
+) -> None:
+    assert tool.C6_SIGNED_VERSIONS == {
+        "@hpke/core": "1.9.0",
+        "@hpke/common": "1.10.1",
+        "pyhpke": "0.6.5",
+    }
+    lock = _add_uv_package((clean_tree / "uv.lock").read_text(), "pyhpke", version, "cbor2")
+    _write(clean_tree, "uv.lock", lock)
+    assert _violations(tool, clean_tree, capsys) == expected
