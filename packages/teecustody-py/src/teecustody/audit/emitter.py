@@ -117,10 +117,11 @@ class AuditEmitter:
         """Append once; False iff the sink is UNAVAILABLE and the record should stay pending."""
         try:
             result = self._sink.append(key, record)
-        except AuditError as err:
-            if err.code is AuditErrorCode.UNAVAILABLE:
+        except Exception as err:  # noqa: BLE001 - never raise into the channel; detail never logged
+            if isinstance(err, AuditError) and err.code is AuditErrorCode.UNAVAILABLE:
                 return False
-            raise
+            self._logger.error("AUDIT_WRITE_FAILED")
+            return True
         if result is AppendResult.ALREADY_EXISTS:
             if record.outcome == _CONFLICT:
                 self._logger.error("AUDIT_WRITE_FAILED")

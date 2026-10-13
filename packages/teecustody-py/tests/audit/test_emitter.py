@@ -2,6 +2,8 @@
 
 import re
 
+import pytest
+
 from teecustody.audit import (
     MAX_COUNT,
     AggregateOutcome,
@@ -317,3 +319,39 @@ def test_close_flushes_the_partial_interval_ending_now() -> None:
         assert record.interval_start == START_MS
         assert record.interval_end == START_MS + 12_345
         assert record.ts == START_MS + 12_345
+
+
+SENTINEL = "SENTINEL-payload-0123456789"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AuditError(AuditErrorCode.INVALID_ARGUMENT),
+        RuntimeError(SENTINEL),
+        ValueError(SENTINEL),
+        KeyError(SENTINEL),
+    ],
+    ids=["invalid-argument", "runtime", "value", "key"],
+)
+def test_no_method_raises_and_failures_are_logged_without_fields(error: Exception) -> None:
+    class Raising(FakeSink):
+        def append(self, key: AuditKey, record: AuditRecord) -> AppendResult:
+            self.attempts += 1
+            raise error
+
+    sink = Raising()
+    emitter, _, clock, logger = _make(sink, cap=1)
+    emitter.count(AggregateOutcome.REQUEST_INVALID)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A, request_id=REQ)
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_B)
+    emitter.alert("PREKEY_BURN_HIGH", interval=(START_MS - INTERVAL_MS, START_MS))
+    clock.now += INTERVAL_S
+    emitter.tick()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    emitter.close()
+    assert sink.attempts == 6
+    assert logger.lines == [("error", "AUDIT_WRITE_FAILED", {})] * 6
+    assert SENTINEL not in repr(logger.lines)
+    emitter.tick()
+    assert sink.attempts == 6
