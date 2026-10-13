@@ -1012,7 +1012,7 @@ DATACLASSES: list[tuple[type, _Options, list[_Field]]] = [
             ("request_id", bytes, M, True),
             ("instance_id", str, M, True),
             ("session_id", bytes, M, True),
-            ("payload", OpenSessionPayload | EnrollPayload, M, True),
+            ("payload", OpenSessionPayload | EnrollPayload, M, False),
         ],
     ),
     (
@@ -1127,12 +1127,21 @@ SENTINEL = "SENTINEL-PLAINTEXT-7f3a"
         HandlerOk(payload={"body": SENTINEL}),
         OpenAccepted(client_id="0" * 32, payload={"body": SENTINEL}),
         OpenResultBody(ok=True, payload={"body": SENTINEL}),
+        OpenRequest(
+            claimed_client_id="0" * 32,
+            request_id=b"\x01" * 16,
+            instance_id="1" * 32,
+            session_id=b"\x02" * 16,
+            payload=OpenSessionPayload(
+                cs=Secret(b"\x03" * 32), key_id=SENTINEL.encode()[:16], epoch=7
+            ),
+        ),
     ],
-    ids=["HandlerOk", "OpenAccepted", "OpenResultBody"],
+    ids=["HandlerOk", "OpenAccepted", "OpenResultBody", "OpenRequest"],
 )
 def test_plaintext_payload_is_not_in_the_default_repr(value: object) -> None:
-    assert SENTINEL not in repr(value)
-    assert SENTINEL not in str(value)
+    assert SENTINEL[:16] not in repr(value)
+    assert SENTINEL[:16] not in str(value)
 
 
 def test_frozen_api_module_files_exist() -> None:

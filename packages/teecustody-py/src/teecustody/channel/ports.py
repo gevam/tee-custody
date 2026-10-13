@@ -45,7 +45,7 @@ class OpenRequest:
     request_id: bytes
     instance_id: str
     session_id: bytes  # pre-minted; becomes the session id if accepted
-    payload: OpenSessionPayload | EnrollPayload
+    payload: OpenSessionPayload | EnrollPayload = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
