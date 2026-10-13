@@ -1,5 +1,6 @@
 // Contract: verifyAttestation + SecurityEventSink (spec §6, §12; ARCHITECTURE "Attestation and launcher";
-// API.md §D [CI-1], [CI-5]; SR-12). Expected red until T-09..T-13 and T-15 merge.
+// API.md §D [CI-1], [CI-5]; SR-12). Amended by T-33 (D-043, ADR 0012; INC-2-API §16.9 C1, C2, C6): the verifier
+// fetches only profile.jwks_uri, and no fixture serves a discovery document.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,15 +14,19 @@ import {
     type VerifierDeps,
 } from "@teecustody/core";
 
-import { fixtureFetcher } from "../../support/fixture-fetcher.js";
+import { fixtureFetcher, type RecordingFetcher } from "../../support/fixture-fetcher.js";
 import { nodeCrypto } from "../../support/node-crypto.js";
 import {
+    ATTACKER_JWKS_URL,
     AUDIENCE,
+    DISCOVERY_URL,
     EXPIRES_AT_S,
     HWMODEL,
     IMAGE_DIGEST,
     ISSUED_AT_S,
     ISSUER,
+    JWKS_URL,
+    KID,
     NOW_MS,
     NOW_S,
     buildFixture,
@@ -31,15 +36,20 @@ import {
     type MintOptions,
 } from "../../support/token-factory.js";
 
-const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 65_536, maxJwksBytes: 65_536 };
+const LIMITS = { maxTokenBytes: 16_384, maxJwksBytes: 65_536 };
 
-function depsFor(fixture: Fixture): VerifierDeps {
-    return {
-        crypto: nodeCrypto(),
-        fetcher: fixtureFetcher(fixture.http),
-        now: () => NOW_MS,
-        limits: LIMITS,
-    };
+function depsFor(
+    fixture: Fixture,
+    fetcher: RecordingFetcher = fixtureFetcher(fixture.http),
+): VerifierDeps {
+    return { crypto: nodeCrypto(), fetcher, now: () => NOW_MS, limits: LIMITS };
+}
+
+// C1: exactly one fetch, of exactly the profile's jwks_uri; never a discovery document.
+function expectPinnedFetch(fixture: Fixture, fetcher: RecordingFetcher): void {
+    expect(fetcher.calls).toHaveLength(1);
+    expect(fetcher.calls[0] === fixture.profile.jwks_uri).toBe(true);
+    expect(fetcher.calls.some((url) => url.includes("openid-configuration"))).toBe(false);
 }
 
 class RecordingSink implements SecurityEventSink {
@@ -96,6 +106,7 @@ interface FailureCase {
     readonly options: MintOptions;
     readonly code: AttestationErrorCode;
     readonly check: AttestationCheckId;
+    readonly headerRule?: true; // fails before key retrieval, so nothing is fetched
 }
 
 const signatures = (claims: Claims): Record<string, unknown>[] =>
@@ -109,12 +120,14 @@ const SINGLE_CHECK_FAILURES: readonly FailureCase[] = [
         },
         code: "UNSUPPORTED_ALGORITHM",
         check: "signature",
+        headerRule: true,
     },
     {
         name: "typ other than JWT (ADR 0009 rule 2.3)",
         options: { header: { alg: "RS256", kid: "contract-issuer", typ: "at+jwt" } },
         code: "MALFORMED",
         check: "signature",
+        headerRule: true,
     },
     {
         name: "EXPERIMENTAL support attribute (D-017)",
@@ -166,6 +179,7 @@ const SINGLE_CHECK_FAILURES: readonly FailureCase[] = [
         options: { header: { alg: "none", typ: "JWT" } },
         code: "UNSUPPORTED_ALGORITHM",
         check: "signature",
+        headerRule: true,
     },
     {
         name: "corrupted signature",
@@ -365,6 +379,28 @@ describe("verifyAttestation", () => {
         expect([error.check, error.code]).toEqual(["token", "MALFORMED"]);
     });
 
+    it.each(SINGLE_CHECK_FAILURES)(
+        "$name: fetches only profile.jwks_uri once, or nothing for a header rule (C1)",
+        async ({ options, headerRule }) => {
+            const fixture = await buildFixture();
+            const fetcher = fixtureFetcher(fixture.http);
+            await rejection(
+                verifyAttestation(
+                    await fixture.mint(options),
+                    fixture.profile,
+                    { identityNonce: fixture.identityNonce },
+                    new RecordingSink(),
+                    depsFor(fixture, fetcher),
+                ),
+            );
+            if (headerRule === true) {
+                expect(fetcher.calls).toEqual([]);
+            } else {
+                expectPinnedFetch(fixture, fetcher);
+            }
+        },
+    );
+
     it("rejects a profile that did not come from parseTrustProfile", async () => {
         const fixture = await buildFixture();
         const counterfeit = { ...fixture.profile } as TrustProfile;
@@ -449,4 +485,102 @@ describe("SecurityEventSink reporting (SR-12)", () => {
             expect([error.check, error.code]).toEqual(["platform", "CLAIM_MISMATCH"]);
         },
     );
+});
+
+// T-33 (D-043, ADR 0012; INC-2-API §16.9 C1, C2, C6; T-29).
+describe("verifyAttestation fetches only the pinned jwks_uri (C1)", () => {
+    it("the fixture profile pins JWKS_URL and no fixture serves a discovery document", async () => {
+        const fixture = await buildFixture();
+        expect(fixture.profile.jwks_uri).toBe(JWKS_URL);
+        expect([...fixture.http.keys()].sort()).toEqual([ATTACKER_JWKS_URL, JWKS_URL].sort());
+        expect(fixture.http.has(DISCOVERY_URL)).toBe(false);
+    });
+
+    it("a valid token calls get exactly once, with profile.jwks_uri", async () => {
+        const fixture = await buildFixture();
+        const fetcher = fixtureFetcher(fixture.http);
+        await verifyAttestation(
+            await fixture.mint(),
+            fixture.profile,
+            { identityNonce: fixture.identityNonce },
+            new RecordingSink(),
+            depsFor(fixture, fetcher),
+        );
+        expectPinnedFetch(fixture, fetcher);
+    });
+});
+
+describe("a same-origin attacker JWKS never decides (C2, T-29)", () => {
+    it.each([["attacker-kid"], [KID]])(
+        "an attacker-signed token with kid %s is signature/UNTRUSTED_SIGNER",
+        async (kid) => {
+            const fixture = await buildFixture();
+            const fetcher = fixtureFetcher(fixture.http);
+            const error = await rejection(
+                verifyAttestation(
+                    await fixture.mint({ signer: "attacker", header: { alg: "RS256", kid } }),
+                    fixture.profile,
+                    { identityNonce: fixture.identityNonce },
+                    new RecordingSink(),
+                    depsFor(fixture, fetcher),
+                ),
+            );
+            expect([error.check, error.code]).toEqual(["signature", "UNTRUSTED_SIGNER"]);
+            expectPinnedFetch(fixture, fetcher);
+        },
+    );
+
+    it.each([["attacker-kid"], [KID]])(
+        "positive control: the kid %s token verifies when profile.jwks_uri serves the attacker JWKS",
+        async (kid) => {
+            const fixture = await buildFixture();
+            const attackerJwks = fixture.http.get(ATTACKER_JWKS_URL);
+            if (attackerJwks === undefined) {
+                throw new Error("the fixture serves no attacker JWKS");
+            }
+            const fetcher = fixtureFetcher(new Map([[fixture.profile.jwks_uri, attackerJwks]]));
+            const result = await verifyAttestation(
+                await fixture.mint({ signer: "attacker", header: { alg: "RS256", kid } }),
+                fixture.profile,
+                { identityNonce: fixture.identityNonce },
+                new RecordingSink(),
+                depsFor(fixture, fetcher),
+            );
+            expect(result.issuer).toBe(ISSUER);
+            expectPinnedFetch(fixture, fetcher);
+        },
+    );
+});
+
+describe("VerifierLimits.maxDiscoveryBytes is inert (C6)", () => {
+    it("absent is accepted", async () => {
+        const fixture = await buildFixture();
+        const deps = depsFor(fixture);
+        expect(Object.hasOwn(deps.limits, "maxDiscoveryBytes")).toBe(false);
+        const result = await verifyAttestation(
+            await fixture.mint(),
+            fixture.profile,
+            { identityNonce: fixture.identityNonce },
+            new RecordingSink(),
+            deps,
+        );
+        expect(result.issuer).toBe(ISSUER);
+    });
+
+    it("0 is signature/MALFORMED, before any fetch", async () => {
+        const fixture = await buildFixture();
+        const fetcher = fixtureFetcher(fixture.http);
+        const deps = { ...depsFor(fixture, fetcher), limits: { ...LIMITS, maxDiscoveryBytes: 0 } };
+        const error = await rejection(
+            verifyAttestation(
+                await fixture.mint(),
+                fixture.profile,
+                { identityNonce: fixture.identityNonce },
+                new RecordingSink(),
+                deps,
+            ),
+        );
+        expect([error.check, error.code]).toEqual(["signature", "MALFORMED"]);
+        expect(fetcher.calls).toEqual([]);
+    });
 });

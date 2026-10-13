@@ -1,5 +1,8 @@
 // Builds Confidential-Space-shaped tokens, a development trust profile and HTTP fixtures with WebCrypto,
 // independently of Core internals and of the simulator (Tech Lead, INC-1 Wave 0). Not shipped.
+// A-9 (T-33; INC-2-API §16.2): the profile is v2 and pins JWKS_URL; `http` serves only JWKS documents, the
+// issuer's at JWKS_URL and a T-29 attacker's on the same origin at ATTACKER_JWKS_URL. DISCOVERY_URL is kept for
+// negative tests only and is never served.
 import { parseTrustProfile, type Bytes, type TrustProfile } from "@teecustody/core";
 
 const subtle = globalThis.crypto.subtle;
@@ -9,6 +12,7 @@ export const ISSUER = "https://issuer.contract.test";
 export const JWKS_ORIGIN = "http://127.0.0.1:8791";
 export const DISCOVERY_URL = `${JWKS_ORIGIN}/.well-known/openid-configuration`;
 export const JWKS_URL = `${JWKS_ORIGIN}/jwks`;
+export const ATTACKER_JWKS_URL = JWKS_ORIGIN + "/attacker/jwks";
 export const KID = "contract-issuer";
 export const AUDIENCE = "https://contract.teecustody.test/tee";
 export const HWMODEL = "CONTRACT_TEST_HW";
@@ -32,6 +36,7 @@ export interface MintOptions {
     readonly mutate?: (claims: Claims) => void;
     readonly header?: Readonly<Record<string, unknown>>;
     readonly corruptSignature?: boolean;
+    readonly signer?: "issuer" | "attacker"; // default "issuer"
 }
 
 export interface Fixture {
@@ -66,19 +71,29 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
     return new Uint8Array(await subtle.digest("SHA-256", data.slice()));
 }
 
+async function rsaSigningKey(): Promise<{ key: CryptoKeyPair; n: string; e: string }> {
+    const key = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", ...RSA_GEN }, true, [
+        "sign",
+        "verify",
+    ]);
+    const jwk = await subtle.exportKey("jwk", key.publicKey);
+    if (jwk.n === undefined || jwk.e === undefined) {
+        throw new Error("RSA JWK export lacks n or e");
+    }
+    return { key, n: jwk.n, e: jwk.e };
+}
+
+function jwkEntry(kid: string, rsa: { readonly n: string; readonly e: string }): object {
+    return { kty: "RSA", kid, alg: "RS256", use: "sig", n: rsa.n, e: rsa.e };
+}
+
 export function containerOf(claims: Claims): Claims {
     return (claims.submods as Claims).container as Claims;
 }
 
 export async function buildFixture(): Promise<Fixture> {
-    const issuer = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", ...RSA_GEN }, true, [
-        "sign",
-        "verify",
-    ]);
-    const issuerJwk = await subtle.exportKey("jwk", issuer.publicKey);
-    if (issuerJwk.n === undefined || issuerJwk.e === undefined) {
-        throw new Error("RSA JWK export lacks n or e");
-    }
+    const issuer = await rsaSigningKey();
+    const attacker = await rsaSigningKey();
     // D-016: the client only counts key_ids (lowercase hex SHA-256 of a signer's SPKI DER) whose
     // signature_algorithm matches the profile; signature bytes are opaque to it.
     const signers = await Promise.all(
@@ -118,12 +133,11 @@ export async function buildFixture(): Promise<Fixture> {
     };
 
     const profileJson = {
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "development",
         token_type: "OIDC",
         issuer: ISSUER,
-        discovery_url: DISCOVERY_URL,
-        jwks_origin: JWKS_ORIGIN,
+        jwks_uri: JWKS_URL,
         expected_audience: AUDIENCE,
         token_max_age_s: 3600,
         allowed_hwmodels: [HWMODEL],
@@ -138,21 +152,11 @@ export async function buildFixture(): Promise<Fixture> {
     };
 
     const http = new Map<string, Bytes>([
-        [DISCOVERY_URL, jsonBytes({ issuer: ISSUER, jwks_uri: JWKS_URL })],
+        [JWKS_URL, jsonBytes({ keys: [jwkEntry(KID, issuer)] })],
+        // T-29: the attacker's key, listed under its own kid and under the issuer's KID.
         [
-            JWKS_URL,
-            jsonBytes({
-                keys: [
-                    {
-                        kty: "RSA",
-                        kid: KID,
-                        alg: "RS256",
-                        use: "sig",
-                        n: issuerJwk.n,
-                        e: issuerJwk.e,
-                    },
-                ],
-            }),
+            ATTACKER_JWKS_URL,
+            jsonBytes({ keys: [jwkEntry("attacker-kid", attacker), jwkEntry(KID, attacker)] }),
         ],
     ]);
 
@@ -171,10 +175,11 @@ export async function buildFixture(): Promise<Fixture> {
             if (header.alg === "none") {
                 return `${signingInput}.`;
             }
+            const signer = options.signer === "attacker" ? attacker : issuer;
             const signature = new Uint8Array(
                 await subtle.sign(
                     "RSASSA-PKCS1-v1_5",
-                    issuer.privateKey,
+                    signer.key.privateKey,
                     encoder.encode(signingInput),
                 ),
             );
