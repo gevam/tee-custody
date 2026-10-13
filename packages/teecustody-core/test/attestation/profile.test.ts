@@ -1,4 +1,5 @@
-// T-10: parseTrustProfile (API.md §D, §E; spec §15.4, §10.2; ADR 0009 rule 9; D-016). Security path.
+// T-10, T-33: parseTrustProfile (API.md §D, §E; INC-2-API §16.1; spec §15.4, §10.2; ADR 0009 rule 9, ADR 0012;
+// D-016, D-043). Security path.
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -14,18 +15,21 @@ import { decodeCanonical } from "../../src/wire/cbor.js";
 type ProfileJson = Record<string, unknown>;
 
 const GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com";
+// FACTS F-07, re-confirmed 2026-10-13 against the live discovery document.
+const GOOGLE_JWKS_URI =
+    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com";
+const DEV_JWKS_URI = "http://127.0.0.1:8791/jwks";
 const KEY_A = "0a".repeat(32);
 const KEY_B = "0b".repeat(32);
 const KEY_C = "0c".repeat(32);
 
 function developmentJson(): ProfileJson {
     return {
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "development",
         token_type: "OIDC",
         issuer: "https://issuer.unit.test",
-        discovery_url: "http://127.0.0.1:8791/.well-known/openid-configuration",
-        jwks_origin: "http://127.0.0.1:8791",
+        jwks_uri: DEV_JWKS_URI,
         expected_audience: "https://unit.test/tee",
         token_max_age_s: 3600,
         allowed_hwmodels: ["UNIT_HW"],
@@ -46,8 +50,7 @@ function productionJson(): ProfileJson {
         ...developmentJson(),
         profile_kind: "production",
         issuer: GOOGLE_ISSUER,
-        discovery_url: `${GOOGLE_ISSUER}/.well-known/openid-configuration`,
-        jwks_origin: "https://www.googleapis.com",
+        jwks_uri: GOOGLE_JWKS_URI,
         allowed_hwmodels: ["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"],
     };
 }
@@ -150,8 +153,9 @@ const REJECTIONS: Row[] = [
         INVALID,
         key,
     ]),
-    ["profile_version 2", developmentJson, { profile_version: 2 }, INVALID, "profile_version"],
-    ['profile_version "1"', developmentJson, { profile_version: "1" }, INVALID, "profile_version"],
+    ["profile_version 1", developmentJson, { profile_version: 1 }, INVALID, "profile_version"],
+    ["profile_version 3", developmentJson, { profile_version: 3 }, INVALID, "profile_version"],
+    ['profile_version "2"', developmentJson, { profile_version: "2" }, INVALID, "profile_version"],
     ["profile_kind staging", developmentJson, { profile_kind: "staging" }, INVALID, "profile_kind"],
     ["profile_kind null", developmentJson, { profile_kind: null }, INVALID, "profile_kind"],
     [
@@ -186,75 +190,11 @@ const REJECTIONS: Row[] = [
         "issuer",
     ],
     [
-        "development discovery_url ftp:",
-        developmentJson,
-        { discovery_url: "ftp://127.0.0.1/.well-known/openid-configuration" },
-        INVALID,
-        "discovery_url",
-    ],
-    [
-        "development discovery_url with query",
-        developmentJson,
-        { discovery_url: "http://127.0.0.1:8791/.well-known/openid-configuration?x=1" },
-        INVALID,
-        "discovery_url",
-    ],
-    [
-        "development discovery_url not a URL",
-        developmentJson,
-        { discovery_url: "/.well-known/openid-configuration" },
-        INVALID,
-        "discovery_url",
-    ],
-    [
-        "development discovery_url not a string",
-        developmentJson,
-        { discovery_url: ["http://127.0.0.1:8791/"] },
-        INVALID,
-        "discovery_url",
-    ],
-    [
-        "jwks_origin with a path (ruling 3)",
-        developmentJson,
-        { jwks_origin: "http://127.0.0.1:8791/jwks" },
-        INVALID,
-        "jwks_origin",
-    ],
-    [
-        "jwks_origin with a trailing slash (ruling 3)",
-        developmentJson,
-        { jwks_origin: "http://127.0.0.1:8791/" },
-        INVALID,
-        "jwks_origin",
-    ],
-    [
-        "jwks_origin with a fragment",
-        developmentJson,
-        { jwks_origin: "http://127.0.0.1:8791#x" },
-        INVALID,
-        "jwks_origin",
-    ],
-    [
-        "jwks_origin ws:",
-        developmentJson,
-        { jwks_origin: "ws://127.0.0.1:8791" },
-        INVALID,
-        "jwks_origin",
-    ],
-    ["jwks_origin not a string", developmentJson, { jwks_origin: null }, INVALID, "jwks_origin"],
-    [
         "production issuer other",
         productionJson,
         { issuer: "https://tee.example.test" },
         INVALID,
         "issuer",
-    ],
-    [
-        "production discovery_url other",
-        productionJson,
-        { discovery_url: "https://confidentialcomputing.googleapis.com/.well-known/jwks" },
-        INVALID,
-        "discovery_url",
     ],
     ["empty audience", developmentJson, { expected_audience: "" }, INVALID, "expected_audience"],
     [
@@ -444,17 +384,6 @@ describe("parseTrustProfile rejects each rule violation with its code and field 
 
     it.each([
         [
-            "dev discovery on localhost",
-            developmentJson,
-            { discovery_url: "http://localhost:8791/.well-known/openid-configuration" },
-        ],
-        ["dev JWKS on [::1]", developmentJson, { jwks_origin: "http://[::1]:8791" }],
-        [
-            "dev JWKS over https loopback",
-            developmentJson,
-            { jwks_origin: "https://127.0.0.1:8443" },
-        ],
-        [
             "boundary audience and age",
             developmentJson,
             { expected_audience: "a".repeat(2048), token_max_age_s: 86400 },
@@ -500,45 +429,6 @@ describe("parseTrustProfile rejects unknown keys", () => {
 // Criterion 6 (SR-1 ADR 0009 conditions; SR-7 dev/prod anchor separation; rulings 1 and 2; FACTS F-07, F-09).
 const ANCHOR_REJECTIONS: readonly (readonly [string, () => ProfileJson, ProfileJson, string])[] = [
     [
-        "production loopback http: discovery",
-        productionJson,
-        { discovery_url: "http://127.0.0.1:8791/.well-known/openid-configuration" },
-        "discovery_url",
-    ],
-    [
-        "production http: discovery",
-        productionJson,
-        {
-            discovery_url:
-                "http://confidentialcomputing.googleapis.com/.well-known/openid-configuration",
-        },
-        "discovery_url",
-    ],
-    [
-        "production loopback JWKS",
-        productionJson,
-        { jwks_origin: "http://127.0.0.1:8791" },
-        "jwks_origin",
-    ],
-    [
-        "production http: JWKS",
-        productionJson,
-        { jwks_origin: "http://www.googleapis.com" },
-        "jwks_origin",
-    ],
-    [
-        "production other JWKS",
-        productionJson,
-        { jwks_origin: "https://keys.example.test" },
-        "jwks_origin",
-    ],
-    [
-        "production JWKS on the issuer origin",
-        productionJson,
-        { jwks_origin: GOOGLE_ISSUER },
-        "jwks_origin",
-    ],
-    [
         "production hwmodel SIMULATED",
         productionJson,
         { allowed_hwmodels: ["GCP_AMD_SEV", "SIMULATED"] },
@@ -576,30 +466,6 @@ const ANCHOR_REJECTIONS: readonly (readonly [string, () => ProfileJson, ProfileJ
         "issuer",
     ],
     [
-        "development non-loopback http: discovery",
-        developmentJson,
-        { discovery_url: "http://sim.example.test:8791/.well-known/openid-configuration" },
-        "discovery_url",
-    ],
-    [
-        "development non-loopback http: JWKS",
-        developmentJson,
-        { jwks_origin: "http://10.0.0.1:8791" },
-        "jwks_origin",
-    ],
-    [
-        "development non-loopback https: discovery (ruling 1)",
-        developmentJson,
-        { discovery_url: `${GOOGLE_ISSUER}/.well-known/openid-configuration` },
-        "discovery_url",
-    ],
-    [
-        "development non-loopback https: JWKS (ruling 1)",
-        developmentJson,
-        { jwks_origin: "https://www.googleapis.com" },
-        "jwks_origin",
-    ],
-    [
         "development issuer with userinfo",
         developmentJson,
         { issuer: "https://user:secret@issuer.unit.test" },
@@ -610,24 +476,6 @@ const ANCHOR_REJECTIONS: readonly (readonly [string, () => ProfileJson, ProfileJ
         developmentJson,
         { issuer: "https://user@issuer.unit.test" },
         "issuer",
-    ],
-    [
-        "development discovery with userinfo",
-        developmentJson,
-        { discovery_url: "http://user:secret@127.0.0.1:8791/.well-known/openid-configuration" },
-        "discovery_url",
-    ],
-    [
-        "development discovery with a password only",
-        developmentJson,
-        { discovery_url: "http://:secret@127.0.0.1:8791/.well-known/openid-configuration" },
-        "discovery_url",
-    ],
-    [
-        "development JWKS with userinfo",
-        developmentJson,
-        { jwks_origin: "http://user@127.0.0.1:8791" },
-        "jwks_origin",
     ],
 ];
 
@@ -711,31 +559,12 @@ describe("parseTrustProfile enforces the signer entry shape", () => {
 });
 
 // T-24 (D-02, B-02, B-03; SR-1, SR-3): development anchors are accepted only in canonical form.
-const WELL_KNOWN = "/.well-known/openid-configuration";
 
 function expectRejected(override: ProfileJson, field: string): void {
     const error = profileError({ ...developmentJson(), ...override });
     expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
     expect(error.message).toBe(`${field}: INVALID_PROFILE`);
 }
-
-describe("parseTrustProfile requires a canonical development discovery_url (T-24 criterion 1)", () => {
-    it.each([
-        `http://0x7f.1${WELL_KNOWN}`,
-        `http://127.1${WELL_KNOWN}`,
-        `http://2130706433${WELL_KNOWN}`,
-        `http://127.0.0.1:80${WELL_KNOWN}`,
-        `HTTP://127.0.0.1${WELL_KNOWN}`,
-        "http://127.0.0.1/x",
-        `http://127.0.0.1${WELL_KNOWN}?a=1`,
-        `http://127.0.0.1${WELL_KNOWN}#f`,
-        `http://u@127.0.0.1${WELL_KNOWN}`,
-        `http://[0:0:0:0:0:0:0:1]${WELL_KNOWN}`,
-        `http://LOCALHOST${WELL_KNOWN}`,
-    ])("rejects %s", (url) => {
-        expectRejected({ discovery_url: url }, "discovery_url");
-    });
-});
 
 describe("parseTrustProfile requires a canonical development issuer origin (T-24 criterion 2)", () => {
     it.each([
@@ -775,13 +604,15 @@ describe("parseTrustProfile accepts canonical anchors (T-24 criteria 3 and 4)", 
     );
 
     it.each([
-        `http://127.0.0.1:8791${WELL_KNOWN}`,
-        `http://[::1]:8791${WELL_KNOWN}`,
-        `http://localhost:8791${WELL_KNOWN}`,
-    ])("accepts discovery_url %s and returns the input string", (url) => {
-        const profile = parseTrustProfile({ ...developmentJson(), discovery_url: url });
-        expect(profile.discovery_url).toBe(url);
-        expect(profile.discovery_url).toBe(new URL(url).href);
+        "http://127.0.0.1:8791/jwks",
+        "http://[::1]:8791/jwks",
+        "http://localhost:8791/jwks",
+        "https://127.0.0.1:8443/jwks",
+        "http://127.0.0.1/jwks",
+    ])("accepts jwks_uri %s and returns the input string", (url) => {
+        const profile = parseTrustProfile({ ...developmentJson(), jwks_uri: url });
+        expect(profile.jwks_uri).toBe(url);
+        expect(profile.jwks_uri).toBe(new URL(url).href);
     });
 
     it("accepts the vector suite's development profile_json unchanged", () => {
@@ -793,10 +624,74 @@ describe("parseTrustProfile accepts canonical anchors (T-24 criteria 3 and 4)", 
 
     it("accepts the production profile with Google anchors unchanged", () => {
         const profile = parseTrustProfile(productionJson());
-        expect([profile.issuer, profile.discovery_url, profile.jwks_origin]).toEqual([
-            GOOGLE_ISSUER,
-            `${GOOGLE_ISSUER}${WELL_KNOWN}`,
-            "https://www.googleapis.com",
-        ]);
+        expect([profile.issuer, profile.jwks_uri]).toEqual([GOOGLE_ISSUER, GOOGLE_JWKS_URI]);
+    });
+});
+
+// T-33 C4 (INC-2-API §16.1 step 2; D-043, D-047 Q9e): only v2 parses, and the version is checked before the
+// key set, so every v1 profile fails at profile_version and never at an unknown-key field.
+// The INC-1 API.md §E v1 JSON verbatim, with its placeholders filled in.
+const INC1_V1_PROFILE_JSON = `{"profile_version": 1, "profile_kind": "development", "token_type": "OIDC",
+ "issuer": "https://tee-sim.localhost",
+ "discovery_url": "http://127.0.0.1:8791/.well-known/openid-configuration",
+ "jwks_origin": "http://127.0.0.1:8791",
+ "expected_audience": "https://example.test/tee", "token_max_age_s": 3600,
+ "allowed_hwmodels": ["SIMULATED"], "allowed_digests": ["sha256:${"ab".repeat(32)}"],
+ "signer_keys": [{"key_id": "${KEY_A}", "algorithm": "RSASSA_PSS_SHA256"}],
+ "signers_required": 2, "expected_args_hash": "${"03".repeat(32)}", "expected_env_hash": "${"04".repeat(32)}"}`;
+
+describe("parseTrustProfile accepts only trust profile v2 (T-33 C4)", () => {
+    it("rejects the exact INC-1 v1 JSON at profile_version", () => {
+        const error = profileError(JSON.parse(INC1_V1_PROFILE_JSON));
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "profile_version"]);
+    });
+
+    it("rejects a v1 profile at profile_version even with a v2 key set", () => {
+        const error = profileError({ ...developmentJson(), profile_version: 1, extra: true });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "profile_version"]);
+    });
+
+    it.each([
+        ["discovery_url", "http://127.0.0.1:8791/.well-known/openid-configuration"],
+        ["jwks_origin", "http://127.0.0.1:8791"],
+    ])("rejects v2 plus %s at that field", (field, value) => {
+        const error = profileError({ ...developmentJson(), [field]: value });
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", field]);
+    });
+
+    it.each([
+        ["development", developmentJson],
+        ["production", productionJson],
+    ])("rejects a %s v2 profile without jwks_uri at jwks_uri", (_kind, build) => {
+        const json = build();
+        Reflect.deleteProperty(json, "jwks_uri");
+        const error = profileError(json);
+        expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "jwks_uri"]);
+    });
+
+    it("rejects an absent profile_version when Object.prototype.profile_version is 2", () => {
+        const json = developmentJson();
+        Reflect.deleteProperty(json, "profile_version");
+        Object.defineProperty(Object.prototype, "profile_version", {
+            value: 2,
+            configurable: true,
+        });
+        try {
+            const error = profileError(json);
+            expect([error.code, error.field]).toEqual(["INVALID_PROFILE", "profile_version"]);
+        } finally {
+            Reflect.deleteProperty(Object.prototype, "profile_version");
+        }
+    });
+});
+
+// T-33 C5 (INC-2-API §16.9): the pinned production jwks_uri is already in WHATWG canonical form in Node 22,
+// so a canonical-form check can never disagree with the Core constant.
+describe("the production jwks_uri constant is canonical (T-33 C5)", () => {
+    it("new URL(GOOGLE_JWKS_URI).href === GOOGLE_JWKS_URI, read through a parsed production profile", () => {
+        expect(Number(process.versions.node.split(".")[0])).toBeGreaterThanOrEqual(22);
+        const { jwks_uri: pinned } = parseTrustProfile(productionJson());
+        expect(pinned).toBe(GOOGLE_JWKS_URI);
+        expect(new URL(pinned).href).toBe(pinned);
     });
 });

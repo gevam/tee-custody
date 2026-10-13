@@ -12,12 +12,11 @@ type ProfileFields = Parameters<typeof brandTrustProfile>[0];
 
 function profileFields(): ProfileFields {
     return {
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "development",
         token_type: "OIDC",
         issuer: "https://issuer.unit.test",
-        discovery_url: "http://127.0.0.1:1/.well-known/openid-configuration",
-        jwks_origin: "http://127.0.0.1:1",
+        jwks_uri: "http://127.0.0.1:1/jwks",
         expected_audience: "https://unit.test/tee",
         token_max_age_s: 3600,
         allowed_hwmodels: ["UNIT_HW"],

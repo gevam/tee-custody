@@ -27,7 +27,6 @@ import { generateRsaKey, signJws } from "../support/jws.js";
 import { testCrypto } from "../support/webcrypto.js";
 
 const ISSUER = "https://confidentialcomputing.googleapis.com";
-const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
 const JWKS_ORIGIN = "https://www.googleapis.com";
 const JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com`;
 const KID = "1be6ff7287d640316ddc929e1a8b21fbca7e54e7";
@@ -54,12 +53,11 @@ beforeAll(async () => {
     issuerKey = await generateRsaKey();
     const crypto = testCrypto();
     profileJson = {
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "production",
         token_type: "OIDC",
         issuer: ISSUER,
-        discovery_url: DISCOVERY_URL,
-        jwks_origin: JWKS_ORIGIN,
+        jwks_uri: JWKS_URI,
         expected_audience: AUDIENCE,
         token_max_age_s: 3600,
         allowed_hwmodels: ["GCP_AMD_SEV"],
@@ -132,7 +130,6 @@ interface Recorder extends Fetcher {
 function documents(): Recorder {
     const inner = mapFetcher(
         new Map([
-            [DISCOVERY_URL, json({ issuer: ISSUER, jwks_uri: JWKS_URI })],
             [
                 JWKS_URI,
                 json({
@@ -199,13 +196,15 @@ class MemorySink implements SecurityEventSink {
 describe("verifyAttestation: valid token (criterion 3)", () => {
     it("returns a frozen VerifiedAttestation with the documented fields and no report", async () => {
         const sink = new MemorySink();
+        const h = harness();
         const result = await verifyAttestation(
             await mint(),
             PROFILE,
             { identityNonce: IDENTITY_NONCE },
             sink,
-            harness().deps,
+            h.deps,
         );
+        expect(h.fetcher.calls).toEqual([JWKS_URI]);
         expect({ ...result }).toEqual({
             issuer: ISSUER,
             audience: AUDIENCE,
@@ -358,6 +357,17 @@ describe("verifyAttestation: one failing check per step (criterion 4)", () => {
         const err = await verifyWith(await token());
         expect([err.check, err.code]).toEqual([check, code]);
     });
+
+    // T-33 C1: every step from key retrieval on fetched exactly once, exactly profile.jwks_uri.
+    it.each(STEP_CASES.filter(({ check }) => check !== "token"))(
+        "$name fetched only profile.jwks_uri, once",
+        async ({ token }) => {
+            const h = harness();
+            await verifyWith(await token(), { deps: h.deps });
+            expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+            expect(h.fetcher.calls.some((url) => url.includes("openid-configuration"))).toBe(false);
+        },
+    );
 });
 
 // Image and claim defects that later steps would reject if they ran first.
@@ -601,7 +611,7 @@ describe("verifyAttestation: profile provenance (criteria 9, 9a; SR-1)", () => {
                 h.deps,
             ),
         ).resolves.toBeDefined();
-        expect(h.fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI]);
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
         expect(h.verifyCalls).toHaveLength(1);
     });
 });

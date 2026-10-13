@@ -1,5 +1,6 @@
-// Trust profile parsing (API.md §D, §E; spec §15.4, §10.2; ADR 0009 rule 9; D-016). The only constructor of
-// a TrustProfile. Every value is read once, validated, and copied; errors carry a code and a JSON path only.
+// Trust profile v2 parsing (API.md §D; INC-2-API §16.1; spec §15.4, §10.2; ADR 0009 rule 9, ADR 0012 rule 1;
+// D-016, D-043). The only constructor of a TrustProfile. Every value is read once, validated, and copied; errors
+// carry a code and a JSON path only.
 import {
     TrustProfileError,
     brandTrustProfile,
@@ -11,25 +12,19 @@ import {
 } from "./types.js";
 
 const GOOGLE_ISSUER_HOST = "confidentialcomputing.googleapis.com";
-const GOOGLE_ISSUER = `https://${GOOGLE_ISSUER_HOST}`;
-const DISCOVERY_PATH = "/.well-known/openid-configuration";
-const GOOGLE_DISCOVERY_URL = `${GOOGLE_ISSUER}${DISCOVERY_PATH}`;
-const GOOGLE_JWKS_ORIGIN = "https://www.googleapis.com";
+const GOOGLE_ISSUER = `https://${GOOGLE_ISSUER_HOST}`; // F-07
 // FACTS F-09 as amended: confidential hardware only (no GCP_SHIELDED_VM, no unprefixed INTEL_TDX).
 const PRODUCTION_HWMODELS: ReadonlySet<string> = new Set([
     "GCP_AMD_SEV",
     "GCP_AMD_SEV_ES",
     "GCP_INTEL_TDX",
 ]);
-// ADR 0009 rule 9 and T-10 ruling 1: development fetches only from the simulator on this host.
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const PROFILE_KEYS = [
     "profile_version",
     "profile_kind",
     "token_type",
     "issuer",
-    "discovery_url",
-    "jwks_origin",
+    "jwks_uri",
     "expected_audience",
     "token_max_age_s",
     "allowed_hwmodels",
@@ -50,7 +45,6 @@ const MAX_AUDIENCE_LENGTH = 2048;
 const MAX_TOKEN_AGE_S = 86_400;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
-const FETCH_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:"]);
 
 function fail(field: string, code: TrustProfileErrorCode = "INVALID_PROFILE"): TrustProfileError {
     return new TrustProfileError(code, field);
@@ -60,11 +54,7 @@ function member(parent: string, key: string): string {
     return parent === "" ? key : `${parent}.${key}`;
 }
 
-function readObject<K extends string>(
-    value: unknown,
-    field: string,
-    keys: readonly K[],
-): Readonly<Record<K, unknown>> {
+function readPlainObject(value: unknown, field: string): object {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw fail(field);
     }
@@ -72,6 +62,14 @@ function readObject<K extends string>(
     if (prototype !== Object.prototype && prototype !== null) {
         throw fail(field);
     }
+    return value;
+}
+
+function requireKeys<K extends string>(
+    value: object,
+    field: string,
+    keys: readonly K[],
+): Readonly<Record<K, unknown>> {
     const allowed: readonly string[] = keys;
     for (const key of Object.keys(value)) {
         if (!allowed.includes(key)) {
@@ -84,6 +82,14 @@ function readObject<K extends string>(
         }
     }
     return value as Readonly<Record<K, unknown>>;
+}
+
+function readObject<K extends string>(
+    value: unknown,
+    field: string,
+    keys: readonly K[],
+): Readonly<Record<K, unknown>> {
+    return requireKeys(readPlainObject(value, field), field, keys);
 }
 
 function readString(value: unknown, field: string): string {
@@ -196,50 +202,23 @@ function readIssuer(value: unknown, kind: ProfileKind): string {
     return value;
 }
 
-function isLoopback(url: URL): boolean {
-    return FETCH_PROTOCOLS.has(url.protocol) && LOOPBACK_HOSTS.has(url.hostname);
-}
-
-function readDiscoveryUrl(value: unknown, kind: ProfileKind): string {
-    if (kind === "production") {
-        if (value !== GOOGLE_DISCOVERY_URL) {
-            throw fail("discovery_url");
-        }
-        return value;
-    }
-    const url = readUrl(value, "discovery_url");
-    if (url.href !== value || !isLoopback(url) || url.pathname !== DISCOVERY_PATH) {
-        throw fail("discovery_url");
-    }
-    return value;
-}
-
-function readJwksOrigin(value: unknown, kind: ProfileKind): string {
-    if (kind === "production") {
-        if (value !== GOOGLE_JWKS_ORIGIN) {
-            throw fail("jwks_origin");
-        }
-        return value;
-    }
-    const url = readUrl(value, "jwks_origin");
-    if (!isLoopback(url) || url.origin !== value) {
-        throw fail("jwks_origin");
-    }
-    return value;
+function readJwksUri(value: unknown): string {
+    return readString(value, "jwks_uri");
 }
 
 export function parseTrustProfile(input: unknown): TrustProfile {
-    const source = readObject(input, "", PROFILE_KEYS);
-    if (source.profile_version !== 1) {
+    const root = readPlainObject(input, "");
+    // INC-2-API §16.1 step 2: before the key set, so every v1 profile fails here.
+    if (!Object.hasOwn(root, "profile_version") || Reflect.get(root, "profile_version") !== 2) {
         throw fail("profile_version");
     }
+    const source = requireKeys(root, "", PROFILE_KEYS);
     const kind = readKind(source.profile_kind);
     if (source.token_type !== "OIDC") {
         throw fail("token_type", "UNSUPPORTED_TOKEN_TYPE");
     }
     const issuer = readIssuer(source.issuer, kind);
-    const discoveryUrl = readDiscoveryUrl(source.discovery_url, kind);
-    const jwksOrigin = readJwksOrigin(source.jwks_origin, kind);
+    const jwksUri = readJwksUri(source.jwks_uri);
     const audience = readString(source.expected_audience, "expected_audience");
     if (audience.length === 0 || audience.length > MAX_AUDIENCE_LENGTH) {
         throw fail("expected_audience");
@@ -259,12 +238,11 @@ export function parseTrustProfile(input: unknown): TrustProfile {
         signerKeys.length,
     );
     return brandTrustProfile({
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: kind,
         token_type: "OIDC",
         issuer,
-        discovery_url: discoveryUrl,
-        jwks_origin: jwksOrigin,
+        jwks_uri: jwksUri,
         expected_audience: audience,
         token_max_age_s: tokenMaxAgeS,
         allowed_hwmodels: hwmodels,

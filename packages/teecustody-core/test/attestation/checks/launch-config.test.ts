@@ -71,13 +71,12 @@ async function profileFor(
     env: Readonly<Record<string, string>> | ReadonlyMap<string, string>,
 ): Promise<TrustProfile> {
     return brandTrustProfile({
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "production",
         token_type: "OIDC",
         issuer: "https://confidentialcomputing.googleapis.com",
-        discovery_url:
-            "https://confidentialcomputing.googleapis.com/.well-known/openid-configuration",
-        jwks_origin: "https://www.googleapis.com",
+        jwks_uri:
+            "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com",
         expected_audience: "https://unit.test/tee",
         token_max_age_s: 3600,
         allowed_hwmodels: ["GCP_AMD_SEV"],
