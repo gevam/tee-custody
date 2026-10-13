@@ -140,7 +140,6 @@ def _digest_token(digest: object) -> str:
         pytest.param(f"{HEADER}.{PAYLOAD}.c2lnA", id="impossible-base64-length"),
         pytest.param(f"{HEADER}.{PAYLOAD}.c2lnbh", id="non-canonical-trailing-bits"),
         pytest.param(f"{HEADER}.{PAYLOAD} .{SIGNATURE}", id="space-in-payload"),
-        pytest.param(f"{HEADER}.{_b64(b'\xef\xbb\xbf{}')}.{SIGNATURE}", id="utf8-bom-payload"),
         pytest.param(f"{HEADER}.{_b64(b'[' * 5000)}.{SIGNATURE}", id="deeply-nested-payload"),
         pytest.param(f"{HEADER}.{_payload('a string')}.{SIGNATURE}", id="string-payload"),
         pytest.param(
@@ -201,3 +200,9 @@ def test_payload_that_is_json_only_under_a_non_utf8_decoding_is_rejected() -> No
 def test_payload_nested_beyond_the_json_recursion_limit_is_rejected() -> None:
     value = f"{HEADER}.{_b64(b'[' * 100_000)}.{SIGNATURE}"
     _assert_rejected(_token(value), max_token_bytes=len(value))
+
+
+def test_utf8_bom_before_an_otherwise_valid_payload_is_rejected() -> None:
+    raw = json.dumps(_claims()).encode("utf-8")
+    assert own_image_digest(_token(f"{HEADER}.{_b64(raw)}.{SIGNATURE}"), max_token_bytes=LIMIT)
+    _assert_rejected(_token(f"{HEADER}.{_b64(b'\xef\xbb\xbf' + raw)}.{SIGNATURE}"))
