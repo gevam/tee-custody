@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import functools
 import json
+import math
 import os
 import re
 import time
@@ -15,6 +16,7 @@ import fastapi
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from notes_gateway.limits import GatewayLimits
 from teecustody.queue import CURSOR_PATTERN, QueueError, QueueErrorCode
@@ -87,6 +89,91 @@ async def _read_body(request: Request, max_bytes: int) -> bytes | None:
     return bytes(body) if len(body) == declared else None
 
 
+class _Bucket:
+    """A token bucket: `rate` tokens/s from the injected clock, capacity `burst`."""
+
+    __slots__ = ("burst", "rate", "stamp", "tokens")
+
+    def __init__(self, rate: float, burst: int, now: float) -> None:
+        self.rate = rate
+        self.burst = burst
+        self.tokens = float(burst)
+        self.stamp = now
+
+    def refill(self, now: float) -> None:
+        self.tokens = min(float(self.burst), self.tokens + (now - self.stamp) * self.rate)
+        self.stamp = now
+
+    def retry_after(self) -> int | None:
+        """None if a token is available, else whole seconds until one is (at least 1)."""
+        if self.tokens >= 1.0:
+            return None
+        return max(1, math.ceil((1.0 - self.tokens) / self.rate))
+
+
+class _Limiter:
+    """Global bucket, then a per-source bucket; a token is spent only when both admit."""
+
+    def __init__(self, limits: GatewayLimits, clock: Callable[[], float]) -> None:
+        self._limits = limits
+        self._clock = clock
+        self._global = _Bucket(limits.global_rate, limits.global_burst, clock())
+        self._sources: dict[str, _Bucket] = {}
+
+    def admit(self, source: str) -> int | None:
+        """None if admitted (one token spent from each bucket), else the Retry-After seconds."""
+        now = self._clock()
+        self._global.refill(now)
+        retry = self._global.retry_after()
+        if retry is not None:
+            return retry
+        bucket = self._sources.get(source)
+        if bucket is None:
+            bucket = _Bucket(self._limits.per_source_rate, self._limits.per_source_burst, now)
+            self._sources[source] = bucket
+        bucket.refill(now)
+        retry = bucket.retry_after()
+        if retry is not None:
+            return retry
+        self._global.tokens -= 1.0
+        bucket.tokens -= 1.0
+        return None
+
+
+class _Guard:
+    """Outer ASGI layer: concurrency limit, then rate limits, before any route runs."""
+
+    def __init__(self, app: ASGIApp, *, limits: GatewayLimits, clock: Callable[[], float]) -> None:
+        self._app = app
+        self._max_concurrency = limits.max_concurrency
+        self._in_flight = 0
+        self._limiter = _Limiter(limits, clock)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        if self._in_flight >= self._max_concurrency:
+            await _rate_limited(1)(scope, receive, send)
+            return
+        client = scope.get("client")
+        retry = self._limiter.admit(client[0] if client else "unknown")
+        if retry is not None:
+            await _rate_limited(retry)(scope, receive, send)
+            return
+        self._in_flight += 1
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            self._in_flight -= 1
+
+
+def _rate_limited(retry_after: int) -> Response:
+    response = _json(429, {"code": "RATE_LIMITED"})
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 def create_app(
     queue: RelayQueue,
     *,
@@ -96,6 +183,7 @@ def create_app(
 ) -> fastapi.FastAPI:
     """Build the gateway ASGI app over `queue` (routes: INC-2-API §6)."""
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(_Guard, limits=limits, clock=clock)
 
     @app.get("/bundles")
     @_guarded
