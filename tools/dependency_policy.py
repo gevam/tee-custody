@@ -851,8 +851,12 @@ def _licence_targets(repo: Repo) -> dict[Node, str]:
     return {node: v for node, v in targets.items() if node[1] not in repo.workspace}
 
 
-def _age_exempt(ecosystem: str, name: str) -> bool:
-    return name in AGE_EXCEPTIONS
+def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
+    exception = AGE_EXCEPTIONS.get(name)
+    if exception is None:
+        return False
+    versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
+    return versions == {exception.version}
 
 
 def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterable[Violation]:
@@ -866,7 +870,7 @@ def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterabl
             yield "licence", name
     for ecosystem, name in sorted(repo.runtime):
         released = _released(ecosystem, name, fetch_json)
-        if (released is None or released < cutoff) and not _age_exempt(ecosystem, name):
+        if (released is None or released < cutoff) and not _age_exempt(repo, ecosystem, name):
             yield "stale", name
 
 

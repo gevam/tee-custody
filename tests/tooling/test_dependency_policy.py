@@ -945,3 +945,11 @@ def test_h11_0_16_0_reached_only_through_uvicorn_in_the_gateway_is_not_stale(
     tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert _h11_violations(tool, gateway_tree, capsys) == []
+
+
+@pytest.mark.parametrize("case", ["h11-other-version"])
+def test_h11_outside_the_exact_exception_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str], case: str
+) -> None:
+    _apply_overlay(gateway_tree, case)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
