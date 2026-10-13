@@ -1002,3 +1002,15 @@ def test_h11_through_uvicorn_in_the_library_closure_is_still_stale(
     lock = (gateway_tree / "uv.lock").read_text()
     _write(gateway_tree, "uv.lock", lock.replace(library, library + '    { name = "uvicorn" },\n', 1))
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_an_npm_package_named_h11_gets_no_age_exception(
+    tool: ModuleType, gateway_tree: Path
+) -> None:
+    pnpm = (gateway_tree / "pnpm-lock.yaml").read_text()
+    lock = _add_npm_package(pnpm, "h11", "0.16.0", "'@hpke/core@1.9.0'")
+    _write(gateway_tree, "pnpm-lock.yaml", lock)
+    repo = tool.load_repo(gateway_tree)
+    assert ("npm", "h11") in repo.runtime
+    assert tool._age_exempt(repo, "pypi", "h11")
+    assert not tool._age_exempt(repo, "npm", "h11")

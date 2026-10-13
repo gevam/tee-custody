@@ -854,7 +854,7 @@ def _licence_targets(repo: Repo) -> dict[Node, str]:
 def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
     """True only on the exact path a human decision admits (AGE_EXCEPTIONS); never for the licence."""
     exception = AGE_EXCEPTIONS.get(name)
-    if exception is None:
+    if exception is None or ecosystem != PYPI:
         return False
     graph = repo.uv_runtime_graph
     versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
