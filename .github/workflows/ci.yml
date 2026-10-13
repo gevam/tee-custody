@@ -101,6 +101,7 @@ jobs:
           CORE_SRC = "packages/teecustody-core/src/_semgrep_probe"
           WEB_SRC = "packages/teecustody-web/src/_semgrep_probe"
           GATEWAY_SRC = "examples/notes-app/gateway/src/_semgrep_probe"
+          PY_TESTS = "packages/teecustody-py/tests/_semgrep_probe"
           # (rule, fixture extension, staged directory, must fire)
           CASES = [
               ("tc-ts-no-function-constructor", "ts", WEB_SRC, True),
@@ -130,6 +131,14 @@ jobs:
               ("tc-py-pattern-fullmatch", "py", GATEWAY_SRC, True),
               ("tc-py-no-test-doubles", "py", PY_SRC, True),
               ("tc-py-no-test-doubles", "py", GATEWAY_SRC, True),
+              # A3: next to each exclusion the rule still fires; package test trees stay silent.
+              ("tc-py-hpke-import-confined", "py", "packages/teecustody-py/src/teecustody/channel", True),
+              ("tc-ts-hpke-import-confined", "ts", "packages/teecustody-web/src/crypto", True),
+              ("tc-py-identity-sign-confined", "py", "packages/teecustody-py/src/teecustody/channel", True),
+              ("tc-py-hpke-import-confined", "py", PY_TESTS, False),
+              ("tc-py-no-hpke-seams", "py", PY_TESTS, False),
+              ("tc-py-identity-sign-confined", "py", PY_TESTS, False),
+              ("tc-py-no-kdf-composition", "py", PY_TESTS, False),
           ]
           staged = {}
           for rule, ext, directory, _ in CASES:

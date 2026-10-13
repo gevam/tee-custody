@@ -33,6 +33,10 @@ export const switches = {
     no_verified_bundle: false,
     // ruleid: tc-no-verification-skip
     noVerifiedBundle: false,
+    // ruleid: tc-no-verification-skip
+    NO_VERIFIED_BUNDLE$: false,
+    // ruleid: tc-no-verification-skip
+    $NO_VERIFIED_BUNDLE: false,
 };
 // A1: the frozen channel error code (INC-2-API §7.5) is not a switch. `ok:` cases live here because
 // semgrep --test rejects `ok:` annotations in a file where the rule never fires.

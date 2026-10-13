@@ -15,3 +15,14 @@ opened = open_base(
     ciphertext,
     eks=fixed_ephemeral,
 )
+# A3: pyhpke also takes psk, psk_id, sks, pks and eks positionally or through a ** splat.
+# ruleid: tc-py-no-hpke-seams
+enc, sender = suite.create_sender_context(pk, b"", b"psk", b"id")
+# ruleid: tc-py-no-hpke-seams
+enc, sender = suite.create_sender_context(pk, b"info", b"psk")
+# ruleid: tc-py-no-hpke-seams
+enc, sender = suite.create_sender_context(pk, **{"pks": p})
+# ruleid: tc-py-no-hpke-seams
+recipient = suite.create_recipient_context(enc, sk, b"", b"psk")
+# ruleid: tc-py-no-hpke-seams
+recipient = suite.create_recipient_context(enc, sk, info, **opts)

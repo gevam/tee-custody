@@ -69,9 +69,9 @@ rules:
         - "/packages/teecustody-core/src/**"
         - "/packages/teecustody-py/src/**"
         - "/packages/teecustody-web/src/**"
-    # A1 (T-05, D-046): the standalone upper-case NO_VERIFIED_BUNDLE error code (INC-2-API §7.5) is
-    # the only exemption; every other spelling still fires (see fixtures).
-    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!\bNO_VERIFIED_BUNDLE\b))no_?verif|insecure
+    # A1/A3 (T-05, D-046): the standalone upper-case NO_VERIFIED_BUNDLE error code (INC-2-API §7.5),
+    # with no word or `$` neighbour, is the only exemption; every other spelling fires (see fixtures).
+    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!(?<![\w$])NO_VERIFIED_BUNDLE(?![\w$])))no_?verif|insecure
 
   - id: tc-no-sim-import-in-library
     message: The library never depends on the simulator (NFR-6, spec §15.5).
@@ -339,9 +339,10 @@ rules:
     paths:
       include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
       exclude: ["/packages/teecustody-web/src/crypto/webcrypto.ts"]
-    # Static, type-only, side-effect, re-export, literal dynamic and require forms.
+    # Static, type-only, side-effect, re-export, literal dynamic and require forms; block and line
+    # comments may sit between the keyword and the specifier (A3).
     pattern-regex: >-
-      (?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*["'`]@hpke/
+      (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*["'`]@hpke/
 
   - id: tc-py-no-hpke-seams
     message: >-
@@ -357,6 +358,11 @@ rules:
       - pattern: $F(..., psk_id=$V, ...)
       - pattern: $F(..., pks=$V, ...)
       - pattern: $F(..., sks=$V, ...)
+      # A3: pyhpke takes psk, psk_id, sks, pks and eks positionally or through a ** splat.
+      - pattern: $S.create_sender_context($A, $B, $C, ...)
+      - pattern: $S.create_sender_context(..., **$KW, ...)
+      - pattern: $S.create_recipient_context($A, $B, $C, $D, ...)
+      - pattern: $S.create_recipient_context(..., **$KW, ...)
 
   - id: tc-ts-no-hpke-seams
     message: >-
