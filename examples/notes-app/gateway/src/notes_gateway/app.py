@@ -348,9 +348,10 @@ def create_app(
     @_guarded
     async def pull_responses(request: Request) -> Response:
         client = _check(_HEX32_PATTERN, request.path_params["client"])
-        after = request.query_params.get("after")
-        if after is not None:
-            _check(CURSOR_PATTERN, after)
+        cursors = request.query_params.getlist("after")
+        if len(cursors) > 1:
+            raise _Invalid
+        after = _check(CURSOR_PATTERN, cursors[0]) if cursors else None
         page = await run_in_threadpool(queue.pull_responses, client, after, limits.max_page)
         items = [
             {"request_id": r.request_id, "body": _b64url(r.body)}

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
+import sys
 import typing
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -638,3 +640,33 @@ def test_request_bodies_never_appear_in_logs_or_responses(
     for text in (accepted.text, oversize.text, wrong_type.text, all_logs.text):
         assert SENTINEL not in text
         assert SENTINEL.encode().hex() not in text
+
+
+# ---------------------------------------------------------------- edge cases
+@pytest.mark.parametrize("query", ["after=a&after=b", "after=a&after=", "after=&after=a"])
+def test_a_repeated_cursor_is_400_with_no_queue_call(query: str) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).get(f"/responses/{CLIENT}?{query}")
+
+    assert (response.status_code, response.content) == (400, INVALID)
+    assert relay.calls == []
+
+
+def test_route_id_pattern_equals_the_channel_hex32_pattern() -> None:
+    from notes_gateway import app as gateway_app
+    from teecustody.channel.codec import HEX32_PATTERN
+
+    assert gateway_app._HEX32_PATTERN.pattern == HEX32_PATTERN.pattern
+
+
+def test_importing_the_gateway_never_imports_cbor2_or_the_simulator() -> None:
+    probe = (
+        "import sys, notes_gateway; "
+        "print(sorted(m for m in sys.modules if m.split('.')[0] in ('cbor2', 'teecustody_sim')))"
+    )
+    result = subprocess.run(  # noqa: S603 -- fixed argv, no shell
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "[]"
