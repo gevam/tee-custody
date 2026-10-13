@@ -15,6 +15,7 @@ Revision 3 addendum (2026-10-13):
 - §4.5, §4.8: `repr=False` on payload fields.
 - §4.9: `FrameAad` is excluded from the `seq`-parameter check.
 - §7.1, §7.2: branded byte fields are copy-on-read getters (T-02 security review, DESIGN_ISSUE).
+- §4.4: closed upper bounds for every `BoundaryLimits`/`DecodeLimits` field, and `pull_wait_s` ≥ 0.01 (T-09 security review).
 
 Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
@@ -446,7 +447,7 @@ class BoundaryLimits:                              # ARCHITECTURE "Validation an
     open_payload_decode: DecodeLimits = DecodeLimits(max_bytes=1024, max_depth=2, max_items=16)
     payload_decode: DecodeLimits = DecodeLimits(max_bytes=32768, max_depth=16, max_items=4096)
     pull_max_messages: int = 32
-    pull_wait_s: float = 1.0                       # 0 < x <= 30
+    pull_wait_s: float = 1.0                       # 0.01 <= x <= 30 (bounds table below)
     max_sessions: int = 1024
     session_evict_min_idle_s: int = 60             # R-8; 1 <= x <= ChannelParams.idle_timeout_s (checked by RunLoop)
     replay_cache_max_entries: int = 100_000
@@ -458,7 +459,37 @@ class BoundaryLimits:                              # ARCHITECTURE "Validation an
     bundle_republish_min_interval_s: int = 5
 ```
 `__post_init__` rejects any value that is not a finite positive number of the declared type (bool is not an
-int), any `DecodeLimits` field < 1 or `max_depth` > 16, and the cross-field rules above. `RunLoop.__init__` checks
+int), any `DecodeLimits` field < 1 or `max_depth` > 16, and the cross-field rules above.
+
+**Upper bounds (2026-10-13; T-09 security review, Low; SR-4, T-07/T-17 detection).** Every field also has a closed
+range. A value outside it → `ConfigError("INVALID_LIMITS:<field>")`, or `INVALID_PARAMS` for `ChannelParams`. The
+reason: a huge value (10^18) would disable a limit or an alert, and a denormal float would turn polling into a busy
+loop. Ranges are inclusive, and every default lies inside its range.
+
+| Field | Range | Default | Basis |
+|---|---|---|---|
+| `max_token_bytes` | 1024..16384 | 16384 | CDDL `token` ≤ 16384 |
+| `max_request_bytes` | 1024..65536 | 65536 | largest frame envelope ≈ 33 KB; gateway default |
+| every `DecodeLimits` | `max_depth` 1..16; `max_items` 1..`max_bytes`; `max_bytes` 1..`max_request_bytes` | — | an item takes ≥ 1 byte; nothing decoded can exceed the envelope |
+| `aad_decode.max_bytes` | ≤ 1024 | 512 | AAD maps are < 200 B |
+| `open_payload_decode.max_bytes` | ≤ 2048 | 1024 | open `ct` ≤ 2048 (CDDL) |
+| `payload_decode.max_bytes` | ≤ 32768 | 32768 | frame `ct` ≤ 32784 = 32768 + tag |
+| `pull_max_messages` | 1..1000 | 32 | Pub/Sub pull maximum |
+| `pull_wait_s` (float) | 0.01..30.0, finite | 1.0 | no busy loop; bounded shutdown latency |
+| `max_sessions` | 1..65536 | 1024 | bounded memory; T-25 |
+| `session_evict_min_idle_s` | 1..86400, and ≤ `idle_timeout_s` (RunLoop) | 60 | R-8 |
+| `replay_cache_max_entries` | 1..1_000_000 | 100_000 | bounded memory (≈ 100 MB at the maximum) |
+| `audit_aggregate_interval_s` | 10..900 | 60 | detection latency ≤ 15 min (T-07, T-17) |
+| `audit_alert_cap` | 1..10_000 | 100 | bounded audit volume |
+| `prekey_burn_alert_threshold` | 1..10_000 per interval | 500 | larger values could never fire (T-17) |
+| `attestation_retry_min_s` | 1..300 | 30 | B-08 |
+| `attestation_retry_max_s` | `retry_min`..3600 | 300 | B-08; stays below the token lifetime |
+| `bundle_republish_min_interval_s` | 1..300 | 5 | bundles stay fresh |
+
+`ChannelParams` keeps the ranges in its comments (already closed).
+
+Each bound gets two tests: the bound itself is accepted, and bound ± 1 (or the next float) is rejected. Tests also
+cover `pull_wait_s=5e-324` and `1e18` on every int field. Owner: T-09. `RunLoop.__init__` checks
 the one rule that spans both objects (`session_evict_min_idle_s <= idle_timeout_s`) and raises
 `ConfigError("INVALID_LIMITS:session_evict_min_idle_s")`. Values are project defaults, not normative. Example: `BoundaryLimits(max_sessions=64)`; `BoundaryLimits(pull_wait_s=0)` →
 `ConfigError("INVALID_LIMITS:pull_wait_s")`.
