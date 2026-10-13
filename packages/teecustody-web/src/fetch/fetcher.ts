@@ -40,12 +40,46 @@ function isRedirect(response: Response, url: string): boolean {
     );
 }
 
+// Reads the body chunk by chunk and cancels the stream the moment the running total exceeds the bound.
+async function readBounded(
+    body: ReadableStream<Uint8Array> | null,
+    maxBodyBytes: number,
+): Promise<Uint8Array> {
+    if (body === null) {
+        return new Uint8Array(0);
+    }
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        total += value.byteLength;
+        if (total > maxBodyBytes) {
+            void reader.cancel();
+            throw new CapabilityError("INVALID_RESPONSE");
+        }
+        chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out;
+}
+
 export class FetchFetcher implements Fetcher {
     readonly #fetch: FetchFn;
+    readonly #maxBodyBytes: number;
 
     // TypeError("INVALID_CONFIG") on bad options
     constructor(options: FetchFetcherOptions) {
         this.#fetch = options.fetch as FetchFn;
+        this.#maxBodyBytes = options.maxBodyBytes;
     }
 
     async get(url: string): Promise<FetchResponse> {
@@ -68,6 +102,10 @@ export class FetchFetcher implements Fetcher {
             void response.body?.cancel();
             throw new CapabilityError("HTTP_ERROR");
         }
-        return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
+        if (Number(response.headers.get("Content-Length")) > this.#maxBodyBytes) {
+            void response.body?.cancel();
+            throw new CapabilityError("INVALID_RESPONSE");
+        }
+        return { status: response.status, body: await readBounded(response.body, this.#maxBodyBytes) };
     }
 }

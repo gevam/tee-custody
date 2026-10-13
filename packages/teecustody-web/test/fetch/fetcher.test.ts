@@ -160,3 +160,42 @@ describe("criterion 4: a non-2xx status fails closed and the body is cancelled",
         expect(probe.pulls).toBe(0);
     });
 });
+
+describe("criterion 5: the body is bounded by maxBodyBytes while streaming", () => {
+    it("Content-Length of maxBodyBytes + 1 -> INVALID_RESPONSE before any read", async () => {
+        const { body, probe } = probedBody([new Uint8Array(10)]);
+        const { fetch } = spy(
+            () => new Response(body, { status: 200, headers: { "Content-Length": "1025" } }),
+        );
+        expect(codeOf(await rejection(make(fetch, 1024).get(URL_OK)))).toBe("INVALID_RESPONSE");
+        expect(probe.pulls).toBe(0);
+        expect(probe.cancelled).toBe(true);
+    });
+
+    it("a chunked body crossing the limit in its third chunk -> INVALID_RESPONSE, cancelled, no fourth pull", async () => {
+        const { body, probe } = probedBody(Array.from({ length: 10 }, () => new Uint8Array(400)));
+        const { fetch } = spy(() => new Response(body, { status: 200 }));
+        expect(codeOf(await rejection(make(fetch, 1024).get(URL_OK)))).toBe("INVALID_RESPONSE");
+        expect(probe.cancelled).toBe(true);
+        expect(probe.pulls).toBe(3);
+    });
+
+    it("a streamed body of exactly maxBodyBytes is returned whole, in order", async () => {
+        const chunks = [new Uint8Array(400).fill(1), new Uint8Array(400).fill(2), new Uint8Array(224).fill(3)];
+        const { body } = probedBody(chunks);
+        const { fetch } = spy(
+            () => new Response(body, { status: 200, headers: { "Content-Length": "1024" } }),
+        );
+        const result = await make(fetch, 1024).get(URL_OK);
+        expect(Array.from(result.body)).toEqual(chunks.flatMap((c) => Array.from(c)));
+    });
+});
+
+describe("decision: a null body resolves an empty Uint8Array", () => {
+    it("204 with no body -> {status: 204, body: empty}", async () => {
+        const { fetch } = spy(() => new Response(null, { status: 204 }));
+        const result = await make(fetch).get(URL_OK);
+        expect(result.status).toBe(204);
+        expect(result.body).toEqual(new Uint8Array(0));
+    });
+});
