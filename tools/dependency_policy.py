@@ -856,7 +856,16 @@ def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
     if exception is None:
         return False
     versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
-    return versions == {exception.version}
+    return versions == {exception.version} and name not in _reached_avoiding(repo, exception.via)
+
+
+def _reached_avoiding(repo: Repo, avoided: str) -> set[str]:
+    """Python runtime nodes reachable from the shipped roots when ``avoided`` is not in the graph."""
+    members = {name for name in repo.workspace if name in repo.uv_runtime_graph}
+    direct = {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
+    roots = (members | direct) - {avoided}
+    pruned = {n: edges - {avoided} for n, edges in repo.uv_runtime_graph.items() if n != avoided}
+    return roots | _closure(pruned, roots)
 
 
 def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterable[Violation]:
