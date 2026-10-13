@@ -47,18 +47,15 @@ function checkHeader(t: ParsedToken): string {
 
 // Fetches the JWKS through the injected Fetcher; any transport, status (a redirect included), size, UTF-8 or
 // JSON-shape failure is UNTRUSTED_SIGNER (INC-2-API §16.2 step 2). Errors carry no response content (SR-11).
-async function fetchJsonObject(
-    deps: VerifierDeps,
-    url: string,
-    maxBytes: number,
-): Promise<JsonObject> {
+// The Fetcher receives exactly the profile's string, once per call (ADR 0012 rule 2).
+async function fetchJwks(p: TrustProfile, deps: VerifierDeps): Promise<JsonObject> {
     let response: FetchResponse;
     try {
-        response = await deps.fetcher.get(url);
+        response = await deps.fetcher.get(p.jwks_uri);
     } catch {
         return reject("UNTRUSTED_SIGNER");
     }
-    if (response.status !== 200 || response.body.length > maxBytes) {
+    if (response.status !== 200 || response.body.length > deps.limits.maxJwksBytes) {
         return reject("UNTRUSTED_SIGNER");
     }
     let parsed: JsonValue;
@@ -118,7 +115,7 @@ export async function checkSignature(
     deps: VerifierDeps,
 ): Promise<void> {
     const kid = checkHeader(t);
-    const jwks = await fetchJsonObject(deps, p.jwks_uri, deps.limits.maxJwksBytes);
+    const jwks = await fetchJwks(p, deps);
     const jwk = selectKey(jwks, kid);
     // unknown: an adapter is outside this module's control; only a boolean true verifies.
     let valid: unknown;
