@@ -1,10 +1,10 @@
 # Status — tee-custody
 
-Updated: 2026-10-13 (INC-2 Wave 0 merging) by Orchestrator
+Updated: 2026-10-13 (INC-2 Wave 1 started) by Orchestrator
 
 ## Where we are
-Stage: INC-2 wave 0 implementation
-Last gate passed: G4 (INC-2 Wave 0, D-042)   Next gate: G4 (Wave 1), G5
+Stage: INC-2 wave 1 implementation (batch B1)
+Last gate passed: G4 (INC-2 Wave 1 B1 part, D-050)   Next gate: G4 (rest of Wave 1), G5
 Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 
 ## INC-1 — Attestation foundation (done)
@@ -21,17 +21,20 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 ## INC-2 — Encrypted channel and browser client
 38 items (T-01..T-36, V-01, V-02) in 6 waves (docs/tasks/INC-2/WAVES.md); merge unit MU-1 = T-33 + T-21 + T-34 + T-36 (D-043 pinned jwks_uri).
 
-| Wave 0 item | State | Review rounds |
-|---|---|---|
-| T-04 Python frozen API | merged 7dc4f7f | 2 (CR Medium test gaps, SR 3 Lows → fixed) |
-| T-03 channel CDDL + harness | merged ac707fc (human-approved D-048) | 2 (+ pin) |
-| V-01 HPKE verification | merged a37d7d7 | SA sign-off (pyhpke); @hpke/* via D-045 |
-| V-02 browser facts | merged 94a2b40 | — |
-| T-06 backlog rows | on trunk (D-044) | — |
-| T-01 gateway tooling | CR + SR APPROVE, awaiting merge | 2 |
-| T-02 TS tooling | round-2 re-review | 2 (SR Medium mutable key bytes → copy-on-read, audit High fixed) |
-| T-05 static rules | round-2 re-review | 2 (SR Medium seam bypass) |
-| QA INC-2 acceptance tests | authoring | — |
+Wave 0: complete on main c38d7fa (D-050), all branches Code+Security APPROVE.
+
+| Wave 1 item | State |
+|---|---|
+| T-07 Python codec | running |
+| T-08 pyhpke + open_base | running |
+| T-16 Core bundle verify/select | running |
+| T-17 @hpke/core + WebCrypto | running; C6 hold point before lock change |
+| T-21, T-33 (MU-1) | start after T-36 authored |
+| T-09, T-13, T-15, T-37 | waiting for QA acceptance tests (QA-acceptance-2 in progress) |
+| T-36 (QA, MU-1) | authoring |
+| T-10..T-14, T-18..T-20, T-34 | batches B2/B3 |
+
+Known red on trunk: prettier on vendored tests/fixtures/rfc9180/test-vectors.json until T-37 merges.
 
 ## Blockers
 | Id | Blocking | Owner | Since | Next action |
