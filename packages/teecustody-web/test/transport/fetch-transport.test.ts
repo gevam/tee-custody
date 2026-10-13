@@ -731,6 +731,22 @@ describe("FetchTransport edge cases", () => {
         expect(calls).toHaveLength(1);
     });
 
+    it("copies exactly the view's bytes, even for a view into a larger buffer", async () => {
+        const { fetch, calls } = spy(
+            json(`{"request_id":"${RID}"}`, 202),
+            json(`{"request_id":"${RID}"}`, 202),
+        );
+        const backing = new Uint8Array([9, 9, 1, 2, 3, 9, 9]);
+        const transport = make(fetch);
+        await transport.postRequest(IID, backing.subarray(2, 5));
+        await transport.postRequest(IID, Buffer.from([4, 5, 6]));
+        const sent = calls.map((call) => Array.from(new Uint8Array(call.init.body as ArrayBuffer)));
+        expect(sent).toEqual([
+            [1, 2, 3],
+            [4, 5, 6],
+        ]);
+    });
+
     it("gives concurrent calls independent timers and results", async () => {
         const { fetch } = spy(
             json(`{"request_id":"${RID}"}`, 202),

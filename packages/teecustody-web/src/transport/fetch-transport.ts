@@ -190,6 +190,14 @@ async function readBounded(response: Response, limit: number): Promise<Uint8Arra
     return bytes;
 }
 
+// A fresh ArrayBuffer holding exactly the view's bytes. `slice()` is not used: on a Node Buffer it is a
+// view into a shared pool, whose `.buffer` would carry unrelated memory.
+function copyOf(view: Uint8Array): ArrayBuffer {
+    const copy = new Uint8Array(view.byteLength);
+    copy.set(view);
+    return copy.buffer;
+}
+
 function exactObject(value: unknown, keys: readonly string[]): Json {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw invalidResponse();
@@ -268,7 +276,7 @@ export class FetchTransport implements Transport {
             {
                 method: "POST",
                 headers: { "Content-Type": "application/octet-stream" },
-                body: body.slice().buffer,
+                body: copyOf(body),
             },
             202,
         );
