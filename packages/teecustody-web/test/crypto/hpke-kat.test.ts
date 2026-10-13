@@ -11,7 +11,7 @@ import {
     HkdfSha256,
     type EncryptionContext,
 } from "@hpke/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
 
@@ -153,6 +153,37 @@ describe("RFC 9180 KATs (criterion 7, ADR 0011 C4)", () => {
             });
             await openAll(v, (aad, ct) => receiver.open(ct, aad));
             await checkExports(v, (label, length) => receiver.export(label, length));
+        }
+    });
+});
+
+describe("KATs on the native X25519 path (criterion 10, C3a.3)", () => {
+    it("every KAT encap and decap calls global deriveBits with X25519", async () => {
+        const spy = vi.spyOn(globalThis.crypto.subtle, "deriveBits");
+        const x25519Calls = (): number =>
+            spy.mock.calls.filter(([a]) => (typeof a === "string" ? a : a.name) === "X25519")
+                .length;
+        try {
+            const crypto = createWebCrypto();
+            for (const v of [...SUITE_0002, ...APPENDIX_A1]) {
+                const before = x25519Calls();
+                await checkSender(v);
+                const afterEncap = x25519Calls();
+                expect(afterEncap).toBeGreaterThan(before);
+                if (v.aead_id === 0x0002) {
+                    await crypto.setupHpkeReceiver(bytes(v.skRm), bytes(v.enc), bytes(v.info));
+                } else {
+                    const suite = librarySuite(v.aead_id);
+                    await suite.createRecipientContext({
+                        recipientKey: await suite.kem.deserializePrivateKey(bytes(v.skRm)),
+                        enc: bytes(v.enc),
+                        info: bytes(v.info),
+                    });
+                }
+                expect(x25519Calls()).toBeGreaterThan(afterEncap);
+            }
+        } finally {
+            spy.mockRestore();
         }
     });
 });

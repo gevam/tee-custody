@@ -629,3 +629,37 @@ describe("no globalThis.crypto (criterion 9, C7a.3)", () => {
         ]);
     });
 });
+
+/** Records the algorithm name of every `globalThis.crypto.subtle.deriveBits` call. */
+function spyDeriveBits(): { names: () => string[]; restore: () => void } {
+    const spy = vi.spyOn(globalThis.crypto.subtle, "deriveBits");
+    return {
+        names: () =>
+            spy.mock.calls.map(([algorithm]) =>
+                typeof algorithm === "string" ? algorithm : algorithm.name,
+            ),
+        restore: () => {
+            spy.mockRestore();
+        },
+    };
+}
+
+describe("native X25519 path (criterion 10, C3a.3)", () => {
+    it("runs every encap and decap of the round trip through global deriveBits X25519", async () => {
+        const { sk, pk } = await x25519KeyPair();
+        const crypto = createWebCrypto();
+        const derive = spyDeriveBits();
+        try {
+            const sender = await crypto.setupHpkeSender(pk, INFO);
+            const afterEncap = derive.names().filter((n) => n === "X25519").length;
+            expect(afterEncap).toBeGreaterThanOrEqual(1);
+            const ct = await sender.seal(AAD, PT);
+            const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+            const afterDecap = derive.names().filter((n) => n === "X25519").length;
+            expect(afterDecap).toBeGreaterThan(afterEncap);
+            expect(hex(await receiver.open(AAD, ct))).toBe(hex(PT));
+        } finally {
+            derive.restore();
+        }
+    });
+});
