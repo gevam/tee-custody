@@ -287,3 +287,17 @@ def test_lifespan_events_pass_through_without_spending_budget() -> None:
 
     with TestClient(app, client=("unknown", 40000)) as client:
         assert client.get("/bundles").status_code == 200
+
+
+# ------------------------------------------------------------- criterion 8: LRU of source buckets
+def test_the_least_recently_used_source_bucket_is_evicted() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1, max_sources_tracked=2)
+    a, b, c = (_source(app, f"192.0.2.{i}") for i in (1, 2, 3))
+
+    assert [a.get("/bundles").status_code, b.get("/bundles").status_code] == [200, 200]
+    assert a.get("/bundles").status_code == 429  # A is now the most recently used
+    assert c.get("/bundles").status_code == 200  # tracking C evicts B, not A
+    assert b.get("/bundles").status_code == 200  # B starts a fresh bucket; A is evicted
+    assert c.get("/bundles").status_code == 429  # C is still tracked
+    assert a.get("/bundles").status_code == 200  # A was evicted

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -118,7 +119,7 @@ class _Limiter:
         self._limits = limits
         self._clock = clock
         self._global = _Bucket(limits.global_rate, limits.global_burst, clock())
-        self._sources: dict[str, _Bucket] = {}
+        self._sources: OrderedDict[str, _Bucket] = OrderedDict()  # least recently used first
 
     def admit(self, source: str) -> int | None:
         """None if admitted (one token spent from each bucket), else the Retry-After seconds."""
@@ -127,10 +128,7 @@ class _Limiter:
         retry = self._global.retry_after()
         if retry is not None:
             return retry
-        bucket = self._sources.get(source)
-        if bucket is None:
-            bucket = _Bucket(self._limits.per_source_rate, self._limits.per_source_burst, now)
-            self._sources[source] = bucket
+        bucket = self._source_bucket(source, now)
         bucket.refill(now)
         retry = bucket.retry_after()
         if retry is not None:
@@ -138,6 +136,17 @@ class _Limiter:
         self._global.tokens -= 1.0
         bucket.tokens -= 1.0
         return None
+
+    def _source_bucket(self, source: str, now: float) -> _Bucket:
+        bucket = self._sources.get(source)
+        if bucket is not None:
+            self._sources.move_to_end(source)
+            return bucket
+        bucket = _Bucket(self._limits.per_source_rate, self._limits.per_source_burst, now)
+        self._sources[source] = bucket
+        if len(self._sources) > self._limits.max_sources_tracked:
+            self._sources.popitem(last=False)
+        return bucket
 
 
 class _Guard:
