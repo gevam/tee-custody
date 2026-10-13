@@ -88,9 +88,9 @@ coding_standards:
   logging: "structured JSON via stdlib logging (Python) and a pino-compatible logger (TS) with an explicit allow-list of fields: client_id, request_id, session_id, prekey_id, epoch, timestamps, outcome codes; security audit records may additionally carry actor_client_id, subject_client_id and recovery_id (D-007, spec §11 identifier kinds); aggregate pre-authentication failure records may carry a non-negative integer count (D-012). Never payloads, keys, shares, nonces, ciphertext or request bodies. Secrets are held in teecustody.secrets.Secret, whose repr is redacted."
 
 # Commands the roles run. Must work from a clean checkout.
-test_command: "uv run pytest -q packages/teecustody-py packages/teecustody-sim tests && pnpm -r test && uv run pytest -q spec/vectors"
-lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off"
-coverage_command: "uv run pytest --cov=teecustody --cov=teecustody_sim --cov-report=term-missing packages/teecustody-py packages/teecustody-sim && pnpm -r coverage"
+test_command: "uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway tests && pnpm -r test && uv run pytest -q spec/vectors"
+lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off"
+coverage_command: "uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway --cov-report=term-missing packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway && pnpm -r coverage"
 # The Architect may replace uv/pnpm in an ADR; the three commands stay single-line and clean-checkout runnable.
 
 # ---------------------------------------------------------------------------
