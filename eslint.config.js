@@ -51,13 +51,15 @@ const HPKE_DYNAMIC_BAN = {
 // ADR 0011 C5: no ekm / PSK / sender-key (Auth mode) seams in library source.
 const C5_MESSAGE = "ADR 0011 C5: no HPKE seams outside tests";
 
+const C5_NAMES = "/^(ekm|psk|pskId|senderKey|senderPublicKey)$/";
+
 const C5_BANS = [
-    {
-        selector: "Property[key.name=/^(ekm|psk|pskId|senderKey|senderPublicKey)$/]",
-        message: C5_MESSAGE,
-    },
-    { selector: "Identifier[name=/^(ekm|pskId|senderKey)$/]", message: C5_MESSAGE },
-];
+    `Property[key.name=${C5_NAMES}]`,
+    `Property[key.value=${C5_NAMES}]`,
+    `MemberExpression[property.name=${C5_NAMES}]`,
+    `MemberExpression[property.value=${C5_NAMES}]`,
+    `Identifier[name=${C5_NAMES}]`,
+].map((selector) => ({ selector, message: C5_MESSAGE }));
 
 // Declared so the core no-implied-eval rule can see these callees; they are not usable in Core
 // (its tsconfig declares no DOM or Node types).

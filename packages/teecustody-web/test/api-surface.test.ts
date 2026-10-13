@@ -137,6 +137,38 @@ describe("ESLint policy for packages/teecustody-web/src (NFR-6, SR-13, SR-14 C5)
         return (result?.messages ?? []).filter((m) => m.severity === 2).map((m) => m.ruleId);
     }
 
+    const C5_MESSAGE = "ADR 0011 C5: no HPKE seams outside tests";
+
+    async function c5Errors(code: string, filePath: string): Promise<number> {
+        const [result] = await eslint.lintText(code, { filePath });
+        return (result?.messages ?? []).filter((m) => m.severity === 2 && m.message === C5_MESSAGE)
+            .length;
+    }
+
+    // A2(b): quoted, computed and member-access spellings of the C5 names (ADR 0011 C5).
+    const C5_BYPASSES = [
+        'const k = 1;\nvoid { "ekm": k };',
+        'void { "psk": 1 };',
+        'void { ["psk"]: 1 };',
+        'const k = 1;\nconst o: Record<string, number> = {};\no["senderKey"] = k;',
+        "const opts = {} as Record<string, unknown>;\nvoid String(opts.psk);",
+        "const o = {} as Record<string, unknown>;\nconst { senderPublicKey } = o;\nvoid senderPublicKey;",
+    ];
+
+    it.each(C5_BYPASSES)("reports C5 for %s in web src", async (code) => {
+        expect(await c5Errors(code, WEB_SRC)).toBeGreaterThan(0);
+    });
+
+    it.each(C5_BYPASSES)("reports C5 for %s in core src", async (code) => {
+        expect(await c5Errors(code, CORE_SRC)).toBeGreaterThan(0);
+    });
+
+    it("does not report C5 for names that merely contain a C5 name", async () => {
+        const code = "void { pskIdentity: 1, info: 2 };";
+        expect(await c5Errors(code, WEB_SRC)).toBe(0);
+        expect(await c5Errors(code, CORE_SRC)).toBe(0);
+    });
+
     it.each([
         ["const x = 1;\nvoid { ekm: x };", "no-restricted-syntax"],
         ["const x = 1;\nvoid { psk: x };", "no-restricted-syntax"],
