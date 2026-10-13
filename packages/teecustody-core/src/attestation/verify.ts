@@ -51,6 +51,11 @@ async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Pr
     }
 }
 
+// VerifierLimits.maxDiscoveryBytes without its @deprecated tag (INC-2-API §16.2, DEBT-2).
+interface LegacyLimits {
+    readonly maxDiscoveryBytes?: number;
+}
+
 // Every VerifierLimits value is a positive safe integer; a NaN, infinite or non-positive cap would disable a
 // size bound downstream, so it fails the step that uses it.
 function requireLimit(value: number, check: AttestationCheckId): void {
@@ -75,7 +80,12 @@ export async function verifyAttestation(
         requireLimit(deps.limits.maxTokenBytes, "token");
     });
     await step("signature", () => {
-        requireLimit(deps.limits.maxDiscoveryBytes, "signature");
+        // D-043 / DEBT-2: the one sanctioned read of the deprecated field. It is validated only when present
+        // and never used as a bound.
+        const legacy: LegacyLimits = deps.limits;
+        if (legacy.maxDiscoveryBytes !== undefined) {
+            requireLimit(legacy.maxDiscoveryBytes, "signature");
+        }
         requireLimit(deps.limits.maxJwksBytes, "signature");
     });
     const t = await step("token", () => parseToken(token, deps.limits.maxTokenBytes));

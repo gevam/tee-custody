@@ -91,8 +91,9 @@ export class TrustProfileError extends Error {
 
 export interface VerifierLimits {
     readonly maxTokenBytes: number;
-    readonly maxDiscoveryBytes: number;
     readonly maxJwksBytes: number;
+    /** @deprecated D-043: ignored (no discovery fetch). If present, must be a positive safe integer. Removed before v1.0.0. */
+    readonly maxDiscoveryBytes?: number;
 }
 
 // [CI-1]

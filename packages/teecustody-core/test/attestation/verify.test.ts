@@ -40,7 +40,7 @@ const SIGNER_B = "0b".repeat(32);
 const ARGS = ["/app/workload"];
 const ENV = { PYTHONUNBUFFERED: "1" };
 const IDENTITY_NONCE = new Uint8Array(32).fill(7);
-const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 4_096, maxJwksBytes: 16_384 };
+const LIMITS = { maxTokenBytes: 16_384, maxJwksBytes: 16_384 };
 const HEADER = { alg: "RS256", kid: KID, typ: "JWT" };
 
 type Claims = Record<string, unknown>;
@@ -778,6 +778,37 @@ describe("verifyAttestation: limits are validated at entry, before any fetch", (
     const rows = LIMIT_CHECKS.flatMap(({ limit, check }) =>
         BAD.map((value) => ({ limit, check, value })),
     );
+
+    // T-33 C6 (INC-2-API §16.2; D-047 Q9d): maxDiscoveryBytes is inert; it is validated only when present.
+    it("maxDiscoveryBytes absent → accepted", async () => {
+        const h = harness();
+        expect(Object.hasOwn(h.deps.limits, "maxDiscoveryBytes")).toBe(false);
+        await expect(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                h.deps,
+            ),
+        ).resolves.toBeDefined();
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+    });
+
+    it("maxDiscoveryBytes present and valid is never read as a bound", async () => {
+        const h = harness();
+        const deps = { ...h.deps, limits: { ...LIMITS, maxDiscoveryBytes: 1 } };
+        await expect(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                deps,
+            ),
+        ).resolves.toBeDefined();
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+    });
 
     it.each(rows)(
         "$limit = $value → $check/MALFORMED, no fetch",

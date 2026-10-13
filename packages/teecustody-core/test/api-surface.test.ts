@@ -409,8 +409,8 @@ describe("API.md §D type pins", () => {
         expectTypeOf<core.TrustProfileError>().toExtend<Error>();
         expectTypeOf<VerifierLimits>().toEqualTypeOf<{
             readonly maxTokenBytes: number;
-            readonly maxDiscoveryBytes: number;
             readonly maxJwksBytes: number;
+            readonly maxDiscoveryBytes?: number;
         }>();
         expectTypeOf<VerifierDeps>().toEqualTypeOf<{
             readonly crypto: Pick<Crypto, "sha256" | "verifySignature">;

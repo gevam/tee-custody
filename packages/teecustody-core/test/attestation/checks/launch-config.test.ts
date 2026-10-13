@@ -25,7 +25,7 @@ const DEPS: VerifierDeps = {
     crypto,
     fetcher: mapFetcher(new Map()),
     now: () => 1_700_000_000_000,
-    limits: { maxTokenBytes: 16_384, maxDiscoveryBytes: 4_096, maxJwksBytes: 16_384 },
+    limits: { maxTokenBytes: 16_384, maxJwksBytes: 16_384 },
 };
 
 async function hexSha256(bytes: Uint8Array): Promise<string> {

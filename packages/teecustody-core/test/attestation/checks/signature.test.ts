@@ -25,7 +25,7 @@ const JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/signer@confide
 const ATTACKER_JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/attacker@evil.iam.gserviceaccount.com`;
 const KID = "1be6ff7287d640316ddc929e1a8b21fbca7e54e7";
 const CLAIMS = { iss: ISSUER, aud: "https://unit.test/tee", exp: 2_000_000_000 };
-const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 4_096, maxJwksBytes: 16_384 };
+const LIMITS = { maxTokenBytes: 16_384, maxJwksBytes: 16_384 };
 
 const PROFILE: TrustProfile = brandTrustProfile({
     profile_version: 2,
