@@ -20,6 +20,7 @@ EXPORT_C2T: Final = b"c2t"
 EXPORT_T2C: Final = b"t2c"
 EXPORT_LENGTH: Final = 32
 
+_PRIVATE_KEY_LENGTH: Final = 32
 _SUITE: Final = CipherSuite.new(
     KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM
 )
@@ -59,6 +60,8 @@ def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: byte
     Every library failure becomes `HpkeError(OPEN_FAILED)` with no cause and no context: a
     low-order `enc` surfaces as `cryptography`'s ValueError, not pyhpke's OpenError (D-045).
     """
+    if len(private_key) != _PRIVATE_KEY_LENGTH:  # a wiped Secret has length 0
+        raise HpkeError(HpkeErrorCode.INVALID_KEY)
     recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
     try:
         context = _SUITE.create_recipient_context(enc, recipient_key, info)

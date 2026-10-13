@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.hpke import HpkeError, HpkeErrorCode, generate_keypair, open_base
+from teecustody.secrets import Secret
 
 SUITE = CipherSuite.new(KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM)
 INFO = b"tee-custody test info"
@@ -114,3 +115,30 @@ def test_tampered_input_fails_with_open_failed_and_no_cause(tamper: Tamper) -> N
         open_base(private, enc, info, aad, ct)
 
     _assert_open_failed(err)
+
+
+# ---------------------------------------------------------------- criterion 4
+def _wiped_key() -> Secret:
+    private, _ = generate_keypair()
+    private.wipe()
+    return private
+
+
+INVALID_KEYS: dict[str, Callable[[], Secret]] = {
+    "wiped": _wiped_key,
+    "31-bytes": lambda: Secret(bytes(range(1, 32))),
+}
+
+
+@pytest.mark.parametrize("make_key", INVALID_KEYS.values(), ids=INVALID_KEYS.keys())
+def test_wiped_or_short_private_key_fails_with_invalid_key(make_key: Callable[[], Secret]) -> None:
+    _, public = generate_keypair()
+    sealed = _seal(public)
+
+    with pytest.raises(HpkeError) as err:
+        open_base(make_key(), sealed.enc, INFO, AAD, sealed.ct)
+
+    assert err.value.code is HpkeErrorCode.INVALID_KEY
+    assert str(err.value) == "INVALID_KEY"
+    assert err.value.__cause__ is None
+    assert err.value.__context__ is None
