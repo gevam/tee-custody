@@ -101,6 +101,9 @@ export async function verifyBundle(
     deps: BundleDeps,
 ): Promise<VerifiedBundle> {
     const decoded = decodeBundle(published.bundle, deps);
+    if (decoded.instanceId !== published.instanceId) {
+        throw new BundleError("INSTANCE_MISMATCH");
+    }
     const identityNonce = await deps.crypto.sha256(decoded.ikPub);
     const attestation = await verifyAttestation(decoded.token, profile, { identityNonce }, events, {
         crypto: deps.crypto,

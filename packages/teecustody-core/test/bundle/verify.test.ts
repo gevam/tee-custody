@@ -143,4 +143,14 @@ describe("verifyBundle", () => {
             expect(mockedVerifyAttestation).not.toHaveBeenCalled();
         });
     });
+
+    it("(3) a published instance id different from the bundle's is INSTANCE_MISMATCH", async () => {
+        const bytes = await bundleBytes({ ik, entries: standardEntries() });
+        const published = { instanceId: "c3".repeat(16), bundle: bytes };
+        await expectBundleError(
+            verifyBundle(published, profile, events, bundleDeps()),
+            "INSTANCE_MISMATCH",
+        );
+        expect(mockedVerifyAttestation).not.toHaveBeenCalled();
+    });
 });
