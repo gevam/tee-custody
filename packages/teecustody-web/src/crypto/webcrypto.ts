@@ -39,7 +39,7 @@ function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
 
 /** The platform object `globalThis.crypto`, which may be absent (fail closed, never polyfilled). */
 interface PlatformCrypto {
-    readonly subtle?: SubtleCrypto; // undefined in insecure browser contexts
+    readonly subtle?: SubtleCrypto; // undefined outside a secure context (browsers)
     getRandomValues(array: Uint8Array): Uint8Array;
 }
 
