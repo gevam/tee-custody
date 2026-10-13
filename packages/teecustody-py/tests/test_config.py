@@ -174,3 +174,36 @@ def test_boundary_limit_int_fields_reject_invalid_value(field: str, bad: Any) ->
 )
 def test_pull_wait_rejects_invalid_value(bad: Any) -> None:
     _assert_rejected(BoundaryLimits, LIMITS, "pull_wait_s", pull_wait_s=bad)
+
+
+# --- criterion 5: attestation_retry_max_s >= attestation_retry_min_s -----------------------
+
+
+def test_retry_max_below_min_is_rejected() -> None:
+    _assert_rejected(
+        BoundaryLimits,
+        LIMITS,
+        "attestation_retry_max_s",
+        attestation_retry_min_s=60,
+        attestation_retry_max_s=59,
+    )
+
+
+def test_retry_max_equal_to_min_is_accepted() -> None:
+    limits = BoundaryLimits(attestation_retry_min_s=60, attestation_retry_max_s=60)
+    assert (limits.attestation_retry_min_s, limits.attestation_retry_max_s) == (60, 60)
+
+
+def test_retry_rule_is_checked_after_every_single_field_rule() -> None:
+    _assert_rejected(
+        BoundaryLimits,
+        LIMITS,
+        "bundle_republish_min_interval_s",
+        attestation_retry_min_s=60,
+        attestation_retry_max_s=30,
+        bundle_republish_min_interval_s=0,
+    )
+
+
+def test_first_failing_limit_in_declaration_order_is_reported() -> None:
+    _assert_rejected(BoundaryLimits, LIMITS, "max_token_bytes", max_token_bytes=0, max_sessions=0)
