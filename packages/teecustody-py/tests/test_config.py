@@ -256,3 +256,13 @@ def test_decode_limit_fields_reject_invalid_limits(field: str, bad: DecodeLimits
 @pytest.mark.parametrize("bad", [None, 1024, {"max_bytes": 1, "max_depth": 1, "max_items": 1}])
 def test_decode_limit_fields_reject_values_that_are_not_decode_limits(field: str, bad: Any) -> None:
     _assert_rejected(BoundaryLimits, LIMITS, field, **{field: bad})
+
+
+# --- criterion 7: the INC-2-API §4.4 examples ---------------------------------------------------
+
+
+def test_documented_examples() -> None:
+    assert BoundaryLimits(max_sessions=64).max_sessions == 64
+    with pytest.raises(ConfigError) as excinfo:
+        BoundaryLimits(pull_wait_s=0)
+    assert str(excinfo.value) == "INVALID_LIMITS:pull_wait_s"
