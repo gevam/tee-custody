@@ -8,6 +8,8 @@ from teecustody.audit import (
     AppendResult,
     AuditClass,
     AuditEmitter,
+    AuditError,
+    AuditErrorCode,
     AuditKey,
     AuditRecord,
 )
@@ -255,3 +257,47 @@ def test_a_conflicting_conflict_alert_is_not_retried_on_conflict_again() -> None
     assert logger.lines == [("error", "AUDIT_WRITE_FAILED", {})]
     emitter.tick()
     assert sink.attempts == 2
+
+
+PENDING_MAX = 2 * len(AggregateOutcome)
+
+
+def _unavailable(n: int) -> list[BaseException | AppendResult | None]:
+    return [AuditError(AuditErrorCode.UNAVAILABLE) for _ in range(n)]
+
+
+def test_unavailable_keeps_a_bounded_pending_queue_and_retries_on_tick() -> None:
+    emitter, sink, _, logger = _make()
+    sink.faults = _unavailable(30)
+    for i in range(30):
+        emitter.alert("AUDIT_WRITE_CONFLICT", request_id=_subject(i))
+    assert sink.stored == {}
+    assert PENDING_MAX == 24
+    assert logger.lines == [("warning", "AUDIT_PENDING_DROPPED", {})] * (30 - PENDING_MAX)
+    emitter.tick()
+    written = [r.request_id for _, r in sink.of(AuditClass.ALERT)]
+    assert written == [_subject(i) for i in range(30 - PENDING_MAX, 30)]
+    attempts = sink.attempts
+    emitter.tick()
+    assert sink.attempts == attempts
+
+
+def test_retry_stops_at_the_first_unavailable_and_keeps_order() -> None:
+    emitter, sink, clock, _ = _make()
+    sink.faults = _unavailable(3)
+    for i in range(3):
+        emitter.alert("AUDIT_WRITE_CONFLICT", request_id=_subject(i))
+    sink.faults = _unavailable(1)
+    emitter.tick()
+    assert sink.attempts == 4
+    assert sink.stored == {}
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    sink.faults = _unavailable(2)
+    clock.now += INTERVAL_S
+    emitter.tick()
+    assert sink.stored == {}
+    emitter.tick()
+    outcomes = [sink.stored[k].outcome for k in sink.order]
+    assert outcomes == ["AUDIT_WRITE_CONFLICT"] * 3 + ["OPEN_FAILED"]
+    [(_, aggregate)] = sink.of(AuditClass.AGGREGATE)
+    assert aggregate.count == 1

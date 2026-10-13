@@ -3,13 +3,17 @@
 `AggregateOutcome` is frozen; bodies belong to T-12.
 """
 
+from collections import deque
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Final
 
 from teecustody.audit.ports import (
     MAX_COUNT,
     AppendResult,
     AuditClass,
+    AuditError,
+    AuditErrorCode,
     AuditKey,
     AuditRecord,
     AuditSink,
@@ -34,6 +38,9 @@ class AggregateOutcome(StrEnum):
     CHANNEL_LIMIT_EXCEEDED = "CHANNEL_LIMIT_EXCEEDED"
 
 
+_PENDING_MAX: Final = 2 * len(AggregateOutcome)
+
+
 class AuditEmitter:
     def __init__(
         self,
@@ -55,6 +62,7 @@ class AuditEmitter:
         self._counts: dict[str, int] = {}
         self._alerted: set[tuple[str, str]] = set()
         self._cap_reached = False
+        self._pending: deque[tuple[AuditKey, AuditRecord]] = deque()
 
     def _now_ms(self) -> int:
         return int(self._clock() * 1000)
@@ -98,12 +106,34 @@ class AuditEmitter:
         return AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
 
     def _write(self, key: AuditKey, record: AuditRecord) -> None:
-        if self._sink.append(key, record) is not AppendResult.ALREADY_EXISTS:
+        if self._attempt(key, record):
             return
-        if record.outcome == _CONFLICT:
-            self._logger.error("AUDIT_WRITE_FAILED")
-            return
-        self.alert(_CONFLICT, request_id=record.request_id)
+        self._pending.append((key, record))
+        if len(self._pending) > _PENDING_MAX:
+            self._pending.popleft()
+            self._logger.warning("AUDIT_PENDING_DROPPED")
+
+    def _attempt(self, key: AuditKey, record: AuditRecord) -> bool:
+        """Append once; False iff the sink is UNAVAILABLE and the record should stay pending."""
+        try:
+            result = self._sink.append(key, record)
+        except AuditError as err:
+            if err.code is AuditErrorCode.UNAVAILABLE:
+                return False
+            raise
+        if result is AppendResult.ALREADY_EXISTS:
+            if record.outcome == _CONFLICT:
+                self._logger.error("AUDIT_WRITE_FAILED")
+            else:
+                self.alert(_CONFLICT, request_id=record.request_id)
+        return True
+
+    def _retry_pending(self) -> None:
+        while self._pending:
+            key, record = self._pending.popleft()
+            if not self._attempt(key, record):
+                self._pending.appendleft((key, record))
+                return
 
     def alert(
         self,
@@ -125,6 +155,7 @@ class AuditEmitter:
         )
 
     def tick(self) -> None:
+        self._retry_pending()
         now = self._now_ms()
         end = self._start + self._interval_ms
         if now < end:
