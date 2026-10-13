@@ -113,4 +113,7 @@ uv run pytest -q spec/vectors
 | `test_channel_suite.py` | the approved `spec/wire` channel CDDL hashes and byte-layout text; `channel/suite.cbor` against the CDDL, the named cases and the Python column of TL-9; a seeded mutation fuzz (seed 1, 2 000 mutations per request/response envelope, each decode < 50 ms, only `EnvelopeError`) |
 
 Besides pytest, the harness imports only `teecustody` (`wire` for the INC-1 files; `wire`, `channel`,
-`config` and `secrets` for the channel suite) and the standard library; it never imports the simulator.
+`config` and `secrets` for the channel suite), `cryptography` (RS256 checks of attestation rows 38–39 in
+`test_rows_38_39_are_signed_by_the_attacker_key_only`) and the standard library; it never imports the
+simulator. `teecustody` has no RS256/JWS verifier, since clients verify tokens (spec §6), so the test keeps
+using `cryptography`, which is already a pinned `teecustody` runtime dependency.
