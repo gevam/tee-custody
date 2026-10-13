@@ -3,7 +3,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as cbor from "../../src/wire/cbor.js";
+import type { CanonicalValue } from "../../src/wire/types.js";
 import {
+    decodeResponse,
     encodeFrameAad,
     encodeFrameRequest,
     encodeOpenAad,
@@ -282,5 +284,79 @@ describe("criterion 2: builders reject out-of-range input before encoding (SR-3,
     it("the enroll plaintext needs no range checks and is encoded", () => {
         encodeOpenPlaintext({ op: "enroll" });
         expect(cbor.encodeCanonical).toHaveBeenCalledOnce();
+    });
+});
+
+const ENVELOPE_LIMITS = { maxBytes: 65_536, maxDepth: 2, maxItems: 16 };
+const AAD_LIMITS = { maxBytes: 512, maxDepth: 2, maxItems: 16 };
+const CT = new Uint8Array(16).fill(6);
+
+const cborMap = (entries: Record<string, CanonicalValue>): Uint8Array =>
+    cbor.encodeCanonical(new Map(Object.entries(entries)));
+const openResultAad = (over: Record<string, CanonicalValue> = {}): Uint8Array =>
+    cborMap({ session_id: SID, request_id: RID, seq: 0, ...over });
+const frameResultAad = (over: Record<string, CanonicalValue> = {}): Uint8Array =>
+    cborMap({ session_id: SID, seq: 3, op: "test.echo", ...over });
+const response = (entries: Record<string, CanonicalValue>): Uint8Array => cborMap(entries);
+
+describe("criterion 3: decodeResponse returns the typed envelope", () => {
+    it("decodes an open_result with a session id, keeping the nested aad bytes", () => {
+        const aad = openResultAad();
+        const got = decodeResponse(
+            response({ kind: "open_result", aad, ct: CT }),
+            ENVELOPE_LIMITS,
+            AAD_LIMITS,
+        );
+        expect(got).toEqual({
+            kind: "open_result",
+            aadBytes: aad,
+            aad: { sessionId: SID, requestId: RID },
+            ct: CT,
+        });
+    });
+
+    it("decodes an open_result refusal with a nil session id", () => {
+        const aad = openResultAad({ session_id: null });
+        const got = decodeResponse(
+            response({ kind: "open_result", aad, ct: CT }),
+            ENVELOPE_LIMITS,
+            AAD_LIMITS,
+        );
+        expect(got).toEqual({
+            kind: "open_result",
+            aadBytes: aad,
+            aad: { sessionId: null, requestId: RID },
+            ct: CT,
+        });
+    });
+
+    it("decodes a frame_result at the CDDL bounds (seq 2^53-1, ct 32784 bytes)", () => {
+        const aad = frameResultAad({ seq: 2 ** 53 - 1 });
+        const ct = new Uint8Array(32_784).fill(1);
+        const got = decodeResponse(
+            response({ kind: "frame_result", aad, ct }),
+            ENVELOPE_LIMITS,
+            AAD_LIMITS,
+        );
+        expect(got).toEqual({
+            kind: "frame_result",
+            aadBytes: aad,
+            aad: { sessionId: SID, seq: 2 ** 53 - 1, op: "test.echo" },
+            ct,
+        });
+    });
+
+    it("decodes the envelope with the envelope limits and the aad with the aad limits", () => {
+        const aad = frameResultAad();
+        decodeResponse(
+            response({ kind: "frame_result", aad, ct: CT }),
+            ENVELOPE_LIMITS,
+            AAD_LIMITS,
+        );
+        const calls = vi.mocked(cbor.decodeCanonical).mock.calls;
+        expect(calls).toHaveLength(2);
+        expect(calls[0]?.[1]).toBe(ENVELOPE_LIMITS);
+        expect(calls[1]?.[0]).toEqual(aad);
+        expect(calls[1]?.[1]).toBe(AAD_LIMITS);
     });
 });

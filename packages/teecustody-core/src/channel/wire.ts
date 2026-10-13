@@ -1,7 +1,7 @@
 // Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions stub → T-15.
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
-import { encodeCanonical } from "../wire/cbor.js";
+import { decodeCanonical, encodeCanonical } from "../wire/cbor.js";
 import { PROTO, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
 import type { OpenPayload } from "./types.js";
 
@@ -163,7 +163,31 @@ export function decodeResponse(
     envelopeDecode: DecodeLimits,
     aadDecode: DecodeLimits,
 ): OpenResultEnvelope | FrameResultEnvelope {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    const envelope = decodeCanonical(body, envelopeDecode) as ReadonlyMap<string, CanonicalValue>;
+    const aadBytes = envelope.get("aad") as Bytes;
+    const ct = envelope.get("ct") as Bytes;
+    const aad = decodeCanonical(aadBytes, aadDecode) as ReadonlyMap<string, CanonicalValue>;
+    if (envelope.get("kind") === "open_result") {
+        return {
+            kind: "open_result",
+            aadBytes,
+            aad: {
+                sessionId: aad.get("session_id") as Bytes | null,
+                requestId: aad.get("request_id") as Bytes,
+            },
+            ct,
+        };
+    }
+    return {
+        kind: "frame_result",
+        aadBytes,
+        aad: {
+            sessionId: aad.get("session_id") as Bytes,
+            seq: aad.get("seq") as number,
+            op: aad.get("op") as string,
+        },
+        ct,
+    };
 }
 
 // ChannelError("INVALID_RESPONSE") on any failure, incl. R-3
