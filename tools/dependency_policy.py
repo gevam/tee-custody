@@ -856,7 +856,11 @@ def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
     if exception is None:
         return False
     versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
-    return versions == {exception.version} and name not in _reached_avoiding(repo, exception.via)
+    return (
+        versions == {exception.version}
+        and name in _closure(repo.uv_runtime_graph, [exception.member])
+        and name not in _reached_avoiding(repo, exception.via)
+    )
 
 
 def _reached_avoiding(repo: Repo, avoided: str) -> set[str]:

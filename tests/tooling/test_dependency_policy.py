@@ -977,3 +977,19 @@ def test_the_h11_exception_covers_age_only_not_the_licence(
 ) -> None:
     lines = _h11_violations(tool, gateway_tree, capsys, h11_licence="GPL-3.0-only")
     assert lines == ["VIOLATION licence h11"]
+
+
+def test_h11_through_uvicorn_is_stale_when_the_gateway_member_is_not_locked(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (gateway_tree / "uv.lock").read_text().replace('    "notes-gateway",\n', "", 1)
+    lock = lock.replace('    { name = "notes-gateway" },\n', "", 1)
+    start = lock.index('[[package]]\nname = "notes-gateway"')
+    lock = lock[:start] + lock[lock.index("[[package]]", start + 1) :]
+    _write(gateway_tree, "uv.lock", lock)
+    _write(
+        gateway_tree,
+        GATEWAY_MANIFEST,
+        '[project]\nname = "notes-gateway"\nversion = "0.1.0"\ndependencies = ["uvicorn==0.54.0"]\n',
+    )
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
