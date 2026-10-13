@@ -99,3 +99,23 @@ def test_a_long_run_with_a_moving_clock_is_fast_and_stays_within_max_entries() -
     assert largest <= max_entries
     assert cache.seen(CLIENT, (99_999).to_bytes(16, "big"))
     assert not cache.seen(CLIENT, (0).to_bytes(16, "big"))
+
+
+@pytest.mark.parametrize("skew_s", [0, -1])
+def test_skew_below_one_is_refused(skew_s: int) -> None:
+    with pytest.raises(ValueError, match=r"^SKEW_RANGE$"):
+        ReplayCache(skew_s=skew_s, max_entries=10, clock=Clock())
+
+
+@pytest.mark.parametrize("max_entries", [0, -1])
+def test_max_entries_below_one_is_refused(max_entries: int) -> None:
+    with pytest.raises(ValueError, match=r"^MAX_ENTRIES_RANGE$"):
+        ReplayCache(skew_s=300, max_entries=max_entries, clock=Clock())
+
+
+def test_the_smallest_valid_values_are_accepted() -> None:
+    clock = Clock()
+    cache = ReplayCache(skew_s=1, max_entries=1, clock=clock)
+    cache.record(CLIENT, RID, T0)
+
+    assert cache.seen(CLIENT, RID)

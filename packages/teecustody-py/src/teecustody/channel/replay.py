@@ -8,6 +8,10 @@ _Key = tuple[str, bytes]
 
 class ReplayCache:
     def __init__(self, *, skew_s: int, max_entries: int, clock: Callable[[], float]) -> None:
+        if skew_s < 1:
+            raise ValueError("SKEW_RANGE")
+        if max_entries < 1:
+            raise ValueError("MAX_ENTRIES_RANGE")
         self._skew_s = skew_s
         self._max_entries = max_entries
         self._clock = clock
