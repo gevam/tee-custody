@@ -634,3 +634,85 @@ describe("FetchTransport criterion 7: configuration is validated at construction
         expect(calls[0]?.url).toBe(`${BASE}bundles`);
     });
 });
+
+describe("FetchTransport criterion 8: errors carry only their code (SR-11)", () => {
+    const SECRET_BODY = "c2VjcmV0LWJvZHktYnl0ZXM";
+    const SECRET_HOST = "https://secret-host.example/";
+
+    function hostile(message: string): Response {
+        const response = json(`{"bundles":[{"instance_id":"${SECRET_BODY}"}]}`);
+        Object.defineProperty(response, "headers", {
+            get(): never {
+                throw new Error(message);
+            },
+        });
+        return response;
+    }
+
+    const failures: [string, string, () => Promise<unknown>][] = [
+        ["INVALID_ARGUMENT", "argument", () => make(spy().fetch).getResponses(SECRET_BODY)],
+        [
+            "INVALID_RESPONSE",
+            "body",
+            () => make(spy(json(`{"bundles":"${SECRET_BODY}"}`)).fetch).listBundles(),
+        ],
+        [
+            "INVALID_RESPONSE",
+            "base64url",
+            () =>
+                make(
+                    spy(json(`{"bundles":[{"instance_id":"${IID}","bundle":"${SECRET_BODY}="}]}`))
+                        .fetch,
+                ).listBundles(),
+        ],
+        [
+            "INVALID_RESPONSE",
+            "JSON syntax",
+            () => make(spy(json(`{"${SECRET_BODY}`)).fetch).listBundles(),
+        ],
+        [
+            "UNAVAILABLE",
+            "network",
+            () =>
+                make(() => Promise.reject(new TypeError(`${SECRET_HOST} ${SECRET_BODY}`)), {
+                    baseUrl: SECRET_HOST,
+                }).listBundles(),
+        ],
+        ["NOT_FOUND", "status", () => make(spy(json(SECRET_BODY, 404)).fetch).listBundles()],
+        [
+            "INTERNAL",
+            "hostile response object",
+            () =>
+                make(spy(hostile(`${SECRET_HOST} ${SECRET_BODY}`)).fetch, {
+                    baseUrl: SECRET_HOST,
+                }).listBundles(),
+        ],
+        [
+            "INTERNAL",
+            "fetch resolving to a non-response",
+            () => make(() => Promise.resolve(undefined as unknown as Response)).listBundles(),
+        ],
+    ];
+
+    it.each(failures)(
+        "%s (%s): message equals the code, nothing else attached",
+        async (expected, _name, run) => {
+            const error = await rejection(run());
+            expect(error).toBeInstanceOf(CapabilityError);
+            const failure = error as CapabilityError;
+            expect(failure.code).toBe(expected);
+            expect(failure.message).toBe(expected);
+            expect(failure.cause).toBeUndefined();
+            expect(Object.keys(failure)).toEqual(["code"]);
+            const rendered = `${String(failure.stack)} ${JSON.stringify(failure)}`;
+            expect(rendered).not.toContain(SECRET_BODY);
+            expect(rendered).not.toContain("secret-host");
+        },
+    );
+
+    it("INVALID_CONFIG carries no URL text", () => {
+        const error = configError({ baseUrl: "http://secret-host.example/" }) as TypeError;
+        expect(error.message).toBe("INVALID_CONFIG");
+        expect(String(error.stack)).not.toContain("secret-host");
+    });
+});

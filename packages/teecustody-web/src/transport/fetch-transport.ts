@@ -324,6 +324,9 @@ export class FetchTransport implements Transport {
                 throw new CapabilityError(STATUS_CODES.get(response.status) ?? "INTERNAL");
             }
             return parseStrictJson(await readBounded(response, this.#maxResponseBytes));
+        } catch (error) {
+            // SR-11: only the code leaves; a foreign error may carry the URL or body text.
+            throw error instanceof CapabilityError ? error : new CapabilityError("INTERNAL");
         } finally {
             clearTimeout(timer);
         }
