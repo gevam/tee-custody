@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from dataclasses import replace
 from typing import Any
 
@@ -230,3 +231,25 @@ def test_audit_json_is_stable_across_runs() -> None:
         + HEX.encode()
         + b'","ts":1}'
     }
+
+
+SENTINEL = "SENTINEL-c2hhcmUtc2VjcmV0-9f3a"
+LEAK_CASES = {
+    "outcome": _case(EVENT_KEY, EVENT, outcome=SENTINEL),
+    "key-id": (AuditKey(AuditClass.EVENT, f"event/{SENTINEL}/x y"), EVENT),
+    "request-id": _case(EVENT_KEY, EVENT, request_id=SENTINEL),
+    "subject-client-id": _case(EVENT_KEY, EVENT, subject_client_id=SENTINEL),
+}
+
+
+@pytest.mark.parametrize(("key", "record"), list(LEAK_CASES.values()), ids=list(LEAK_CASES))
+def test_rejection_never_echoes_the_offending_value(key: AuditKey, record: AuditRecord) -> None:
+    with pytest.raises(AuditError) as caught:
+        validate_audit(key, record)
+    err = caught.value
+    assert err.code is AuditErrorCode.INVALID_ARGUMENT
+    assert err.args == ("INVALID_ARGUMENT",)
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    rendered = str(err) + repr(err) + "".join(traceback.format_exception(err))
+    assert SENTINEL not in rendered
