@@ -63,6 +63,8 @@ class ChannelParams:
         for f in fields(self):
             if not _int_in_range(getattr(self, f.name), *_CHANNEL_RANGES[f.name]):
                 raise ConfigError(ConfigErrorCode.INVALID_PARAMS, f.name)
+        if self.prekey_low_water >= self.prekey_batch:
+            raise ConfigError(ConfigErrorCode.INVALID_PARAMS, "prekey_low_water")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

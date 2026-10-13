@@ -95,3 +95,23 @@ CHANNEL_INVALID: list[tuple[str, Any]] = [
 @pytest.mark.parametrize(("field", "bad"), CHANNEL_INVALID)
 def test_channel_params_reject_invalid_value(field: str, bad: Any) -> None:
     _assert_rejected(ChannelParams, PARAMS, field, **{field: bad})
+
+
+# --- criterion 4: prekey_low_water < prekey_batch ---------------------------------------------
+
+
+@pytest.mark.parametrize(("batch", "low_water"), [(100, 100), (100, 101), (1, 1), (10, 256)])
+def test_low_water_not_below_batch_is_rejected(batch: int, low_water: int) -> None:
+    _assert_rejected(
+        ChannelParams, PARAMS, "prekey_low_water", prekey_batch=batch, prekey_low_water=low_water
+    )
+
+
+def test_cross_field_rule_is_checked_after_every_single_field_rule() -> None:
+    _assert_rejected(
+        ChannelParams, PARAMS, "refresh_margin_s", prekey_low_water=500, refresh_margin_s=0
+    )
+
+
+def test_first_failing_field_in_declaration_order_is_reported() -> None:
+    _assert_rejected(ChannelParams, PARAMS, "prekey_ttl_s", prekey_ttl_s=0, prekey_batch=0)
