@@ -1103,3 +1103,27 @@ def test_uvicorn_declared_by_a_library_manifest_but_not_locked_still_makes_h11_s
     assert "uvicorn" in text
     _write(gateway_tree, "packages/teecustody-py/pyproject.toml", text)
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_h11_through_uvicorn_from_another_workspace_member_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = _add_lock_edge(
+        (gateway_tree / "uv.lock").read_text(), "tee-custody-workspace", "uvicorn"
+    )
+    _write(gateway_tree, "uv.lock", lock)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_h11_through_uvicorn_outside_the_locked_gateway_closure_is_still_stale(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = (gateway_tree / "uv.lock").read_text()
+    gateway = 'dependencies = [\n    { name = "teecustody" },\n    { name = "uvicorn" },\n]\n'
+    lock = lock.replace(gateway, 'dependencies = [\n    { name = "teecustody" },\n]\n', 1)
+    _write(gateway_tree, "uv.lock", lock)
+    root = (gateway_tree / "pyproject.toml").read_text()
+    root = root.replace('"teecustody-sim"]', '"teecustody-sim", "uvicorn==0.54.0"]', 1)
+    assert "uvicorn" in root
+    _write(gateway_tree, "pyproject.toml", root)
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
