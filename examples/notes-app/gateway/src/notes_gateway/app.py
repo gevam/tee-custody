@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import fastapi
@@ -16,7 +17,7 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response
 
 from notes_gateway.limits import GatewayLimits
-from teecustody.queue import CURSOR_PATTERN
+from teecustody.queue import CURSOR_PATTERN, QueueError, QueueErrorCode
 
 if TYPE_CHECKING:
     from teecustody.queue.ports import RelayQueue
@@ -26,6 +27,14 @@ if TYPE_CHECKING:
 _HEX32_PATTERN = re.compile(r"[0-9a-f]{32}")
 _CONTENT_LENGTH_PATTERN = re.compile(r"[0-9]{1,19}")
 _OCTET_STREAM = "application/octet-stream"
+_QUEUE_ERRORS: dict[QueueErrorCode, tuple[int, str]] = {
+    QueueErrorCode.INVALID_ARGUMENT: (400, "INVALID_ARGUMENT"),
+    QueueErrorCode.NOT_FOUND: (404, "UNKNOWN_INSTANCE"),
+    QueueErrorCode.UNAVAILABLE: (503, "UNAVAILABLE"),
+}
+_INTERNAL = (500, "INTERNAL")
+
+Endpoint = Callable[[Request], Awaitable[Response]]
 
 
 def _b64url(raw: bytes) -> str:
@@ -39,6 +48,22 @@ def _json(status: int, obj: object) -> Response:
 
 def _invalid() -> Response:
     return _json(400, {"code": "INVALID_ARGUMENT"})
+
+
+def _guarded(endpoint: Endpoint) -> Endpoint:
+    """Map every failure to a stable §6 code; the cause never reaches the body or the logs."""
+
+    @functools.wraps(endpoint)
+    async def wrapper(request: Request) -> Response:
+        try:
+            return await endpoint(request)
+        except QueueError as exc:
+            status, code = _QUEUE_ERRORS.get(exc.code, _INTERNAL)
+        except Exception:  # noqa: BLE001 - the relay answers INTERNAL for any other failure
+            status, code = _INTERNAL
+        return _json(status, {"code": code})
+
+    return wrapper
 
 
 async def _read_body(request: Request, max_bytes: int) -> bytes | None:
@@ -73,6 +98,7 @@ def create_app(
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/bundles")
+    @_guarded
     async def list_bundles(request: Request) -> Response:
         bundles = await run_in_threadpool(queue.list_bundles, limits.max_bundles)
         items = [
@@ -82,6 +108,7 @@ def create_app(
         return _json(200, {"bundles": items})
 
     @app.post("/requests/{instance}")
+    @_guarded
     async def publish_request(request: Request) -> Response:
         instance: str = request.path_params["instance"]
         if not _HEX32_PATTERN.fullmatch(instance):
@@ -94,6 +121,7 @@ def create_app(
         return _json(202, {"request_id": request_id})
 
     @app.get("/responses/{client}")
+    @_guarded
     async def pull_responses(request: Request) -> Response:
         client: str = request.path_params["client"]
         after = request.query_params.get("after")

@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import typing
+from collections.abc import Iterator
 from dataclasses import dataclass
 
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 from starlette.types import ASGIApp
 
 from notes_gateway import GatewayLimits, create_app
-from teecustody.queue import PublishedBundle, PublishedResponse, ResponsePage
+from teecustody.queue import (
+    PublishedBundle,
+    PublishedResponse,
+    QueueError,
+    QueueErrorCode,
+    ResponsePage,
+)
 
 INSTANCE = "a1" * 16
 OTHER_INSTANCE = "b2" * 16
@@ -390,3 +399,82 @@ def test_chunked_body_matching_content_length_is_relayed_whole() -> None:
 
     assert result.status == 202
     assert relay.calls == [("publish_request", INSTANCE, "00" * 16, b"abcde")]
+
+
+# ---------------------------------------------------------------- criterion 5: QueueError mapping
+SENTINEL = "SENTINEL-T14-c5e1"
+
+
+@pytest.fixture
+def all_logs(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
+    """caplog, also attached to the non-propagating `teecustody` logger tree."""
+    base = logging.getLogger("teecustody")
+    base.addHandler(caplog.handler)
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="teecustody")
+    try:
+        yield caplog
+    finally:
+        base.removeHandler(caplog.handler)
+
+
+ROUTES = [
+    pytest.param(("GET", "/bundles"), id="bundles"),
+    pytest.param(("POST", f"/requests/{INSTANCE}"), id="requests"),
+    pytest.param(("GET", f"/responses/{CLIENT}"), id="responses"),
+]
+
+
+def _call(client: TestClient, route: tuple[str, str], body: bytes = b"x") -> httpx.Response:
+    method, path = route
+    if method == "POST":
+        return client.post(path, content=body, headers=OCTET)
+    return client.get(path)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (QueueError(QueueErrorCode.INVALID_ARGUMENT), 400, "INVALID_ARGUMENT"),
+        (QueueError(QueueErrorCode.NOT_FOUND), 404, "UNKNOWN_INSTANCE"),
+        (QueueError(QueueErrorCode.UNAVAILABLE), 503, "UNAVAILABLE"),
+        (QueueError(QueueErrorCode.CONFLICT), 500, "INTERNAL"),
+        (QueueError(QueueErrorCode.INTERNAL), 500, "INTERNAL"),
+        (RuntimeError(SENTINEL), 500, "INTERNAL"),
+    ],
+)
+def test_queue_failures_map_to_stable_codes_without_leaking_the_cause(
+    route: tuple[str, str],
+    error: Exception,
+    status: int,
+    code: str,
+    all_logs: pytest.LogCaptureFixture,
+) -> None:
+    relay = RecordingRelay()
+    relay.error = error
+    client = TestClient(create_app(relay), raise_server_exceptions=False)
+
+    response = _call(client, route)
+
+    assert response.status_code == status
+    assert response.content == b'{"code":"' + code.encode() + b'"}'
+    assert response.headers["content-type"] == "application/json"
+    assert SENTINEL not in response.text + all_logs.text
+    assert all(record.exc_info is None for record in all_logs.records)
+
+
+def test_rng_failure_is_500_internal_with_no_queue_call(
+    all_logs: pytest.LogCaptureFixture,
+) -> None:
+    relay = RecordingRelay()
+
+    def broken_rng(n: int) -> bytes:
+        raise OSError(SENTINEL)
+
+    client = TestClient(create_app(relay, rng=broken_rng), raise_server_exceptions=False)
+    response = client.post(f"/requests/{INSTANCE}", content=b"x", headers=OCTET)
+
+    assert (response.status_code, response.content) == (500, b'{"code":"INTERNAL"}')
+    assert relay.calls == []
+    assert SENTINEL not in response.text + all_logs.text
