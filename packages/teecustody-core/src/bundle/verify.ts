@@ -2,6 +2,7 @@
 import type { Bytes, Crypto, PublishedBundle, SecurityEventSink } from "../capabilities.js";
 import {
     AttestationError,
+    isVerifiedAttestation,
     type TrustProfile,
     type VerifiedAttestation,
 } from "../attestation/types.js";
@@ -133,6 +134,9 @@ export async function verifyBundle(
     }
     const identityNonce = await deps.crypto.sha256(decoded.ikPub);
     const attestation = await attest(decoded.token, profile, identityNonce, events, deps);
+    if (!isVerifiedAttestation(attestation)) {
+        throw new BundleError("ATTESTATION_FAILED");
+    }
     const nowMs = deps.now();
     const prekeys = decoded.prekeys
         .filter((e) => e.notAfter * 1000 > nowMs)

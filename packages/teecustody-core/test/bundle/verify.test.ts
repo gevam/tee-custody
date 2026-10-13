@@ -190,4 +190,11 @@ describe("verifyBundle", () => {
             },
         );
     });
+
+    it("(5) an unbranded structural copy of a VerifiedAttestation is ATTESTATION_FAILED (B-13)", async () => {
+        const copy = { ...attestation() };
+        mockedVerifyAttestation.mockResolvedValue(copy);
+        const bytes = await bundleBytes({ ik, entries: standardEntries() });
+        await expectBundleError(verifyBytes(bytes), "ATTESTATION_FAILED");
+    });
 });
