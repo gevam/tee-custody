@@ -1,7 +1,8 @@
 // Channel wire codec (INC-2-API §7.3, §3.1; API-TL §3). Constants and types final; functions stub → T-15.
 // Every function goes through encodeCanonical/decodeCanonical only. The nonce builder is not here (R-5).
 import type { Bytes, CanonicalEnvelope, ClientId, Crypto, InstanceId } from "../capabilities.js";
-import type { CanonicalValue, DecodeLimits } from "../wire/types.js";
+import { encodeCanonical } from "../wire/cbor.js";
+import { PROTO, type CanonicalValue, type DecodeLimits } from "../wire/types.js";
 import type { OpenPayload } from "./types.js";
 
 export const MAX_SEQ = 9_007_199_254_740_991; // also MAX_UNIX_S
@@ -52,27 +53,46 @@ export type FrameResultBody =
     | { readonly re: number; readonly ok: true; readonly payload: CanonicalValue }
     | { readonly re: number; readonly ok: false; readonly error: string };
 
+function encodeMap(entries: Record<string, CanonicalValue>): Bytes {
+    return encodeCanonical(new Map(Object.entries(entries)));
+}
+
 // RangeError("<FIELD>_RANGE")
 export function encodeOpenAad(aad: OpenAadFields): Bytes {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    return encodeMap({
+        proto: PROTO,
+        client_id: aad.clientId,
+        instance_id: aad.instanceId,
+        prekey_id: aad.prekeyId,
+        request_id: aad.requestId,
+        timestamp: aad.timestamp,
+    });
 }
 
 // RangeError: cs ≠ 32, keyId ≠ 16, epoch ∉ uint32
 export function encodeOpenPlaintext(payload: OpenPayload): Bytes {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    if (payload.op === "enroll") {
+        return encodeMap({ op: "enroll" });
+    }
+    return encodeMap({
+        op: "open_session",
+        cs: payload.cs,
+        key_id: payload.keyId,
+        epoch: payload.epoch,
+    });
 }
 
 export function encodeOpenRequest(aadBytes: Bytes, enc: Bytes, ct: Bytes): CanonicalEnvelope {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    return encodeMap({ kind: "open", aad: aadBytes, enc, ct });
 }
 
 // RangeError("SEQ_RANGE"|"OP_RANGE"|"SESSION_ID_RANGE")
 export function encodeFrameAad(aad: FrameAadFields): Bytes {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    return encodeMap({ session_id: aad.sessionId, seq: aad.seq, op: aad.op });
 }
 
 export function encodeFrameRequest(aadBytes: Bytes, ct: Bytes): CanonicalEnvelope {
-    throw new Error("NOT_IMPLEMENTED: T-15");
+    return encodeMap({ kind: "frame", aad: aadBytes, ct });
 }
 
 // WireError from the codec; WireError("MALFORMED") on any schema failure
