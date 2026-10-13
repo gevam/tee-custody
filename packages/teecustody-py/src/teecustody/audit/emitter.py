@@ -6,8 +6,17 @@
 from collections.abc import Callable
 from enum import StrEnum
 
-from teecustody.audit.ports import MAX_COUNT, AuditClass, AuditKey, AuditRecord, AuditSink
+from teecustody.audit.ports import (
+    MAX_COUNT,
+    AppendResult,
+    AuditClass,
+    AuditKey,
+    AuditRecord,
+    AuditSink,
+)
 from teecustody.obs.types import AllowListedLogger
+
+_CONFLICT = "AUDIT_WRITE_CONFLICT"
 
 
 class AggregateOutcome(StrEnum):
@@ -41,6 +50,7 @@ class AuditEmitter:
         self._alert_cap = alert_cap
         self._clock = clock
         self._rng = rng
+        self._logger = logger
         self._start = self._now_ms()
         self._counts: dict[str, int] = {}
         self._alerted: set[tuple[str, str]] = set()
@@ -88,7 +98,12 @@ class AuditEmitter:
         return AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
 
     def _write(self, key: AuditKey, record: AuditRecord) -> None:
-        self._sink.append(key, record)
+        if self._sink.append(key, record) is not AppendResult.ALREADY_EXISTS:
+            return
+        if record.outcome == _CONFLICT:
+            self._logger.error("AUDIT_WRITE_FAILED")
+            return
+        self.alert(_CONFLICT, request_id=record.request_id)
 
     def alert(
         self,

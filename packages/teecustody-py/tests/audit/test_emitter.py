@@ -219,3 +219,39 @@ def test_alert_is_never_capped_or_deduplicated() -> None:
     assert conflict.request_id == REQ
     assert conflict.interval_start is None
     assert conflict.interval_end is None
+
+
+def _conflicts(sink: FakeSink) -> list[tuple[AuditKey, AuditRecord]]:
+    return [(k, r) for k, r in sink.of(AuditClass.ALERT) if r.outcome == "AUDIT_WRITE_CONFLICT"]
+
+
+def test_already_exists_writes_a_conflict_alert_with_a_fresh_id() -> None:
+    emitter, sink, clock, _ = _make()
+    sink.faults = [AppendResult.ALREADY_EXISTS]
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A, request_id=REQ)
+    [(conflict_key, conflict)] = _conflicts(sink)
+    assert [r.outcome for _, r in sink.of(AuditClass.ALERT)] == ["AUDIT_WRITE_CONFLICT"]
+    assert conflict.request_id == REQ
+    assert conflict.subject_client_id is None
+    assert conflict.count is None
+    assert ALERT_ID.fullmatch(conflict_key.id) is not None
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    sink.faults = [AppendResult.ALREADY_EXISTS]
+    clock.now += INTERVAL_S
+    emitter.tick()
+    assert sink.of(AuditClass.AGGREGATE) == []
+    conflicts = _conflicts(sink)
+    assert len(conflicts) == 2
+    assert conflicts[1][1].request_id is None
+    assert len({k.id for k, _ in conflicts}) == 2
+
+
+def test_a_conflicting_conflict_alert_is_not_retried_on_conflict_again() -> None:
+    emitter, sink, _, logger = _make()
+    sink.faults = [AppendResult.ALREADY_EXISTS, AppendResult.ALREADY_EXISTS]
+    emitter.alert("PREKEY_BURN_HIGH", interval=(START_MS - INTERVAL_MS, START_MS))
+    assert sink.attempts == 2
+    assert sink.stored == {}
+    assert logger.lines == [("error", "AUDIT_WRITE_FAILED", {})]
+    emitter.tick()
+    assert sink.attempts == 2
