@@ -1,6 +1,7 @@
 """Channel parameters and boundary limits (INC-2-API §4.4; spec §14 defaults).
 
-Fields and defaults are frozen. Validation (`__post_init__`) belongs to T-09.
+Fields and defaults are frozen. `__post_init__` rejects every out-of-range or wrongly typed value
+at construction (SR-3, SR-4); `RunLoop` checks the one rule that spans both classes.
 """
 
 from dataclasses import dataclass, fields
