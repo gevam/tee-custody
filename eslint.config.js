@@ -32,6 +32,35 @@ const NODE_DYNAMIC_BAN = {
     message: "NFR-6: Core is platform-agnostic.",
 };
 
+const WEB_NODE_MESSAGE = "NFR-6: Web runs in the browser; no Node built-ins.";
+
+const WEB_NODE_BANS = {
+    paths: NODE_BUILTINS.map((name) => ({ name, message: WEB_NODE_MESSAGE })),
+    patterns: [{ group: ["node:*"], message: WEB_NODE_MESSAGE }],
+};
+
+const WEB_NODE_DYNAMIC_BAN = { ...NODE_DYNAMIC_BAN, message: WEB_NODE_MESSAGE };
+
+const HPKE_MESSAGE = "SR-14, ADR 0011: @hpke/* is imported only in src/crypto/webcrypto.ts.";
+
+const HPKE_DYNAMIC_BAN = {
+    selector: "ImportExpression[source.value=/^@hpke\\//]",
+    message: HPKE_MESSAGE,
+};
+
+// ADR 0011 C5: no ekm / PSK / sender-key (Auth mode) seams in library source.
+const C5_MESSAGE = "ADR 0011 C5: no HPKE seams outside tests";
+
+const C5_NAMES = "/^(ekm|psk|pskId|senderKey|senderPublicKey)$/";
+
+const C5_BANS = [
+    `Property[key.name=${C5_NAMES}]`,
+    `Property[key.value=${C5_NAMES}]`,
+    `MemberExpression[property.name=${C5_NAMES}]`,
+    `MemberExpression[property.value=${C5_NAMES}]`,
+    `Identifier[name=${C5_NAMES}]`,
+].map((selector) => ({ selector, message: C5_MESSAGE }));
+
 // Declared so the core no-implied-eval rule can see these callees; they are not usable in Core
 // (its tsconfig declares no DOM or Node types).
 const IMPLIED_EVAL_GLOBALS = {
@@ -52,6 +81,8 @@ export default tseslint.config(
                 project: [
                     "packages/teecustody-core/tsconfig.json",
                     "packages/teecustody-core/tsconfig.test.json",
+                    "packages/teecustody-web/tsconfig.json",
+                    "packages/teecustody-web/tsconfig.test.json",
                     "tests/tsconfig.json",
                 ],
                 tsconfigRootDir: import.meta.dirname,
@@ -99,6 +130,7 @@ export default tseslint.config(
                 NON_LITERAL_IMPORT_BAN,
                 CBOR_X_DYNAMIC_BAN,
                 NODE_DYNAMIC_BAN,
+                ...C5_BANS,
             ],
             "no-restricted-imports": [
                 "error",
@@ -106,6 +138,46 @@ export default tseslint.config(
                     paths: [CBOR_X_BAN, ...NODE_BUILTIN_BANS],
                     patterns: [{ group: ["node:*"], message: "NFR-6: Core is platform-agnostic." }],
                 },
+            ],
+        },
+    },
+    {
+        files: ["packages/teecustody-web/src/**"],
+        rules: {
+            "no-restricted-syntax": [
+                "error",
+                NON_LITERAL_IMPORT_BAN,
+                CBOR_X_DYNAMIC_BAN,
+                WEB_NODE_DYNAMIC_BAN,
+                HPKE_DYNAMIC_BAN,
+                ...C5_BANS,
+            ],
+            "no-restricted-imports": [
+                "error",
+                {
+                    paths: [CBOR_X_BAN, ...WEB_NODE_BANS.paths],
+                    patterns: [
+                        ...WEB_NODE_BANS.patterns,
+                        { group: ["@hpke/*"], message: HPKE_MESSAGE },
+                    ],
+                },
+            ],
+        },
+    },
+    {
+        // The single @hpke/* import site (INC-2-API §8.1, §9.5); every other web ban still applies.
+        files: ["packages/teecustody-web/src/crypto/webcrypto.ts"],
+        rules: {
+            "no-restricted-syntax": [
+                "error",
+                NON_LITERAL_IMPORT_BAN,
+                CBOR_X_DYNAMIC_BAN,
+                WEB_NODE_DYNAMIC_BAN,
+                ...C5_BANS,
+            ],
+            "no-restricted-imports": [
+                "error",
+                { paths: [CBOR_X_BAN, ...WEB_NODE_BANS.paths], patterns: WEB_NODE_BANS.patterns },
             ],
         },
     },

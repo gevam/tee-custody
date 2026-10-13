@@ -1,16 +1,24 @@
 // Frozen Core API surface (API.md §D): exact public names, final wire types.
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import { FrameReject, type FrameRejectCode } from "../src/channel/errors.js";
 import * as core from "../src/index.js";
 import type {
     AttestationCheckId,
     AttestationErrorCode,
+    BundleDeps,
+    BundleErrorCode,
+    BundleLimits,
     Bytes,
     CanonicalEnvelope,
     CanonicalValue,
     CapabilityErrorCode,
+    ChannelClientConfig,
+    ChannelErrorCode,
+    ChannelLimits,
     ClientId,
     ClientShare,
+    Clock,
     Crypto,
     DecodeLimits,
     ExpectedAttestation,
@@ -21,11 +29,14 @@ import type {
     InstanceId,
     JsonObject,
     JsonValue,
+    OpenOutcome,
+    OpenPayload,
     ParsedToken,
     ProfileKind,
     PublicKeyInput,
     PublishedBundle,
     PublishedResponse,
+    RemoteErrorCode,
     RequestId,
     ResponseCursor,
     ResponsePage,
@@ -42,6 +53,8 @@ import type {
     TrustProfile,
     TrustProfileErrorCode,
     VerifiedAttestation,
+    VerifiedBundle,
+    VerifiedPreKey,
     VerifierDeps,
     VerifierLimits,
     WireErrorCode,
@@ -49,7 +62,11 @@ import type {
 
 const PUBLIC_VALUES = [
     "AttestationError",
+    "BundleError",
     "CapabilityError",
+    "ChannelClient",
+    "ChannelError",
+    "DEFAULT_CHANNEL_LIMITS",
     "EncodingError",
     "PROTO",
     "TrustProfileError",
@@ -76,9 +93,13 @@ const PUBLIC_VALUES = [
     "launchConfigHash",
     "parseToken",
     "parseTrustProfile",
+    "prekeySigningMessage",
+    "selectPreKey",
+    "Session",
     "utf8DecodeStrict",
     "utf8Encode",
     "verifyAttestation",
+    "verifyBundle",
 ];
 
 describe("index.ts public surface", () => {
@@ -94,6 +115,19 @@ describe("index.ts public surface", () => {
         ]) {
             expect(Object.hasOwn(core, name)).toBe(false);
         }
+    });
+
+    it.each([
+        "isVerifiedAttestation",
+        "isVerifiedBundle",
+        "createVerifiedBundle",
+        "openT2cFrame",
+        "readOpenResult",
+        "readFrameResult",
+        "decodeResponse",
+        "hpkeInfo",
+    ])("does not export the internal channel name %s (API-TL §3)", (name) => {
+        expect(Object.hasOwn(core, name)).toBe(false);
     });
 });
 
@@ -114,6 +148,8 @@ describe("wire/types.ts", () => {
 // Any added parameter, option, property, or changed return type fails type-checking.
 type StringKeyed<T> = { [K in keyof T as K extends string ? K : never]: T[K] };
 type BrandKey<T> = Exclude<keyof T, string>;
+// The frozen surface of a class: its public members, so the owner may add #private state (API-TL §1).
+type PublicMembers<T> = Pick<T, keyof T>;
 
 describe("API.md §D type pins", () => {
     it("pins the capability contracts", () => {
@@ -436,6 +472,242 @@ describe("API.md §D type pins", () => {
                 events: SecurityEventSink,
                 deps: VerifierDeps,
             ) => Promise<VerifiedAttestation>
+        >();
+    });
+});
+
+describe("INC-2-API §7 type pins", () => {
+    it("pins bundle/types.ts, bundle/verify.ts and bundle/select.ts (§7.2)", () => {
+        expectTypeOf<VerifiedPreKey>().toEqualTypeOf<{
+            readonly id: number;
+            readonly publicKey: Uint8Array;
+            readonly notAfterMs: number;
+        }>();
+        expectTypeOf<StringKeyed<VerifiedBundle>>().toEqualTypeOf<{
+            readonly instanceId: string;
+            readonly identityPublicKey: Uint8Array;
+            readonly attestation: VerifiedAttestation;
+            readonly prekeys: readonly VerifiedPreKey[];
+            readonly verifiedAtMs: number;
+        }>();
+        expectTypeOf<BrandKey<VerifiedBundle>>().toExtend<symbol>();
+        expectTypeOf<VerifiedBundle[BrandKey<VerifiedBundle>]>().toEqualTypeOf<true>();
+        expectTypeOf<StringKeyed<VerifiedBundle>>().not.toExtend<VerifiedBundle>();
+        expectTypeOf<BundleErrorCode>().toEqualTypeOf<
+            | "MALFORMED"
+            | "ATTESTATION_FAILED"
+            | "INSTANCE_MISMATCH"
+            | "PREKEY_SIGNATURE_INVALID"
+            | "NO_USABLE_PREKEY"
+            | "UNSUPPORTED"
+        >();
+        expectTypeOf(core.BundleError).constructorParameters.toEqualTypeOf<
+            [BundleErrorCode, (AttestationCheckId | undefined)?]
+        >();
+        expectTypeOf<core.BundleError>().toExtend<Error>();
+        expectTypeOf<Pick<core.BundleError, "code" | "attestationCheck">>().toEqualTypeOf<{
+            readonly code: BundleErrorCode;
+            readonly attestationCheck?: AttestationCheckId | undefined;
+        }>();
+        expectTypeOf<BundleLimits>().toEqualTypeOf<{
+            readonly decode: DecodeLimits;
+            readonly maxPrekeys: number;
+        }>();
+        expectTypeOf<BundleDeps>().toEqualTypeOf<{
+            readonly crypto: Pick<Crypto, "sha256" | "verifySignature" | "verifyEd25519">;
+            readonly fetcher: Fetcher;
+            readonly now: () => number;
+            readonly verifierLimits: VerifierLimits;
+            readonly bundleLimits: BundleLimits;
+        }>();
+        expectTypeOf(core.verifyBundle).toEqualTypeOf<
+            (
+                published: PublishedBundle,
+                profile: TrustProfile,
+                events: SecurityEventSink,
+                deps: BundleDeps,
+            ) => Promise<VerifiedBundle>
+        >();
+        expectTypeOf(core.prekeySigningMessage).toEqualTypeOf<
+            (
+                crypto: Pick<Crypto, "sha256">,
+                instanceId: string,
+                id: number,
+                pub: Uint8Array,
+                notAfter: number,
+                imageDigest: string,
+            ) => Promise<Uint8Array>
+        >();
+        expectTypeOf(core.selectPreKey).toEqualTypeOf<
+            (
+                bundle: VerifiedBundle,
+                used: ReadonlySet<number>,
+                nowMs: number,
+                crypto: Pick<Crypto, "randomBytes">,
+            ) => VerifiedPreKey | undefined
+        >();
+    });
+
+    it("pins channel/types.ts, client.ts and session.ts (§7.4)", () => {
+        expectTypeOf<Clock>().toEqualTypeOf<{
+            now(): number;
+            sleep(ms: number): Promise<void>;
+        }>();
+        expectTypeOf<ChannelLimits>().toEqualTypeOf<{
+            readonly maxBundles: number;
+            readonly bundle: BundleLimits;
+            readonly verifier: VerifierLimits;
+            readonly envelopeDecode: DecodeLimits;
+            readonly aadDecode: DecodeLimits;
+            readonly payloadDecode: DecodeLimits;
+            readonly maxPayloadBytes: number;
+            readonly responseTimeoutMs: number;
+            readonly pollIntervalMs: number;
+            readonly maxInFlight: number;
+            readonly bundleMaxAgeMs: number;
+        }>();
+        expectTypeOf(core.DEFAULT_CHANNEL_LIMITS).toEqualTypeOf<ChannelLimits>();
+        expectTypeOf<ChannelClientConfig>().toEqualTypeOf<{
+            readonly trustProfile: TrustProfile;
+            readonly transport: Transport;
+            readonly crypto: Crypto;
+            readonly fetcher: Fetcher;
+            readonly securityEvents: SecurityEventSink;
+            readonly clock: Clock;
+            readonly limits?: ChannelLimits;
+        }>();
+        expectTypeOf<OpenPayload>().toEqualTypeOf<
+            | {
+                  readonly op: "open_session";
+                  readonly clientId: string;
+                  readonly cs: Uint8Array;
+                  readonly keyId: Uint8Array;
+                  readonly epoch: number;
+              }
+            | { readonly op: "enroll" }
+        >();
+        expectTypeOf<OpenOutcome>().toEqualTypeOf<{
+            readonly session: core.Session;
+            readonly payload: CanonicalValue;
+        }>();
+        expectTypeOf(core.ChannelClient).constructorParameters.toEqualTypeOf<
+            [ChannelClientConfig]
+        >();
+        expectTypeOf<PublicMembers<core.ChannelClient>>().toEqualTypeOf<{
+            fetchVerifiedBundles(): Promise<readonly VerifiedBundle[]>;
+            open(payload: OpenPayload, bundle?: VerifiedBundle): Promise<OpenOutcome>;
+        }>();
+        expectTypeOf<PublicMembers<core.Session>>().toEqualTypeOf<{
+            readonly sessionId: Uint8Array;
+            readonly instanceId: string;
+            readonly clientId: string;
+            readonly closed: boolean;
+            request(op: string, payload: CanonicalValue): Promise<CanonicalValue>;
+            close(): Promise<void>;
+        }>();
+    });
+
+    it("pins channel/errors.ts (§7.5)", () => {
+        expectTypeOf<ChannelErrorCode>().toEqualTypeOf<
+            | "NO_VERIFIED_BUNDLE"
+            | "UNVERIFIED_BUNDLE"
+            | "NO_USABLE_PREKEY"
+            | "TRANSPORT"
+            | "TIMEOUT"
+            | "INVALID_RESPONSE"
+            | "REMOTE_ERROR"
+            | "SESSION_CLOSED"
+            | "SEQUENCE_EXHAUSTED"
+            | "INVALID_ARGUMENT"
+            | "CRYPTO_UNAVAILABLE"
+        >();
+        expectTypeOf<RemoteErrorCode>().toEqualTypeOf<
+            | "INVALID_FRAME"
+            | "AUTHENTICATION_FAILED"
+            | "REPLAYED_OR_OUT_OF_ORDER"
+            | "UNKNOWN_CLIENT"
+            | "UNKNOWN_OPERATION"
+            | "NOT_AUTHORIZED"
+            | "LIMIT_EXCEEDED"
+            | "RECORD_NOT_FOUND"
+            | "BACKEND_UNAVAILABLE"
+            | "INTERNAL"
+            | "UNKNOWN"
+        >();
+        expectTypeOf(core.ChannelError).constructorParameters.toEqualTypeOf<
+            [ChannelErrorCode, (CapabilityErrorCode | RemoteErrorCode | undefined)?]
+        >();
+        expectTypeOf<core.ChannelError>().toExtend<Error>();
+        expectTypeOf<Pick<core.ChannelError, "code" | "detail">>().toEqualTypeOf<{
+            readonly code: ChannelErrorCode;
+            readonly detail?: CapabilityErrorCode | RemoteErrorCode | undefined;
+        }>();
+    });
+});
+
+describe("DEFAULT_CHANNEL_LIMITS (INC-2-API §7.4)", () => {
+    it("equals the §7.4 values", () => {
+        expect(core.DEFAULT_CHANNEL_LIMITS).toStrictEqual({
+            maxBundles: 16,
+            bundle: { decode: { maxBytes: 65_536, maxDepth: 4, maxItems: 4096 }, maxPrekeys: 256 },
+            verifier: { maxTokenBytes: 16_384, maxDiscoveryBytes: 65_536, maxJwksBytes: 65_536 },
+            envelopeDecode: { maxBytes: 65_536, maxDepth: 2, maxItems: 16 },
+            aadDecode: { maxBytes: 512, maxDepth: 2, maxItems: 16 },
+            payloadDecode: { maxBytes: 32_768, maxDepth: 16, maxItems: 4096 },
+            maxPayloadBytes: 32_768,
+            responseTimeoutMs: 30_000,
+            pollIntervalMs: 500,
+            maxInFlight: 8,
+            bundleMaxAgeMs: 60_000,
+        });
+    });
+
+    it("is frozen at every level", () => {
+        const limits = core.DEFAULT_CHANNEL_LIMITS;
+        for (const value of [
+            limits,
+            limits.bundle,
+            limits.bundle.decode,
+            limits.verifier,
+            limits.envelopeDecode,
+            limits.aadDecode,
+            limits.payloadDecode,
+        ]) {
+            expect(Object.isFrozen(value)).toBe(true);
+        }
+    });
+});
+
+describe("channel and bundle error classes (INC-2-API §7.2, §7.5; API-TL §3)", () => {
+    it("BundleError carries its code as message and an optional attestation check", () => {
+        const plain = new core.BundleError("MALFORMED");
+        expect(plain).toBeInstanceOf(Error);
+        expect(plain.message).toBe("MALFORMED");
+        expect(plain.code).toBe("MALFORMED");
+        expect(plain.attestationCheck).toBeUndefined();
+        const failed = new core.BundleError("ATTESTATION_FAILED", "nonce");
+        expect(failed.message).toBe("ATTESTATION_FAILED");
+        expect(failed.attestationCheck).toBe("nonce");
+    });
+
+    it("ChannelError carries its code as message and an optional detail", () => {
+        const plain = new core.ChannelError("TIMEOUT");
+        expect(plain).toBeInstanceOf(Error);
+        expect(plain.message).toBe("TIMEOUT");
+        expect(plain.code).toBe("TIMEOUT");
+        expect(plain.detail).toBeUndefined();
+        const remote = new core.ChannelError("REMOTE_ERROR", "UNKNOWN_CLIENT");
+        expect(remote.message).toBe("REMOTE_ERROR");
+        expect(remote.detail).toBe("UNKNOWN_CLIENT");
+    });
+
+    it("FrameReject (internal) carries its code as message", () => {
+        const reject = new FrameReject("SEQ_REJECTED");
+        expect(reject).toBeInstanceOf(Error);
+        expect(reject.message).toBe("SEQ_REJECTED");
+        expect(reject.code).toBe("SEQ_REJECTED");
+        expectTypeOf<FrameRejectCode>().toEqualTypeOf<
+            "INVALID_ENVELOPE" | "SEQ_REJECTED" | "AUTH_FAILED"
         >();
     });
 });

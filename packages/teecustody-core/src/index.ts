@@ -29,3 +29,24 @@ export * from "./attestation/checks/claims.js";
 export * from "./attestation/checks/image.js";
 export * from "./attestation/checks/launch-config.js";
 export * from "./attestation/verify.js";
+export {
+    BundleError,
+    type BundleDeps,
+    type BundleErrorCode,
+    type BundleLimits,
+    type VerifiedBundle,
+    type VerifiedPreKey,
+} from "./bundle/types.js";
+export { verifyBundle, prekeySigningMessage } from "./bundle/verify.js";
+export { selectPreKey } from "./bundle/select.js";
+export {
+    DEFAULT_CHANNEL_LIMITS,
+    type ChannelClientConfig,
+    type ChannelLimits,
+    type Clock,
+    type OpenOutcome,
+    type OpenPayload,
+} from "./channel/types.js";
+export { ChannelError, type ChannelErrorCode, type RemoteErrorCode } from "./channel/errors.js";
+export { ChannelClient } from "./channel/client.js";
+export { Session } from "./channel/session.js";
