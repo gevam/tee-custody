@@ -180,7 +180,25 @@ def _kind(value: CanonicalValue) -> CanonicalValue:
 
 
 def encode_bundle(b: PreKeyBundle) -> bytes:
-    raise NotImplementedError("T-07")
+    checked = _bundle(
+        b.instance_id,
+        b.token,
+        b.ik_pub,
+        b.published_at,
+        [_prekey(p.id, p.pub, p.not_after, p.sig) for p in b.prekeys],
+    )
+    return wire.encode(
+        {
+            "instance_id": checked.instance_id,
+            "token": checked.token,
+            "IK_pub": checked.ik_pub,
+            "published_at": checked.published_at,
+            "prekeys": [
+                {"id": p.id, "pub": p.pub, "not_after": p.not_after, "sig": p.sig}
+                for p in checked.prekeys
+            ],
+        }
+    )
 
 
 def decode_bundle(data: bytes, limits: DecodeLimits) -> PreKeyBundle:

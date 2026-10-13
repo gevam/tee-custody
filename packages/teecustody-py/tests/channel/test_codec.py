@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from teecustody.channel.codec import (
     PreKeyEntry,
     decode_bundle,
     decode_request,
+    encode_bundle,
 )
 from teecustody.config import BoundaryLimits
 from teecustody.wire import PROTO, DecodeLimits, encode
@@ -395,3 +397,59 @@ def test_bundle_is_decoded_with_the_given_limits() -> None:
         decode_bundle(encode(bundle()), DecodeLimits(max_bytes=65536, max_depth=3, max_items=4096))
 
     assert exc.value.code is EnvelopeErrorCode.INVALID
+
+
+# ---------------------------------------------------------------- criterion 4
+VALID_BUNDLE = PreKeyBundle(
+    instance_id=INSTANCE_ID,
+    token=TOKEN,
+    ik_pub=IK_PUB,
+    published_at=1_900_000_000,
+    prekeys=tuple(PreKeyEntry(id=i, pub=PUB, not_after=1_900_003_600, sig=SIG) for i in (0, 1, 5)),
+)
+
+
+def test_encode_bundle_round_trips_through_decode_bundle() -> None:
+    data = encode_bundle(VALID_BUNDLE)
+
+    assert data == encode(bundle())
+    assert decode_bundle(data, BUNDLE_LIMITS) == VALID_BUNDLE
+
+
+def _entry(prekey_id: Any = 0, **override: Any) -> PreKeyEntry:
+    return dataclasses.replace(
+        PreKeyEntry(id=0, pub=PUB, not_after=1_900_003_600, sig=SIG), id=prekey_id, **override
+    )
+
+
+INVALID_BUNDLE_INPUTS: dict[str, tuple[dict[str, Any], str]] = {
+    "ids-unsorted": ({"prekeys": (_entry(1), _entry(0))}, "PREKEY_ID_RANGE"),
+    "ids-duplicate": ({"prekeys": (_entry(2), _entry(2))}, "PREKEY_ID_RANGE"),
+    "instance-id-uppercase": ({"instance_id": INSTANCE_ID.upper()}, "INSTANCE_ID_RANGE"),
+    "instance-id-newline": ({"instance_id": INSTANCE_ID + "\n"}, "INSTANCE_ID_RANGE"),
+    "token-empty": ({"token": ""}, "TOKEN_RANGE"),
+    "token-16385": ({"token": "t" * 16385}, "TOKEN_RANGE"),
+    "token-bytes": ({"token": b"t"}, "TOKEN_RANGE"),
+    "ik-pub-31": ({"ik_pub": IK_PUB[:31]}, "IK_PUB_RANGE"),
+    "ik-pub-bytearray": ({"ik_pub": bytearray(IK_PUB)}, "IK_PUB_RANGE"),
+    "published-at-2^53": ({"published_at": 2**53}, "PUBLISHED_AT_RANGE"),
+    "published-at-bool": ({"published_at": True}, "PUBLISHED_AT_RANGE"),
+    "prekeys-empty": ({"prekeys": ()}, "PREKEYS_RANGE"),
+    "prekeys-257": ({"prekeys": tuple(_entry(i) for i in range(257))}, "PREKEYS_RANGE"),
+    "prekey-id-2^32": ({"prekeys": (_entry(2**32),)}, "PREKEY_ID_RANGE"),
+    "prekey-id-bool": ({"prekeys": (_entry(True),)}, "PREKEY_ID_RANGE"),
+    "pub-33": ({"prekeys": (_entry(pub=PUB + b"\x00"),)}, "PUB_RANGE"),
+    "not-after-2^53": ({"prekeys": (_entry(not_after=2**53),)}, "NOT_AFTER_RANGE"),
+    "not-after-negative": ({"prekeys": (_entry(not_after=-1),)}, "NOT_AFTER_RANGE"),
+    "sig-63": ({"prekeys": (_entry(sig=SIG[:63]),)}, "SIG_RANGE"),
+}
+
+
+@pytest.mark.parametrize(
+    ("override", "message"), INVALID_BUNDLE_INPUTS.values(), ids=INVALID_BUNDLE_INPUTS.keys()
+)
+def test_encode_bundle_applies_the_decoder_range_checks(
+    override: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        encode_bundle(dataclasses.replace(VALID_BUNDLE, **override))
