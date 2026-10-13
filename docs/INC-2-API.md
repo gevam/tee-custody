@@ -14,6 +14,7 @@ Revision 3 addendum (2026-10-13):
 - §11: `httpx2` (D-046).
 - §4.5, §4.8: `repr=False` on payload fields.
 - §4.9: `FrameAad` is excluded from the `seq`-parameter check.
+- §7.1, §7.2: branded byte fields are copy-on-read getters (T-02 security review, DESIGN_ISSUE).
 
 Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
@@ -1059,15 +1060,40 @@ Every consumer checks the brand at runtime: `verifyBundle` on the value `verifyA
 `ChannelClient.open` on `bundle.attestation`. A structurally identical object literal fails. Example:
 `if (!isVerifiedAttestation(va)) throw new BundleError("ATTESTATION_FAILED");`.
 
+**Branded values must be immutable in fact, not only frozen (ruling 2026-10-13; T-02 security review; SR-1, B-13,
+T-23).**
+- *Problem.* `Object.freeze` cannot freeze the contents of a typed array. A branded object that exposes a
+  `Uint8Array` field stays mutable behind its brand.
+- *Rule.* A branded type (`VerifiedAttestation`, `VerifiedBundle`, `VerifiedPreKey`, `TrustProfile`) never exposes a
+  mutable buffer that Core reads later.
+  - Each byte field is held in module-private storage, copied once when the value is branded.
+  - The field is exposed only as a **copy-on-read getter**: a frozen accessor property with no setter, returning a
+    fresh `slice()` on every read.
+  - A host that mutates what it read changes only its own copy. Core consumers therefore always see the bytes that
+    were verified, and no snapshot comparison is needed.
+  - `isVerifiedBundle` stays a pure membership check.
+- *Audit of the INC-1 brands.*
+  - `VerifiedAttestation` holds only strings, numbers and a frozen string array, so it is unaffected.
+  - `TrustProfile` is deep-frozen and holds no typed arrays, so it is unaffected.
+  - `ExpectedAttestation.identityNonce` is caller-owned input, not a brand. As hardening, `verifyAttestation`
+    copies it at entry, before the first `await` (task: T-33, `verify.ts`).
+- *Consumers.* Within one operation, Core reads each key exactly once into a local and uses only that local. For
+  example, `ChannelClient.open` reads `identityPublicKey` once for `H(IK_pub)`/`info`, and the selected pre-key's
+  `publicKey` once for HPKE setup.
+- *Python.* There is no analogue. Python bundle and pre-key fields are immutable `bytes`, and secret buffers are
+  `Secret`-owned and never handed to the host.
+
 ### 7.2 Bundle verification (spec §5.2; D2-1, D2-2, D2-4)
 
 ```ts
 declare const verifiedBundle: unique symbol;
 export interface VerifiedPreKey { readonly id: number; readonly publicKey: Bytes; readonly notAfterMs: number }
+// VerifiedPreKey.publicKey and VerifiedBundle.identityPublicKey are copy-on-read getters (§7.1 ruling). The types are
+// unchanged.
 export interface VerifiedBundle {                       // only verifyBundle creates one (runtime WeakSet brand)
     readonly [verifiedBundle]: true;
     readonly instanceId: InstanceId;
-    readonly identityPublicKey: Bytes;                   // IK_pub, 32 bytes
+    readonly identityPublicKey: Bytes;                   // IK_pub, 32 bytes; a fresh copy on every read
     readonly attestation: VerifiedAttestation;
     readonly prekeys: readonly VerifiedPreKey[];         // unexpired at verifiedAtMs, sorted by id
     readonly verifiedAtMs: number;
@@ -1105,6 +1131,25 @@ Any `false` → `PREKEY_SIGNATURE_INVALID`; a `CapabilityError("UNSUPPORTED")` �
 `not_after × 1000 > now()`; none → `NO_USABLE_PREKEY`. Every builder input is range-checked first (§2; `RangeError`
 → `MALFORMED`).
 Example: `const vb = await verifyBundle(pb, profile, events, deps);`.
+
+**`createVerifiedBundle`** (internal, T-02). The signature is unchanged. Its body does the following:
+- copies `identityPublicKey` and each `publicKey` into a module-private `WeakMap` entry keyed by the new frozen object;
+- defines those two fields with `Object.defineProperty(obj, name, { get: () => stored.slice(), enumerable: true })`,
+  with no setter, before `Object.freeze`;
+- registers the object in the `WeakSet`.
+
+`verifyBundle` (T-16) keeps no reference to the buffers it passes in.
+
+Tests for T-02, each mutating what the API *returned*:
+- (1) `b.identityPublicKey.set(0xee…)`, then a fresh read returns the original bytes, and `isVerifiedBundle(b)` is true.
+- (2) The same for `b.prekeys[i].publicKey`.
+- (3) Two reads return distinct objects with equal bytes.
+- (4) Mutating the input buffers after `createVerifiedBundle` returns has no effect.
+- (5) Assigning a field or redefining a property throws in strict mode, and `Object.isFrozen` holds for the bundle, the
+  `prekeys` array and every entry.
+
+Test for T-26: a host mutates its read copy of `bundle.prekeys[k].publicKey` before `open`, and the
+`setupHpkeSender` spy receives the original key.
 
 ```ts
 // bundle/select.ts
