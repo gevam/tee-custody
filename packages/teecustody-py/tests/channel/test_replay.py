@@ -67,3 +67,14 @@ def test_full_cache_refuses_a_new_entry_and_keeps_every_live_one() -> None:
     assert all(cache.seen(CLIENT, bytes([n]) * 16) for n in range(3))
     assert not cache.seen(CLIENT, b"\x09" * 16)
     assert cache._size() == 3
+
+
+def test_full_cache_accepts_a_new_entry_once_every_entry_has_expired() -> None:
+    clock = Clock()
+    cache = _full_cache(clock)
+
+    clock.now = T0 + 300 + 1
+    cache.record(CLIENT, b"\x09" * 16, int(clock.now))
+
+    assert cache.seen(CLIENT, b"\x09" * 16)
+    assert cache._size() == 1
