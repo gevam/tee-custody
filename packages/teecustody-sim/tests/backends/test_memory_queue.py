@@ -68,3 +68,18 @@ def test_withdraw_bundle_removes_it_and_is_idempotent() -> None:
     queue.withdraw_bundle(IID_A)
 
     assert queue.list_bundles(10) == [PublishedBundle(IID_B, b"b")]
+
+
+# ---------------------------------------------------------------- criterion 2: live bundle required
+def test_publish_request_without_a_live_bundle_is_not_found() -> None:
+    clock = FakeClock()
+    queue = _queue(clock)
+    with pytest.raises(QueueError) as never:
+        queue.publish_request(IID_A, "01" * 16, b"req")
+    queue.publish_bundle(IID_A, b"a", int(START) + 10)
+    clock.now = START + 10
+    with pytest.raises(QueueError) as expired:
+        queue.publish_request(IID_A, "01" * 16, b"req")
+
+    assert _code(never) is QueueErrorCode.NOT_FOUND
+    assert _code(expired) is QueueErrorCode.NOT_FOUND

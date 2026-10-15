@@ -9,7 +9,13 @@ import time
 from collections.abc import Callable
 
 from teecustody.audit import AppendResult, AuditClass, AuditErrorCode, AuditKey, AuditRecord
-from teecustody.queue import PublishedBundle, QueueMessage, ResponsePage
+from teecustody.queue import (
+    PublishedBundle,
+    QueueError,
+    QueueErrorCode,
+    QueueMessage,
+    ResponsePage,
+)
 
 
 class InMemoryQueue:
@@ -62,7 +68,11 @@ class InMemoryQueue:
             del self._bundles[instance_id]
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            self._purge(self._clock())
+            if instance_id not in self._bundles:
+                raise QueueError(QueueErrorCode.NOT_FOUND)
+            raise NotImplementedError("T-24")
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
         raise NotImplementedError("T-24")
