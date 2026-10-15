@@ -81,3 +81,29 @@ describe("criterion 3: the guards in the patterns", () => {
         assert.match(result.stdout, /^string-timer\t[^\t]+\t\d+\n$/);
     });
 });
+
+describe("criterion 4: usage and build errors exit 2", () => {
+    const USAGE = /^usage: node tools\/scan-bundle\.mjs --entry <path> /;
+    for (const [name, args] of [
+        ["no arguments", []],
+        ["a missing --entry", ["--alias", "@teecustody/core=packages/teecustody-core/src/index.ts"]],
+        ["an --entry without a value", ["--entry"]],
+        ["an unknown flag", ["--entry", "x.js", "--minify"]],
+        ["a positional argument", ["x.js"]],
+        ["an --alias without =", ["--entry", "x.js", "--alias", "@teecustody/core"]],
+        ["an --alias with an empty side", ["--entry", "x.js", "--alias", "=x.ts"]],
+    ]) {
+        it(`prints usage for ${name}`, async () => {
+            const result = await run(args);
+            assert.equal(result.code, 2);
+            assert.equal(result.stdout, "");
+            assert.match(result.stderr, USAGE);
+        });
+    }
+
+    it("reports a non-existent entry as a build error without esbuild's message", async () => {
+        const entry = join(scratch, "does-not-exist.js");
+        const result = await run(["--entry", entry]);
+        assert.deepEqual(result, { code: 2, stdout: "", stderr: `build-error\t${entry}\t1\n` });
+    });
+});
