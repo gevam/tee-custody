@@ -361,3 +361,35 @@ describe("native only (criterion 7, C8.4 b and its clarification)", () => {
         }
     });
 });
+
+/** SR-11: the error carries only its code; no platform or library text survives (C8.4 c). */
+function expectNoPlatformText(error: unknown, code: string): void {
+    expect(error).toBeInstanceOf(CapabilityError);
+    const capability = error as CapabilityError;
+    expect(capability.code).toBe(code);
+    expect(capability.message).toBe(code);
+    expect(capability.cause).toBeUndefined();
+    expect(String(error)).not.toContain(SENTINEL);
+    for (const name of Reflect.ownKeys(capability)) {
+        expect(String(Reflect.get(capability, name))).not.toContain(SENTINEL);
+    }
+}
+
+describe("SR-11 sentinel (criterion 8, C8.4 c)", () => {
+    it("keeps the platform message out of the UNSUPPORTED exhaustion error", async () => {
+        const { pk } = x25519();
+        harness((call) => call > 1);
+        const crypto = createWebCrypto();
+        expectNoPlatformText(await rejection(crypto.setupHpkeSender(pk, INFO)), "UNSUPPORTED");
+    });
+
+    it("keeps the library message out of the INVALID_ARGUMENT no-retry error", async () => {
+        const { pk } = x25519();
+        harness();
+        vi.spyOn(CipherSuite.prototype, "createSenderContext").mockRejectedValueOnce(
+            new EncapError(SENTINEL),
+        );
+        const crypto = createWebCrypto();
+        expectNoPlatformText(await rejection(crypto.setupHpkeSender(pk, INFO)), "INVALID_ARGUMENT");
+    });
+});
