@@ -656,25 +656,42 @@ def test_c10_the_close_callback_itself_swallows_an_opener_failure_after_logging(
 
 
 # ---------------------------------------------------------------- criterion 11: run(stop)
-class RecordingStop(threading.Event):
-    """A stop event that records every wait; `on_wait` may move the clock or set the event."""
+TICK_BUDGET = 50  # A2 SL1: no `run()` test can loop more often than this
 
-    def __init__(self) -> None:
+
+class BudgetStop(threading.Event):
+    """The only stop event passed to `run()` (A2 SL1): it fails instead of hanging.
+
+    `is_set()` raises `AssertionError("TICK_BUDGET_EXCEEDED")` once it has been checked more than
+    `budget` times. `wait` never sleeps; it records the timeout, and `on_wait` may move the clock
+    or set the event.
+    """
+
+    def __init__(self, budget: int = TICK_BUDGET) -> None:
+        assert 0 < budget <= TICK_BUDGET
         super().__init__()
+        self.budget = budget
+        self.checks = 0
         self.waits: list[float | None] = []
         self.on_wait: Callable[[int], None] = lambda n: None
+
+    def is_set(self) -> bool:
+        self.checks += 1
+        if self.checks > self.budget:
+            raise AssertionError("TICK_BUDGET_EXCEEDED")
+        return super().is_set()
 
     def wait(self, timeout: float | None = None) -> bool:
         self.waits.append(timeout)
         self.on_wait(len(self.waits))
-        return self.is_set()
+        return super().is_set()
 
 
 def test_c11_run_ticks_until_stop_and_shuts_down_in_finally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     world = World(monkeypatch, start=False)
-    stop = RecordingStop()
+    stop = BudgetStop()
     original_pull = world.queue.pull_requests
 
     def pull_then_stop(instance_id: str, max_messages: int, wait_s: float) -> list[QueueMessage]:
@@ -697,7 +714,7 @@ def test_c11_a_tick_skipping_its_pull_waits_until_the_pull_is_due_at_most_pull_w
 ) -> None:
     world = World(monkeypatch, limits=BoundaryLimits(pull_wait_s=1.0), start=False)
     world.queue.pull_errors = [QueueError(QueueErrorCode.UNAVAILABLE)]
-    stop = RecordingStop()
+    stop = BudgetStop()
 
     def on_wait(n: int) -> None:
         if n == 1:
@@ -721,7 +738,7 @@ def test_c11_a_stop_raised_by_a_tick_propagates_after_a_single_shutdown(
     world.queue.pull_errors = [QueueError(QueueErrorCode.INTERNAL)]
 
     with pytest.raises(WorkloadStopped) as stopped:
-        world.loop.run(threading.Event())
+        world.loop.run(BudgetStop())
 
     assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
 
@@ -735,7 +752,7 @@ def test_c11_a_failed_start_propagates_and_shutdown_has_nothing_to_undo(
     world.launcher.fail = True
 
     with pytest.raises(LauncherError):
-        world.loop.run(threading.Event())
+        world.loop.run(BudgetStop())
 
     assert world.queue.calls == []
 
@@ -1232,7 +1249,7 @@ def test_c14_a_failing_withdraw_in_run_is_reported_as_a_stop_not_a_raw_queue_err
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     world = World(monkeypatch, start=False)
-    stop = threading.Event()
+    stop = BudgetStop()
     stop.set()
 
     def failing(instance_id: str) -> None:
