@@ -3,16 +3,30 @@
 import os
 from dataclasses import dataclass
 
+import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from teecustody.channel.codec import FrameAad, encode_frame_aad
 from teecustody.channel.ports import CloseReason, SessionInfo
-from teecustody.channel.session import Session, SessionTable, T2cSealer
+from teecustody.channel.session import (
+    Session,
+    SessionReject,
+    SessionRejectCode,
+    SessionTable,
+    T2cSealer,
+    _nonce,
+)
 from teecustody.secrets import Secret
 
 INSTANCE_ID = "fedcba9876543210" * 2
 CLIENT_A = "a1" * 16
 CLIENT_B = "b2" * 16
+CLIENT_C = "c3" * 16
+CLIENT_D = "d4" * 16
 SID_1 = b"\x01" * 16
 SID_2 = b"\x02" * 16
 SID_3 = b"\x03" * 16
+SID_9 = b"\x09" * 16
 T0 = 1_900_000_000.0
 
 
@@ -79,3 +93,121 @@ def test_a_new_session_for_a_live_principal_replaces_the_old_one() -> None:
     assert new_keys.live
     assert world.table.get(SID_2) is other
     assert other_keys.live
+
+
+# ---------------------------------------------------------------- criterion 10 (R-8)
+def _frame(
+    keys: Keys, session_id: bytes, seq: int, *, forged: bool = False
+) -> tuple[FrameAad, bytes, bytes]:
+    aad = FrameAad(session_id=session_id, seq=seq, op="test.echo")
+    aad_bytes = encode_frame_aad(aad)
+    key = os.urandom(32) if forged else keys.sk_c2t.reveal()
+    return aad, aad_bytes, AESGCM(key).encrypt(_nonce(seq), b"p", aad_bytes)
+
+
+def test_a_full_table_evicts_exactly_the_idle_session() -> None:
+    world = World(max_sessions=2)
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    s2, k2 = world.create(SID_2, CLIENT_B)
+    world.clock.now += 90
+    s2.open_c2t(*_frame(k2, SID_2, 0), world.clock())
+    world.clock.now += 10
+    s3, k3 = world.create(SID_3, CLIENT_C)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.EVICTED)]
+    assert k1.wiped
+    assert world.table.get(SID_1) is None
+    assert world.table.get(SID_2) is s2
+    assert world.table.get(SID_3) is s3
+    assert k2.live
+    assert k3.live
+
+
+def test_a_full_table_of_active_sessions_refuses_and_evicts_nobody() -> None:
+    world = World(max_sessions=2)
+    s1, k1 = world.create(SID_1, CLIENT_A)
+    s2, k2 = world.create(SID_2, CLIENT_B)
+    world.clock.now += 59.999
+    with pytest.raises(OverflowError, match=r"^SESSIONS_FULL$"):
+        world.create(SID_3, CLIENT_C)
+    assert world.closes == []
+    assert world.table.get(SID_1) is s1
+    assert world.table.get(SID_2) is s2
+    assert k1.live
+    assert k2.live
+
+
+def test_a_session_idle_exactly_the_minimum_is_evictable() -> None:
+    world = World(max_sessions=1)
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    world.clock.now += 60
+    world.create(SID_2, CLIENT_B)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.EVICTED)]
+    assert k1.wiped
+
+
+def test_equal_activity_evicts_the_smallest_session_id() -> None:
+    world = World(max_sessions=3)
+    world.create(SID_9, CLIENT_A)
+    world.create(SID_1, CLIENT_B)
+    world.create(SID_2, CLIENT_C)
+    world.clock.now += 61
+    world.create(SID_3, CLIENT_D)
+    assert world.closes == [(_info(SID_1, CLIENT_B), CloseReason.EVICTED)]
+
+
+def test_the_least_recently_active_session_is_chosen_not_the_oldest() -> None:
+    world = World(max_sessions=2)
+    s1, k1 = world.create(SID_1, CLIENT_A)
+    world.clock.now += 10
+    world.create(SID_2, CLIENT_B)
+    world.clock.now += 10
+    s1.open_c2t(*_frame(k1, SID_1, 0), world.clock())
+    world.clock.now += 100
+    world.create(SID_3, CLIENT_C)
+    assert world.closes == [(_info(SID_2, CLIENT_B), CloseReason.EVICTED)]
+
+
+def test_at_most_one_session_is_evicted_per_create() -> None:
+    world = World(max_sessions=3)
+    world.create(SID_1, CLIENT_A)
+    world.create(SID_2, CLIENT_B)
+    world.create(SID_9, CLIENT_C)
+    world.clock.now += 300
+    world.create(SID_3, CLIENT_D)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.EVICTED)]
+    assert world.table.get(SID_2) is not None
+    assert world.table.get(SID_9) is not None
+
+
+@pytest.mark.parametrize("rejection", ["forged", "replayed", "foreign"])
+def test_a_rejected_or_unauthenticated_frame_never_refreshes_activity(rejection: str) -> None:
+    world = World(max_sessions=2)
+    s1, k1 = world.create(SID_1, CLIENT_A)
+    world.clock.now += 5
+    world.create(SID_2, CLIENT_B)
+    s1.open_c2t(*_frame(k1, SID_1, 0), world.clock())
+    world.clock.now += 50
+    frame = {
+        "forged": _frame(k1, SID_1, 1, forged=True),
+        "replayed": _frame(k1, SID_1, 0),
+        "foreign": _frame(k1, SID_2, 1),
+    }[rejection]
+    with pytest.raises(SessionReject) as err:
+        s1.open_c2t(*frame, world.clock())
+    assert err.value.code in {SessionRejectCode.AUTH_FAILED, SessionRejectCode.SEQ_REJECTED}
+    world.clock.now += 20
+    world.create(SID_3, CLIENT_C)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.EVICTED)]
+
+
+def test_sessions_past_the_idle_timeout_expire_before_any_eviction() -> None:
+    world = World(max_sessions=2)
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    world.clock.now += 850
+    s2, k2 = world.create(SID_2, CLIENT_B)
+    world.clock.now += 50
+    world.create(SID_3, CLIENT_C)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.IDLE_TIMEOUT)]
+    assert k1.wiped
+    assert world.table.get(SID_2) is s2
+    assert k2.live

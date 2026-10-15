@@ -127,6 +127,9 @@ class SessionTable:
         clock: Callable[[], float],
     ) -> None:
         self._instance_id = instance_id
+        self._max_sessions = max_sessions
+        self._idle_timeout_s = idle_timeout_s
+        self._evict_min_idle_s = evict_min_idle_s
         self._on_close = on_close
         self._clock = clock
         self._sessions: dict[bytes, Session] = {}
@@ -137,6 +140,10 @@ class SessionTable:
         for existing in list(self._sessions.values()):
             if existing.client_id == client_id:
                 self.close(existing.session_id, CloseReason.REPLACED)
+        if len(self._sessions) >= self._max_sessions:
+            self.expire_idle()
+        if len(self._sessions) >= self._max_sessions:
+            self._evict_one()
         now = self._clock()
         # Built here so that no Session method ever takes a key (R-5, INC-2-API §4.9).
         session = Session.__new__(Session)
@@ -166,7 +173,25 @@ class SessionTable:
         )
 
     def expire_idle(self) -> int:
-        raise NotImplementedError("T-23")
+        now = self._clock()
+        idle = [
+            session.session_id
+            for session in self._sessions.values()
+            if now - session.last_activity >= self._idle_timeout_s
+        ]
+        for session_id in idle:
+            self.close(session_id, CloseReason.IDLE_TIMEOUT)
+        return len(idle)
 
     def close_all(self) -> None:
         raise NotImplementedError("T-23")
+
+    def _evict_one(self) -> None:
+        """R-8: evict the least recently active session (ties: smallest id) if idle long enough."""
+        victim = min(
+            self._sessions.values(),
+            key=lambda session: (session.last_activity, session.session_id),
+        )
+        if self._clock() - victim.last_activity < self._evict_min_idle_s:
+            raise OverflowError("SESSIONS_FULL")
+        self.close(victim.session_id, CloseReason.EVICTED)
