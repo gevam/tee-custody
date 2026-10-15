@@ -1423,3 +1423,23 @@ Participants: Code Reviewer, Security Reviewer
 - `time` NOT_YET_VALID, because the branch predates T-38. It is resolved on main after the merge.
 
 **Dissent:** none
+
+## D-069 — B-45: bounded X25519 keygen retry (ADR 0011 C8) via T-39, in INC-2 before G6 (INC-2, 2026-10-15)
+
+Type: design
+Chair / decider: Orchestrator, on Architect decision (B-45-decision.md, 334c223) and Security Architect sign-off (ADR 0011 C8, C8.1–C8.7)
+Participants: T-32 engineer (finding), Architect, Security Architect
+
+**Decision:** new task T-39 (STRONG) is added to INC-2 and lands before G6.
+- `packages/teecustody-web/src/crypto/webcrypto.ts` retries native X25519 `generateKey` at most 3 times, then rejects `UNSUPPORTED`, with no `cause`.
+- Failed probes are no longer cached.
+- When the sender's keygen retries run out, the error is `UNSUPPORTED`, not `INVALID_ARGUMENT`.
+- Core is unchanged. The C3a manifest stays identical (C8.3).
+- T-39 also re-records `docs/tasks/INC-2/FACTS.md` at the locked Playwright 1.63.0. The 1.64.0 table is kept as superseded, and a new section, "X25519 generateKey reliability", is added.
+- INC-2-API §8.1 text is approved by the SA. The Architect applies it.
+
+**Human:** not required. The SA judged its sign-off sufficient: the change is within the D-045/D-051 scope, with the same @hpke versions and the same unreachable vendored code. The human is informed of one new Low availability residual.
+
+**Rationale:** WebKit X25519 keygen fails in about 0.35% of calls. Host-level retries would cost another WebAuthn ceremony, and a cached probe failure would break HPKE for the page lifetime.
+
+**Dissent:** none
