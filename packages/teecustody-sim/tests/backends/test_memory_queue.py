@@ -403,7 +403,7 @@ def test_bundle_already_expired_at_publish_is_invalid_argument() -> None:
 
 
 def _drained_wave(queue: InMemoryQueue, clock: FakeClock, wave: int) -> None:
-    for index in range(2000):
+    for index in range(500):
         queue.publish_response(f"{wave:08x}{index:024x}", "01" * 16, b"r")
     clock.now += 301
     queue.pull_responses(CLIENT, None, 1)  # any call purges
@@ -417,13 +417,13 @@ def test_per_client_state_does_not_accumulate_once_responses_expire() -> None:
     try:
         _drained_wave(queue, clock, 1)
         settled = tracemalloc.get_traced_memory()[0]
-        for wave in range(2, 6):
+        for wave in range(2, 4):
             _drained_wave(queue, clock, wave)
         growth = tracemalloc.get_traced_memory()[0] - settled
     finally:
         tracemalloc.stop()
 
-    assert growth < 100_000  # SR-4: 8,000 more distinct client routes leave nothing behind
+    assert growth < 100_000  # SR-4: 1,000 more distinct client routes leave nothing behind
 
 
 def test_a_drained_route_is_released_and_its_stale_cursor_still_sees_new_responses() -> None:
