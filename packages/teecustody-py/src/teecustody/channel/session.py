@@ -1,6 +1,7 @@
 """Session keys, the t2c sealer and the session table (INC-2-API §4.9; API-TL §2; D2-16, R-5, R-8).
 
-`SessionRejectCode` and `SessionReject` are frozen; bodies belong to T-23.
+`SessionRejectCode` and `SessionReject` are frozen (T-04). Nothing here logs: the `on_close`
+owner does (TL-2).
 """
 
 import contextlib
@@ -122,16 +123,16 @@ class Session:
         self.last_activity = now
         return plaintext
 
-    def _wipe(self) -> None:
-        self._sk_c2t.wipe()
-        self._t2c.wipe()
-
     def seal_open_result(self, request_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]:
         aad = OpenResultAad(session_id=self.session_id, request_id=request_id)
         return self._t2c.seal_open_result(aad, plaintext)
 
     def seal_t2c(self, op: str, plaintext: bytes) -> tuple[FrameAad, bytes, bytes]:
         return self._t2c._seal_frame(op, self.session_id, plaintext)
+
+    def _wipe(self) -> None:
+        self._sk_c2t.wipe()
+        self._t2c.wipe()
 
 
 class SessionTable:
@@ -162,6 +163,8 @@ class SessionTable:
     ) -> Session:
         if not t2c._is_fresh():
             raise ValueError("T2C_USED")
+        if session_id in self._sessions:
+            raise ValueError("SESSION_ID_IN_USE")
         for existing in list(self._sessions.values()):
             if existing.client_id == client_id:
                 self.close(existing.session_id, CloseReason.REPLACED)

@@ -349,3 +349,15 @@ def test_the_smallest_valid_limits_are_accepted() -> None:
         clock=FakeClock(),
     )
     assert table.get(SID_1) is None
+
+
+def test_a_session_id_already_in_use_is_refused_without_side_effects() -> None:
+    world = World()
+    existing, existing_keys = world.create(SID_1, CLIENT_A)
+    sk_c2t, sealer = Secret(os.urandom(32)), T2cSealer(Secret(os.urandom(32)))
+    with pytest.raises(ValueError, match=r"^SESSION_ID_IN_USE$"):
+        world.table.create(session_id=SID_1, client_id=CLIENT_B, sk_c2t=sk_c2t, t2c=sealer)
+    assert world.table.get(SID_1) is existing
+    assert existing_keys.live
+    assert world.closes == []
+    assert not sk_c2t.wiped
