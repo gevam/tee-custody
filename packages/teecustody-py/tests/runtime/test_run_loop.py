@@ -46,13 +46,14 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def token_value(digest: str, nonce: bytes) -> str:
+def token_value(digest: str, nonce: bytes, iat: int) -> str:
     header = b64(json.dumps({"alg": "RS256"}).encode())
-    payload = b64(
-        json.dumps(
-            {"eat_nonce": nonce.hex(), "submods": {"container": {"image_digest": digest}}}
-        ).encode()
-    )
+    claims = {
+        "iat": iat,
+        "eat_nonce": nonce.hex(),
+        "submods": {"container": {"image_digest": digest}},
+    }
+    payload = b64(json.dumps(claims).encode())
     return f"{header}.{payload}.{b64(b'not-checked')}"
 
 
@@ -83,7 +84,7 @@ class FakeLauncher:
             raise LauncherError(LauncherErrorCode.UNAVAILABLE)
         now = int(self.clock())
         token = AttestationToken(
-            value=token_value(self.digest, identity_nonce),
+            value=token_value(self.digest, identity_nonce, now),
             issued_at=now,
             expires_at=now + self.lifetime,
         )
@@ -453,3 +454,96 @@ def test_c7_consumption_is_counted_per_interval_not_across_the_boundary(
     [alert] = burn_alerts(world)
     start_ms = int((START + 120) * 1000)
     assert (alert.interval_start, alert.interval_end) == (start_ms, start_ms + 60_000)
+
+
+# ---------------------------------------------------------------- criterion 8: republish
+def test_c8_a_changed_prekey_set_is_republished_at_most_once_per_min_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS)
+    interval = world.limits.bundle_republish_min_interval_s
+    world.clock.now += 1
+    burn(world, 1)  # consumed during step (4): republished on a later tick
+    assert len(world.queue.bundles) == 1
+
+    world.clock.now = START + interval - 0.5
+    assert world.loop.tick().bundle_published is False
+    world.clock.now = START + interval
+    assert world.loop.tick().bundle_published is True
+    burn(world, 1)
+    for _ in range(3):
+        world.clock.now += 1
+        world.loop.tick()
+    assert len(world.queue.bundles) == 2
+    world.clock.now = START + 2 * interval
+    world.loop.tick()
+
+    assert len(world.queue.bundles) == 3
+    live_ids = [e.id for e in world.server.kwargs["prekeys"].public_entries()]
+    assert [e.id for e in published_bundle(world).prekeys] == live_ids
+    assert world.logger.outcomes().count("BUNDLE_PUBLISHED") == 3
+
+
+def test_c8_an_unchanged_bundle_is_not_republished(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch)
+    world.clock.now += 60
+
+    report = world.loop.tick()
+
+    assert report.bundle_published is False
+    assert len(world.queue.bundles) == 1
+
+
+def test_c8_expired_prekeys_are_replaced_with_new_ids_and_republished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    first_ids = [e.id for e in published_bundle(world).prekeys]
+    world.clock.now += PARAMS.prekey_ttl_s
+
+    assert world.loop.tick().bundle_published is True
+
+    bundle = published_bundle(world)
+    assert len(bundle.prekeys) == PARAMS.prekey_batch
+    assert min(e.id for e in bundle.prekeys) > max(first_ids)
+    assert world.queue.bundles[-1][2] == min(
+        world.launcher.issued[-1].expires_at, max(e.not_after for e in bundle.prekeys)
+    )
+
+
+def test_c8_a_refreshed_token_is_republished_under_the_same_identity_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(
+        monkeypatch, params=ChannelParams(prekey_batch=4, prekey_low_water=1, refresh_margin_s=3599)
+    )
+    before = published_bundle(world)
+    world.clock.now += world.limits.bundle_republish_min_interval_s
+
+    report = world.loop.tick()
+
+    after = published_bundle(world)
+    assert report.refresh is RefreshOutcome.REFRESHED
+    assert report.bundle_published is True
+    assert after.token == world.launcher.issued[-1].value != before.token
+    assert (after.ik_pub, after.prekeys) == (before.ik_pub, before.prekeys)
+
+
+def test_c8_a_refresh_inside_the_min_interval_is_published_once_it_has_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(
+        monkeypatch, params=ChannelParams(prekey_batch=4, prekey_low_water=1, refresh_margin_s=3599)
+    )
+    world.clock.now += world.limits.bundle_republish_min_interval_s
+    assert world.loop.tick().bundle_published is True  # refreshed and published
+    world.clock.now += 2
+    assert world.loop.tick().refresh is RefreshOutcome.REFRESHED
+    assert len(world.queue.bundles) == 2
+    world.launcher.fail = True  # no further refresh: only the pending one remains
+
+    world.clock.now += world.limits.bundle_republish_min_interval_s
+    world.loop.tick()
+
+    assert len(world.queue.bundles) == 3
+    assert published_bundle(world).token == world.launcher.issued[-1].value

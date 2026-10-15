@@ -74,6 +74,8 @@ class _Live:
     server: ChannelServer
     burn_start: float
     published: tuple[PreKeyPublic, ...] = ()
+    published_at: float = float("-inf")
+    token_refreshed: bool = False
 
 
 class RunLoop:
@@ -190,6 +192,8 @@ class RunLoop:
         expires_at = min(token.expires_at, max(p.not_after for p in entries))  # TL-3
         self._queue.publish_bundle(self._instance_id, body, expires_at)
         live.published = entries
+        live.published_at = self._clock()
+        live.token_refreshed = False
         self._logger.info("BUNDLE_PUBLISHED")
 
     def _on_close(self, info: SessionInfo, reason: CloseReason) -> None:
@@ -198,12 +202,25 @@ class RunLoop:
     def tick(self) -> TickReport:
         live = self._require_live()
         refresh = self._refresh(live)
+        live.token_refreshed |= refresh is RefreshOutcome.REFRESHED
+        live.prekeys.expire()
+        live.prekeys.top_up()
+        bundle_published = self._republish_if_changed(live)
         processed = 0
         for message in self._pull():
             self._handle(live, message)
             processed += 1
         self._check_burn(live)
-        return TickReport(refresh=refresh, bundle_published=False, processed=processed)
+        return TickReport(refresh=refresh, bundle_published=bundle_published, processed=processed)
+
+    def _republish_if_changed(self, live: _Live) -> bool:
+        """(3) new token or changed pre-key set; at most once per republish min interval."""
+        changed = live.token_refreshed or live.prekeys.public_entries() != live.published
+        due = self._clock() - live.published_at >= self._limits.bundle_republish_min_interval_s
+        if not (changed and due):
+            return False
+        self._publish(live, live.lifecycle.current())
+        return True
 
     def _check_burn(self, live: _Live) -> None:
         """(6) SR-12: one PREKEY_BURN_HIGH per ended interval whose own consumption is too high."""
