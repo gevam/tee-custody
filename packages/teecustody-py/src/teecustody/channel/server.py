@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import cast
 
-from teecustody.audit.emitter import AuditEmitter
+from teecustody.audit.emitter import AggregateOutcome, AuditEmitter
 from teecustody.channel.codec import (
+    EnvelopeError,
     OpenRequestEnvelope,
     OpenSessionPayload,
     decode_open_payload,
@@ -85,11 +86,27 @@ class ChannelServer:
         self._logger = logger
 
     def process(self, body: bytes) -> ProcessResult:
-        envelope = decode_request(body, self._limits)
-        return self._open(cast(OpenRequestEnvelope, envelope))
+        now = self._clock()
+        try:
+            envelope = decode_request(body, self._limits)
+        except EnvelopeError:
+            return self._drop(AggregateOutcome.REQUEST_INVALID)
+        return self._open(cast(OpenRequestEnvelope, envelope), now)
 
-    def _open(self, envelope: OpenRequestEnvelope) -> ProcessResult:
+    def _drop(self, outcome: AggregateOutcome) -> ProcessResult:
+        self._audit.count(outcome)
+        return ProcessResult(outcome=outcome, response=None)
+
+    def _open(self, envelope: OpenRequestEnvelope, now: float) -> ProcessResult:
         aad = envelope.aad
+        if aad.instance_id != self._instance_id:
+            return self._drop(AggregateOutcome.REQUEST_WRONG_INSTANCE)
+        if all(entry.id != aad.prekey_id for entry in self._prekeys.public_entries()):
+            return self._drop(AggregateOutcome.PREKEY_UNKNOWN)
+        if abs(now - aad.timestamp) > self._params.request_skew_s:
+            return self._drop(AggregateOutcome.REQUEST_STALE)
+        if self._replay.seen(aad.client_id, aad.request_id):
+            return self._drop(AggregateOutcome.REQUEST_REPLAYED)
         private_key = self._prekeys.take(aad.prekey_id)
         try:
             opened = open_base(
