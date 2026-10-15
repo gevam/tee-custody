@@ -6,6 +6,7 @@ keys only (spec/vectors/README.md).
 """
 
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass, replace
@@ -25,6 +26,7 @@ from teecustody.channel.codec import (
     prekey_signing_message,
 )
 from teecustody.wire import PROTO, CanonicalValue, encode
+from teecustody_sim.alterations import JsonValue
 from teecustody_sim.config import LaunchConfig
 from teecustody_sim.constants import (
     DEFAULT_SIGNERS_REQUIRED,
@@ -32,6 +34,7 @@ from teecustody_sim.constants import (
     SIM_TOKEN_TTL_S,
 )
 from teecustody_sim.keys import SimKeys
+from teecustody_sim.profile import build_trust_profile
 from teecustody_sim.token import TokenMinter, parse_alteration
 
 _SUITE_PATH: Final = Path("channel", "suite.cbor")
@@ -42,6 +45,8 @@ _LAUNCH: Final = LaunchConfig(
     (("PYTHONUNBUFFERED", "1"),),
 )
 _AUDIENCE: Final = "https://vectors.teecustody.test/tee"
+# INC-2-API §16.4: `http` holds exactly the pinned JWKS URL, never a discovery URL.
+_JWKS_URI: Final = "http://127.0.0.1:8792/jwks"
 _OTHER_IMAGE_DIGEST: Final = "sha256:" + hashlib.sha256(b"teecustody-sim other image").hexdigest()
 _PREKEY_TTL_S: Final = 3600
 _EXPIRED_AGE_S: Final = 10
@@ -71,6 +76,10 @@ class _Workload:
     ik_pub: bytes
     token: str
     prekeys: tuple[X25519PrivateKey, ...]
+
+
+def _json_text(value: JsonValue) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _hex_id() -> str:
@@ -669,6 +678,13 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     minter = TokenMinter(
         keys, _LAUNCH, ttl_s=SIM_TOKEN_TTL_S, token_max_age_s=DEFAULT_TOKEN_MAX_AGE_S
     )
+    profile = build_trust_profile(
+        jwks_uri=_JWKS_URI,
+        expected_audience=_AUDIENCE,
+        launch=_LAUNCH,
+        signers=keys.signers,
+        signers_required=DEFAULT_SIGNERS_REQUIRED,
+    )
     identity = Ed25519PrivateKey.generate()
     ik_pub = _raw_public(identity)
     nonce = hashlib.sha256(ik_pub).hexdigest()
@@ -691,8 +707,8 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
         "proto": PROTO,
         "generated_at": now,
         "verify_at_ms": now * 1000,
-        "profile_json": "",
-        "http": {},
+        "profile_json": _json_text(profile),
+        "http": {_JWKS_URI: _json_text(keys.issuer_jwks()).encode()},
         "bundles": _bundle_cases(workload, dbgstat_token),
         "opens": opens,
         "frames": [

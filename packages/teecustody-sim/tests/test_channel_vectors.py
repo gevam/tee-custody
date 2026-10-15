@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -804,3 +806,63 @@ def test_two_runs_share_no_key_and_never_touch_a_state_dir(
         Path("two", "channel"),
         Path("two", "channel", "suite.cbor"),
     ]
+
+
+# --- trust profile and http map (criterion 9; INC-2-API §16.1, §16.4) -------------------------
+
+JWKS_URI = "http://127.0.0.1:8792/jwks"
+PROFILE_KEYS = {
+    "profile_version",
+    "profile_kind",
+    "token_type",
+    "issuer",
+    "jwks_uri",
+    "expected_audience",
+    "token_max_age_s",
+    "allowed_hwmodels",
+    "allowed_digests",
+    "signer_keys",
+    "signers_required",
+    "expected_args_hash",
+    "expected_env_hash",
+}
+PUBLIC_JWK_MEMBERS = {"kty", "alg", "use", "kid", "n", "e"}
+
+
+def _b64url_int(text: str) -> int:
+    return int.from_bytes(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)), "big")
+
+
+def test_profile_is_a_v2_development_profile_pinned_to_the_only_http_url(
+    suite: dict[str, Any],
+) -> None:
+    profile = json.loads(suite["profile_json"])
+    assert set(profile) == PROFILE_KEYS
+    assert (profile["profile_version"], profile["profile_kind"]) == (2, "development")
+    assert profile["jwks_uri"] == JWKS_URI
+    assert list(suite["http"]) == [JWKS_URI]
+    assert not any(url.endswith("/.well-known/openid-configuration") for url in suite["http"])
+
+
+def test_valid_bundle_token_verifies_against_the_served_jwks_and_profile(
+    suite: dict[str, Any],
+) -> None:
+    profile = json.loads(suite["profile_json"])
+    jwks = json.loads(suite["http"][JWKS_URI])
+    assert all(set(key) == PUBLIC_JWK_MEMBERS for key in jwks["keys"])
+    token = decode_bundle(_by_id(suite, "bundles")["valid"]["bundle"], BUNDLE_DECODE_LIMITS).token
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    header = json.loads(base64.urlsafe_b64decode(header_b64 + "=" * (-len(header_b64) % 4)))
+    [jwk] = [key for key in jwks["keys"] if key["kid"] == header["kid"]]
+    public_key = rsa.RSAPublicNumbers(_b64url_int(jwk["e"]), _b64url_int(jwk["n"])).public_key()
+    public_key.verify(
+        base64.urlsafe_b64decode(signature_b64 + "=" * (-len(signature_b64) % 4)),
+        f"{header_b64}.{payload_b64}".encode("ascii"),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+    claims = _jwt_payload(token)
+    assert claims["iss"] == profile["issuer"]
+    assert claims["aud"] == profile["expected_audience"]
+    assert claims["iat"] == suite["generated_at"]
+    assert claims["submods"]["container"]["image_digest"] in profile["allowed_digests"]
