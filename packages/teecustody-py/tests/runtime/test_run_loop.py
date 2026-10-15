@@ -31,7 +31,7 @@ from teecustody.channel.ports import (
 )
 from teecustody.channel.server import OutboundResponse, ProcessResult
 from teecustody.channel.session import SessionTable, T2cSealer
-from teecustody.config import BoundaryLimits, ChannelParams
+from teecustody.config import BoundaryLimits, ChannelParams, ConfigError, ConfigErrorCode
 from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage
 from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
 from teecustody.secrets import Secret
@@ -729,3 +729,49 @@ def test_c11_a_failed_start_propagates_and_shutdown_has_nothing_to_undo(
         world.loop.run(threading.Event())
 
     assert world.queue.calls == []
+
+
+# ---------------------------------------------------------------- contract decisions
+def make_loop(**overrides: Any) -> RunLoop:
+    kwargs: dict[str, Any] = {
+        "launcher": FakeLauncher(FakeClock()),
+        "queue": FakeQueue(),
+        "audit_sink": RecordingSink(),
+        "opener": RecordingOpener(),
+        "handler": NullHandler(),
+        "audience": AUDIENCE,
+        "token_type": "OIDC",
+    }
+    kwargs.update(overrides)
+    return RunLoop(**kwargs)
+
+
+def test_evict_min_idle_above_idle_timeout_is_refused_at_construction() -> None:
+    with pytest.raises(ConfigError) as err:
+        make_loop(
+            params=ChannelParams(idle_timeout_s=100),
+            limits=BoundaryLimits(session_evict_min_idle_s=101),
+        )
+
+    assert err.value.code is ConfigErrorCode.INVALID_LIMITS
+    assert err.value.field == "session_evict_min_idle_s"
+
+
+def test_evict_min_idle_equal_to_idle_timeout_is_accepted() -> None:
+    make_loop(
+        params=ChannelParams(idle_timeout_s=100),
+        limits=BoundaryLimits(session_evict_min_idle_s=100),
+    )
+
+
+def test_instance_id_is_sixteen_random_bytes_in_hex() -> None:
+    requested: list[int] = []
+
+    def rng(n: int) -> bytes:
+        requested.append(n)
+        return bytes(range(n))
+
+    loop = make_loop(rng=rng)
+
+    assert requested == [16]
+    assert loop.instance_id == bytes(range(16)).hex()

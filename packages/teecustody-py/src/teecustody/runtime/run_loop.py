@@ -24,7 +24,7 @@ from teecustody.channel.prekeys import PreKeyPublic, PreKeyStore
 from teecustody.channel.replay import ReplayCache
 from teecustody.channel.server import ChannelServer
 from teecustody.channel.session import SessionTable
-from teecustody.config import BoundaryLimits, ChannelParams
+from teecustody.config import BoundaryLimits, ChannelParams, ConfigError, ConfigErrorCode
 from teecustody.obs.logger import get_logger
 from teecustody.obs.types import AllowListedLogger
 from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage, WorkloadQueue
@@ -98,6 +98,8 @@ class RunLoop:
         rng: Callable[[int], bytes] = os.urandom,
         logger: AllowListedLogger | None = None,
     ) -> None:
+        if limits.session_evict_min_idle_s > params.idle_timeout_s:  # R-8; spans both objects
+            raise ConfigError(ConfigErrorCode.INVALID_LIMITS, "session_evict_min_idle_s")
         self._launcher = launcher
         self._queue = queue
         self._audit_sink = audit_sink
