@@ -105,7 +105,10 @@ rules:
     severity: ERROR
     languages: [python]
     paths:
-      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+      include:
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-sim/src/**"
+        - "/examples/notes-app/gateway/src/**"
     pattern-either:
       - pattern: importlib.import_module(...)
       - pattern: importlib.__import__(...)
@@ -208,13 +211,18 @@ rules:
     severity: ERROR
     languages: [python]
     paths:
-      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+      include:
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-sim/src/**"
+        - "/examples/notes-app/gateway/src/**"
     pattern-either:
       - pattern-regex: (?i)#\s*noqa\b(?!\s*:)
       - pattern-regex: (?i)#\s*noqa\s*:[^#\n]*\bTID
       - pattern-regex: (?i)#\s*(?:ruff|flake8)\s*:\s*(?:noqa|disable)\b
       # bandit suppression: bandit Lows are gated by ruff `S`, so no finding is silenced in source.
       - pattern-regex: (?i)#\s*nosec\b
+      # A7: formatter pragmas hide a statement's layout from review (SR Low 5).
+      - pattern-regex: (?i)#\s*fmt\s*:\s*(?:skip|off)\b
 
   - id: tc-ts-no-global-object
     message: >-
@@ -352,6 +360,61 @@ rules:
     pattern-regex: >-
       (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*["'`]@hpke/
 
+  # ADR 0011 C3a.2 (D-045, D-047; T-27): @hpke/common is reached only through @hpke/core.
+  - id: tc-ts-hpke-common-banned
+    message: No file imports @hpke/common (ADR 0011 C3a.2, D-045).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/**/*.ts"]
+    pattern-regex: (["'`])@hpke/common(?:/[^"'`]*)?\1
+
+  - id: tc-ts-hpke-core-names
+    message: webcrypto.ts imports only CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm and error classes from @hpke/core (ADR 0011 C3a.2).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-web/src/crypto/webcrypto.ts"]
+    pattern-either:
+      - pattern-regex: \bimport\s*\{[^}]*?(?<![\w$])(?!(?:CipherSuite|DhkemX25519HkdfSha256|HkdfSha256|Aes256Gcm|[A-Za-z]+Error)(?![\w$]))[A-Za-z_$][\w$]*[^}]*\}\s*from\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bimport\s+(?:type\s+)?(?:\*|[A-Za-z_$][\w$]*)[^;'"`]*?from\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bexport\b[^;]*?\bfrom\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bimport\s*\(\s*["'`]@hpke/core["'`]
+      # A7 (SR Low 7): no comment inside an @hpke/core import, so a `}` cannot hide a name.
+      - pattern-regex: \bimport\b[^;]*?(?:/\*|//)[^;]*?\bfrom\s*["'`]@hpke/core["'`]
+      # Round 2 (SR): nor between `from` and the specifier, for import and re-export statements.
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:import|export)\b[^;]*?\bfrom\s*(?:/\*|//)[^;]*?["'`]@hpke/core["'`]
+
+  # A3 (T-27; SR Low #2): the gateway is an untrusted relay of opaque bytes.
+  - id: tc-py-gateway-banned-import
+    message: The gateway relays opaque bytes (no cbor2) and imports the simulator only in dev.py (SR-3, NFR-6).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/examples/notes-app/gateway/src/**"]
+      exclude: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
+    pattern-either:
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+      # A7 gateway ruling: from teecustody, only teecustody.queue (with submodules) and teecustody.obs.
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+teecustody(?![\w.])|from[ \t]+teecustody\.(?!(?:queue|obs)(?![\w]))|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody(?![\w])(?!\.(?:queue|obs)(?![\w])))
+  - id: tc-py-gateway-dev-banned-import
+    message: dev.py may import the simulator lazily, but never cbor2 (SR-3).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
+    pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+
+  # A4 (T-27; T-05 Security Review round 2): no escape can hide a banned specifier from the rules above.
+  - id: tc-ts-no-escaped-specifier
+    message: Module specifiers are plain literals; escapes hide banned packages (ADR 0011 C3a.2, SR-14).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
+    pattern-regex: (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*(["'`])[^"'`\n]*\\
+
   - id: tc-py-no-hpke-seams
     message: >-
       No HPKE test seam in production: no injected sender ephemeral key, PSK, PSK id or sender/auth
@@ -371,6 +434,52 @@ rules:
       - pattern: $S.create_sender_context(..., **$KW, ...)
       - pattern: $S.create_recipient_context($A, $B, $C, $D, ...)
       - pattern: $S.create_recipient_context(..., **$KW, ...)
+      # A4: a * splat carries the positional seams too.
+      - pattern: $S.create_sender_context(..., *$ARGS, ...)
+      - pattern: $S.create_recipient_context(..., *$ARGS, ...)
+      # A4/A6: no low-level KEM access (decap, encap, aliasing the KEM); the one allowed KEM call is
+      # kem.deserialize_private_key(...), which channel/hpke.py needs to load the recipient key.
+      - patterns:
+          - pattern: $S.kem.$M(...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(?!deserialize_private_key$)
+      - patterns:
+          - pattern: $S.kem
+          - pattern-not-inside: $S.kem.$M(...)
+
+  # A7/A8 (SR Low 6): hpke.py is the one pyhpke importer; it reaches pyhpke only through plain, called,
+  # public names, so no seam can be fetched indirectly.
+  - id: tc-py-hpke-module-confined
+    message: >-
+      channel/hpke.py reaches pyhpke only through called public names: no getattr, attrgetter,
+      methodcaller, vars or inspect, no _-prefixed attribute, no uncalled context factory (ADR 0011
+      C5, SR-14).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/teecustody/channel/hpke.py"]
+    pattern-either:
+      - pattern: getattr(...)
+      - pattern: operator.attrgetter(...)
+      - pattern: operator.methodcaller(...)
+      # Round 2 (SR): no vars() or inspect reflection, by attribute or by import.
+      - pattern: vars(...)
+      - pattern: inspect.$X
+      - pattern: import inspect
+      - patterns:
+          - pattern: $S.$A
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^_
+          # A8: exactly the exception constructor chain; the attribute node only, not its arguments.
+          - pattern-not: super().__init__
+      - patterns:
+          - pattern-either:
+              - pattern: $S.create_recipient_context
+              - pattern: $S.create_sender_context
+          - pattern-not-inside: $S.create_recipient_context(...)
+          - pattern-not-inside: $S.create_sender_context(...)
 
   - id: tc-ts-no-hpke-seams
     message: >-

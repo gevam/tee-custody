@@ -28,3 +28,26 @@ recipient = suite.create_recipient_context(enc, sk, b"", b"psk")
 recipient = suite.create_recipient_context(enc, sk, info, **opts)
 # ruleid: tc-py-no-hpke-seams
 recipient = suite.create_recipient_context(enc, sk, **opts)
+# A4: a * splat can carry the positional seams.
+# ruleid: tc-py-no-hpke-seams
+enc, sender = suite.create_sender_context(*args)
+# ruleid: tc-py-no-hpke-seams
+recipient = suite.create_recipient_context(enc, *rest)
+# A4/A6: low-level KEM access bypasses Base mode; only kem.deserialize_private_key(...) is allowed.
+# ruleid: tc-py-no-hpke-seams
+shared = suite.kem.decap(enc, skr, pks)
+# ruleid: tc-py-no-hpke-seams
+k = SUITE.kem
+# ruleid: tc-py-no-hpke-seams
+shared = _SUITE.kem.decap(enc, skr, pks)
+# ruleid: tc-py-no-hpke-seams
+k = _SUITE.kem
+# ruleid: tc-py-no-hpke-seams, tc-py-hpke-module-confined
+decap = getattr(_SUITE.kem, "decap")
+# ruleid: tc-py-no-hpke-seams
+y = _SUITE.kem.deserialize_private_key
+# ruleid: tc-py-no-hpke-seams
+key = _SUITE.kem.deserialize_private_key(_SUITE.kem.decap(enc, skr, pks))
+# A7: only the exact method name is allowed; the regex is anchored at both ends.
+# ruleid: tc-py-no-hpke-seams
+key = _SUITE.kem.deserialize_private_key_raw(x)

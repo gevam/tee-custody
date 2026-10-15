@@ -1,5 +1,6 @@
 # Negative fixture: neighbouring modules and the port the double implements are allowed.
 import tests_helpers
+# ruleid: tc-py-gateway-banned-import
 from teecustody.channel.ports import ShareOpener
 from teecustody.queue import ports
 
