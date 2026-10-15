@@ -68,7 +68,11 @@ class FixtureFetcher implements Fetcher {
             throw reply.throws;
         }
         if ("rejects" in reply) {
-            return Promise.reject(reply.rejects);
+            // The rejection value may deliberately be a non-Error (A3 9b).
+            const { rejects } = reply;
+            return Promise.resolve().then(() => {
+                throw rejects;
+            });
         }
         return Promise.resolve(reply);
     }
