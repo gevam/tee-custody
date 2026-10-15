@@ -1219,3 +1219,17 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer
 **Follow-up:** B-36. `.gitleaks.toml` allow-lists all of suite.cbor, so a future regeneration gets no secret scan. Replace the allow-list with fingerprint entries for the known simulator JWTs, or with a CI check that the suite contains no PEM or private-key fields.
 
 **Dissent:** none
+
+## D-059 — T-28 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts)
+Participants: Code Reviewer, Security Reviewer, Tech Lead
+
+**Decision:** T-28 (inc-2/T-28-channel-server, tip 98b5352) has Code Review APPROVE (round 2) and Security Review APPROVE (round 2). It is ready to merge together with QA-acceptance-8 (d12ef37), the OPEN_ABORTED assertions moved to `opener.closed_calls`.
+
+- Round 1 Code Review High: `cs` was not wiped if `rng` or the request build raised. Fixed by starting the wipe right after decode.
+- The engineer's five unspecified choices are accepted; none adds a code.
+- The Security Review's replay-cache `now` Low is deferred to INC-3 under B-31 by Tech Lead ruling. It is low exploitability: it needs `cs`, two live pre-keys and the skew edge.
+
+**Dissent:** none
