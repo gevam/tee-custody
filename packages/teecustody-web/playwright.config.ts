@@ -4,6 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
     testDir: "test/browser",
     testMatch: "**/*.spec.ts",
+    globalSetup: "./test/browser/global-setup.ts",
     workers: 1,
     retries: 0,
     projects: [
