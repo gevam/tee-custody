@@ -384,3 +384,72 @@ def test_c5_publish_failing_twice_is_logged_and_the_message_still_acked(
     failures = [line for line in world.logger.lines if line[1] == "RESPONSE_PUBLISH_FAILED"]
     assert failures
     assert all(fields == {} for _, _, fields in failures)
+
+
+# ---------------------------------------------------------------- criterion 7: PREKEY_BURN_HIGH
+BURN_LIMITS = BoundaryLimits(pull_wait_s=0.01, prekey_burn_alert_threshold=2)
+BURN_PARAMS = ChannelParams(prekey_batch=20, prekey_low_water=1, prekey_ttl_s=3600)
+
+
+def burn(world: World, count: int) -> None:
+    """One tick in which `count` opens each consume a pre-key."""
+    prekeys = world.server.kwargs["prekeys"]
+    world.server.on_process = lambda body: prekeys.take(int(body))
+    world.queue.inbox.extend(
+        message(i, str(e.id).encode()) for i, e in enumerate(prekeys.public_entries()[:count])
+    )
+    world.loop.tick()
+
+
+def burn_alerts(world: World) -> list[AuditRecord]:
+    return [r for r in world.sink.of(AuditClass.ALERT) if r.outcome == "PREKEY_BURN_HIGH"]
+
+
+def test_c7_consumption_above_the_threshold_raises_exactly_one_alert_for_that_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS, limits=BURN_LIMITS)
+    world.clock.now += 1
+    burn(world, 3)
+    assert burn_alerts(world) == []  # checked at interval end only
+
+    world.clock.now = START + 60
+    for _ in range(5):
+        world.loop.tick()
+
+    [alert] = burn_alerts(world)
+    assert (alert.interval_start, alert.interval_end) == (
+        int(START * 1000),
+        int(START * 1000) + 60_000,
+    )
+    assert alert.count is None
+
+
+def test_c7_consumption_at_the_threshold_raises_no_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS, limits=BURN_LIMITS)
+    world.clock.now += 1
+    burn(world, 2)
+
+    world.clock.now += 120
+    world.loop.tick()
+
+    assert burn_alerts(world) == []
+
+
+def test_c7_consumption_is_counted_per_interval_not_across_the_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS, limits=BURN_LIMITS)
+    world.clock.now = START + 59
+    burn(world, 2)
+    world.clock.now = START + 61  # the first interval ends before this tick consumes
+    burn(world, 2)
+    world.clock.now = START + 125
+    burn(world, 3)  # third interval [START+120, START+180)
+
+    world.clock.now = START + 1000
+    world.loop.tick()
+
+    [alert] = burn_alerts(world)
+    start_ms = int((START + 120) * 1000)
+    assert (alert.interval_start, alert.interval_end) == (start_ms, start_ms + 60_000)

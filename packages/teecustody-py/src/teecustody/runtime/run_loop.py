@@ -33,6 +33,10 @@ _DEFAULT_LIMITS = BoundaryLimits()
 _MAX_PULL_FAILURES: Final = 10  # consecutive UNAVAILABLE pulls before QUEUE_UNAVAILABLE
 
 
+def _ms(seconds: float) -> int:
+    return int(seconds * 1000)
+
+
 class StopCode(StrEnum):
     ATTESTATION_EXPIRED = "ATTESTATION_EXPIRED"
     DIGEST_CHANGED = "DIGEST_CHANGED"
@@ -68,6 +72,7 @@ class _Live:
     audit: AuditEmitter
     sessions: SessionTable
     server: ChannelServer
+    burn_start: float
     published: tuple[PreKeyPublic, ...] = ()
 
 
@@ -168,7 +173,7 @@ class RunLoop:
             rng=self._rng,
             logger=self._logger,
         )
-        live = _Live(ik, lifecycle, digest, prekeys, audit, sessions, server)
+        live = _Live(ik, lifecycle, digest, prekeys, audit, sessions, server, self._clock())
         self._live = live
         prekeys.top_up()
         self._publish(live, token)
@@ -197,7 +202,25 @@ class RunLoop:
         for message in self._pull():
             self._handle(live, message)
             processed += 1
+        self._check_burn(live)
         return TickReport(refresh=refresh, bundle_published=False, processed=processed)
+
+    def _check_burn(self, live: _Live) -> None:
+        """(6) SR-12: one PREKEY_BURN_HIGH per ended interval whose own consumption is too high."""
+        now = self._clock()
+        interval = self._limits.audit_aggregate_interval_s
+        consumed_since = live.prekeys.consumed_since
+        while now >= live.burn_start + interval:
+            start, end = live.burn_start, live.burn_start + interval
+            if (
+                consumed_since(start) - consumed_since(end)
+                > self._limits.prekey_burn_alert_threshold
+            ):
+                live.audit.alert("PREKEY_BURN_HIGH", interval=(_ms(start), _ms(end)))
+            # Intervals with no consumption at all are skipped in one step.
+            live.burn_start = (
+                end if consumed_since(end) else end + (now - end) // interval * interval
+            )
 
     def _pull(self) -> list[QueueMessage]:
         """(4) pull; UNAVAILABLE backs off like B-08 on its own counter, and 10 in a row stop."""
