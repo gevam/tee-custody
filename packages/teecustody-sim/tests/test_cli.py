@@ -367,11 +367,12 @@ def test_profile_from_a_running_simulator_is_v2_with_its_exact_jwks_uri(
 GENERATED_OUTPUTS = {
     "suite": Path("attestation", "suite.cbor"),
     "corpus": Path("wire", "differential-corpus.json"),
+    "channel": Path("channel", "suite.cbor"),  # INC-2-API §5.3 (A-4)
 }
 
 
 class RecordingGenerator:
-    """Stands in for T-17 `generate_suite` / `generate_corpus`."""
+    """Stands in for `generate_suite`, `generate_corpus` and `generate_channel_suite`."""
 
     def __init__(self, name: str, calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]]) -> None:
         self._name = name
@@ -385,12 +386,13 @@ class RecordingGenerator:
         return path
 
 
-def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
+def test_vectors_generates_attestation_corpus_and_channel_and_prints_three_paths(
     cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(cli_module, "generate_suite", RecordingGenerator("suite", calls))
     monkeypatch.setattr(cli_module, "generate_corpus", RecordingGenerator("corpus", calls))
+    monkeypatch.setattr(cli_module, "generate_channel_suite", RecordingGenerator("channel", calls))
     monkeypatch.chdir(tmp_path)
     out_dir = tmp_path / "vec"
 
@@ -402,14 +404,18 @@ def test_vectors_generates_suite_then_corpus_and_prints_both_paths(
     assert calls == [
         ("suite", (staging,), {}),
         ("corpus", (staging,), {"seed": 1, "count": 512}),
+        ("channel", (staging,), {}),
     ]
-    suite, corpus = (
-        out_dir / "attestation" / "suite.cbor",
-        out_dir / "wire" / "differential-corpus.json",
+    suite, corpus, channel = (out_dir / path for path in GENERATED_OUTPUTS.values())
+    assert out == f"{suite}\n{corpus}\n{channel}\n"
+    assert (suite.read_bytes(), corpus.read_bytes(), channel.read_bytes()) == (
+        b"suite",
+        b"corpus",
+        b"channel",
     )
-    assert out == f"{suite}\n{corpus}\n"
-    assert (suite.read_bytes(), corpus.read_bytes()) == (b"suite", b"corpus")
-    assert sorted(out_dir.rglob("*")) == sorted({suite, corpus, suite.parent, corpus.parent})
+    assert sorted(out_dir.rglob("*")) == sorted(
+        {suite, corpus, channel, suite.parent, corpus.parent, channel.parent}
+    )
     assert not (tmp_path / ".teecustody-sim").exists()
 
 
@@ -832,6 +838,7 @@ def recorded_generators(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any,
     calls: list[tuple[str, Any, Any]] = []
     monkeypatch.setattr(cli_module, "generate_suite", RecordingGenerator("suite", calls))
     monkeypatch.setattr(cli_module, "generate_corpus", RecordingGenerator("corpus", calls))
+    monkeypatch.setattr(cli_module, "generate_channel_suite", RecordingGenerator("channel", calls))
     return calls
 
 
@@ -884,6 +891,27 @@ def _output_is_a_directory(root: Path) -> Path:
     return out
 
 
+def _symlink_channel_dir(root: Path) -> Path:
+    out = root / "out"
+    out.mkdir()
+    (root / "elsewhere").mkdir()
+    (out / "channel").symlink_to(root / "elsewhere")
+    return out
+
+
+def _dangling_channel_link(root: Path) -> Path:
+    out = root / "out"
+    (out / "channel").mkdir(parents=True)
+    (out / "channel" / "suite.cbor").symlink_to(root / "missing")
+    return out
+
+
+def _channel_output_is_a_directory(root: Path) -> Path:
+    out = root / "out"
+    (out / "channel" / "suite.cbor").mkdir(parents=True)
+    return out
+
+
 @pytest.mark.parametrize(
     "make_out",
     [
@@ -894,6 +922,9 @@ def _output_is_a_directory(root: Path) -> Path:
         _out_is_a_file,
         _subdir_is_a_file,
         _output_is_a_directory,
+        _symlink_channel_dir,
+        _dangling_channel_link,
+        _channel_output_is_a_directory,
     ],
 )
 @pytest.mark.parametrize("force", [(), ("--force",)])
@@ -970,7 +1001,7 @@ def test_vectors_writes_into_an_existing_real_output_tree(
     code, _, err = cli("vectors", "--out", str(out), "--force")
 
     assert (code, err) == (0, "")
-    assert [name for name, _, _ in recorded_generators] == ["suite", "corpus"]
+    assert [name for name, _, _ in recorded_generators] == ["suite", "corpus", "channel"]
 
 
 def _tree(root: Path) -> dict[Path, bytes]:
@@ -987,7 +1018,12 @@ def _existing_corpus(out: Path) -> None:
     (out / "wire" / "differential-corpus.json").write_bytes(b"approved corpus")
 
 
-@pytest.mark.parametrize("make_existing", [_existing_suite, _existing_corpus])
+def _existing_channel(out: Path) -> None:
+    (out / "channel").mkdir(parents=True)
+    (out / "channel" / "suite.cbor").write_bytes(b"approved channel suite")
+
+
+@pytest.mark.parametrize("make_existing", [_existing_suite, _existing_corpus, _existing_channel])
 def test_vectors_refuses_to_overwrite_an_existing_output_without_force(
     cli: Cli,
     tmp_path: Path,
@@ -1006,18 +1042,22 @@ def test_vectors_refuses_to_overwrite_an_existing_output_without_force(
     assert sorted(tmp_path.rglob("*")) == sorted({out, *before, *(p.parent for p in before)})
 
 
-def test_vectors_with_force_regenerates_both_existing_outputs(cli: Cli, tmp_path: Path) -> None:
+def test_vectors_with_force_regenerates_all_three_existing_outputs(
+    cli: Cli, tmp_path: Path
+) -> None:
     out = tmp_path / "out"
     _existing_suite(out)
     _existing_corpus(out)
-    suite, corpus = out / "attestation" / "suite.cbor", out / "wire" / "differential-corpus.json"
+    _existing_channel(out)
+    suite, corpus, channel = (out / path for path in GENERATED_OUTPUTS.values())
 
     code, stdout, err = cli("vectors", "--out", str(out), "--force")
 
-    assert (code, stdout, err) == (0, f"{suite}\n{corpus}\n", "")
+    assert (code, stdout, err) == (0, f"{suite}\n{corpus}\n{channel}\n", "")
     assert suite.read_bytes() != b"approved suite"
     assert corpus.read_bytes() != b"approved corpus"
-    assert set(_tree(tmp_path)) == {suite, corpus}
+    assert channel.read_bytes() != b"approved channel suite"
+    assert set(_tree(tmp_path)) == {suite, corpus, channel}
 
 
 def _unwritable_parent(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -1038,8 +1078,13 @@ def _corpus_os_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root / "out"
 
 
+def _channel_os_error(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli_module, "generate_channel_suite", Exploding(OSError(28, "no space")))
+    return root / "out"
+
+
 @pytest.mark.parametrize(
-    "make_out", [_unwritable_parent, _suite_permission_error, _corpus_os_error]
+    "make_out", [_unwritable_parent, _suite_permission_error, _corpus_os_error, _channel_os_error]
 )
 def test_vectors_reports_an_os_error_while_writing_as_invalid_path(
     cli: Cli,
@@ -1057,18 +1102,25 @@ def test_vectors_reports_an_os_error_while_writing_as_invalid_path(
     assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
 
 
+@pytest.mark.parametrize("failing", ["generate_corpus", "generate_channel_suite"])
 @pytest.mark.parametrize(
     ("error", "expected"),
     [(OSError(28, "no space"), "INVALID_PATH\n"), (RuntimeError(), "INTERNAL\n")],
 )
-def test_vectors_leaves_existing_outputs_untouched_when_the_second_write_fails(
-    cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
+def test_vectors_leaves_existing_outputs_untouched_when_a_later_generator_fails(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected: str,
+    failing: str,
 ) -> None:
     out = tmp_path / "out"
     _existing_suite(out)
     _existing_corpus(out)
+    _existing_channel(out)
     before = _tree(tmp_path)
-    monkeypatch.setattr(cli_module, "generate_corpus", Exploding(error))
+    monkeypatch.setattr(cli_module, failing, Exploding(error))
 
     code, stdout, err = cli("vectors", "--out", str(out), "--force")
 
