@@ -301,7 +301,7 @@ class RunLoop:
         )
         expires_at = min(token.expires_at, max(p.not_after for p in entries))  # TL-3
         self._queue.publish_bundle(self._instance_id, body, expires_at)
-        self._queue_failures = 0
+        self._queue_ok()
         live.published = entries
         live.published_at = self._clock()
         live.token_refreshed = False
@@ -320,7 +320,7 @@ class RunLoop:
             self._logger.warning("QUEUE_PULL_FAILED")
             self._queue_failed(err)
             return 0
-        self._queue_failures = 0
+        self._queue_ok()
         processed = 0
         for message in messages:
             processed += 1
@@ -337,7 +337,8 @@ class RunLoop:
         except QueueError as err:  # not acked: redelivered later, then rejected as a replay
             self._queue_failed(err)
             return False
-        self._queue_failures = 0
+        if delivered:  # an ack after an undelivered response is no sign of a healthy queue
+            self._queue_ok()
         return delivered
 
     def _publish_response(self, response: OutboundResponse, request_id: str) -> bool:
@@ -348,9 +349,14 @@ class RunLoop:
                 self._logger.warning("RESPONSE_PUBLISH_FAILED")
                 self._queue_failed(err)
                 continue
-            self._queue_failures = 0
+            self._queue_ok()
             return True
         return False
+
+    def _queue_ok(self) -> None:
+        """A successful queue call ends the failure streak and its backoff."""
+        self._queue_failures = 0
+        self._next_queue_at = float("-inf")
 
     def _queue_ready(self) -> bool:
         return self._clock() >= self._next_queue_at

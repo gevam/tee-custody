@@ -1258,3 +1258,36 @@ def test_c14_a_successful_response_retry_resets_the_count_before_a_failed_ack(
     world.loop.tick()
 
     assert len(world.queue.named("pull")) == pulls + 1
+
+
+def test_c14_a_publish_that_succeeds_on_retry_leaves_no_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    answered(world, 1, b"req-1")
+    world.queue.publish_errors = [unavailable()]
+    world.loop.tick()
+    answered(world, 2, b"req-2")
+
+    world.loop.tick()  # same instant: the queue is healthy again
+
+    assert world.server.bodies == [b"req-1", b"req-2"]
+
+
+def test_c14_an_undelivered_response_backs_off_even_though_its_ack_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    answered(world, 1, b"req-1")
+    world.queue.publish_errors = [unavailable(), unavailable()]  # failures 1 and 2
+    world.loop.tick()
+    assert world.queue.calls[-1] == ("ack", f"{1:032x}")
+    pulls = len(world.queue.named("pull"))
+    second_delay = 2 * world.limits.attestation_retry_min_s
+
+    world.clock.now += second_delay - 1
+    world.loop.tick()
+    assert len(world.queue.named("pull")) == pulls
+    world.clock.now += 1
+    world.loop.tick()
+    assert len(world.queue.named("pull")) == pulls + 1
