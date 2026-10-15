@@ -198,3 +198,16 @@ def test_handler_error_and_handler_exception_are_answered_with_stable_codes() ->
         {"re": 1, "ok": False, "error": "BACKEND_UNAVAILABLE"},
     ]
     assert "SENTINEL-HANDLER-TEXT-3c3c" not in repr(failed) + repr(world.logger.calls)
+
+
+# ---------------------------------------------------------------- criterion 14 (A1)
+def test_authenticated_frame_with_empty_plaintext_is_auth_failed_and_unanswered() -> None:
+    world, sent, session_id = _opened()
+
+    result = world.process(seal_frame(sent.c2t, session_id, 0, "test.echo", b""))
+
+    assert str(result.outcome) == "FRAME_AUTH_FAILED"
+    assert result.response is None
+    assert dict(world.audit.counts) == {"FRAME_AUTH_FAILED": 1}
+    assert world.handler.calls == []
+    assert _echo(world, sent, session_id, 0).response is not None
