@@ -3,6 +3,7 @@
 `SessionRejectCode` and `SessionReject` are frozen; bodies belong to T-23.
 """
 
+import contextlib
 from collections.abc import Callable
 from enum import StrEnum
 
@@ -139,6 +140,10 @@ class SessionTable:
         on_close: Callable[[SessionInfo, CloseReason], None],
         clock: Callable[[], float],
     ) -> None:
+        if min(max_sessions, idle_timeout_s, evict_min_idle_s) < 1:
+            raise ValueError("SESSION_LIMITS")
+        if evict_min_idle_s > idle_timeout_s:
+            raise ValueError("SESSION_LIMITS")
         self._instance_id = instance_id
         self._max_sessions = max_sessions
         self._idle_timeout_s = idle_timeout_s
@@ -176,16 +181,18 @@ class SessionTable:
         return self._sessions.get(session_id)
 
     def close(self, session_id: bytes, reason: CloseReason) -> None:
-        session = self._sessions.pop(session_id)
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
         session._wipe()
-        self._on_close(
-            SessionInfo(
-                client_id=session.client_id,
-                session_id=session.session_id,
-                instance_id=self._instance_id,
-            ),
-            reason,
+        info = SessionInfo(
+            client_id=session.client_id,
+            session_id=session.session_id,
+            instance_id=self._instance_id,
         )
+        # The owner's hook logs and reports (TL-2); its failure never stops a close.
+        with contextlib.suppress(Exception):
+            self._on_close(info, reason)
 
     def expire_idle(self) -> int:
         now = self._clock()

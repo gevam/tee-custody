@@ -274,3 +274,78 @@ def test_close_all_shuts_every_session_down_and_wipes_every_key() -> None:
     assert k2.wiped
     assert world.table.get(SID_1) is None
     assert world.table.get(SID_2) is None
+
+
+# ---------------------------------------------------------------- edges: close, on_close, limits
+def test_close_is_idempotent_and_reports_once() -> None:
+    world = World()
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    world.table.close(SID_1, CloseReason.CLIENT_CLOSE)
+    world.table.close(SID_1, CloseReason.CLIENT_CLOSE)
+    world.table.close(SID_9, CloseReason.CLIENT_CLOSE)
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.CLIENT_CLOSE)]
+    assert k1.wiped
+
+
+def test_an_on_close_failure_is_swallowed_after_the_keys_are_wiped() -> None:
+    clock = FakeClock()
+    seen: list[CloseReason] = []
+
+    def failing(info: SessionInfo, reason: CloseReason) -> None:
+        seen.append(reason)
+        raise RuntimeError("host hook failed")
+
+    table = SessionTable(
+        instance_id=INSTANCE_ID,
+        max_sessions=1,
+        idle_timeout_s=900,
+        evict_min_idle_s=60,
+        on_close=failing,
+        clock=clock,
+    )
+    sk_c2t, sk_t2c = Secret(os.urandom(32)), Secret(os.urandom(32))
+    table.create(session_id=SID_1, client_id=CLIENT_A, sk_c2t=sk_c2t, t2c=T2cSealer(sk_t2c))
+    clock.now += 60
+    second = table.create(
+        session_id=SID_2,
+        client_id=CLIENT_B,
+        sk_c2t=Secret(os.urandom(32)),
+        t2c=T2cSealer(Secret(os.urandom(32))),
+    )
+    assert seen == [CloseReason.EVICTED]
+    assert sk_c2t.wiped
+    assert sk_t2c.wiped
+    assert table.get(SID_1) is None
+    assert table.get(SID_2) is second
+    table.close(SID_2, CloseReason.CLIENT_CLOSE)
+    assert seen == [CloseReason.EVICTED, CloseReason.CLIENT_CLOSE]
+
+
+@pytest.mark.parametrize(
+    ("max_sessions", "idle_timeout_s", "evict_min_idle_s"),
+    [(0, 900, 60), (4, 0, 0), (4, 900, 0), (4, 59, 60), (-1, 900, 60)],
+)
+def test_the_table_refuses_invalid_limits(
+    max_sessions: int, idle_timeout_s: int, evict_min_idle_s: int
+) -> None:
+    with pytest.raises(ValueError, match=r"^SESSION_LIMITS$"):
+        SessionTable(
+            instance_id=INSTANCE_ID,
+            max_sessions=max_sessions,
+            idle_timeout_s=idle_timeout_s,
+            evict_min_idle_s=evict_min_idle_s,
+            on_close=lambda info, reason: None,
+            clock=FakeClock(),
+        )
+
+
+def test_the_smallest_valid_limits_are_accepted() -> None:
+    table = SessionTable(
+        instance_id=INSTANCE_ID,
+        max_sessions=1,
+        idle_timeout_s=1,
+        evict_min_idle_s=1,
+        on_close=lambda info, reason: None,
+        clock=FakeClock(),
+    )
+    assert table.get(SID_1) is None
