@@ -251,7 +251,7 @@ Section 4 items (browser criteria): item 1 and 2 (CSP, steps) pass in Chromium a
 ## 7. Exploratory testing
 
 New files (all under `tests/acceptance/`, public interfaces only, synthetic values): `test_EXPLORE_channel_edges.py` (38),
-`test_EXPLORE_gateway_http.py` (66 plus one strict xfail), `test_EXPLORE_gateway_keying.py` (30), `test_EXPLORE_queue.py` (32),
+`test_EXPLORE_gateway_http.py` (66 green plus 7 QA-T-40 rows red until T-40), `test_EXPLORE_gateway_keying.py` (30), `test_EXPLORE_queue.py` (32),
 `EXPLORE.client-bundle-time.test.ts` (4), `EXPLORE.vault-ceremony.test.ts` (6). Live tests spawn
 `tests/e2e/channel_harness.py --stop-on-stdin-eof` in their own process group and read the per-run fixture only from its temp dir.
 No `tc-e2e-*` directory or process remained after any run.
@@ -285,7 +285,7 @@ IPv6 over a real socket (the harness binds 127.0.0.1 only; keying was tested in-
 
 | Id | Severity | Summary | Violates |
 |---|---|---|---|
-| D-03 | Medium | The gateway never times out a connection that stops sending request headers: 300 partial-header connections stayed open for 5 minutes; the per-source and global caps and the body deadline never apply. A strict xfail test (`test_D03_...`) flips when it is fixed. | SR-4 |
+| D-03 | Medium | The gateway never times out a connection that stops sending request headers: 300 partial-header connections stayed open for 5 minutes; the per-source and global caps and the body deadline never apply. Red tests until T-40: `test_D03_partial_header_...`, `test_D03_idle_connection_...` (T-40 QA-T-40 Q1, Q2). | SR-4 |
 | D-04 | Low | Parse failures rejected by uvicorn (oversize or too many headers, a TLS hello) return plain text `Invalid HTTP request received.`, not the documented `{"code":...}` body. | INC-2-API §6 (FR-5) |
 
 Not filed, as accepted or known: B-26 ordering, B-41 pre-key collision, B-45 WebKit keygen flake (T-39 pending), D-02 clock steps.
@@ -305,3 +305,11 @@ are covered by tests.
 All INC-2 acceptance criteria pass except the four QA-T-39 rows, which are expected and clear with T-39. No Critical or High defect is
 open. Open: one Medium (D-03) and one Low (D-04), for triage (fix now, or defer with human sign-off; D-03 can alternatively be closed
 by a README deployment requirement for a fronting proxy, which would make it Low). G6 is blocked only by T-39 and that triage.
+
+## 11. QA-T-40 (added before QA-exec merges)
+
+The D-03 strict xfail became a plain test, and the following were added to `test_EXPLORE_gateway_http.py` before the slowloris section.
+All are red until T-40 and the rest of the file is green (66 pass):
+`test_D03_partial_header_connection_is_closed_within_a_bounded_time`, `test_D03_idle_connection_sending_nothing_is_closed_within_a_bounded_time`,
+and `test_D04_parse_failures_get_the_json_400[20000-byte header value | 3000 headers | header named Bad Header | missing Host | TLS ClientHello prefix]`
+(exact `{"code":"INVALID_ARGUMENT"}` 400 with `cache-control: no-store` and `x-content-type-options: nosniff`). D-03 and D-04 fix contract: T-40.

@@ -657,6 +657,58 @@ def test_concurrent_opens_distinct_prekeys_all_answered_and_same_prekey_collides
     assert len(sids) == answered
 
 
+def test_D03_partial_header_connection_is_closed_within_a_bounded_time(live: Live) -> None:
+    """Expected after the D-03 fix: the gateway closes a connection that never finishes its headers."""
+    s = socket.socket()
+    s.settimeout(15)
+    s.bind((fresh_src(), 0))
+    s.connect(("127.0.0.1", live.port))
+    s.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\nX-A: ")
+    try:
+        closed = s.recv(1) == b""
+    except TimeoutError:
+        closed = False
+    finally:
+        s.close()
+    assert closed
+
+
+def test_D03_idle_connection_sending_nothing_is_closed_within_a_bounded_time(live: Live) -> None:
+    """T-40 Q2: a connection that sends no bytes is closed (zero bytes written) within 15 s."""
+    s = socket.socket()
+    s.settimeout(15)
+    s.bind((fresh_src(), 0))
+    s.connect(("127.0.0.1", live.port))
+    try:
+        closed = s.recv(1) == b""
+    except TimeoutError:
+        closed = False
+    finally:
+        s.close()
+    assert closed
+
+
+JSON_400 = b'{"code":"INVALID_ARGUMENT"}'
+_HEAD = b"GET /bundles HTTP/1.1\r\nHost: x\r\n"
+D04_INPUTS = {
+    "20000-byte header value": _HEAD + b"X-Big: " + b"a" * 20000 + b"\r\n\r\n",
+    "3000 headers": _HEAD + b"X-n: v\r\n" * 3000 + b"\r\n",
+    "header named Bad Header": _HEAD + b"Bad Header: v\r\n\r\n",
+    "missing Host": b"GET /bundles HTTP/1.1\r\n\r\n",
+    "TLS ClientHello prefix": bytes.fromhex("16030100c4010000c00303") + bytes(40),
+}
+
+
+@pytest.mark.parametrize("name", list(D04_INPUTS))
+def test_D04_parse_failures_get_the_json_400(live: Live, name: str) -> None:
+    """T-40 Q3: the HTTP parser's rejection carries the documented JSON body (read to EOF)."""
+    r = raw_request(live, D04_INPUTS[name], timeout=15)
+    assert r.status == 400, name
+    assert r.body == JSON_400, (name, r.body[:60])
+    assert r.h("cache-control") == "no-store"
+    assert r.h("x-content-type-options") == "nosniff"
+
+
 # ---------------------------------------------------------------- slowloris / caps (destructive: last)
 def test_slowloris_per_source_cap_deadline_and_second_source(live: Live) -> None:
     src = fresh_src()
@@ -732,22 +784,3 @@ def test_workload_still_healthy_after_all_probes(live: Live) -> None:
     assert got and read_open_result(got[0], sent.t2c).ok
     # harness process group is single and alive
     assert live.proc.poll() is None
-
-
-@pytest.mark.xfail(
-    strict=True, reason="D-03: no header-read deadline; partial-header connections stay open"
-)
-def test_D03_partial_header_connection_is_closed_within_a_bounded_time(live: Live) -> None:
-    """Expected after the D-03 fix: the gateway closes a connection that never finishes its headers."""
-    s = socket.socket()
-    s.settimeout(15)
-    s.bind((fresh_src(), 0))
-    s.connect(("127.0.0.1", live.port))
-    s.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\nX-A: ")
-    try:
-        closed = s.recv(1) == b""
-    except TimeoutError:
-        closed = False
-    finally:
-        s.close()
-    assert closed
