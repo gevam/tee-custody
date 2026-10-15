@@ -347,3 +347,66 @@ def test_limits_are_checked_before_cors_origins() -> None:
 
     with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
         create_app(CountingRelay(), limits=limits)
+
+
+# ---------------------------------------------------------------- criterion 12: A1 check order
+def test_per_source_in_flight_cap_answers_429_retry_after_one_and_spares_other_sources() -> None:
+    relay, clock = CountingRelay(block=True), Clock()
+    app = _app(relay, clock, per_source_max_in_flight=2)
+    peer, other = ("192.0.2.1", 40000), ("192.0.2.2", 40000)
+
+    async def scenario() -> tuple[list[Exchange], Exchange, Exchange, Exchange]:
+        held = [asyncio.create_task(_drive(app, "/bundles", peer)) for _ in range(2)]
+        await _until(lambda: relay.entered == 2)
+        excess = await _drive(app, "/bundles", peer)
+        served = await _drive(app, f"/responses/{'c3' * 16}", other)
+        relay.release.set()
+        finished = list(await asyncio.gather(*held))
+        again = await _drive(app, "/bundles", peer)
+        return finished, excess, served, again
+
+    finished, excess, served, again = asyncio.run(scenario())
+
+    assert (excess.status, excess.body, excess.headers["retry-after"]) == (429, RATE_LIMITED, "1")
+    assert served.status == 200
+    assert [r.status for r in finished] == [200, 200]
+    assert again.status == 200
+    assert relay.calls == 4
+
+
+def test_a_request_refused_for_concurrency_spends_no_token() -> None:
+    relay, clock = CountingRelay(block=True), Clock()
+    app = _app(relay, clock, max_concurrency=1, per_source_max_in_flight=1, per_source_burst=2)
+    peer = ("192.0.2.1", 40000)
+
+    async def scenario() -> tuple[Exchange, Exchange, Exchange]:
+        held = asyncio.create_task(_drive(app, "/bundles", peer))
+        await _until(lambda: relay.entered == 1)
+        refused = await _drive(app, "/bundles", peer)
+        relay.release.set()
+        first = await held
+        return first, refused, await _drive(app, "/bundles", peer)
+
+    first, refused, last = asyncio.run(scenario())
+
+    assert (first.status, refused.status, last.status) == (200, 429, 200)
+
+
+def test_a_request_refused_by_a_bucket_releases_both_slots() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(
+        relay,
+        clock,
+        max_concurrency=1,
+        per_source_max_in_flight=1,
+        per_source_rate=0.25,
+        per_source_burst=1,
+    )
+    client = _source(app, "192.0.2.1")
+    assert client.get("/bundles").status_code == 200
+
+    limited = client.get("/bundles")
+    clock.now += 4.0
+
+    assert (limited.status_code, limited.headers["retry-after"]) == (429, "4")
+    assert client.get("/bundles").status_code == 200

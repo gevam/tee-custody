@@ -237,7 +237,9 @@ class _Guard:
     def __init__(self, app: ASGIApp, *, limits: GatewayLimits, clock: Callable[[], float]) -> None:
         self._app = app
         self._max_concurrency = limits.max_concurrency
+        self._per_source_max = limits.per_source_max_in_flight
         self._in_flight = 0
+        self._in_flight_by_source: dict[str, int] = {}  # no zero entries; <= max_concurrency keys
         self._limiter = _Limiter(limits, clock)
         self._cors_origins = frozenset(limits.cors_origins)
 
@@ -258,23 +260,40 @@ class _Guard:
         cors = len(origins) == 1 and origins[0] in self._cors_origins
         cors_headers = _cors_headers(origins[0]) if cors else []
         send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
-        if self._in_flight >= self._max_concurrency:
+        client = scope.get("client")
+        source = client[0] if client else "unknown"
+        held = self._in_flight_by_source.get(source, 0)
+        if held >= self._per_source_max or self._in_flight >= self._max_concurrency:
             await _rate_limited(scope, 1)(scope, receive, send)
             return
-        client = scope.get("client")
-        retry = self._limiter.admit(client[0] if client else "unknown")
+        self._in_flight += 1
+        self._in_flight_by_source[source] = held + 1
+        try:
+            await self._admitted(scope, receive, send, source, cors=cors)
+        finally:
+            self._in_flight -= 1
+            self._release(source)
+
+    async def _admitted(
+        self, scope: Scope, receive: Receive, send: Send, source: str, *, cors: bool
+    ) -> None:
+        retry = self._limiter.admit(source)
         if retry is not None:
             await _rate_limited(scope, retry)(scope, receive, send)
             return
-        if cors and scope["method"] == "OPTIONS" and "access-control-request-method" in headers:
+        method, headers = scope["method"], Headers(scope=scope)
+        if cors and method == "OPTIONS" and "access-control-request-method" in headers:
             scope[_OUTCOME_KEY].code = "OK"
             await _PREFLIGHT(scope, receive, send)
             return
-        self._in_flight += 1
-        try:
-            await self._app(scope, receive, send)
-        finally:
-            self._in_flight -= 1
+        await self._app(scope, receive, send)
+
+    def _release(self, source: str) -> None:
+        remaining = self._in_flight_by_source[source] - 1
+        if remaining:
+            self._in_flight_by_source[source] = remaining
+        else:
+            del self._in_flight_by_source[source]
 
 
 def _cors_headers(origin: str) -> list[tuple[bytes, bytes]]:
