@@ -898,3 +898,46 @@ def test_an_over_limit_request_with_a_control_character_path_is_400_not_404() ->
     )
 
     _assert_refused_invalid(result, relay, app)
+
+
+# ------------------------------------------------- T-40 criterion 22: Transfer-Encoding (A4.5)
+def test_a_transfer_encoded_request_is_400_before_the_buckets_and_takes_no_slot_or_token() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1)
+    chunked = [(b"transfer-encoding", b"chunked")]
+
+    async def scenario() -> tuple[Exchange, Exchange, Exchange]:
+        before = await _drive(app, "/bundles", PEER, headers=chunked)
+        served = await _drive(app, "/bundles", PEER)
+        after = await _drive(app, "/bundles", PEER, headers=chunked)
+        return before, served, after
+
+    before, served, after = asyncio.run(scenario())
+
+    assert served.status == 200  # the refused request spent no token
+    for refused in (before, after):  # `after` meets an empty per-source bucket: 400, not 429
+        assert (refused.status, refused.body) == (400, INVALID_ARGUMENT)
+        assert refused.headers["connection"] == "close"
+        assert refused.headers["cache-control"] == "no-store"
+    assert relay.calls == 1
+    guard = _guard_of(app)
+    assert (guard._in_flight, guard._in_flight_by_source) == (0, {})
+
+
+def test_a_transfer_encoded_request_is_refused_while_the_source_is_at_its_in_flight_cap() -> None:
+    relay, clock = CountingRelay(block=True), Clock()
+    app = _app(relay, clock, max_concurrency=1, per_source_max_in_flight=1)
+
+    async def scenario() -> Exchange:
+        held = asyncio.create_task(_drive(app, "/bundles", PEER))
+        await _until(lambda: relay.entered == 1)
+        refused = await _drive(
+            app, "/bundles", PEER, headers=[(b"transfer-encoding", b"gzip, chunked")]
+        )
+        relay.release.set()
+        await held
+        return refused
+
+    refused = asyncio.run(asyncio.wait_for(scenario(), 15))
+
+    assert (refused.status, refused.body) == (400, INVALID_ARGUMENT)

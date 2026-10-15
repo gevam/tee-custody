@@ -884,7 +884,8 @@ CHUNKED_BODY_STILL_ARRIVING = {
 
 @pytest.mark.parametrize(
     ("payload", "queue_calls"),
-    list(zip(CHUNKED_BODY_STILL_ARRIVING.values(), (1, 0), strict=True)),
+    # Since A4.5 a Transfer-Encoding request is refused before routing: no queue call either way.
+    list(zip(CHUNKED_BODY_STILL_ARRIVING.values(), (0, 0), strict=True)),
     ids=CHUNKED_BODY_STILL_ARRIVING.keys(),
 )
 def test_a_parse_failure_after_a_complete_response_writes_no_second_response(
@@ -902,3 +903,34 @@ def test_a_parse_failure_after_a_complete_response_writes_no_second_response(
 
     assert (first + rest).count(b"HTTP/1.1 ") == 1
     assert live.relay.calls == queue_calls
+
+
+# ----------------------------------------------------------- criterion 22: Transfer-Encoding (A4.5)
+TRANSFER_ENCODED = {
+    "POST with Content-Length and chunked": f"POST /requests/{INSTANCE} HTTP/1.1\r\n".encode()
+    + b"Host: x\r\nContent-Type: application/octet-stream\r\nContent-Length: 5\r\n"
+    + b"Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    "GET with chunked only": b"GET /bundles HTTP/1.1\r\nHost: x\r\n"
+    b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+}
+
+
+@pytest.mark.parametrize("payload", TRANSFER_ENCODED.values(), ids=TRANSFER_ENCODED.keys())
+def test_a_transfer_encoded_request_gets_the_json_400_and_the_connection_closes(
+    payload: bytes, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(payload)
+
+    raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+    status, headers, body = _parse(raw)
+
+    assert (status, body) == (400, b'{"code":"INVALID_ARGUMENT"}')
+    assert headers[b"connection"] == b"close"
+    assert headers[b"content-type"] == b"application/json"
+    assert headers[b"cache-control"] == b"no-store"
+    assert headers[b"x-content-type-options"] == b"nosniff"
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]

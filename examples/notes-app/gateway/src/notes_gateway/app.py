@@ -299,6 +299,11 @@ class _Guard:
         cors = len(origins) == 1 and origins[0] in self._cors_origins
         cors_headers = _cors_headers(origins[0]) if cors else []
         send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
+        if "transfer-encoding" in headers:  # step 0 (D-06; RFC 9112 §6.3): no slot, no token
+            response = _refuse(scope, 400, "INVALID_ARGUMENT")
+            response.headers["Connection"] = "close"
+            await response(scope, receive, send)
+            return
         source = _source_key(scope.get("client"))
         held = self._in_flight_by_source.get(source, 0)
         if held >= self._per_source_max or self._in_flight >= self._max_concurrency:
