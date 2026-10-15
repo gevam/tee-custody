@@ -1242,3 +1242,19 @@ def test_c15_a_session_idle_for_exactly_the_timeout_is_closed_before_its_frame_i
 
     info = SessionInfo(CLIENT, SESSION_ID, world.loop.instance_id)
     assert seen == [(True, [(info, CloseReason.IDLE_TIMEOUT)])]  # server answers SESSION_UNKNOWN
+
+
+def test_c14_a_successful_response_retry_resets_the_count_before_a_failed_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    answered(world, 1, b"req")
+    world.queue.publish_errors = [unavailable()]  # failure 1, then the retry succeeds: reset
+    world.queue.ack_errors = [unavailable()]  # failure 1 again, so the backoff is retry_min
+    world.loop.tick()
+    pulls = len(world.queue.named("pull"))
+
+    world.clock.now += world.limits.attestation_retry_min_s
+    world.loop.tick()
+
+    assert len(world.queue.named("pull")) == pulls + 1
