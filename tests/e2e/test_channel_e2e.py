@@ -266,3 +266,35 @@ def test_harness_passes_gateway_limits_to_create_app(monkeypatch: pytest.MonkeyP
     assert _run_harness_in_process(monkeypatch, ["--cors-origin", origin], stdout) == 0
     assert READY_LINE.fullmatch(stdout.text.rstrip("\n"))
     assert limits == [GatewayLimits(cors_origins=(origin,))]
+
+
+def test_ready_line_is_written_only_after_the_first_bundle_is_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from teecustody_sim.backends import InMemoryQueue
+    from tests.e2e import channel_harness
+
+    queues: list[InMemoryQueue] = []
+    held: list[bool] = []
+    listed_at_write: list[bool] = []
+    stdout = _ReadyStdout(
+        lambda: listed_at_write.append(bool(queues and queues[0].list_bundles(16)))
+    )
+
+    class GatedQueue(InMemoryQueue):
+        """Holds the first bundle publish for 2 s, or until a ready line is written during it."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            queues.append(self)
+
+        def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
+            if not held:
+                held.append(stdout.ready.wait(2.0))
+            super().publish_bundle(instance_id, bundle, expires_at)
+
+    monkeypatch.setattr(channel_harness, "InMemoryQueue", GatedQueue)
+    assert _run_harness_in_process(monkeypatch, [], stdout) == 0
+    assert held == [False]  # nothing was written while the first bundle was held back
+    assert listed_at_write == [True]
+    assert READY_LINE.fullmatch(stdout.text.rstrip("\n"))
