@@ -88,7 +88,12 @@ def _nonce(seq: int) -> bytes: ...   # module-private (INC-2-API §4.9); ValueEr
   `GatewayLimits` field is not a positive `int` (int fields) or a finite positive `float`/`int` (float
   fields), `bool` excluded; then validates `cors_origins` (`ValueError("INVALID_CORS_ORIGIN")`).
 - **TL-5 dev entry.** `notes_gateway/dev.py`: `def main(argv: Sequence[str] | None = None) -> int`,
-  options `--host` (default `127.0.0.1`), `--port` (default `0`); module runs `raise SystemExit(main())`.
+  options `--host` (default `127.0.0.1`), `--port` (default `0`), `--allow-non-loopback` (`store_true`; T-31 A5,
+  spec §15.5, mirrors `teecustody-sim serve`); module runs `raise SystemExit(main())`. Without the flag, a
+  non-loopback `--host` (loopback = `"localhost"`, IPv4 in `127.0.0.0/8`, or IPv6 `::1`; anything else, including
+  `""`, is refused) writes `NON_LOOPBACK_NOT_ALLOWED\n` to stderr and returns 2 before any `uvicorn.Config` is
+  built. With the flag, every start logs warning `SIM_NON_LOOPBACK_BIND` (logger `teecustody.gateway`) to stderr
+  before serving.
 
 ## 3. TypeScript Core pins beyond INC-2-API §7 (internal: never exported from `index.ts`)
 
