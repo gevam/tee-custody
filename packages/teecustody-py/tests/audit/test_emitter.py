@@ -523,3 +523,28 @@ def test_a_protected_retry_failure_stops_before_the_anonymous_queue_is_tried() -
         "TRUSTEE_SHARE_REJECTED",
         "KCV_MISMATCH",
     ]
+
+
+_SHED_DROP = ("warning", "AUDIT_PENDING_DROPPED_KCV_MISMATCH", {})
+_CAP_DROP = ("warning", "AUDIT_PENDING_DROPPED_ALERT_CAP_REACHED", {})
+
+
+def test_a_long_outage_keeps_one_pending_cap_reached_and_never_evicts_real_alerts() -> None:
+    sink = OutageSink()
+    emitter, _, clock, logger = _make(sink, cap=1)
+    intervals = 300
+    assert intervals > PROTECTED_PENDING_MAX
+    for n in range(intervals):
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(2 * n))
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(2 * n + 1))
+        if n == 0:
+            emitter.alert("PREKEY_BURN_HIGH", interval=(START_MS - INTERVAL_MS, START_MS))
+        clock.now += INTERVAL_S
+        emitter.tick()
+    assert [line for line in logger.lines if line != _SHED_DROP] == [_CAP_DROP] * (intervals - 1)
+    sink.down = False
+    emitter.tick()
+    alerts = [r for _, r in sink.of(AuditClass.ALERT)]
+    assert [r.outcome for r in alerts[:2]] == ["ALERT_CAP_REACHED", "PREKEY_BURN_HIGH"]
+    assert alerts[0].ts == START_MS
+    assert [r.outcome for r in alerts].count("ALERT_CAP_REACHED") == 1

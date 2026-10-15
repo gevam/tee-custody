@@ -21,6 +21,7 @@ from teecustody.audit.ports import (
 from teecustody.obs.types import OUTCOME_PATTERN, AllowListedLogger
 
 _CONFLICT = "AUDIT_WRITE_CONFLICT"
+_CAP_REACHED = "ALERT_CAP_REACHED"
 
 
 class AggregateOutcome(StrEnum):
@@ -101,7 +102,7 @@ class AuditEmitter:
         if len(self._alerted) >= self._alert_cap:
             if not self._cap_reached:
                 self._cap_reached = True
-                self.alert("ALERT_CAP_REACHED")
+                self.alert(_CAP_REACHED)
             self._fold(outcome)
             return
         self._alerted.add((outcome, subject_client_id))
@@ -121,6 +122,11 @@ class AuditEmitter:
     def _write(self, key: AuditKey, record: AuditRecord, *, protected: bool) -> None:
         """Protected records (`alert()`) never share a bound with anonymous-driven ones (SR-12)."""
         if self._attempt(key, record):
+            return
+        if record.outcome == _CAP_REACHED and any(
+            queued.outcome == _CAP_REACHED for _, queued in self._protected
+        ):  # anonymous-triggered: one pending copy at most, so it cannot evict real alerts
+            self._logger.warning(_drop_log(_CAP_REACHED))
             return
         pending, bound = (
             (self._protected, PROTECTED_PENDING_MAX)
