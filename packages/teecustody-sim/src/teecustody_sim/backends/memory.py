@@ -4,6 +4,7 @@ Development only: never a dependency of `teecustody`. Bodies belong to T-24.
 """
 
 import os
+import threading
 import time
 from collections.abc import Callable
 
@@ -26,10 +27,13 @@ class InMemoryQueue:
         clock: Callable[[], float] = time.time,
         rng: Callable[[int], bytes] = os.urandom,
     ) -> None:
-        raise NotImplementedError("T-24")
+        self._clock = clock
+        self._cond = threading.Condition()
+        self._bundles: dict[str, tuple[bytes, int]] = {}
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            self._bundles[instance_id] = (bundle, expires_at)
 
     def pull_requests(
         self, instance_id: str, max_messages: int, wait_s: float
@@ -43,10 +47,19 @@ class InMemoryQueue:
         raise NotImplementedError("T-24")
 
     def withdraw_bundle(self, instance_id: str) -> None:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            self._bundles.pop(instance_id, None)
 
     def list_bundles(self, max_bundles: int) -> list[PublishedBundle]:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            self._purge(self._clock())
+            live = sorted(self._bundles.items())[:max_bundles]
+            return [PublishedBundle(instance_id, bundle) for instance_id, (bundle, _) in live]
+
+    def _purge(self, now: float) -> None:
+        expired = [iid for iid, (_, expires_at) in self._bundles.items() if expires_at <= now]
+        for instance_id in expired:
+            del self._bundles[instance_id]
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         raise NotImplementedError("T-24")
