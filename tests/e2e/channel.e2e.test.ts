@@ -24,7 +24,7 @@ import {
     type TrustProfile,
 } from "@teecustody/core";
 import { FetchFetcher, FetchTransport, createWebCrypto, systemClock } from "@teecustody/web";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -142,9 +142,9 @@ function signalGroup(proc: ChildProcess, signal: NodeJS.Signals | 0): boolean {
     }
 }
 
-// SIGTERM to the whole group (the harness cleans up); SIGKILL to the group after STOP_TIMEOUT_MS,
+// SIGTERM to the whole group (the harness cleans up); SIGKILL to the group after timeoutMs,
 // or at once if anything in the group outlives uv.
-function stopProcess(proc: ChildProcess): Promise<void> {
+function stopProcess(proc: ChildProcess, timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
     return new Promise<void>((done) => {
         const finish = (): void => {
             clearTimeout(timer);
@@ -153,7 +153,7 @@ function stopProcess(proc: ChildProcess): Promise<void> {
             }
             done();
         };
-        const timer = setTimeout(() => signalGroup(proc, "SIGKILL"), STOP_TIMEOUT_MS);
+        const timer = setTimeout(() => signalGroup(proc, "SIGKILL"), timeoutMs);
         if (proc.exitCode !== null || proc.signalCode !== null) {
             finish();
             return;
@@ -425,4 +425,78 @@ describe("harness lifecycle", () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+});
+
+describe("stopProcess group fallback (C2)", () => {
+    const IGNORES_SIGTERM =
+        'process.on("SIGTERM",()=>{});console.log("ready");setInterval(()=>{},1e3)';
+
+    function readyOn(proc: ChildProcess): Promise<void> {
+        return new Promise<void>((resolveReady, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error("NOT_READY"));
+            }, 10_000);
+            let out = "";
+            proc.stdout?.on("data", (chunk: Buffer) => {
+                out += chunk.toString();
+                if (out.includes("ready")) {
+                    clearTimeout(timer);
+                    resolveReady();
+                }
+            });
+        });
+    }
+
+    async function groupGoneWithin(proc: ChildProcess, ms: number): Promise<boolean> {
+        const deadline = Date.now() + ms;
+        while (signalGroup(proc, 0)) {
+            if (Date.now() >= deadline) {
+                return false;
+            }
+            await new Promise((r) => setTimeout(r, 50));
+        }
+        return true;
+    }
+
+    it("SIGKILLs the group once timeoutMs passes when SIGTERM is ignored (13a)", async () => {
+        const proc = spawn(process.execPath, ["-e", IGNORES_SIGTERM], {
+            detached: true,
+            stdio: ["ignore", "pipe", "ignore"],
+        });
+        onTestFinished(() => {
+            signalGroup(proc, "SIGKILL"); // also runs when the test times out
+        });
+        try {
+            await readyOn(proc);
+            const started = Date.now();
+            await stopProcess(proc, 500);
+            expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+            expect(proc.signalCode).toBe("SIGKILL");
+            expect(signalGroup(proc, 0)).toBe(false);
+        } finally {
+            signalGroup(proc, "SIGKILL");
+        }
+    }, 15_000);
+
+    it("SIGKILLs a group member that outlives the leader, without waiting for the timer (13b)", async () => {
+        const leader = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(
+            IGNORES_SIGTERM,
+        )}], { stdio: ["ignore", "inherit", "ignore"] }); setInterval(() => {}, 1e3);`;
+        const proc = spawn(process.execPath, ["-e", leader], {
+            detached: true,
+            stdio: ["ignore", "pipe", "ignore"],
+        });
+        onTestFinished(() => {
+            signalGroup(proc, "SIGKILL"); // also runs when the test times out
+        });
+        try {
+            await readyOn(proc);
+            const started = Date.now();
+            await stopProcess(proc, 60_000);
+            expect(Date.now() - started).toBeLessThan(5_000);
+            expect(await groupGoneWithin(proc, 2_000)).toBe(true);
+        } finally {
+            signalGroup(proc, "SIGKILL");
+        }
+    }, 15_000);
 });
