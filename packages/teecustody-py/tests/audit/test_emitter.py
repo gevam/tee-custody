@@ -506,3 +506,20 @@ def test_constructor_accepts_the_range_bounds(interval_s: int, alert_cap: int) -
         rng=CountingRng(),
         logger=RecordingLogger(),
     )
+
+
+def test_a_protected_retry_failure_stops_before_the_anonymous_queue_is_tried() -> None:
+    emitter, sink, _, _ = _make()
+    sink.faults = _unavailable(2)
+    emitter.alert("TRUSTEE_SHARE_REJECTED")
+    emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=SUBJECT_A)
+    assert sink.attempts == 2
+    sink.faults = _unavailable(1)
+    emitter.tick()
+    assert sink.attempts == 3
+    assert sink.stored == {}
+    emitter.tick()
+    assert [sink.stored[k].outcome for k in sink.order] == [
+        "TRUSTEE_SHARE_REJECTED",
+        "KCV_MISMATCH",
+    ]
