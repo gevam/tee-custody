@@ -197,6 +197,45 @@ describe("criterion 7: Session.request", () => {
         expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2]);
     });
 
+    it("forced reorder: posts in completion order; the seqs are still exactly 0, 1, 2", async () => {
+        const inner = workload.crypto;
+        let armed = false;
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let first = true;
+        const session = await connect(
+            { ...TEST_LIMITS, maxInFlight: 2 },
+            {
+                ...inner,
+                aes256GcmEncrypt: async (key, n, aad, pt) => {
+                    if (armed && first) {
+                        first = false;
+                        await gate;
+                    }
+                    return inner.aes256GcmEncrypt(key, n, aad, pt);
+                },
+            },
+        );
+        armed = true;
+        workload.afterHandle = () => {
+            release();
+            return Promise.resolve();
+        };
+        const results = await Promise.allSettled([
+            session.request("test.echo", echo(0)),
+            session.request("test.echo", echo(1)),
+            session.request("test.echo", echo(2)),
+        ]);
+        expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
+        const rejected = results[2] as PromiseRejectedResult;
+        expect((rejected.reason as ChannelError).code).toBe("INVALID_ARGUMENT");
+        await session.request("test.echo", echo(3));
+        expect(workload.frames.map((f) => f.seq).slice(0, 2)).toEqual([1, 0]);
+        expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2]);
+    });
+
     it("maps ok:false to REMOTE_ERROR with the detail and stays usable", async () => {
         const session = await connect();
         workload.onFrame = (frame) =>
