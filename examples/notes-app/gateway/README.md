@@ -9,10 +9,18 @@ request or response body. A route id is a routing hint, not an identity. Only th
 authenticates a client.
 
 ```python
-from notes_gateway import GatewayLimits, create_app
+import uvicorn
 
-app = create_app(queue)  # queue: any teecustody.queue.RelayQueue
+from notes_gateway import GatewayLimits, create_app
+from notes_gateway.server import uvicorn_config
+
+limits = GatewayLimits()
+app = create_app(queue, limits=limits)  # queue: any teecustody.queue.RelayQueue
+uvicorn.Server(uvicorn_config(app, limits=limits, host="127.0.0.1", port=8080)).run()
 ```
+
+Run the gateway under uvicorn only through `notes_gateway.server.uvicorn_config`, and pass it the same `limits`
+given to `create_app` (see "Server hardening" below).
 
 ## Routes
 
@@ -47,7 +55,7 @@ Every error body is exactly `{"code":"<CODE>"}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `INVALID_ARGUMENT` | bad route id, cursor, headers or body; queue `INVALID_ARGUMENT` |
+| 400 | `INVALID_ARGUMENT` | bad route id, cursor, headers or body; a header block over `max_header_bytes` or `max_header_count`; a request the HTTP parser rejects (malformed or oversized header block, missing `Host`, non-HTTP bytes); queue `INVALID_ARGUMENT` |
 | 404 | `UNKNOWN_INSTANCE` | queue `NOT_FOUND` (no live bundle for the instance) |
 | 404 | `NOT_FOUND` | unknown path |
 | 404 | `NOT_FOUND` | control character in the decoded path |
@@ -74,6 +82,10 @@ carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 | `cors_origins` | `()` | CORS allow-list (see below) |
 | `per_source_max_in_flight` | 8 | requests in flight per source key, 1..`max_concurrency`; excess gets `429` with `Retry-After: 1` |
 | `body_read_timeout_s` | 10.0 | total deadline, 1.0..60.0 s, to receive a request body |
+| `header_read_timeout_s` | 10.0 | total deadline, 1.0..60.0 s, to receive one request's header block; the connection is then closed without a response |
+| `max_connections` | 512 | open connections per process in any state, at least `max_concurrency`; an excess connection is closed at once without a response |
+| `max_header_bytes` | 8192 | 1024..12288; `raw_path` + query string + every header name and value, in bytes; excess gets `400` |
+| `max_header_count` | 64 | 16..256; headers per request; excess gets `400` |
 
 Every request passes these checks in order, before routing and before any queue call:
 
@@ -81,24 +93,52 @@ Every request passes these checks in order, before routing and before any queue 
 2. global concurrency;
 3. global bucket;
 4. per-source bucket;
-5. control-character path rule;
-6. routing.
+5. header limits;
+6. control-character path rule;
+7. routing.
 
 The in-flight slots taken in steps 1–2 are released in a `finally` (success, error, body deadline, client
-disconnect, cancellation). A token is spent only when both buckets admit the request. `Retry-After` is the
+disconnect, cancellation). The header limits are measured on the parsed request, so the answer does not depend on
+how the bytes arrived; an oversized request spends rate budget, and a rate-limited one gets `429` unmeasured. A token is spent only when both buckets admit the request. `Retry-After` is the
 whole number of seconds until one token is available, at least 1.
 
 The **source key** is derived from the ASGI peer address: an IPv4 address keys on itself, an IPv4-mapped
 IPv6 address on its IPv4 address, any other IPv6 address on its /64 network, and a missing or unparseable
 peer on `"unknown"`. `X-Forwarded-For` and similar headers are never trusted.
 
-**Deployment requirement.** Run the gateway under uvicorn with `proxy_headers=False`,
-`server_header=False` and `access_log=False`, and never set `forwarded_allow_ips`. With uvicorn's defaults a
-loopback peer could spoof `X-Forwarded-For` and choose its own source key. Behind a reverse proxy, every client shares the proxy's peer address, so the per-source limit collapses to the global limit.
+**Deployment requirement.** Run the gateway under uvicorn with `uvicorn_config`, which sets
+`proxy_headers=False`, `server_header=False` and `access_log=False` and never sets `forwarded_allow_ips`. With
+uvicorn's defaults a loopback peer could spoof `X-Forwarded-For` and choose its own source key. Behind a reverse
+proxy, every client shares the proxy's peer address, so the per-source limit collapses to the global limit. The
+connection cap is global, not per source: one source can hold up to `max_connections` connections for
+`header_read_timeout_s` each. That is accepted for this reference gateway; a production deployment puts
+per-client connection limits in its fronting proxy.
 
-`create_app` raises `ValueError("INVALID_LIMITS")` unless every integer field is a positive `int`, every
-rate is a finite positive `int` or `float` (`bool` is refused), `per_source_max_in_flight` is at most
-`max_concurrency`, and `body_read_timeout_s` is a finite number in 1.0..60.0. It then checks `cors_origins`.
+`create_app` and `uvicorn_config` raise `ValueError("INVALID_LIMITS")` unless every integer field is a
+positive `int`, every rate is a finite positive `int` or `float` (`bool` is refused), `per_source_max_in_flight`
+is at most `max_concurrency`, `body_read_timeout_s` and `header_read_timeout_s` are finite numbers in 1.0..60.0,
+`max_connections` is an `int` of at least `max_concurrency`, `max_header_bytes` is an `int` in 1024..12288 and
+`max_header_count` is an `int` in 16..256. They then check `cors_origins`.
+
+## Server hardening
+
+`notes_gateway.server.uvicorn_config(app, *, limits=GatewayLimits(), host, port)` returns the `uvicorn.Config`
+for the gateway. It runs uvicorn's h11 protocol with the gateway's hooks (never httptools), `ws="none"` (no
+upgrade path, even if a WebSocket library is installed), `h11_max_incomplete_event_size=16384`,
+`timeout_keep_alive=5` and `log_level="warning"`, and never sets `limit_concurrency`. ASGI middleware cannot do
+the following, because uvicorn handles these paths before the app runs:
+
+- **Header-read deadline.** The whole header block of each request must arrive within `header_read_timeout_s`,
+  counted from the accepted connection or, on a kept-alive connection, from the previous response. Data does not
+  reset it. On expiry the connection is closed and nothing is written.
+- **Connection cap.** A connection beyond `max_connections` open connections is closed at once, and nothing is
+  written. Other connections are unaffected.
+- **Parse failures.** A request the HTTP parser rejects gets exactly `400 {"code":"INVALID_ARGUMENT"}` with
+  `Content-Type: application/json`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
+  `Connection: close` (no CORS headers), and the connection is closed. If a response is already in progress on
+  the connection, nothing is written; the connection is only closed.
+
+The hooks rely on uvicorn 0.54.0 internals; any uvicorn version change re-runs their tests.
 
 ## CORS
 
@@ -118,5 +158,8 @@ rate is a finite positive `int` or `float` (`bool` is refused), `per_source_max_
 ## Logging
 
 One `info` line per request on the `teecustody.gateway` logger, with outcome `GATEWAY_<CODE>` (`GATEWAY_OK`,
-`GATEWAY_INVALID_ARGUMENT`, `GATEWAY_REQUEST_TIMEOUT`, `GATEWAY_RATE_LIMITED`, …) and no fields. Paths,
-ids, origins and bodies are not logged. uvicorn access logging must be disabled (`access_log=False`).
+`GATEWAY_INVALID_ARGUMENT`, `GATEWAY_REQUEST_TIMEOUT`, `GATEWAY_RATE_LIMITED`, …) and no fields. The server
+hooks log `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, and `GATEWAY_INVALID_ARGUMENT` for a parse
+failure, also without fields. Paths, ids, origins, peer addresses, request bytes and bodies are not logged.
+uvicorn access logging must be disabled (`access_log=False`); uvicorn's own constant warning for a parse failure
+remains and carries neither the input nor the peer.

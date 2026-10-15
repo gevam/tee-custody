@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -785,3 +786,38 @@ def test_a_websocket_upgrade_request_reaches_the_app_and_is_never_upgraded(
 
     assert read_response(sock) == (200, b'{"bundles":[]}')
     assert live.relay.calls == 1
+
+
+# ------------------------------------------------------------- README (A1 (3); §6)
+def _readme() -> str:
+    path = Path(__file__).resolve().parents[1] / "README.md"
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_readme_documents_the_server_hardening_limits_and_check_order() -> None:
+    readme = _readme()
+    for row in (
+        "| `header_read_timeout_s` | 10.0 |",
+        "| `max_connections` | 512 |",
+        "| `max_header_bytes` | 8192 |",
+        "| `max_header_count` | 64 |",
+    ):
+        assert row in readme
+    assert (
+        "1. per-source in-flight cap; 2. global concurrency; 3. global bucket; 4. per-source "
+        "bucket; 5. header limits; 6. control-character path rule; 7. routing." in readme
+    )
+
+
+def test_readme_documents_uvicorn_config_parse_failures_and_the_connection_cap() -> None:
+    readme = _readme()
+    assert "uvicorn_config(app, limits=limits, host=" in readme
+    assert "a request the HTTP parser rejects" in readme
+    assert "ws=\"none\"" in readme
+    assert (
+        "The connection cap is global, not per source: one source can hold up to "
+        "`max_connections` connections for `header_read_timeout_s` each." in readme
+    )
+    assert "per-client connection limits in its fronting proxy" in readme
+    for outcome in ("GATEWAY_HEADER_TIMEOUT", "GATEWAY_CONNECTION_LIMIT"):
+        assert outcome in readme
