@@ -2,7 +2,8 @@
 // (INC-2-API §9.4, §16.9 N1–N3; API-TL TL-8, TL-10; FR-4, FR-5, SR-1). The harness runs with a bounded
 // start-up wait and is stopped (SIGTERM, then SIGKILL) after the file, so a hung harness fails here.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -87,12 +88,17 @@ function spawnHarness(options: SpawnOptions = {}): Spawned {
         cwd: REPO_ROOT,
         env: options.env ?? process.env,
         stdio: ["ignore", "pipe", "ignore"],
+        detached: true, // its own process group: uv and the harness are signalled together
     });
     const ready = new Promise<Harness>((resolveReady, reject) => {
         let out = "";
+        let timedOut = false;
         const timer = setTimeout(() => {
-            proc.kill("SIGKILL");
-            reject(new Error("HARNESS_TIMEOUT"));
+            timedOut = true;
+            // Rejected only once the whole group has stopped, so nothing outlives the timeout.
+            void stopProcess(proc).then(() => {
+                reject(new Error("HARNESS_TIMEOUT"));
+            });
         }, options.readyTimeoutMs ?? READY_TIMEOUT_MS);
         proc.stdout.on("data", (chunk: Buffer) => {
             out += chunk.toString();
@@ -104,7 +110,9 @@ function spawnHarness(options: SpawnOptions = {}): Spawned {
         });
         proc.on("exit", (code) => {
             clearTimeout(timer);
-            reject(new Error(`HARNESS_EXITED:${String(code)}`));
+            if (!timedOut) {
+                reject(new Error(`HARNESS_EXITED:${String(code)}`));
+            }
         });
     });
     return { proc, ready };
@@ -116,19 +124,41 @@ function startHarness(): Promise<Harness> {
     return spawned.ready;
 }
 
-function stopHarness(): Promise<void> {
-    const proc = child;
-    if (proc === undefined || proc.exitCode !== null || proc.signalCode !== null) {
-        return Promise.resolve();
+function signalGroup(proc: ChildProcess, signal: NodeJS.Signals | 0): boolean {
+    if (proc.pid === undefined) {
+        return false;
     }
+    try {
+        process.kill(-proc.pid, signal);
+        return true;
+    } catch {
+        return false; // ESRCH: no process is left in the group
+    }
+}
+
+// SIGTERM to the whole group (the harness cleans up); SIGKILL to the group after STOP_TIMEOUT_MS,
+// or at once if anything in the group outlives uv.
+function stopProcess(proc: ChildProcess): Promise<void> {
     return new Promise<void>((done) => {
-        const timer = setTimeout(() => proc.kill("SIGKILL"), STOP_TIMEOUT_MS);
-        proc.once("exit", () => {
+        const finish = (): void => {
             clearTimeout(timer);
+            if (signalGroup(proc, 0)) {
+                signalGroup(proc, "SIGKILL");
+            }
             done();
-        });
-        proc.kill("SIGTERM");
+        };
+        const timer = setTimeout(() => signalGroup(proc, "SIGKILL"), STOP_TIMEOUT_MS);
+        if (proc.exitCode !== null || proc.signalCode !== null) {
+            finish();
+            return;
+        }
+        proc.once("exit", finish);
+        signalGroup(proc, "SIGTERM");
     });
+}
+
+function stopHarness(): Promise<void> {
+    return child === undefined ? Promise.resolve() : stopProcess(child);
 }
 
 beforeAll(async () => {
@@ -322,5 +352,41 @@ describe("SR-1 / D-043 pinned jwks_uri over live HTTP", () => {
         const lines = stdout.split("\n").filter((line) => line !== "");
         expect(lines).toHaveLength(1);
         expect(lines[0]).toMatch(/ jwks_acao=http:\/\/127\.0\.0\.1:1 discovery_acao=absent$/);
+    });
+});
+
+describe("harness lifecycle", () => {
+    // Every process whose environment carries TMPDIR=<dir>: uv and the harness it started.
+    function processesWithTmpdir(dir: string): number[] {
+        const marker = `\0TMPDIR=${dir}\0`;
+        return readdirSync("/proc")
+            .filter((name) => /^\d+$/.test(name))
+            .filter((pid) => {
+                try {
+                    return `\0${readFileSync(`/proc/${pid}/environ`, "latin1")}`.includes(marker);
+                } catch {
+                    return false;
+                }
+            })
+            .map(Number);
+    }
+
+    it("leaves no harness process and no tc-e2e-* dir after a forced ready timeout", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "tc-t31-"));
+        try {
+            // Given a harness that comes up fully but whose ready line is never recognised
+            const spawned = spawnHarness({
+                readyLine: /^never$/,
+                readyTimeoutMs: 5_000,
+                env: { ...process.env, TMPDIR: dir },
+            });
+            // When the ready wait times out
+            await expect(spawned.ready).rejects.toThrow("HARNESS_TIMEOUT");
+            // Then the whole process tree is gone and the harness removed its temp dir
+            expect(processesWithTmpdir(dir)).toEqual([]);
+            expect(readdirSync(dir).filter((name) => name.startsWith("tc-e2e-"))).toEqual([]);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
