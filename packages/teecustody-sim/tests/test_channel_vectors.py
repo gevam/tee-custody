@@ -66,3 +66,87 @@ def test_now_defaults_to_the_current_time(tmp_path: Path) -> None:
     before = int(time.time())
     generated = _load(generate_channel_suite(tmp_path))["generated_at"]
     assert before <= generated <= int(time.time())
+
+
+# INC-2-API §3.2 "Required named cases" and spec/vectors/README.md, transcribed (not imported).
+BUNDLE_CASES = (
+    "valid",
+    "prekey_sig_corrupted",
+    "prekey_sig_other_digest",
+    "prekey_sig_other_instance",
+    "instance_mismatch",
+    "ik_nonce_mismatch",
+    "all_prekeys_expired",
+    "some_prekeys_expired",
+    "expired_prekey_sig_corrupted",
+    "prekey_ids_unsorted_or_duplicate",
+    "published_at_over_max",
+    "not_after_over_max",
+    "unknown_key",
+    "noncanonical",
+    "token_dbgstat_enabled",
+)
+OPEN_CASES = (
+    "valid_open_session",
+    "valid_enroll",
+    "aad_modified",
+    "info_other_prekey",
+    "ct_truncated",
+    "enc_wrong_length",
+    "timestamp_over_max",
+)
+FRAME_NAMES = (
+    "valid",
+    "seq_equal_last",
+    "seq_below_last",
+    "seq_above_max",
+    "aad_op_modified",
+    "aad_session_modified",
+    "wrong_key",
+    "ct_bitflip",
+)
+FRAME_CASES = tuple(f"{direction}_{name}" for direction in ("c2t", "t2c") for name in FRAME_NAMES)
+RESULT_CASES = (
+    "open_ok",
+    "open_rejected",
+    "open_ok_nil_session",
+    "open_error_with_session",
+    "open_other_request_id",
+    "open_ct_bitflip",
+    "frame_ok",
+    "frame_re_mismatch",
+    "frame_seq_not_above_last",
+)
+# One accept case per builder, one reject per spec/wire/README.md width/range rule of its inputs.
+LAYOUT_INPUTS = {
+    "prekey_preimage": ("instance_id", "prekey_id", "pub", "not_after", "image_digest"),
+    "hpke_info": ("ik_pub", "prekey_id"),
+    "session_nonce": ("seq",),
+}
+LAYOUT_CASES = tuple(
+    case_id
+    for kind, fields in LAYOUT_INPUTS.items()
+    for case_id in (f"{kind}_accept", *(f"{kind}_{field}_range" for field in fields))
+)
+NAMED_CASES = {
+    "bundles": BUNDLE_CASES,
+    "opens": OPEN_CASES,
+    "frames": FRAME_CASES,
+    "results": RESULT_CASES,
+    "layouts": LAYOUT_CASES,
+}
+
+
+@pytest.mark.parametrize(("array", "names"), sorted(NAMED_CASES.items()))
+def test_each_array_holds_exactly_its_named_cases_once_in_catalog_order(
+    suite: dict[str, Any], array: str, names: tuple[str, ...]
+) -> None:
+    # Catalog order: the TypeScript contract test compares bundles, opens and results as lists.
+    assert [case["id"] for case in suite[array]] == list(names)
+
+
+def test_layout_and_frame_ids_name_their_kind_and_direction(suite: dict[str, Any]) -> None:
+    for case in suite["layouts"]:
+        assert case["id"].startswith(f"{case['kind']}_")
+    for case in suite["frames"]:
+        assert case["id"].startswith(f"{case['direction']}_")
