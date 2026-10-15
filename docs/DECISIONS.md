@@ -1312,3 +1312,29 @@ Participants: Code Reviewer, Security Reviewer, Tech Lead, T-31 engineer
 - The CR Low (wall-clock elapsed time in the e2e tests) goes to BACKLOG as B-42, per A6.
 
 **Dissent:** none
+
+## D-064 — D-02 resolved by root cause plus ADR 0013 (bounded nbf/iat skew); zero-nbf-tolerance reversed (INC-2, 2026-10-15)
+
+Type: design + gate-routing
+Chair / decider: Orchestrator (reverses its own INC-1 T-12 contract choice), on Architect and Security Architect advice
+Participants: Tech Lead (Q1 triage), Architect (Q2, ADR 0013), Security Architect (sign-off S1–S6), QA
+
+**Decision:**
+1. D-02 root cause (Tech Lead, a9ad0bc):
+   - The WSL2 host's wall clock steps back about 2.2 s roughly every 30 s, because systemd-timesyncd and Hyper-V time sync conflict. A step while the token is younger than the step puts `nbf` ahead of the client clock.
+   - Core reads `now` fresh on every check and caches nothing. The "cascade" is the step window, in which each open fails within 10–20 ms.
+   - Severity is Medium: availability only, fails closed, clears on its own.
+2. ADR 0013 is **Accepted**:
+   - private Core constant `CLOCK_SKEW_S = 300`;
+   - `nbf` gets 300 s leeway;
+   - future `iat` tightened to `min(token_max_age_s, 300)`;
+   - no leeway on `exp`, and past `iat` unchanged;
+   - no profile, wire, vector, Python or docs/security change.
+   This reverses the zero-`nbf`-tolerance rule in INC-1 T-12, an Orchestrator contract choice made against the SA's ADR 0009 note. The rule was never a human or spec decision. SA conditions S1–S6 bind the implementing task.
+3. A new task, T-38 (STRONG, Core `attestation/**`), implements ADR 0013 in INC-2. D-02 closes when T-38 merges.
+4. G6 condition D-062 item 2 is satisfied: the cascade is attributed (D-02) and its product exposure is fixed by T-38.
+5. Host clock configuration is the human's choice, offered as an option; CI is unaffected.
+
+**Rationale:** spec §6.4 constrains only `exp` and `iat`. The leeway moves only the start of the acceptance window, and Google signs those claims. Real client and issuer skew would otherwise cause rejections right after every token refresh.
+
+**Dissent:** none
