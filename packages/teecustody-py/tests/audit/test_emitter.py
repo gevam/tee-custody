@@ -15,6 +15,7 @@ from teecustody.audit import (
     AuditKey,
     AuditRecord,
 )
+from teecustody.audit.emitter import PROTECTED_PENDING_MAX
 from teecustody.obs.types import FieldValue
 
 START = 1_700_000_000.0
@@ -444,3 +445,16 @@ def test_an_anonymous_flood_during_an_outage_never_evicts_an_authenticated_alert
     assert [r.outcome for r in alerts[1:]] == ["ALERT_CAP_REACHED"] + ["KCV_MISMATCH"] * PENDING_MAX
     assert [r.subject_client_id for r in alerts[2:]] == [_subject(i) for i in range(76, 100)]
     assert logger.lines == [("warning", "AUDIT_PENDING_DROPPED_KCV_MISMATCH", {})] * 76
+
+
+def test_protected_pending_is_bounded_at_256_dropping_the_oldest() -> None:
+    sink = OutageSink()
+    emitter, _, _, logger = _make(sink)
+    assert PROTECTED_PENDING_MAX == 256
+    for i in range(PROTECTED_PENDING_MAX + 1):
+        emitter.alert("AUDIT_WRITE_CONFLICT", request_id=_subject(i))
+    assert logger.lines == [("warning", "AUDIT_PENDING_DROPPED_AUDIT_WRITE_CONFLICT", {})]
+    sink.down = False
+    emitter.tick()
+    written = [r.request_id for _, r in sink.of(AuditClass.ALERT)]
+    assert written == [_subject(i) for i in range(1, PROTECTED_PENDING_MAX + 1)]

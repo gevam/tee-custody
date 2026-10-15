@@ -39,6 +39,7 @@ class AggregateOutcome(StrEnum):
 
 
 _PENDING_MAX: Final = 2 * len(AggregateOutcome)
+PROTECTED_PENDING_MAX: Final = 256
 
 
 def _drop_log(outcome: str) -> str:
@@ -115,12 +116,14 @@ class AuditEmitter:
         """Protected records (`alert()`) never share a bound with anonymous-driven ones (SR-12)."""
         if self._attempt(key, record):
             return
-        if protected:
-            self._protected.append((key, record))
-            return
-        self._sheddable.append((key, record))
-        if len(self._sheddable) > _PENDING_MAX:
-            _, dropped = self._sheddable.popleft()
+        pending, bound = (
+            (self._protected, PROTECTED_PENDING_MAX)
+            if protected
+            else (self._sheddable, _PENDING_MAX)
+        )
+        pending.append((key, record))
+        if len(pending) > bound:
+            _, dropped = pending.popleft()
             self._logger.warning(_drop_log(dropped.outcome))
 
     def _attempt(self, key: AuditKey, record: AuditRecord) -> bool:
