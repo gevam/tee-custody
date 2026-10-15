@@ -7,11 +7,15 @@
         ".": "./dist/index.js"
     },
     "types": "./dist/index.d.ts",
+    "bin": {
+        "teecustody-profile": "./dist/profile/bin.js"
+    },
     "engines": {
         "node": ">=22"
     },
     "scripts": {
         "test": "vitest run",
+        "build:cli": "esbuild src/profile/bin.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/profile/bin.js --alias:@teecustody/core=../teecustody-core/src/index.ts \"--banner:js=#!/usr/bin/env node\"",
         "coverage": "vitest run --coverage",
         "lint": "eslint . && prettier --check . && node ../../tools/scan-bundle.mjs --entry src/index.ts --alias @teecustody/core=../teecustody-core/src/index.ts",
         "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.cli.json",
