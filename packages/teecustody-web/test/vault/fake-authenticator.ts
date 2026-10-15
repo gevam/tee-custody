@@ -34,9 +34,11 @@ export interface FakeBehaviour {
 }
 
 const NONE = Symbol("none");
+// Captured at import so tests may remove globalThis.crypto from the vault's view only.
+const webcrypto = globalThis.crypto;
 
 export class FakeAuthenticator {
-    secret: Uint8Array = crypto.getRandomValues(new Uint8Array(32));
+    secret: Uint8Array<ArrayBuffer> = webcrypto.getRandomValues(new Uint8Array(32));
     readonly ceremonies: Ceremony[] = [];
     readonly behaviour: FakeBehaviour = {
         prfEnabled: true,
@@ -92,7 +94,7 @@ export class FakeAuthenticator {
         if (this.behaviour.createCredential !== NONE) {
             return this.behaviour.createCredential as Credential | null;
         }
-        const id = crypto.getRandomValues(new Uint8Array(16));
+        const id = webcrypto.getRandomValues(new Uint8Array(16));
         this.#known.add(hex(id));
         this.createdIds.push(id.slice());
         const prf: Record<string, unknown> = { enabled: this.behaviour.prfEnabled };
@@ -145,14 +147,14 @@ export class FakeAuthenticator {
 
     /** The PRF this authenticator computes, for tests that derive the expected key. */
     async prf(salt: BufferSource): Promise<ArrayBuffer> {
-        const key = await crypto.subtle.importKey(
+        const key = await webcrypto.subtle.importKey(
             "raw",
             this.secret,
             { name: "HMAC", hash: "SHA-256" },
             false,
             ["sign"],
         );
-        const full = new Uint8Array(await crypto.subtle.sign("HMAC", key, bytesOf(salt)));
+        const full = new Uint8Array(await webcrypto.subtle.sign("HMAC", key, bytesOf(salt)));
         const out = new Uint8Array(this.behaviour.resultLength);
         out.set(full.subarray(0, Math.min(full.length, out.length)));
         this.outputs.push(out.buffer);
@@ -164,7 +166,7 @@ function evalFirst(extensions: AuthenticationExtensionsClientInputs | undefined)
     return extensions?.prf?.eval?.first;
 }
 
-export function bytesOf(source: BufferSource): Uint8Array {
+export function bytesOf(source: BufferSource): Uint8Array<ArrayBuffer> {
     return source instanceof ArrayBuffer
         ? new Uint8Array(source.slice(0))
         : new Uint8Array(

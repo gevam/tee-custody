@@ -23,33 +23,69 @@ const CLIENT_ID = /^[0-9a-f]{32}$/;
 const FIELDS = "client_id,credential_id,ct,nonce,prf_salt,v";
 const MAX_CREDENTIAL_ID = 1023; // WebAuthn credential id limit
 const INFO_LABEL = "teecustody/vault/v1";
+const DEFAULT_DB_NAME = "teecustody-vault";
+const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_TIMER_MS = 2_147_483_647; // setTimeout fires at once beyond this
+
+type Buf = Uint8Array<ArrayBuffer>;
 
 interface CredentialPrf {
-    readonly credentialId: Uint8Array;
+    readonly credentialId: Buf;
     readonly prf: ArrayBuffer;
 }
 
 interface ShareRecord {
     readonly v: 1;
     readonly client_id: ClientId;
-    readonly credential_id: Uint8Array;
-    readonly prf_salt: Uint8Array;
-    readonly nonce: Uint8Array;
-    readonly ct: Uint8Array;
+    readonly credential_id: Buf;
+    readonly prf_salt: Buf;
+    readonly nonce: Buf;
+    readonly ct: Buf;
 }
 
-function ascii(text: string): Uint8Array {
+function ascii(text: string): Buf {
     return Uint8Array.from(text, (c) => c.charCodeAt(0));
 }
 
 export class PrfShareVault implements ShareVault {
     readonly #options: PrfShareVaultOptions;
+    readonly #timeoutMs: number;
+    readonly #dbName: string;
 
     constructor(options: PrfShareVaultOptions) {
+        const rp = options.rp as { readonly id?: unknown; readonly name?: unknown } | undefined;
+        const timeoutMs: unknown = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const dbName: unknown = options.dbName ?? DEFAULT_DB_NAME;
+        if (
+            !isNonEmptyString(rp?.id) ||
+            !isNonEmptyString(rp.name) ||
+            !Number.isSafeInteger(timeoutMs) ||
+            (timeoutMs as number) <= 0 ||
+            !isNonEmptyString(dbName)
+        ) {
+            throw new TypeError("INVALID_CONFIG");
+        }
         this.#options = options;
+        this.#timeoutMs = timeoutMs as number;
+        this.#dbName = dbName;
     }
 
-    async get(client: ClientId): Promise<ClientShare | undefined> {
+    get(client: ClientId): Promise<ClientShare | undefined> {
+        return guard(() => this.#get(client));
+    }
+
+    set(client: ClientId, share: ClientShare): Promise<void> {
+        return guard(() => this.#set(client, share));
+    }
+
+    clear(client: ClientId): Promise<void> {
+        return guard(async () => {
+            checkClient(client);
+            await this.#transact("readwrite", (store) => store.delete(client));
+        });
+    }
+
+    async #get(client: ClientId): Promise<ClientShare | undefined> {
         checkClient(client);
         const stored = await this.#read(client);
         if (stored === undefined) {
@@ -74,7 +110,7 @@ export class PrfShareVault implements ShareVault {
         }
     }
 
-    async set(client: ClientId, share: ClientShare): Promise<void> {
+    async #set(client: ClientId, share: ClientShare): Promise<void> {
         checkClient(client);
         if (!(share instanceof Uint8Array) || share.length !== 32) {
             throw new CapabilityError("INVALID_ARGUMENT");
@@ -109,34 +145,23 @@ export class PrfShareVault implements ShareVault {
         }
     }
 
-    async clear(client: ClientId): Promise<void> {
-        checkClient(client);
-        await this.#transact("readwrite", (store) => store.delete(client));
-    }
-
     /** Creates the passkey; PRF output comes from `create` if it evaluated, else from one `get`. */
-    async #enroll(client: ClientId, salt: Uint8Array): Promise<CredentialPrf> {
+    async #enroll(client: ClientId, salt: Buf): Promise<CredentialPrf> {
         const credentials = this.#credentials();
-        const created = await this.#ceremony((signal) =>
-            credentials.create({
-                signal,
-                publicKey: {
-                    rp: this.#options.rp,
-                    user: { id: this.#random(16), ...this.#options.user(client) },
-                    challenge: this.#random(32),
-                    pubKeyCredParams: [
-                        { type: "public-key", alg: -8 },
-                        { type: "public-key", alg: -7 },
-                    ],
-                    authenticatorSelection: {
-                        residentKey: "required",
-                        userVerification: "required",
-                    },
-                    timeout: this.#timeoutMs(),
-                    extensions: { prf: { eval: { first: salt } } },
-                },
-            }),
-        );
+        const { name, displayName } = this.#options.user(client);
+        const publicKey: PublicKeyCredentialCreationOptions = {
+            rp: { id: this.#options.rp.id, name: this.#options.rp.name },
+            user: { id: this.#random(16), name, displayName },
+            challenge: this.#random(32),
+            pubKeyCredParams: [
+                { type: "public-key", alg: -8 },
+                { type: "public-key", alg: -7 },
+            ],
+            authenticatorSelection: { residentKey: "required", userVerification: "required" },
+            timeout: this.#timeoutMs,
+            extensions: { prf: { eval: { first: salt } } },
+        };
+        const created = await this.#ceremony((signal) => credentials.create({ signal, publicKey }));
         const credentialId = new Uint8Array(created.rawId);
         const outputs = created.getClientExtensionResults().prf;
         if (outputs?.enabled !== true) {
@@ -147,25 +172,21 @@ export class PrfShareVault implements ShareVault {
         return { credentialId, prf };
     }
 
-    async #reuse(credentialId: Uint8Array, salt: Uint8Array): Promise<CredentialPrf> {
+    async #reuse(credentialId: Buf, salt: Buf): Promise<CredentialPrf> {
         return { credentialId, prf: await this.#assert(credentialId, salt) };
     }
 
-    async #assert(credentialId: Uint8Array, salt: Uint8Array): Promise<ArrayBuffer> {
+    async #assert(credentialId: Buf, salt: Buf): Promise<ArrayBuffer> {
         const credentials = this.#credentials();
-        const asserted = await this.#ceremony((signal) =>
-            credentials.get({
-                signal,
-                publicKey: {
-                    challenge: this.#random(32),
-                    rpId: this.#options.rp.id,
-                    allowCredentials: [{ type: "public-key", id: credentialId }],
-                    userVerification: "required",
-                    timeout: this.#timeoutMs(),
-                    extensions: { prf: { eval: { first: salt } } },
-                },
-            }),
-        );
+        const publicKey: PublicKeyCredentialRequestOptions = {
+            challenge: this.#random(32),
+            rpId: this.#options.rp.id,
+            allowCredentials: [{ type: "public-key", id: credentialId }],
+            userVerification: "required",
+            timeout: this.#timeoutMs,
+            extensions: { prf: { eval: { first: salt } } },
+        };
+        const asserted = await this.#ceremony((signal) => credentials.get({ signal, publicKey }));
         if (!equalBytes(new Uint8Array(asserted.rawId), credentialId)) {
             throw new CapabilityError("AUTHENTICATION_FAILED");
         }
@@ -177,16 +198,24 @@ export class PrfShareVault implements ShareVault {
         run: (signal: AbortSignal) => Promise<Credential | null>,
     ): Promise<PublicKeyCredential> {
         const controller = new AbortController();
-        const timer = setTimeout(() => {
-            controller.abort();
-        }, this.#timeoutMs());
+        const timer = setTimeout(
+            () => {
+                controller.abort();
+            },
+            Math.min(this.#timeoutMs, MAX_TIMER_MS),
+        );
+        let result: unknown;
         try {
-            return (await run(controller.signal)) as PublicKeyCredential;
+            result = await run(controller.signal);
         } catch (error) {
             throw ceremonyError(error);
         } finally {
             clearTimeout(timer);
         }
+        if (!isPublicKeyCredential(result)) {
+            throw new CapabilityError("INTERNAL");
+        }
+        return result;
     }
 
     #credentials(): CredentialsContainer {
@@ -200,9 +229,14 @@ export class PrfShareVault implements ShareVault {
         return container;
     }
 
-    async #deriveKey(prf: ArrayBuffer, salt: Uint8Array, client: ClientId): Promise<CryptoKey> {
+    async #deriveKey(prf: ArrayBuffer, salt: Buf, client: ClientId): Promise<CryptoKey> {
         const subtle = this.#subtle();
-        const ikm = await subtle.importKey("raw", prf, "HKDF", false, ["deriveKey"]);
+        let ikm: CryptoKey;
+        try {
+            ikm = await subtle.importKey("raw", prf, "HKDF", false, ["deriveKey"]);
+        } finally {
+            new Uint8Array(prf).fill(0);
+        }
         const label = ascii(INFO_LABEL);
         const id = ascii(client);
         const info = new Uint8Array(label.length + 1 + id.length);
@@ -221,20 +255,19 @@ export class PrfShareVault implements ShareVault {
         return this.#options.subtle ?? globalThis.crypto.subtle;
     }
 
-    #random(length: number): Uint8Array {
+    #random(length: number): Buf {
+        const bytes = new Uint8Array(length);
         const fill = this.#options.getRandomValues ?? ((a) => globalThis.crypto.getRandomValues(a));
-        return fill(new Uint8Array(length));
-    }
-
-    #timeoutMs(): number {
-        return this.#options.timeoutMs ?? 60_000;
+        fill(bytes);
+        return bytes;
     }
 
     async #read(client: ClientId): Promise<object | undefined> {
-        return this.#transact(
+        const value = await this.#transact(
             "readonly",
             (store) => store.get(client) as IDBRequest<unknown>,
-        ) as Promise<object | undefined>;
+        );
+        return value as object | undefined;
     }
 
     async #write(record: ShareRecord): Promise<void> {
@@ -242,10 +275,10 @@ export class PrfShareVault implements ShareVault {
     }
 
     /** One IndexedDB transaction on `shares`; every IndexedDB failure is UNAVAILABLE. */
-    async #transact(
+    async #transact<T>(
         mode: IDBTransactionMode,
-        op: (store: IDBObjectStore) => IDBRequest<unknown>,
-    ): Promise<unknown> {
+        op: (store: IDBObjectStore) => IDBRequest<T>,
+    ): Promise<T> {
         const factory =
             this.#options.indexedDB ?? (globalThis as { indexedDB?: IDBFactory }).indexedDB;
         if (factory === undefined) {
@@ -253,7 +286,7 @@ export class PrfShareVault implements ShareVault {
         }
         let db: IDBDatabase | undefined;
         try {
-            db = await openDatabase(factory, this.#options.dbName ?? "teecustody-vault");
+            db = await openDatabase(factory, this.#dbName);
             return await transaction(db, mode, op);
         } catch {
             throw new CapabilityError("UNAVAILABLE");
@@ -278,11 +311,11 @@ function openDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
     });
 }
 
-function transaction(
+function transaction<T>(
     db: IDBDatabase,
     mode: IDBTransactionMode,
-    op: (store: IDBObjectStore) => IDBRequest<unknown>,
-): Promise<unknown> {
+    op: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
     return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, mode);
         const req = op(tx.objectStore(STORE));
@@ -295,14 +328,37 @@ function transaction(
     });
 }
 
-function aad(client: ClientId, credentialId: Uint8Array): Uint8Array {
-    return encodeCanonical(
-        new Map<string, number | string | Uint8Array>([
-            ["v", 1],
-            ["client_id", client],
-            ["credential_id", credentialId],
-        ]),
+function aad(client: ClientId, credentialId: Buf): Buf {
+    return new Uint8Array(
+        encodeCanonical(
+            new Map<string, number | string | Uint8Array>([
+                ["v", 1],
+                ["client_id", client],
+                ["credential_id", credentialId],
+            ]),
+        ),
     );
+}
+
+/** Every failure leaves as a CapabilityError whose message is its code (SR-11). */
+async function guard<T>(op: () => Promise<T>): Promise<T> {
+    try {
+        return await op();
+    } catch (error) {
+        throw error instanceof CapabilityError ? error : new CapabilityError("INTERNAL");
+    }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === "string" && value.length > 0;
+}
+
+function isPublicKeyCredential(value: unknown): value is PublicKeyCredential {
+    if (typeof value !== "object" || value === null) {
+        return false;
+    }
+    const c = value as { readonly rawId?: unknown; readonly getClientExtensionResults?: unknown };
+    return c.rawId instanceof ArrayBuffer && typeof c.getClientExtensionResults === "function";
 }
 
 function checkClient(client: unknown): void {
@@ -349,7 +405,7 @@ function parseRecord(stored: object): ShareRecord {
     return r as unknown as ShareRecord;
 }
 
-function isBytes(value: unknown, min: number, max: number): value is Uint8Array {
+function isBytes(value: unknown, min: number, max: number): value is Buf {
     return value instanceof Uint8Array && value.length >= min && value.length <= max;
 }
 

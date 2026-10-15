@@ -128,7 +128,7 @@ async function decryptIndependently(
     record: StoredRecord,
     client: string,
 ): Promise<Uint8Array> {
-    const salt = record.prf_salt as Uint8Array;
+    const salt = record.prf_salt as Uint8Array<ArrayBuffer>;
     const ikm = await crypto.subtle.importKey("raw", await auth.prf(salt), "HKDF", false, [
         "deriveKey",
     ]);
@@ -144,15 +144,17 @@ async function decryptIndependently(
         false,
         ["decrypt"],
     );
-    const aad = encodeCanonical(
-        new Map<string, number | string | Uint8Array>([
-            ["v", 1],
-            ["client_id", client],
-            ["credential_id", record.credential_id as Uint8Array],
-        ]),
+    const aad = new Uint8Array(
+        encodeCanonical(
+            new Map<string, number | string | Uint8Array>([
+                ["v", 1],
+                ["client_id", client],
+                ["credential_id", record.credential_id as Uint8Array],
+            ]),
+        ),
     );
-    const iv = record.nonce as Uint8Array;
-    const ct = record.ct as Uint8Array;
+    const iv = record.nonce as Uint8Array<ArrayBuffer>;
+    const ct = record.ct as Uint8Array<ArrayBuffer>;
     return new Uint8Array(
         await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: aad }, key, ct),
     );
@@ -666,7 +668,11 @@ describe("criterion 8: UNAVAILABLE when IndexedDB is missing or fails", () => {
 
     it("fails, writing nothing, when the write transaction aborts", async () => {
         const idb = new IDBFactory();
-        const put = FakeObjectStore.prototype.put;
+        const put = Object.getOwnPropertyDescriptor(FakeObjectStore.prototype, "put")?.value as (
+            this: IDBObjectStore,
+            value: unknown,
+            key?: IDBValidKey,
+        ) => IDBRequest<IDBValidKey>;
         vi.spyOn(FakeObjectStore.prototype, "put").mockImplementation(function (
             this: IDBObjectStore,
             value: unknown,
@@ -899,7 +905,7 @@ function spySubtle(): SubtleSpy {
                 spy.derived.push(key);
                 return key;
             },
-            encrypt: (algorithm: AesGcmParams, key: CryptoKey, data: Uint8Array) => {
+            encrypt: (algorithm: AesGcmParams, key: CryptoKey, data: Uint8Array<ArrayBuffer>) => {
                 spy.encrypted.push(data);
                 return real.encrypt(algorithm, key, data);
             },
@@ -1004,5 +1010,171 @@ describe("criteria 13-16: capability hints are never trusted (INC-2-API §8.4 a-
             expect(text).not.toContain("getClientCapabilities");
             expect(text).not.toContain("isUserVerifyingPlatformAuthenticatorAvailable");
         }
+    });
+});
+
+describe("constructor validation", () => {
+    const base: PrfShareVaultOptions = {
+        rp: { id: "app.example", name: "Example" },
+        user: () => ({ name: "u", displayName: "U" }),
+    };
+    const bad: [string, unknown][] = [
+        ["rp missing", { ...base, rp: undefined }],
+        ["rp.id empty", { ...base, rp: { id: "", name: "Example" } }],
+        ["rp.id not a string", { ...base, rp: { id: 7, name: "Example" } }],
+        ["rp.name empty", { ...base, rp: { id: "app.example", name: "" } }],
+        ["rp.name not a string", { ...base, rp: { id: "app.example", name: null } }],
+        ["timeoutMs 0", { ...base, timeoutMs: 0 }],
+        ["timeoutMs negative", { ...base, timeoutMs: -1 }],
+        ["timeoutMs fractional", { ...base, timeoutMs: 1.5 }],
+        ["timeoutMs NaN", { ...base, timeoutMs: Number.NaN }],
+        ["timeoutMs infinite", { ...base, timeoutMs: Number.POSITIVE_INFINITY }],
+        ["timeoutMs unsafe", { ...base, timeoutMs: 2 ** 53 }],
+        ["timeoutMs a string", { ...base, timeoutMs: "1000" }],
+        ["dbName empty", { ...base, dbName: "" }],
+        ["dbName not a string", { ...base, dbName: 5 }],
+    ];
+    it.each(bad)("throws TypeError(INVALID_CONFIG) when %s", (_name, options) => {
+        expect(() => new PrfShareVault(options as PrfShareVaultOptions)).toThrow(
+            new TypeError("INVALID_CONFIG"),
+        );
+    });
+
+    it("accepts the largest safe timeoutMs without aborting the ceremony early", async () => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory(), { timeoutMs: Number.MAX_SAFE_INTEGER });
+        await v.set(CLIENT, SHARE.slice());
+        expect(auth.creates[0]?.publicKey.timeout).toBe(Number.MAX_SAFE_INTEGER);
+        expect(auth.creates[0]?.signal?.aborted).toBe(false);
+    });
+});
+
+describe("wiping temporary secrets", () => {
+    it("zeroes every PRF output buffer after deriving the key, on set and get", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        await v.get(CLIENT);
+        expect(auth.outputs).toHaveLength(2);
+        for (const output of auth.outputs) {
+            expect(new Uint8Array(output).every((b) => b === 0)).toBe(true);
+        }
+    });
+
+    it("zeroes the PRF output from create", async () => {
+        const auth = new FakeAuthenticator();
+        await vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice());
+        expect(auth.gets).toHaveLength(0);
+        expect(new Uint8Array(auth.outputs[0] ?? new ArrayBuffer(1)).every((b) => b === 0)).toBe(
+            true,
+        );
+    });
+
+    it("zeroes the PRF output when decryption then fails", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        await editRecord(idb, CLIENT, flip("ct"));
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+        for (const output of auth.outputs) {
+            expect(new Uint8Array(output).every((b) => b === 0)).toBe(true);
+        }
+    });
+
+    it("encrypts an internal copy and zeroes it, leaving the caller's buffer intact", async () => {
+        const spy = spySubtle();
+        const mine = SHARE.slice();
+        await vault(new FakeAuthenticator(), new IDBFactory(), { subtle: spy.subtle }).set(
+            CLIENT,
+            mine,
+        );
+        expect(spy.encrypted).toHaveLength(1);
+        expect(spy.encrypted[0]).not.toBe(mine);
+        expect(spy.encrypted[0]?.every((b) => b === 0)).toBe(true);
+        expect(Array.from(mine)).toEqual(Array.from(SHARE));
+    });
+
+    it("zeroes the internal copy when the write fails", async () => {
+        const spy = spySubtle();
+        vi.spyOn(FakeObjectStore.prototype, "put").mockImplementation(() => {
+            throw new DOMException("quota", "QuotaExceededError");
+        });
+        const v = vault(new FakeAuthenticator(), new IDBFactory(), { subtle: spy.subtle });
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
+        expect(spy.encrypted[0]?.every((b) => b === 0)).toBe(true);
+    });
+});
+
+describe("malformed ceremony results and unexpected failures are INTERNAL", () => {
+    const credentials: [string, unknown][] = [
+        ["null", null],
+        ["a string", "credential"],
+        ["missing rawId", { getClientExtensionResults: () => ({ prf: { enabled: true } }) }],
+        [
+            "a non-ArrayBuffer rawId",
+            { rawId: new Uint8Array(16), getClientExtensionResults: () => ({}) },
+        ],
+        ["no getClientExtensionResults", { rawId: new ArrayBuffer(16) }],
+    ];
+    it.each(credentials)("create returning %s", async (_name, credential) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.createCredential = credential;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+        await expectNothingStored(idb);
+    });
+
+    it.each(credentials)("get returning %s", async (_name, credential) => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        auth.behaviour.getCredential = credential;
+        expect(await codeOf(v.get(CLIENT))).toBe("INTERNAL");
+    });
+
+    it.each([
+        ["a TypeError", new TypeError("boom")],
+        ["an unknown DOMException", new DOMException("x", "InvalidStateError")],
+        ["a string", "boom"],
+        ["undefined", undefined],
+    ])("a ceremony rejecting with %s", async (_name, reason) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.rejectWith = reason;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+        await expectNothingStored(idb);
+    });
+
+    it("the host's user() callback throwing", async () => {
+        const idb = new IDBFactory();
+        const v = vault(new FakeAuthenticator(), idb, {
+            user: () => {
+                throw new DOMException("host", "NotAllowedError");
+            },
+        });
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+        await expectNothingStored(idb);
+    });
+
+    it("WebCrypto failing during encryption, without echoing its message", async () => {
+        const { subtle } = spySubtle();
+        (subtle as { encrypt: unknown }).encrypt = () =>
+            Promise.reject(new Error(`leak ${Buffer.from(SHARE).toString("hex")}`));
+        const idb = new IDBFactory();
+        const v = vault(new FakeAuthenticator(), idb, { subtle });
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+        await expectNothingStored(idb);
+    });
+
+    it("WebCrypto missing entirely", async () => {
+        vi.stubGlobal("crypto", undefined);
+        const idb = new IDBFactory();
+        const v = vault(new FakeAuthenticator(), idb, {
+            getRandomValues: (a) => a.fill(1),
+        });
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+        await expectNothingStored(idb);
     });
 });
