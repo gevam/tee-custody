@@ -16,6 +16,7 @@ import {
     checkTime,
     isDebugMode,
     parseToken,
+    parseTrustProfile,
     verifyAttestation,
 } from "@teecustody/core";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -351,5 +352,74 @@ describe("NFR-5 / NFR-6 no bypass, no platform capabilities in Core", () => {
             g.localStorage = saved.localStorage;
             g.indexedDB = saved.indexedDB;
         }
+    });
+});
+
+describe("SR-1 token time (ADR 0013)", () => {
+    const E = (c: Claims) => {
+        c.exp = NOW_S + 3600;
+    };
+    const claims = (extra: Record<string, number>) => (c: Claims) => {
+        E(c);
+        Object.assign(c, extra);
+    };
+    const parsedWith = async (extra: Record<string, number>) =>
+        parseToken(await fx.mint({ mutate: claims(extra) }), MAX_TOKEN_BYTES);
+    const verifies = async (
+        extra: Record<string, number>,
+        profile: typeof fx.profile,
+    ): Promise<unknown> => {
+        const { deps } = makeDeps(fx);
+        const result = await verifyAttestation(
+            await fx.mint({ mutate: claims(extra) }),
+            profile,
+            { identityNonce: fx.identityNonce },
+            new MemorySink(),
+            deps,
+        );
+        return result.audience;
+    };
+    const profile60 = () => parseTrustProfile({ ...fx.profileJson, token_max_age_s: 60 });
+    const expectNotYetValid = (fn: () => unknown) => {
+        const err = thrown(fn) as AttestationError;
+        expect(err).toBeInstanceOf(AttestationError);
+        expect([err.check, err.code]).toEqual(["time", "NOT_YET_VALID"]);
+    };
+
+    it("accepts nbf = now + 300 s at now and rejects it 1 ms earlier", async () => {
+        const parsed = await parsedWith({ iat: NOW_S, nbf: NOW_S + 300 });
+        expect(thrown(() => checkTime(parsed, fx.profile, NOW_MS))).toBeUndefined();
+        expectNotYetValid(() => checkTime(parsed, fx.profile, NOW_MS - 1));
+        await expect(verifies({ iat: NOW_S, nbf: NOW_S + 300 }, fx.profile)).resolves.toBe(
+            fx.profileJson.expected_audience,
+        );
+    });
+
+    it("accepts iat = now + 300 s at now and rejects it 1 ms earlier", async () => {
+        const parsed = await parsedWith({ iat: NOW_S + 300 });
+        expect(thrown(() => checkTime(parsed, fx.profile, NOW_MS))).toBeUndefined();
+        expectNotYetValid(() => checkTime(parsed, fx.profile, NOW_MS - 1));
+        await expect(verifies({ iat: NOW_S + 300 }, fx.profile)).resolves.toBe(
+            fx.profileJson.expected_audience,
+        );
+    });
+
+    it("bounds future iat by token_max_age_s when it is below the skew", async () => {
+        const profile = profile60();
+        const parsed = await parsedWith({ iat: NOW_S + 60 });
+        expect(thrown(() => checkTime(parsed, profile, NOW_MS))).toBeUndefined();
+        expectNotYetValid(() => checkTime(parsed, profile, NOW_MS - 1));
+        await expect(verifies({ iat: NOW_S + 60 }, profile)).resolves.toBe(
+            fx.profileJson.expected_audience,
+        );
+    });
+
+    it("lets nbf = now + 300 s pass under a 60 s token_max_age_s", async () => {
+        const profile = profile60();
+        const parsed = await parsedWith({ iat: NOW_S, nbf: NOW_S + 300 });
+        expect(thrown(() => checkTime(parsed, profile, NOW_MS))).toBeUndefined();
+        await expect(verifies({ iat: NOW_S, nbf: NOW_S + 300 }, profile)).resolves.toBe(
+            fx.profileJson.expected_audience,
+        );
     });
 });
