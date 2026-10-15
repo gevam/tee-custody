@@ -81,7 +81,7 @@ class T2cSealer:
         return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
 
     def wipe(self) -> None:
-        raise NotImplementedError("T-23")
+        self._key.wipe()
 
 
 class Session:
@@ -104,6 +104,10 @@ class Session:
         self.last_activity = now
         return plaintext
 
+    def _wipe(self) -> None:
+        self._sk_c2t.wipe()
+        self._t2c.wipe()
+
     def seal_open_result(self, request_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]:
         raise NotImplementedError("T-23")
 
@@ -122,12 +126,17 @@ class SessionTable:
         on_close: Callable[[SessionInfo, CloseReason], None],
         clock: Callable[[], float],
     ) -> None:
+        self._instance_id = instance_id
+        self._on_close = on_close
         self._clock = clock
         self._sessions: dict[bytes, Session] = {}
 
     def create(
         self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer
     ) -> Session:
+        for existing in list(self._sessions.values()):
+            if existing.client_id == client_id:
+                self.close(existing.session_id, CloseReason.REPLACED)
         now = self._clock()
         # Built here so that no Session method ever takes a key (R-5, INC-2-API §4.9).
         session = Session.__new__(Session)
@@ -142,10 +151,19 @@ class SessionTable:
         return session
 
     def get(self, session_id: bytes) -> Session | None:
-        raise NotImplementedError("T-23")
+        return self._sessions.get(session_id)
 
     def close(self, session_id: bytes, reason: CloseReason) -> None:
-        raise NotImplementedError("T-23")
+        session = self._sessions.pop(session_id)
+        session._wipe()
+        self._on_close(
+            SessionInfo(
+                client_id=session.client_id,
+                session_id=session.session_id,
+                instance_id=self._instance_id,
+            ),
+            reason,
+        )
 
     def expire_idle(self) -> int:
         raise NotImplementedError("T-23")
