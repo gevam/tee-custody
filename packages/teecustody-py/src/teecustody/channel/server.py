@@ -6,18 +6,21 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import cast
+from typing import Final
 
+from teecustody import wire
 from teecustody.audit.emitter import AggregateOutcome, AuditEmitter
 from teecustody.channel.codec import (
     CLIENT_ID_PATTERN,
     EnvelopeError,
+    FrameRequestEnvelope,
     OpenAad,
     OpenRequestEnvelope,
     OpenResultAad,
     OpenSessionPayload,
     decode_open_payload,
     decode_request,
+    encode_frame_result_plaintext,
     encode_open_result_plaintext,
     encode_response_envelope,
     hpke_info,
@@ -26,6 +29,9 @@ from teecustody.channel.hpke import HpkeError, OpenedHpke, open_base
 from teecustody.channel.ports import (
     CloseReason,
     FrameHandler,
+    FrameResultBody,
+    HandlerError,
+    HandlerOk,
     OpenRejected,
     OpenRequest,
     RemoteErrorCode,
@@ -34,9 +40,16 @@ from teecustody.channel.ports import (
 )
 from teecustody.channel.prekeys import PreKeyStore
 from teecustody.channel.replay import ReplayCache
-from teecustody.channel.session import Session, SessionTable, T2cSealer
+from teecustody.channel.session import (
+    Session,
+    SessionReject,
+    SessionRejectCode,
+    SessionTable,
+    T2cSealer,
+)
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.obs.types import AllowListedLogger
+from teecustody.wire.types import CanonicalValue
 
 
 class ChannelOutcome(StrEnum):
@@ -57,6 +70,17 @@ class OutboundResponse:
 class ProcessResult:
     outcome: str
     response: OutboundResponse | None
+
+
+_CLOSE_OP: Final = "close"
+_MAX_RESULT_PLAINTEXT: Final = 32_768  # every encoded result plaintext (§4.10 step 9, §3.1)
+
+
+def _frame_plaintext(re: int, body: FrameResultBody) -> bytes:
+    plaintext = encode_frame_result_plaintext(re, body)
+    if len(plaintext) > _MAX_RESULT_PLAINTEXT:
+        return encode_frame_result_plaintext(re, HandlerError(RemoteErrorCode.LIMIT_EXCEEDED))
+    return plaintext
 
 
 def _principal_ok(principal: object, claimed: str | None) -> bool:
@@ -113,7 +137,51 @@ class ChannelServer:
             envelope = decode_request(body, self._limits)
         except EnvelopeError:
             return self._drop(AggregateOutcome.REQUEST_INVALID)
-        return self._open(cast(OpenRequestEnvelope, envelope), now)
+        if isinstance(envelope, OpenRequestEnvelope):
+            return self._open(envelope, now)
+        return self._frame(envelope, now)
+
+    def _frame(self, envelope: FrameRequestEnvelope, now: float) -> ProcessResult:
+        aad = envelope.aad
+        session = self._sessions.get(aad.session_id)
+        if session is None:
+            return self._drop(AggregateOutcome.SESSION_UNKNOWN)
+        try:
+            plaintext = session.open_c2t(aad, envelope.aad_bytes, envelope.ct, now)
+        except SessionReject as rejected:
+            if rejected.code is SessionRejectCode.SEQ_REJECTED:
+                return self._drop(AggregateOutcome.FRAME_SEQ_REJECTED)
+            return self._drop(AggregateOutcome.FRAME_AUTH_FAILED)
+        info = SessionInfo(
+            client_id=session.client_id,
+            session_id=session.session_id,
+            instance_id=self._instance_id,
+        )
+        closing = False
+        try:
+            payload = wire.decode(plaintext.reveal(), self._limits.payload_decode)
+        except wire.WireError:
+            body: FrameResultBody = HandlerError(RemoteErrorCode.INVALID_FRAME)
+        else:
+            closing = aad.op == _CLOSE_OP
+            body = HandlerOk(None) if closing else self._handle(info, aad.op, payload)
+        finally:
+            plaintext.wipe()
+        _sealed_aad, aad_bytes, ct = session.seal_t2c(aad.op, _frame_plaintext(aad.seq, body))
+        response = OutboundResponse(
+            client_id=session.client_id,
+            body=encode_response_envelope("frame_result", aad_bytes, ct),
+        )
+        if closing:
+            self._sessions.close(session.session_id, CloseReason.CLIENT_CLOSE)
+            return ProcessResult(outcome=ChannelOutcome.SESSION_CLOSED, response=response)
+        return ProcessResult(outcome=ChannelOutcome.FRAME_ACCEPTED, response=response)
+
+    def _handle(self, info: SessionInfo, op: str, payload: CanonicalValue) -> FrameResultBody:
+        try:
+            return self._handler.handle(info, op, payload)
+        except Exception:  # noqa: BLE001 - a port failure is BACKEND_UNAVAILABLE, text discarded (SR-11)
+            return HandlerError(RemoteErrorCode.BACKEND_UNAVAILABLE)
 
     def _drop(self, outcome: AggregateOutcome) -> ProcessResult:
         self._audit.count(outcome)
