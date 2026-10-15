@@ -9,8 +9,10 @@ _Key = tuple[str, bytes]
 class ReplayCache:
     """Remembers each accepted open `(aad_client_id, request_id)` until `timestamp + skew_s` (R-6).
 
-    Bounded to `max_entries` live keys; a full cache refuses new keys and never evicts a live one.
-    The expiry heap may hold superseded entries; it is rebuilt once it exceeds twice the bound.
+    A timestamp later than `now + skew_s` could never pass the skew check and is refused, so it
+    cannot hold a slot past its acceptance window. Bounded to `max_entries` live keys; a full cache
+    refuses new keys and never evicts a live one. The expiry heap may hold superseded entries; it is
+    rebuilt once it exceeds twice the bound.
     """
 
     def __init__(self, *, skew_s: int, max_entries: int, clock: Callable[[], float]) -> None:
@@ -25,11 +27,14 @@ class ReplayCache:
         self._by_expiry: list[tuple[int, _Key]] = []
 
     def seen(self, aad_client_id: str, request_id: bytes) -> bool:
-        self._purge()
+        self._purge(self._clock())
         return (aad_client_id, request_id) in self._expires
 
     def record(self, aad_client_id: str, request_id: bytes, timestamp: int) -> None:
-        self._purge()
+        now = self._clock()
+        if timestamp > now + self._skew_s:
+            raise ValueError("TIMESTAMP_RANGE")
+        self._purge(now)
         key = (aad_client_id, request_id)
         expires_at = timestamp + self._skew_s
         current = self._expires.get(key)
@@ -42,8 +47,7 @@ class ReplayCache:
         if len(self._by_expiry) > 2 * self._max_entries:
             self._compact()
 
-    def _purge(self) -> None:
-        now = self._clock()
+    def _purge(self, now: float) -> None:
         while self._by_expiry and self._by_expiry[0][0] < now:
             expires_at, key = heapq.heappop(self._by_expiry)
             if self._expires[key] == expires_at:
