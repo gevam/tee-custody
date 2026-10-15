@@ -136,6 +136,7 @@ function parseStrictJson(bytes: Uint8Array): unknown {
 const STATUS_CODES: ReadonlyMap<number, CapabilityErrorCode> = new Map([
     [400, "INVALID_ARGUMENT"],
     [404, "NOT_FOUND"],
+    [408, "UNAVAILABLE"],
     [429, "UNAVAILABLE"],
     [503, "UNAVAILABLE"],
 ]);

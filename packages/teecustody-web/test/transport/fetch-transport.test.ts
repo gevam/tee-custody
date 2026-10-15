@@ -58,7 +58,12 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
     return error instanceof CapabilityError ? error.code : String(error);
 }
 
-const SAFE_INIT = { redirect: "manual", credentials: "omit", cache: "no-store" };
+const SAFE_INIT = {
+    redirect: "manual",
+    credentials: "omit",
+    cache: "no-store",
+    referrerPolicy: "no-referrer",
+};
 
 describe("FetchTransport criterion 1: typed values over credential-less, no-redirect requests", () => {
     it("lists bundles with decoded bytes over a GET with no headers", async () => {
@@ -329,6 +334,7 @@ describe("FetchTransport criterion 4: status mapping; redirects are refused, nev
         [429, "UNAVAILABLE"],
         [503, "UNAVAILABLE"],
         [500, "INTERNAL"],
+        [408, "UNAVAILABLE"],
         [418, "INTERNAL"],
         [201, "INTERNAL"],
         [202, "INTERNAL"],
@@ -639,11 +645,11 @@ describe("FetchTransport criterion 7: configuration is validated at construction
 });
 
 describe("FetchTransport criterion 8: errors carry only their code (SR-11)", () => {
-    const SECRET_BODY = "c2VjcmV0LWJvZHktYnl0ZXM";
+    const SENTINEL_BODY = "c2VjcmV0LWJvZHktYnl0ZXM";
     const SECRET_HOST = "https://secret-host.example/";
 
     function hostile(message: string): Response {
-        const response = json(`{"bundles":[{"instance_id":"${SECRET_BODY}"}]}`);
+        const response = json(`{"bundles":[{"instance_id":"${SENTINEL_BODY}"}]}`);
         Object.defineProperty(response, "headers", {
             get(): never {
                 throw new Error(message);
@@ -653,40 +659,40 @@ describe("FetchTransport criterion 8: errors carry only their code (SR-11)", () 
     }
 
     const failures: [string, string, () => Promise<unknown>][] = [
-        ["INVALID_ARGUMENT", "argument", () => make(spy().fetch).getResponses(SECRET_BODY)],
+        ["INVALID_ARGUMENT", "argument", () => make(spy().fetch).getResponses(SENTINEL_BODY)],
         [
             "INVALID_RESPONSE",
             "body",
-            () => make(spy(json(`{"bundles":"${SECRET_BODY}"}`)).fetch).listBundles(),
+            () => make(spy(json(`{"bundles":"${SENTINEL_BODY}"}`)).fetch).listBundles(),
         ],
         [
             "INVALID_RESPONSE",
             "base64url",
             () =>
                 make(
-                    spy(json(`{"bundles":[{"instance_id":"${IID}","bundle":"${SECRET_BODY}="}]}`))
+                    spy(json(`{"bundles":[{"instance_id":"${IID}","bundle":"${SENTINEL_BODY}="}]}`))
                         .fetch,
                 ).listBundles(),
         ],
         [
             "INVALID_RESPONSE",
             "JSON syntax",
-            () => make(spy(json(`{"${SECRET_BODY}`)).fetch).listBundles(),
+            () => make(spy(json(`{"${SENTINEL_BODY}`)).fetch).listBundles(),
         ],
         [
             "UNAVAILABLE",
             "network",
             () =>
-                make(() => Promise.reject(new TypeError(`${SECRET_HOST} ${SECRET_BODY}`)), {
+                make(() => Promise.reject(new TypeError(`${SECRET_HOST} ${SENTINEL_BODY}`)), {
                     baseUrl: SECRET_HOST,
                 }).listBundles(),
         ],
-        ["NOT_FOUND", "status", () => make(spy(json(SECRET_BODY, 404)).fetch).listBundles()],
+        ["NOT_FOUND", "status", () => make(spy(json(SENTINEL_BODY, 404)).fetch).listBundles()],
         [
             "INTERNAL",
             "hostile response object",
             () =>
-                make(spy(hostile(`${SECRET_HOST} ${SECRET_BODY}`)).fetch, {
+                make(spy(hostile(`${SECRET_HOST} ${SENTINEL_BODY}`)).fetch, {
                     baseUrl: SECRET_HOST,
                 }).listBundles(),
         ],
@@ -708,7 +714,7 @@ describe("FetchTransport criterion 8: errors carry only their code (SR-11)", () 
             expect(failure.cause).toBeUndefined();
             expect(Object.keys(failure)).toEqual(["code"]);
             const rendered = `${String(failure.stack)} ${JSON.stringify(failure)}`;
-            expect(rendered).not.toContain(SECRET_BODY);
+            expect(rendered).not.toContain(SENTINEL_BODY);
             expect(rendered).not.toContain("secret-host");
         },
     );
