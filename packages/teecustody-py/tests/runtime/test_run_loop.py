@@ -888,3 +888,55 @@ def test_tick_before_start_and_after_shutdown_is_refused(monkeypatch: pytest.Mon
     with pytest.raises(RuntimeError, match="NOT_STARTED"):
         world.loop.tick()
     assert world.queue.named("pull") == []
+
+
+# ---------------------------------------------------------------- edge cases
+def test_a_refreshed_token_without_a_readable_digest_counts_as_a_changed_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.launcher.digest = "sha256:not-a-digest"
+    world.clock.now += TOKEN_LIFETIME - PARAMS.refresh_margin_s
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.DIGEST_CHANGED
+    assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+def test_a_failing_withdraw_still_closes_sessions_wipes_keys_and_flushes_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    sk_c2t = open_session(world)
+    world.server.kwargs["audit"].count(AggregateOutcome.REQUEST_INVALID)
+
+    def unavailable(instance_id: str) -> None:
+        raise QueueError(QueueErrorCode.UNAVAILABLE)
+
+    monkeypatch.setattr(world.queue, "withdraw_bundle", unavailable)
+
+    with pytest.raises(QueueError):
+        world.loop.shutdown()
+    world.loop.shutdown()  # nothing left to do
+
+    assert sk_c2t.wiped
+    assert world.server.kwargs["prekeys"].public_entries() == ()
+    assert [r.outcome for r in world.sink.of(AuditClass.AGGREGATE)] == ["REQUEST_INVALID"]
+
+
+def test_a_stop_code_survives_a_failing_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch)
+    world.launcher.fail = True
+    world.clock.now += TOKEN_LIFETIME + 1
+
+    def unavailable(instance_id: str) -> None:
+        raise QueueError(QueueErrorCode.UNAVAILABLE)
+
+    monkeypatch.setattr(world.queue, "withdraw_bundle", unavailable)
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.ATTESTATION_EXPIRED

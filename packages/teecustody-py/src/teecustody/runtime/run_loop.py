@@ -313,14 +313,25 @@ class RunLoop:
             self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
         elif outcome is RefreshOutcome.REFRESHED:
             self._refresh_failures = 0
-            token = live.lifecycle.current()
-            if own_image_digest(token, max_token_bytes=self._limits.max_token_bytes) != live.digest:
+            if not self._same_digest(live):
                 self._stop(StopCode.DIGEST_CHANGED)
         return outcome
 
+    def _same_digest(self, live: _Live) -> bool:
+        """The refreshed token names this image; an unreadable digest is not this image."""
+        token = live.lifecycle.current()
+        try:
+            digest = own_image_digest(token, max_token_bytes=self._limits.max_token_bytes)
+        except LauncherError:
+            return False
+        return digest == live.digest
+
     def _stop(self, code: StopCode) -> NoReturn:
-        self.shutdown()
-        raise WorkloadStopped(code)
+        """Fail closed: shut down, then report `code` even if shutting down raised."""
+        try:
+            self.shutdown()
+        finally:
+            raise WorkloadStopped(code)
 
     def _backoff(self, failures: int) -> int:
         """`min(retry_max, retry_min * 2^(n-1))` for the n-th consecutive failure (B-08)."""
@@ -342,7 +353,8 @@ class RunLoop:
         live, self._live = self._live, None
         if live is None:
             return
-        self._queue.withdraw_bundle(self._instance_id)
-        live.sessions.close_all()
-        live.prekeys.destroy_all()
-        live.audit.close()
+        with contextlib.ExitStack() as later:  # every step runs even if an earlier one raises
+            later.callback(live.audit.close)
+            later.callback(live.prekeys.destroy_all)
+            later.callback(live.sessions.close_all)
+            self._queue.withdraw_bundle(self._instance_id)
