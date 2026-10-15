@@ -1,13 +1,7 @@
 // WebCrypto Crypto adapter (INC-2-API §8.1; spec §10.2; ADR 0009 rule 5, ADR 0011).
-// This file is the only @hpke/* import site in the packages (SR-14).
-import {
-    Aes256Gcm,
-    CipherSuite,
-    DhkemX25519HkdfSha256,
-    HkdfSha256,
-    type RecipientContext,
-    type SenderContext,
-} from "@hpke/core";
+// No other file in the packages uses @hpke/* (SR-14); the names taken from @hpke/core are exactly the
+// ADR 0011 C3a.2 list.
+import { Aes256Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
 import {
     CapabilityError,
     type Bytes,
@@ -50,6 +44,9 @@ function platformCrypto(): PlatformCrypto | undefined {
 function isNotSupported(error: unknown): boolean {
     return error instanceof DOMException && error.name === "NotSupportedError";
 }
+
+type SenderContext = Awaited<ReturnType<CipherSuite["createSenderContext"]>>;
+type RecipientContext = Awaited<ReturnType<CipherSuite["createRecipientContext"]>>;
 
 function requireKeyLength(key: Bytes): void {
     if (key.length !== X25519_KEY_BYTES) {

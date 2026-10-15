@@ -374,7 +374,8 @@ probe/global `subtle` mismatch). Security Architect.
 Evidence for the Security Architect's open item 2(c), the C7 guard quote and the C3a input list (D-045 follow-up 1,
 D-047, T-17 A2 items 1–5). Gathered 2026-10-13T12:46Z–12:50Z by the T-17 engineer, in a scratch project outside the
 repo (`package.json` `{"name":"t17-evidence","private":true}`, then `npm install --ignore-scripts --save-exact
-@hpke/core@1.9.0`). Node v22.16.0, npm 10.9.2, esbuild 0.28.2 (the repo's pin). No lock file in the repo is changed.
+@hpke/core@1.9.0`). Node v22.16.0, npm 10.9.2, esbuild 0.28.2 (the repo's pin). The repo lock file was not changed while this evidence was
+gathered; T-17 changed it only after the D-051 sign-off, at the integrities recorded below.
 
 Scratch install result (`npm ls --all`):
 ```
@@ -557,6 +558,10 @@ command on its final branch, and the list below must match it unchanged. In a pn
 | `node_modules/@hpke/core/esm/src/utils/emitNotSupported.js` | 135 |
 | **Total `@hpke/*`** | **48911** |
 
+Re-run on the final branch (D-051 condition 1), at commit 17566b5, with the real pnpm install and the exact
+`pnpm exec esbuild` command above: the table is identical (43 inputs, 48911 B in total); the output has one
+external, `crypto`/`dynamic-import`, and its per-input attribution is `algorithm.js` ×1 and `utils/misc.js` ×2.
+
 Every `curve/**` input contributes 0 bytes. The two recorded fragments are unchanged from V-01:
 - `hash/hmac.js`, the noble `_HMAC` class: **2698 B**;
 - `hash/sha3.js`, the SHA-3 round-constant setup (`SHA3_PI`, `SHA3_ROTL`, `_SHA3_IOTA` loop over `u64.js` `split`):
@@ -599,4 +604,4 @@ have verified attestations").
 `sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw==`. Both equal V-01's
 recorded registry hashes.
 
-Sign-off: pending Security Architect (scoped to these five items and the C7a.1 finding above)
+Sign-off: signed by the Security Architect on 2026-10-13, at the recorded integrities (D-051).
