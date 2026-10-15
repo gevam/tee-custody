@@ -87,6 +87,18 @@ def test_c2_top_up_is_a_no_op_at_or_above_low_water_and_refills_below_it() -> No
     assert [e.id for e in entries] == [8, 9, *range(10, 18)]
 
 
+def test_c2_with_zero_low_water_top_up_refills_only_an_empty_store() -> None:
+    params = ChannelParams(prekey_batch=3, prekey_low_water=0, prekey_ttl_s=600)
+    store = make_store(params=params)
+
+    assert store.top_up() == 3
+    store.take(0)
+    store.take(1)
+    assert store.top_up() == 0
+    store.take(2)
+    assert store.top_up() == 3
+
+
 def test_c3_take_returns_the_private_key_once() -> None:
     store = make_store()
     store.top_up()
@@ -243,3 +255,31 @@ def test_c5_consumption_history_keeps_only_the_last_two_hours() -> None:
 
     assert store.consumed_since(0.0) == 3
     assert store.consumed_since(START + 3000) == 3
+
+
+def test_c6_ids_stop_at_the_uint32_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = capture_private_keys(monkeypatch)
+    params = ChannelParams(prekey_batch=1, prekey_low_water=0, prekey_ttl_s=600)
+    store = make_store(params=params)
+    store._next_id = 2**32 - 1  # white-box: 2^32 - 1 ids already allocated
+
+    assert store.top_up() == 1
+    assert [e.id for e in store.public_entries()] == [2**32 - 1]
+    store.take(2**32 - 1)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        store.top_up()
+
+    assert excinfo.value.args == ("PREKEY_IDS_EXHAUSTED",)
+    assert len(captured) == 1  # no key material generated for the refused id
+    assert store.public_entries() == ()
+
+
+def test_c6_exhaustion_mid_batch_keeps_the_keys_already_generated() -> None:
+    store = make_store()
+    store._next_id = 2**32 - 3
+
+    with pytest.raises(RuntimeError, match=r"\APREKEY_IDS_EXHAUSTED\Z"):
+        store.top_up()
+
+    assert [e.id for e in store.public_entries()] == [2**32 - 3, 2**32 - 2, 2**32 - 1]

@@ -12,6 +12,7 @@ from teecustody.channel.identity import IdentityKey
 from teecustody.config import ChannelParams
 from teecustody.secrets import Secret
 
+_MAX_PREKEY_ID: Final = 2**32 - 1  # uint32 (INC-2-API §2)
 _CONSUMED_WINDOW_S: Final = 2 * 3600  # history kept for `consumed_since` (PREKEY_BURN_HIGH)
 
 
@@ -44,7 +45,7 @@ class PreKeyStore:
 
     def top_up(self) -> int:
         live = len(self.public_entries())
-        if live >= self._params.prekey_low_water:
+        if live and live >= self._params.prekey_low_water:
             return 0
         count = self._params.prekey_batch - live
         for _ in range(count):
@@ -53,6 +54,8 @@ class PreKeyStore:
 
     def _generate(self) -> None:
         prekey_id = self._next_id
+        if prekey_id > _MAX_PREKEY_ID:
+            raise RuntimeError("PREKEY_IDS_EXHAUSTED")  # ids are never reused: restart
         self._next_id += 1
         private, pub = hpke.generate_keypair()
         not_after = math.floor(self._clock()) + self._params.prekey_ttl_s
