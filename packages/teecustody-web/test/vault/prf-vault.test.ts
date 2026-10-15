@@ -487,42 +487,65 @@ describe("criterion 6: USER_PRESENCE_REQUIRED with nothing written", () => {
         expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
     });
 
-    it("(f) aborts a create that never settles through signal at timeoutMs", async () => {
+    it("(f) aborts a create that never settles through signal at exactly timeoutMs", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const auth = new FakeAuthenticator();
         auth.behaviour.hang = true;
         const idb = new IDBFactory();
-        const started = Date.now();
-        expect(await codeOf(vault(auth, idb, { timeoutMs: 30 }).set(CLIENT, SHARE.slice()))).toBe(
-            "USER_PRESENCE_REQUIRED",
-        );
-        expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+        const outcome = codeOf(vault(auth, idb, { timeoutMs: 1000 }).set(CLIENT, SHARE.slice()));
+        await untilCeremonies(auth, 1);
+        await vi.advanceTimersByTimeAsync(999);
+        expect(auth.creates[0]?.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
         expect(auth.creates[0]?.signal?.aborted).toBe(true);
+        expect(await outcome).toBe("USER_PRESENCE_REQUIRED");
         await expectNothingStored(idb);
     });
 
     it("(f) aborts a get that never settles, on the first set and on a read", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const auth = new FakeAuthenticator();
         const idb = new IDBFactory();
-        const v = vault(auth, idb, { timeoutMs: 30 });
+        const v = vault(auth, idb, { timeoutMs: 1000 });
         auth.behaviour.hangGet = true;
-        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("USER_PRESENCE_REQUIRED");
+        const first = codeOf(v.set(CLIENT, SHARE.slice()));
+        await untilCeremonies(auth, 2);
+        await vi.advanceTimersByTimeAsync(999);
+        expect(auth.gets[0]?.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
         expect(auth.gets[0]?.signal?.aborted).toBe(true);
+        expect(await first).toBe("USER_PRESENCE_REQUIRED");
         await expectNothingStored(idb);
+
         auth.behaviour.hangGet = false;
         await v.set(CLIENT, SHARE.slice());
         auth.behaviour.hangGet = true;
-        expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
+        const read = codeOf(v.get(CLIENT));
+        await untilCeremonies(auth, 5);
+        await vi.advanceTimersByTimeAsync(1000);
         expect(auth.gets.at(-1)?.signal?.aborted).toBe(true);
+        expect(await read).toBe("USER_PRESENCE_REQUIRED");
     });
 
-    it("does not abort a ceremony that completes in time", async () => {
+    it("clears the abort timer when ceremonies complete in time", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const auth = new FakeAuthenticator();
-        auth.behaviour.resultsOnCreate = false;
         const v = vault(auth, new IDBFactory(), { timeoutMs: 1000 });
         await v.set(CLIENT, SHARE.slice());
+        await v.get(CLIENT);
+        expect(auth.ceremonies).toHaveLength(3);
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(5000);
         expect(auth.ceremonies.every((c) => c.signal?.aborted === false)).toBe(true);
     });
 });
+
+/** Lets IndexedDB (setImmediate-scheduled) progress until `n` ceremonies have started. */
+async function untilCeremonies(auth: FakeAuthenticator, n: number): Promise<void> {
+    while (auth.ceremonies.length < n) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+}
 
 async function editRecord(
     idb: IDBFactory,
@@ -1014,6 +1037,19 @@ describe("criteria 13-16: capability hints are never trusted (INC-2-API §8.4 a-
         expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
         expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create", "get"]);
         await expectNothingStored(idb);
+        expect(hints()).toBe(0);
+    });
+
+    it("(b) a valid 32-byte create-time output is no substitute for missing get results", async () => {
+        const { auth, hints } = advertisingBrowser();
+        const atCreate = new Uint8Array(32).fill(0x77).buffer;
+        auth.behaviour.createPrf = { enabled: true, results: { first: atCreate } };
+        auth.behaviour.resultsOnGet = false;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create", "get"]);
+        await expectNothingStored(idb);
+        expect(new Uint8Array(atCreate).every((b) => b === 0)).toBe(true);
         expect(hints()).toBe(0);
     });
 
