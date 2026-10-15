@@ -6,6 +6,7 @@
 import base64
 import hashlib
 import json
+import threading
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -645,3 +646,86 @@ def test_c10_the_close_callback_itself_swallows_an_opener_failure_after_logging(
 
     assert world.opener.closed_calls == [(info, CloseReason.CLIENT_CLOSE)]
     assert world.logger.outcomes()[-1] == "SESSION_CLOSED"
+
+
+# ---------------------------------------------------------------- criterion 11: run(stop)
+class RecordingStop(threading.Event):
+    """A stop event that records every wait; `on_wait` may move the clock or set the event."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float | None] = []
+        self.on_wait: Callable[[int], None] = lambda n: None
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        self.on_wait(len(self.waits))
+        return self.is_set()
+
+
+def test_c11_run_ticks_until_stop_and_shuts_down_in_finally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    stop = RecordingStop()
+    original_pull = world.queue.pull_requests
+
+    def pull_then_stop(instance_id: str, max_messages: int, wait_s: float) -> list[QueueMessage]:
+        if len(world.queue.named("pull")) == 2:
+            stop.set()
+        return original_pull(instance_id, max_messages, wait_s)
+
+    monkeypatch.setattr(world.queue, "pull_requests", pull_then_stop)
+
+    world.loop.run(stop)
+
+    assert len(world.queue.named("pull")) == 3
+    assert len(world.queue.bundles) == 1  # start() ran inside run()
+    assert world.queue.calls[-1] == ("withdraw_bundle", world.loop.instance_id)
+    assert stop.waits == []  # every tick pulled (the pull itself waits)
+
+
+def test_c11_a_tick_skipping_its_pull_waits_until_the_pull_is_due_at_most_pull_wait_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, limits=BoundaryLimits(pull_wait_s=1.0), start=False)
+    world.queue.pull_errors = [QueueError(QueueErrorCode.UNAVAILABLE)]
+    stop = RecordingStop()
+
+    def on_wait(n: int) -> None:
+        if n == 1:
+            world.clock.now += world.limits.attestation_retry_min_s - 0.25
+        else:
+            stop.set()
+
+    stop.on_wait = on_wait
+
+    world.loop.run(stop)
+
+    assert stop.waits == [1.0, pytest.approx(0.25)]
+    assert len(world.queue.named("pull")) == 1
+    assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+def test_c11_a_stop_raised_by_a_tick_propagates_after_a_single_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    world.queue.pull_errors = [QueueError(QueueErrorCode.INTERNAL)]
+
+    with pytest.raises(QueueError):
+        world.loop.run(threading.Event())
+
+    assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+def test_c11_a_failed_start_propagates_and_shutdown_has_nothing_to_undo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    world.launcher.fail = True
+
+    with pytest.raises(LauncherError):
+        world.loop.run(threading.Event())
+
+    assert world.queue.calls == []

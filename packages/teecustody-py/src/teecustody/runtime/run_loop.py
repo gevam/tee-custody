@@ -116,6 +116,7 @@ class RunLoop:
         self._next_refresh_attempt_at = float("-inf")
         self._pull_failures = 0
         self._next_pull_at = float("-inf")
+        self._pull_skipped = False
 
     @property
     def instance_id(self) -> str:
@@ -212,7 +213,9 @@ class RunLoop:
         live.prekeys.top_up()
         bundle_published = self._republish_if_changed(live)
         processed = 0
-        for message in self._pull():
+        messages = self._pull()
+        self._pull_skipped = messages is None
+        for message in messages or ():
             self._handle(live, message)
             processed += 1
         self._check_burn(live)
@@ -244,11 +247,11 @@ class RunLoop:
                 end if consumed_since(end) else end + (now - end) // interval * interval
             )
 
-    def _pull(self) -> list[QueueMessage]:
-        """(4) pull; UNAVAILABLE backs off like B-08 on its own counter, and 10 in a row stop."""
+    def _pull(self) -> list[QueueMessage] | None:
+        """(4) pull, or None while backing off (B-08 formula, own counter; 10 in a row stop)."""
         now = self._clock()
         if now < self._next_pull_at:
-            return []
+            return None
         try:
             messages = self._queue.pull_requests(
                 self._instance_id, self._limits.pull_max_messages, self._limits.pull_wait_s
@@ -313,7 +316,14 @@ class RunLoop:
         return min(self._limits.attestation_retry_max_s, retry_min << (failures - 1))
 
     def run(self, stop: threading.Event) -> None:
-        raise NotImplementedError("T-29")
+        try:
+            self.start()
+            while not stop.is_set():
+                self.tick()
+                if self._pull_skipped:
+                    stop.wait(min(self._limits.pull_wait_s, self._next_pull_at - self._clock()))
+        finally:
+            self.shutdown()
 
     def shutdown(self) -> None:
         """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""
