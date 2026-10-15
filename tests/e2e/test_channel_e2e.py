@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import uvicorn
 
 from teecustody.channel.codec import decode_bundle
 from teecustody.wire import DecodeLimits
@@ -160,3 +161,29 @@ def test_sigterm_exits_zero_within_ten_seconds_and_removes_the_temp_dir(
     assert harness.terminate() == 0
     assert not directory.exists()
     assert cs_hex not in harness.output()
+
+
+def test_harness_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from notes_gateway import create_app
+
+    from teecustody_sim.backends import InMemoryQueue
+    from tests.e2e import channel_harness
+
+    calls: list[dict[str, object]] = []
+    real_config = uvicorn.Config
+
+    class RecordingConfig(real_config):  # type: ignore[valid-type,misc]
+        def __init__(self, app: object, **kwargs: object) -> None:
+            calls.append(kwargs)
+            super().__init__(app, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(uvicorn, "Config", RecordingConfig)
+    config = channel_harness.server_config(create_app(InMemoryQueue()))
+    assert config.proxy_headers is False
+    assert config.server_header is False
+    assert config.access_log is False
+    assert (config.host, config.port) == ("127.0.0.1", 0)
+    assert len(calls) == 1
+    assert "forwarded_allow_ips" not in calls[0]
