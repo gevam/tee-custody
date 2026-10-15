@@ -1,4 +1,13 @@
-// SR-13 bundle scan (T-27).
+// SR-13 bundle scan (T-27; INC-2-API 9.2, ADR 0011 C7a and C3a, §16.5 D4).
+//
+//   node tools/scan-bundle.mjs --entry <path> [--entry <path> ...] [--alias <name>=<path> ...]
+//
+// Bundles each entry in memory with esbuild, so bundled dependencies (@hpke/*) are scanned too, and
+// fails on dynamic code (eval, the Function constructor, non-literal import(), string timers). The
+// esbuild metafile is then checked for external imports (C7a.1), the @hpke/* input manifest (C3a.1)
+// and trust-profile inputs (D4). Output is one line per finding, `<id>\t<entry>\t<offset|path|count>`,
+// never source text. Exit codes: 0 clean, 1 findings, 2 usage, build or external-import error.
+// There is no allow-list for regex hits; HPKE_CRYPTO_EXTERNALS is the only external allowance.
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
