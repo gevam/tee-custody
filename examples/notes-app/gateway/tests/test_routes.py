@@ -671,3 +671,14 @@ def test_importing_the_gateway_never_imports_cbor2_or_the_simulator() -> None:
     )
 
     assert result.stdout.strip() == "[]"
+
+
+def test_a_client_disconnect_mid_body_releases_its_slots() -> None:
+    relay = RecordingRelay()
+    app = create_app(relay, limits=GatewayLimits(max_concurrency=1, per_source_max_in_flight=1))
+    disconnect: list[Message] = [_chunk(b"ab", True), {"type": "http.disconnect"}]
+
+    dropped = _drive(app, "POST", f"/requests/{INSTANCE}", _octet(5), disconnect)
+    after = _drive(app, "GET", "/bundles", [], [])
+
+    assert (dropped.status, after.status) == (400, 200)

@@ -442,6 +442,11 @@ def _declared(length: int) -> list[tuple[bytes, bytes]]:
     ]
 
 
+def _stack_built(app: ASGIApp) -> bool:
+    """True once the app has built its middleware stack (on its first request)."""
+    return typing.cast("typing.Any", app).middleware_stack is not None
+
+
 def _guard_of(app: ASGIApp) -> typing.Any:
     """The gateway's outer ASGI layer, found by walking the built middleware stack."""
     layer: typing.Any = typing.cast("typing.Any", app).middleware_stack
@@ -491,7 +496,6 @@ def test_slow_body_drips_are_capped_per_source_and_answered_408_at_the_deadline(
 
 
 def test_the_body_deadline_is_total_not_per_chunk(caplog: pytest.LogCaptureFixture) -> None:
-    logging.getLogger("teecustody").addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger="teecustody")
     relay, clock = CountingRelay(), Clock()
     app = _app(relay, clock, body_read_timeout_s=1.0)
@@ -507,9 +511,42 @@ def test_the_body_deadline_is_total_not_per_chunk(caplog: pytest.LogCaptureFixtu
             gap_s=0.4,
         )
 
-    result = asyncio.run(asyncio.wait_for(scenario(), 15))
+    logging.getLogger("teecustody").addHandler(caplog.handler)
+    try:
+        result = asyncio.run(asyncio.wait_for(scenario(), 15))
+    finally:
+        logging.getLogger("teecustody").removeHandler(caplog.handler)
 
-    logging.getLogger("teecustody").removeHandler(caplog.handler)
     assert (result.status, result.body) == (408, REQUEST_TIMEOUT)
     assert relay.calls == 0
     assert [r.getMessage() for r in caplog.records] == ["GATEWAY_REQUEST_TIMEOUT"]
+
+
+# ---------------------------------------------------------------- criterion 14: slot release
+def test_a_cancelled_request_releases_its_slots() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, max_concurrency=1, per_source_max_in_flight=1)
+    peer = ("192.0.2.1", 40000)
+
+    async def scenario() -> Exchange:
+        stalled = asyncio.create_task(
+            _drive(
+                app,
+                f"/requests/{INSTANCE}",
+                peer,
+                method="POST",
+                headers=_declared(10),
+                body=[b"x"],
+            )
+        )
+        await _until(lambda: _stack_built(app) and _guard_of(app)._in_flight == 1)
+        stalled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stalled
+        return await _drive(app, "/bundles", peer)
+
+    after = asyncio.run(asyncio.wait_for(scenario(), 15))
+
+    assert after.status == 200
+    guard = _guard_of(app)
+    assert (guard._in_flight, guard._in_flight_by_source) == (0, {})
