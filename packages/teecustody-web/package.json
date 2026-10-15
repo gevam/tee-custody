@@ -18,6 +18,7 @@
         "test:browser": "playwright test --pass-with-no-tests"
     },
     "dependencies": {
+        "@hpke/core": "1.9.0",
         "@teecustody/core": "workspace:*"
     },
     "devDependencies": {
