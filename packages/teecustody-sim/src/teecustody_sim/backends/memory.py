@@ -73,6 +73,7 @@ class InMemoryQueue:
         self._requests: dict[str, _Request] = {}
         self._routes: dict[str, _Route] = {}
         self._response_depth = 0
+        self._responses_issued = 0
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         with self._cond:
@@ -112,8 +113,10 @@ class InMemoryQueue:
             self._purge(now)
             if self._response_depth >= self._max_topic_depth:
                 raise QueueError(QueueErrorCode.UNAVAILABLE)
-            route = self._routes.setdefault(client_id, _Route())
+            route = self._route(client_id)
+            self._routes[client_id] = route
             route.last_seq += 1
+            self._responses_issued += 1
             route.responses.append(
                 _Response(route.last_seq, now, PublishedResponse(request_id, body))
             )
@@ -148,13 +151,21 @@ class InMemoryQueue:
         ]
         for message_id in stale:
             del self._requests[message_id]
-        for route in self._routes.values():
+        for client_id, route in list(self._routes.items()):
             while (
                 route.responses
                 and now - route.responses[0].published_at >= self._response_retention_s
             ):
                 route.responses.popleft()
                 self._response_depth -= 1
+            if not route.responses:
+                del self._routes[client_id]
+
+    def _route(self, client_id: str) -> _Route:
+        # A route without responses is not stored (SR-4). It (re)starts above every sequence issued
+        # so far, so a cursor from a drained route stays valid and sees only newer responses.
+        route = self._routes.get(client_id)
+        return _Route(last_seq=self._responses_issued) if route is None else route
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         with self._cond:
@@ -173,7 +184,7 @@ class InMemoryQueue:
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
         with self._cond:
             self._purge(self._clock())
-            route = self._routes.get(client_id, _Route())
+            route = self._route(client_id)
             if after is None:
                 floor = 0
             elif _CURSOR_PATTERN.fullmatch(after) and int(after) <= route.last_seq:

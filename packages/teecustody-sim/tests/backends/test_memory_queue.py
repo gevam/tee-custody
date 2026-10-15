@@ -252,14 +252,20 @@ def test_another_clients_route_returns_an_empty_page() -> None:
     assert queue.pull_responses(OTHER_CLIENT, None, 10) == ResponsePage((), None)
 
 
-def test_cursor_sequences_are_per_client() -> None:
+def test_each_route_has_its_own_increasing_sequence() -> None:
     queue = _queue(FakeClock())
-    _five_responses(queue)
-    queue.publish_response(OTHER_CLIENT, "ff" * 16, b"other")
+    queue.publish_response(CLIENT, "01" * 16, b"c1")
+    queue.publish_response(OTHER_CLIENT, "02" * 16, b"o1")
+    queue.publish_response(CLIENT, "03" * 16, b"c2")
+    queue.publish_response(OTHER_CLIENT, "04" * 16, b"o2")
 
-    page = queue.pull_responses(OTHER_CLIENT, None, 10)
+    mine = queue.pull_responses(CLIENT, None, 1)
+    rest = queue.pull_responses(CLIENT, mine.next, 10)
+    other = queue.pull_responses(OTHER_CLIENT, None, 10)
 
-    assert page == ResponsePage((PublishedResponse("ff" * 16, b"other"),), "1")
+    assert [r.body for r in mine.responses + rest.responses] == [b"c1", b"c2"]
+    assert int(mine.next or "") < int(rest.next or "")
+    assert [r.body for r in other.responses] == [b"o1", b"o2"]
 
 
 # ---------------------------------------------------------------- criterion 6: retention and depth
@@ -325,9 +331,7 @@ def test_full_response_topic_is_unavailable_until_retention_drains_it() -> None:
     queue.publish_response(CLIENT, "03" * 16, b"3")
 
     assert _code(caught) is QueueErrorCode.UNAVAILABLE
-    assert queue.pull_responses(CLIENT, None, 10) == ResponsePage(
-        (PublishedResponse("03" * 16, b"3"),), "2"
-    )
+    assert [r.body for r in queue.pull_responses(CLIENT, None, 10).responses] == [b"3"]
 
 
 def test_bundles_beyond_max_bundles_live_instances_are_unavailable() -> None:
@@ -354,3 +358,29 @@ def test_bundle_already_expired_at_publish_is_invalid_argument() -> None:
 
     assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
     assert queue.list_bundles(10) == []
+
+
+def test_a_drained_route_is_released_and_its_stale_cursor_still_sees_new_responses() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, response_retention_s=300.0)
+    _five_responses(queue)
+    cursor = queue.pull_responses(CLIENT, None, 10).next
+
+    clock.now = START + 300
+    assert queue.pull_responses(CLIENT, cursor, 10) == ResponsePage((), None)
+    assert queue._routes == {}  # SR-4: no per-client state outlives its responses
+    queue.publish_response(CLIENT, "06" * 16, b"after-drain")
+    page = queue.pull_responses(CLIENT, cursor, 10)
+
+    assert [r.body for r in page.responses] == [b"after-drain"]
+    assert int(page.next or "") > int(cursor or "")
+
+
+def test_cursor_of_a_route_without_responses_is_bounded_by_every_sequence_issued() -> None:
+    queue = _queue(FakeClock())
+    queue.publish_response(CLIENT, "01" * 16, b"x")
+
+    assert queue.pull_responses(OTHER_CLIENT, "1", 10) == ResponsePage((), None)
+    with pytest.raises(QueueError) as caught:
+        queue.pull_responses(OTHER_CLIENT, "2", 10)
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
