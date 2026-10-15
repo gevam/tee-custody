@@ -386,11 +386,43 @@ test("C6 GET /favicon.ico is 204 with an empty body", async () => {
     expect((await response.arrayBuffer()).byteLength).toBe(0);
 });
 
+// Headless Firefox never fetches /favicon.ico (the server sees no request, with or without an icon link);
+// it applies img-src to its automatic favicon load, which is what raised the 2026-10-12 violation.
+function isFaviconBlock(line: string): boolean {
+    return line.includes("(img-src)") && line.includes(`${env("TC_SERVE_ORIGIN")}/favicon.ico`);
+}
+
 test("C6 Firefox loading index.html records no img-src violation for its automatic favicon request", async ({
     page,
+    browser,
     browserName,
 }) => {
-    test.skip(browserName !== "firefox", "only Firefox requests /favicon.ico (FACTS V-2.2 note)");
+    test.skip(browserName !== "firefox", "only Firefox loads /favicon.ico (FACTS V-2.2 note)");
+    // Positive control, first: the same page with only img-src 'self' rewritten to 'none' must log Firefox's
+    // block of /favicon.ico, so this Firefox attempts that load in this run.
+    const context = await browser.newContext();
+    try {
+        const control = await context.newPage();
+        const blocked = watchErrors(control, (line) => !isFaviconBlock(line));
+        await control.route(`${env("TC_SERVE_ORIGIN")}/`, async (route) => {
+            const response = await route.fetch();
+            const csp = response.headers()["content-security-policy"] ?? "";
+            await route.fulfill({
+                response,
+                headers: {
+                    ...response.headers(),
+                    "content-security-policy": csp.replace("img-src 'self'", "img-src 'none'"),
+                },
+            });
+        });
+        await runHarness(control);
+        await expect
+            .poll(() => blocked().length, { timeout: FAVICON_WINDOW_MS })
+            .toBeGreaterThan(0);
+    } finally {
+        await context.close();
+    }
+    // Then the served policy: the same load raises no violation and no error.
     const errors = watchErrors(page, isDiscoveryCorsBlock);
     await runHarness(page);
     // The listener keeps counting after the run; read the live count once the favicon window has passed.
