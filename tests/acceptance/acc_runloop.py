@@ -146,7 +146,7 @@ def make_run_world(
     opener: CompositeOpener | None = None,
     shares: dict[str, bytes] | None = None,
 ) -> RunWorld:
-    lim = limits if limits is not None else BoundaryLimits(pull_wait_s=0.001)
+    lim = limits if limits is not None else BoundaryLimits(pull_wait_s=0.01)
     prm = params if params is not None else ChannelParams()
     raw = InMemoryQueue(clock=rs.clock)
     q = queue(raw) if callable(queue) else (queue if queue is not None else raw)

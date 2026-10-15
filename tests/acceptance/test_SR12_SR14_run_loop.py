@@ -101,7 +101,7 @@ def test_SR12_prekey_burn_above_threshold_raises_one_uncapped_alert(
     # Given a burn threshold of 2 per interval
     world = make_run_world(
         running_sim,
-        limits=BoundaryLimits(pull_wait_s=0.001, prekey_burn_alert_threshold=2),
+        limits=BoundaryLimits(pull_wait_s=0.01, prekey_burn_alert_threshold=2),
     )
     world.clock.now += 1
     # When three pre-keys are consumed within one interval, and the interval ends
@@ -122,7 +122,7 @@ def test_SR12_prekey_consumption_at_the_threshold_raises_no_alert(running_sim: R
     # Given a burn threshold of 2 per interval
     world = make_run_world(
         running_sim,
-        limits=BoundaryLimits(pull_wait_s=0.001, prekey_burn_alert_threshold=2),
+        limits=BoundaryLimits(pull_wait_s=0.01, prekey_burn_alert_threshold=2),
     )
     world.clock.now += 1
     # When exactly two pre-keys are consumed and the interval ends
