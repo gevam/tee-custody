@@ -806,3 +806,85 @@ def test_other_prekey_store_errors_are_not_mistaken_for_exhaustion(
 
     with pytest.raises(RuntimeError, match="SOMETHING_ELSE"):
         world.loop.tick()
+
+
+# ---------------------------------------------------------------- tick order (1)-(7)
+def spy(monkeypatch: pytest.MonkeyPatch, order: list[str], target: object, name: str) -> None:
+    original = getattr(target, name)
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        order.append(name)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, recorded)
+
+
+def test_tick_runs_steps_one_to_seven_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    params = ChannelParams(prekey_batch=4, prekey_low_water=1, refresh_margin_s=3599)
+    world = World(monkeypatch, params=params, limits=BURN_LIMITS)
+    answered(world, 1, b"req-1")
+    world.clock.now += 60  # refresh due, republish due, burn interval ended
+    order: list[str] = []
+    spy(monkeypatch, order, world.launcher, "get_attestation_token")
+    prekeys = world.server.kwargs["prekeys"]
+    for name in ("expire", "top_up", "consumed_since"):
+        spy(monkeypatch, order, prekeys, name)
+    for name in ("publish_bundle", "pull_requests", "publish_response", "ack"):
+        spy(monkeypatch, order, world.queue, name)
+    spy(monkeypatch, order, world.server, "process")
+    spy(monkeypatch, order, world.server.kwargs["sessions"], "expire_idle")
+    spy(monkeypatch, order, world.server.kwargs["audit"], "tick")
+
+    world.loop.tick()
+
+    assert order[: order.index("consumed_since")] == [
+        "get_attestation_token",
+        "expire",
+        "top_up",
+        "publish_bundle",
+        "pull_requests",
+        "process",
+        "publish_response",
+        "ack",
+        "expire_idle",
+    ]
+    assert order[-1] == "tick"
+    assert set(order[order.index("consumed_since") : -1]) == {"consumed_since"}
+
+
+def test_tick_closes_idle_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch)
+    sk_c2t = open_session(world)
+    world.clock.now += PARAMS.idle_timeout_s
+
+    world.loop.tick()
+
+    assert sk_c2t.wiped
+    info = SessionInfo(CLIENT, SESSION_ID, world.loop.instance_id)
+    assert world.opener.closed_calls == [(info, CloseReason.IDLE_TIMEOUT)]
+
+
+def test_tick_writes_audit_aggregates_when_their_interval_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.server.kwargs["audit"].count(AggregateOutcome.REQUEST_INVALID)
+    world.clock.now += world.limits.audit_aggregate_interval_s
+
+    world.loop.tick()
+
+    assert [(r.outcome, r.count) for r in world.sink.of(AuditClass.AGGREGATE)] == [
+        ("REQUEST_INVALID", 1)
+    ]
+
+
+def test_tick_before_start_and_after_shutdown_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch, start=False)
+    with pytest.raises(RuntimeError, match="NOT_STARTED"):
+        world.loop.tick()
+    world.loop.start()
+    world.loop.shutdown()
+
+    with pytest.raises(RuntimeError, match="NOT_STARTED"):
+        world.loop.tick()
+    assert world.queue.named("pull") == []

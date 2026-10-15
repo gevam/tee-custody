@@ -228,7 +228,9 @@ class RunLoop:
         for message in messages or ():
             self._handle(live, message)
             processed += 1
+        live.sessions.expire_idle()
         self._check_burn(live)
+        live.audit.tick()
         return TickReport(refresh=refresh, bundle_published=bundle_published, processed=processed)
 
     def _republish_if_changed(self, live: _Live) -> bool:
