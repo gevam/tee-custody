@@ -478,3 +478,31 @@ def test_a_backward_clock_ends_the_interval_at_its_nominal_end_and_restarts_at_n
     second = sink.of(AuditClass.AGGREGATE)[1][1]
     restart = START_MS - 500_000
     assert (second.interval_start, second.interval_end) == (restart, restart + INTERVAL_MS)
+
+
+@pytest.mark.parametrize(
+    ("interval_s", "alert_cap"),
+    [(0, 100), (9, 100), (901, 100), (True, 100), (60, 0), (60, -1), (60, 10_001), (60, True)],
+)
+def test_constructor_rejects_out_of_range_settings(interval_s: int, alert_cap: int) -> None:
+    with pytest.raises(ValueError, match=r"\AINVALID_EMITTER_CONFIG\Z"):
+        AuditEmitter(
+            FakeSink(),
+            interval_s=interval_s,
+            alert_cap=alert_cap,
+            clock=FakeClock(),
+            rng=CountingRng(),
+            logger=RecordingLogger(),
+        )
+
+
+@pytest.mark.parametrize(("interval_s", "alert_cap"), [(10, 1), (900, 10_000)])
+def test_constructor_accepts_the_range_bounds(interval_s: int, alert_cap: int) -> None:
+    AuditEmitter(
+        FakeSink(),
+        interval_s=interval_s,
+        alert_cap=alert_cap,
+        clock=FakeClock(),
+        rng=CountingRng(),
+        logger=RecordingLogger(),
+    )

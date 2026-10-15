@@ -42,6 +42,10 @@ _PENDING_MAX: Final = 2 * len(AggregateOutcome)
 PROTECTED_PENDING_MAX: Final = 256
 
 
+def _in_range(value: object, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
 def _drop_log(outcome: str) -> str:
     named = f"AUDIT_PENDING_DROPPED_{outcome}"
     return named if OUTCOME_PATTERN.fullmatch(named) else "AUDIT_PENDING_DROPPED"
@@ -58,6 +62,8 @@ class AuditEmitter:
         rng: Callable[[int], bytes],
         logger: AllowListedLogger,
     ) -> None:
+        if not (_in_range(interval_s, 10, 900) and _in_range(alert_cap, 1, 10_000)):
+            raise ValueError("INVALID_EMITTER_CONFIG")  # INC-2-API §4.4 ranges
         self._sink = sink
         self._interval_ms = interval_s * 1000
         self._alert_cap = alert_cap
