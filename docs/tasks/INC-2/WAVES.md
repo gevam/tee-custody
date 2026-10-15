@@ -31,6 +31,15 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 - QA-T-38 merges to `main` first, with red rows. T-38 then branches from that `main`.
 - D-02 closes when T-38 merges.
 
+**Amended 2026-10-15 (D-069, ADR 0011 C8 signed with SA conditions C8.1–C8.7; B-45).**
+- New task T-39 (Wave 6, STRONG): the bounded X25519 key-generation retry in `webcrypto.ts`, and FACTS.md re-recorded
+  at the locked Playwright 1.63.0. It carries QA item QA-T-39, which adds the SR-14 C8 acceptance rows.
+- T-39 depends only on merged code (T-17, T-27, T-32). It is Wave 6 because criterion 12 runs T-32's `csp.spec.ts`
+  (a run, not an edit). It shares no file with any open task.
+- QA-T-39 merges to `main` first, with red rows. T-39 then branches from that `main`.
+- C8.5 check (Tech Lead): no Core, QA or contract test asserts `INVALID_ARGUMENT` for a sender key-generation
+  failure. INC-2-API §8.1 carries the C8 text (1681894).
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -125,10 +134,12 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 4 | QA-T-38 | QA: FR-2 acceptance rows for SR-1 "Token time" (ADR 0013); `FR02.attestation-checks.test.ts` only (in T-38.md) | MID (QA) | REQUIREMENTS SR-1 | |
 | 4 | T-38 | Core `checkTime` bounded not-yet-valid skew (`CLOCK_SKEW_S` = 300, private); S1 clock-freshness tests (ADR 0013, D-064) | STRONG | INC-1 T-12, T-33, T-26 (all merged); QA-T-38 merged | |
 | 5 | T-32 | Playwright CSP harness (SR-13, V-2.2); B1–B3, favicon, exact CSP header | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02, MU-1 | |
+| 6 | QA-T-39 | QA: SR-14 C8 acceptance rows Q1–Q5; `SR14.webcrypto-hpke.test.ts` only (in T-39.md) | MID (QA) | REQUIREMENTS SR-14 | |
+| 6 | T-39 | Bounded X25519 keygen retry (ADR 0011 C8, `X25519_KEYGEN_ATTEMPTS` = 3, private); failed probe not cached; FACTS re-recorded at Playwright 1.63.0 (B-45, D-069) | STRONG | T-17, T-27, T-32 (all merged); QA-T-39 merged; SA C8 sign-off (done) | |
 
-Counts: 41 items (38 tasks T-01..T-38, the QA item QA-T-38, and V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL).
+Counts: 43 items (39 tasks T-01..T-39, the QA items QA-T-38 and QA-T-39, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
 Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
-3: T-31, T-38 and QA-T-38. Wave 5 has 1. The largest wave is Wave 1.
+3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 2: QA-T-39, then T-39. The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
 - B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
@@ -190,6 +201,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - `tests/acceptance/FR02.attestation-checks.test.ts`: T-36 W1, QA-T-38 W4 (append only).
   - Core `test/attestation/verify.test.ts`: T-33 W1, T-38 W4 (append one `describe` only).
   - Core `test/attestation/checks/claims.test.ts`: T-33 W1, T-38 W4.
+  - Web `src/crypto/webcrypto.ts`, `test/crypto/webcrypto.test.ts`: T-17 W1, T-39 W6.
+  - `docs/tasks/INC-2/FACTS.md`: V-02 W0, T-39 W6 (B-45 §9 items 1–4; superseded 1.64.0 table kept).
+  - `tests/acceptance/SR14.webcrypto-hpke.test.ts`: QA (after W0), QA-T-39 W6 (append one `describe` only).
+- T-39 (W6) also creates `packages/teecustody-web/test/crypto/webcrypto-keygen-retry.test.ts`. It runs T-32's
+  `csp.spec.ts` with `--repeat-each=20` and edits no T-32 file.
 - T-38 (W4) is the first INC-2 owner of Core `src/attestation/checks/claims.ts` (INC-1 T-12). It also creates
   `test/channel/clock-freshness.test.ts`.
 - INC-1 frozen files changed:
@@ -256,6 +272,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | Q3 expired pre-keys after all signatures | T-16, T-25 (`expired_prekey_sig_corrupted`) |
 | Q6, Q7, Q8 (INC-3) | T-06 (B-25..B-27) |
 | ADR 0011 C1–C7 | V-01 (C1–C4, C6, C7 evidence), T-08 (C1, C4, C5 Python), T-17 (C3–C5 web), T-05 (C2, C3, C5 rules), T-27 (C7) |
+| ADR 0011 C8 + SA conditions C8.1–C8.7 (B-45, D-069) | T-39 (C8.1–C8.5; FACTS V-2.6), QA-T-39 (SR-14 C8 rows); C8.6 residual is in THREAT_MODEL T-28 (SA, done) |
 | ADR 0011 C3a/C7a (D-045) | T-17 (C7a.3, C3a.3, C6 follow-up evidence items 1–5), T-27 (C7a.1, C7a.2, C3a.1, C3a.2), INC-5 README (C7a.4, Orchestrator action 9) |
 | D-043 / ADR 0012 (INC-2-API §16) | T-33 (rules 1–2, C1–C7), T-21 (rule 5, S1–S6, L-1), T-34 (rule 6), T-35 (rules 3–4, D1–D4), T-32 (rule 7, B1–B3), T-31 (N1–N3), T-18 (§16.8), T-25/T-30 (channel suite v2), T-36 (acceptance) |
 | D-047 L-1 (attacker key) and DEBT-2 (`maxDiscoveryBytes`, expires INC-5) | T-21; T-33 |
@@ -282,6 +299,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `spec/vectors/test_channel_suite.py` (all but the CDDL-hash and README tests) | T-30 (after T-07, T-08, T-23) |
 | `tests/acceptance/**` INC-2 files (QA) | per QA mapping |
 | `tests/acceptance/FR02.attestation-checks.test.ts` "SR-1 token time (ADR 0013)" rows (QA-T-38) | T-38 |
+| `tests/acceptance/SR14.webcrypto-hpke.test.ts` "SR-14 bounded X25519 key generation (ADR 0011 C8)" rows Q1–Q4 (QA-T-39) | T-39 |
 
 "Full suite green" in every DoD means: every test outside this table passes, and each red test fails only with
 `NotImplementedError('T-nn')` / `NOT_IMPLEMENTED: T-nn` or a missing vector file.
@@ -300,6 +318,21 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 `tests/e2e/channel_harness.py` (TL-8, from Wave 4). Doubles: `tests.support.channel_doubles`.
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
+
+## G4 conditions (Wave 6, T-39, against main 1681894, 2026-10-15)
+
+| Condition | Status |
+|---|---|
+| Same-wave file overlap | Met. QA-T-39 owns only the SR-14 acceptance file; T-39 owns `webcrypto.ts`, its two test files and FACTS.md |
+| Inputs from earlier waves | Met. T-17, T-27 and T-32 are merged; ADR 0011 C8 is signed (cf56861); §8.1 text is on main (1681894) |
+| Acceptance red for the right reason | Pending QA-T-39: Q1–Q4 must fail on trunk with the current codes (`INVALID_ARGUMENT`, a cached `UNSUPPORTED`); Q5 is a green guard. T-39 starts only after QA-T-39 merges |
+| Contract stubs | Not applicable: no new boundary; `web-adapters.contract.test.ts` is unchanged and stays green |
+| New scanner or static rules | None. `NotSupportedError` is admitted by the existing `tc-ts-hpke-core-names` rule |
+
+**Risk.** C8.4(b) reads "every `deriveBits` names X25519", but the native key schedule also calls `deriveBits` HKDF
+(measured: 1 X25519 + 4 HKDF per encap on Node 22). T-39 criterion 7 asserts {X25519, HKDF} with exactly one X25519
+per encap. The SA should confirm that reading. Criterion 0 may stop the task (C8.2), and a FACTS matrix change
+against `csp.spec.ts` returns a CONTRACT_ISSUE for T-32's owner.
 
 ## G4 conditions (Wave 1, against main c38d7fa, 2026-10-13)
 
