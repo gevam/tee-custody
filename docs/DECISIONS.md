@@ -1078,3 +1078,23 @@ Participants: Orchestrator, Software Engineer (T-17)
 - (b) C3a.3 governs: HPKE uses only `globalThis.crypto.subtle`. QA changes the two SR14 acceptance tests that use `options.subtle`.
 
 **Dissent:** none
+
+## D-052 — Human approves the T-34 regenerated attestation vectors (MU-1) (INC-2, 2026-10-15)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
+
+**Decision:** The human approved inc-2/T-34-attestation-vectors-v2 @ 6336fe1:
+- spec/vectors/attestation/suite.cbor goes from 37 to 39 cases:
+  - row 38 `jwks_other_path` and row 39 `jwks_other_path_same_kid` (T-29) are both UNTRUSTED_SIGNER;
+  - the profiles are v2 with a pinned jwks_uri;
+  - `http` holds JWKS URLs only;
+  - the file holds public keys only.
+- test_attestation_suite.py, including the attacker-key signature test.
+- spec/vectors/README.md, as amended by A1/A2 and including the sentence explaining `cryptography`.
+- Core contract CASE_COUNT 39.
+
+Code Review APPROVE (round 2), Security Review APPROVE (round 2). It merges only with MU-1 (T-33, T-21, T-36), from one combined green run.
+
+**Dissent:** none
