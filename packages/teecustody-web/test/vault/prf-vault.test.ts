@@ -781,3 +781,88 @@ describe("criterion 10: absent records and idempotent clear", () => {
         );
     });
 });
+
+describe("criterion 11: a second set reuses the credential", () => {
+    it("asserts the stored credential instead of creating one, with a fresh salt and nonce", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        const [first] = await records(idb);
+        const replacement = SHARE.map((b) => b ^ 0xff);
+        await v.set(CLIENT, replacement);
+        const [second] = await records(idb);
+        expect(auth.creates).toHaveLength(1);
+        expect(auth.gets).toHaveLength(1);
+        const get = auth.gets[0]?.publicKey;
+        expect(Array.from(bytes(get?.allowCredentials?.[0]?.id))).toEqual(
+            Array.from((first as StoredRecord).credential_id as Uint8Array),
+        );
+        expect(Array.from(bytes(get?.extensions?.prf?.eval?.first))).toEqual(
+            Array.from((second as StoredRecord).prf_salt as Uint8Array),
+        );
+        expect((second as StoredRecord).credential_id).toEqual(
+            (first as StoredRecord).credential_id,
+        );
+        for (const field of ["prf_salt", "nonce", "ct"]) {
+            expect(
+                Buffer.from((second as StoredRecord)[field] as Uint8Array).equals(
+                    Buffer.from((first as StoredRecord)[field] as Uint8Array),
+                ),
+            ).toBe(false);
+        }
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(replacement));
+    });
+
+    const failures: [string, (auth: FakeAuthenticator) => void, string][] = [
+        [
+            "a cancelled assertion",
+            (a) => (a.behaviour.getError = "NotAllowedError"),
+            "USER_PRESENCE_REQUIRED",
+        ],
+        [
+            "an assertion for another credential",
+            (a) => (a.behaviour.getRawId = new Uint8Array(16)),
+            "AUTHENTICATION_FAILED",
+        ],
+        [
+            "an assertion without PRF output",
+            (a) => (a.behaviour.resultsOnGet = false),
+            "UNSUPPORTED",
+        ],
+    ];
+    it.each(failures)(
+        "keeps the old record untouched after %s",
+        async (_name, arrange, expected) => {
+            const auth = new FakeAuthenticator();
+            const idb = new IDBFactory();
+            const v = vault(auth, idb);
+            await v.set(CLIENT, SHARE.slice());
+            const before = await records(idb);
+            arrange(auth);
+            expect(
+                await codeOf(
+                    v.set(
+                        CLIENT,
+                        SHARE.map((b) => b ^ 1),
+                    ),
+                ),
+            ).toBe(expected);
+            expect(auth.creates).toHaveLength(1);
+            expect(await records(idb)).toEqual(before);
+        },
+    );
+
+    it("refuses to overwrite a malformed record, without a ceremony", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        await editRecord(idb, CLIENT, (r) => (r.v = 2));
+        const before = await records(idb);
+        const ceremonies = auth.ceremonies.length;
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("AUTHENTICATION_FAILED");
+        expect(auth.ceremonies).toHaveLength(ceremonies);
+        expect(await records(idb)).toEqual(before);
+    });
+});

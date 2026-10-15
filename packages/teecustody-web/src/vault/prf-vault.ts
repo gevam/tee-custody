@@ -24,6 +24,11 @@ const FIELDS = "client_id,credential_id,ct,nonce,prf_salt,v";
 const MAX_CREDENTIAL_ID = 1023; // WebAuthn credential id limit
 const INFO_LABEL = "teecustody/vault/v1";
 
+interface CredentialPrf {
+    readonly credentialId: Uint8Array;
+    readonly prf: ArrayBuffer;
+}
+
 interface ShareRecord {
     readonly v: 1;
     readonly client_id: ClientId;
@@ -74,9 +79,43 @@ export class PrfShareVault implements ShareVault {
         if (!(share instanceof Uint8Array) || share.length !== 32) {
             throw new CapabilityError("INVALID_ARGUMENT");
         }
-        await this.#read(client);
         const copy = new Uint8Array(share);
-        const salt = this.#random(32);
+        try {
+            const stored = await this.#read(client);
+            const salt = this.#random(32);
+            const { credentialId, prf } =
+                stored === undefined
+                    ? await this.#enroll(client, salt)
+                    : await this.#reuse(parseRecord(stored).credential_id, salt);
+            const key = await this.#deriveKey(prf, salt, client);
+            const nonce = this.#random(12);
+            const ct = new Uint8Array(
+                await this.#subtle().encrypt(
+                    { name: "AES-GCM", iv: nonce, additionalData: aad(client, credentialId) },
+                    key,
+                    copy,
+                ),
+            );
+            await this.#write({
+                v: 1,
+                client_id: client,
+                credential_id: credentialId,
+                prf_salt: salt,
+                nonce,
+                ct,
+            });
+        } finally {
+            copy.fill(0);
+        }
+    }
+
+    async clear(client: ClientId): Promise<void> {
+        checkClient(client);
+        await this.#transact("readwrite", (store) => store.delete(client));
+    }
+
+    /** Creates the passkey; PRF output comes from `create` if it evaluated, else from one `get`. */
+    async #enroll(client: ClientId, salt: Uint8Array): Promise<CredentialPrf> {
         const credentials = this.#credentials();
         const created = await this.#ceremony((signal) =>
             credentials.create({
@@ -105,29 +144,11 @@ export class PrfShareVault implements ShareVault {
         }
         const first = outputs.results?.first;
         const prf = first === undefined ? await this.#assert(credentialId, salt) : prfOutput(first);
-        const key = await this.#deriveKey(prf, salt, client);
-        const nonce = this.#random(12);
-        const ct = new Uint8Array(
-            await this.#subtle().encrypt(
-                { name: "AES-GCM", iv: nonce, additionalData: aad(client, credentialId) },
-                key,
-                copy,
-            ),
-        );
-        copy.fill(0);
-        await this.#write({
-            v: 1,
-            client_id: client,
-            credential_id: credentialId,
-            prf_salt: salt,
-            nonce,
-            ct,
-        });
+        return { credentialId, prf };
     }
 
-    async clear(client: ClientId): Promise<void> {
-        checkClient(client);
-        await this.#transact("readwrite", (store) => store.delete(client));
+    async #reuse(credentialId: Uint8Array, salt: Uint8Array): Promise<CredentialPrf> {
+        return { credentialId, prf: await this.#assert(credentialId, salt) };
     }
 
     async #assert(credentialId: Uint8Array, salt: Uint8Array): Promise<ArrayBuffer> {
