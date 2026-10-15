@@ -1,6 +1,6 @@
 # ADR-0013: Bounded clock-skew tolerance on the "not yet valid" side of the §6.4 time check
 
-Status: Proposed. Awaiting Security Architect sign-off and an Orchestrator DECISIONS record. Date: 2026-10-15. Author: architect. Context: INC-2 defect D-02, Q2; analysis in `docs/tasks/INC-2/D-02-Q2-design.md`.
+Status: Accepted (D-064, 2026-10-15; implemented by T-38, merged c9f9784, D-066). Date: 2026-10-15. Author: architect. Context: INC-2 defect D-02, Q2; analysis in `docs/tasks/INC-2/D-02-Q2-design.md`.
 
 Supersedes the zero-`nbf`-tolerance rule of INC-1 T-12 and FACTS.md line 39 (Orchestrator decision, 2026-09-30). Does not amend the spec, the trust profile, `spec/wire` or `spec/vectors`.
 
