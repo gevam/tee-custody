@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 from starlette.types import ASGIApp
 
 from notes_gateway import GatewayLimits, create_app
-from teecustody.queue import PublishedBundle, ResponsePage
+from teecustody.queue import PublishedBundle, PublishedResponse, ResponsePage
 
 INSTANCE = "a1" * 16
 RATE_LIMITED = b'{"code":"RATE_LIMITED"}'
@@ -949,3 +950,85 @@ def test_a_transfer_encoded_request_is_refused_while_the_source_is_at_its_in_fli
     refused = asyncio.run(asyncio.wait_for(scenario(), 15))
 
     assert (refused.status, refused.body) == (400, INVALID_ARGUMENT)
+
+
+# ------------------------------------------------- T-40 criterion 24 (A5, D-07): maximal pages
+CLIENT_MAX_RESPONSE_BYTES = 2_097_152  # FetchTransport's default maxResponseBytes (§8.3)
+CLIENT = "c3" * 16
+
+
+def _maximal_frame_envelope() -> bytes:
+    """D-07 step 1: the CDDL-maximal frame-result envelope, 32,926 bytes."""
+    from teecustody.channel.codec import FrameAad, encode_frame_aad, encode_response_envelope
+
+    aad = encode_frame_aad(FrameAad(b"\x11" * 16, 2**53 - 1, "a" * 64))
+    return encode_response_envelope("frame_result", aad, b"\0" * 32784)
+
+
+def _maximal_responses() -> list[PublishedResponse]:
+    """64 maximal responses: more than a default page, so `max_page` caps it."""
+    body = _maximal_frame_envelope()
+    assert len(body) == 32926
+    return [PublishedResponse(f"{i:032x}", body) for i in range(64)]
+
+
+class FullPageRelay(CountingRelay):
+    """Every page is `max_messages` maximal responses with a 128-character `next` cursor."""
+
+    def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
+        self.calls += 1
+        return ResponsePage(tuple(_maximal_responses()[:max_messages]), "A" * 128)
+
+
+def test_a_full_in_memory_responses_page_at_default_limits_is_1406811_bytes() -> None:
+    from teecustody_sim.backends import InMemoryQueue
+
+    queue = InMemoryQueue()
+    for response in _maximal_responses():
+        queue.publish_response(CLIENT, response.request_id, response.body)
+
+    page = TestClient(create_app(queue)).get(f"/responses/{CLIENT}")
+
+    assert page.status_code == 200
+    # 64 are queued, so the page is capped at 32 and `next` is InMemoryQueue's cursor "32": the
+    # same 4 bytes as `"next":null` in D-07's figure.
+    assert page.json()["next"] == "32"
+    assert len(page.json()["responses"]) == 32
+    assert len(page.content) == 1_406_811 <= CLIENT_MAX_RESPONSE_BYTES
+
+
+def test_a_full_responses_page_with_a_128_character_next_is_1406937_bytes() -> None:
+    page = TestClient(create_app(FullPageRelay())).get(f"/responses/{CLIENT}")
+
+    assert page.status_code == 200
+    assert page.json()["next"] == "A" * 128
+    assert len(page.content) == 1_406_937 <= CLIENT_MAX_RESPONSE_BYTES
+
+
+def test_a_full_bundles_page_at_default_limits_is_1399133_bytes() -> None:
+    from teecustody_sim.backends import InMemoryQueue
+
+    queue = InMemoryQueue()
+    expires_at = int(time.time()) + 3600
+    for i in range(32):  # more than a default page, so `max_bundles` caps it
+        queue.publish_bundle(f"{i:032x}", bytes([i]) * 65536, expires_at)
+
+    page = TestClient(create_app(queue)).get("/bundles")
+
+    assert page.status_code == 200
+    assert len(page.json()["bundles"]) == 16
+    assert len(page.content) == 1_399_133 <= CLIENT_MAX_RESPONSE_BYTES
+
+
+def test_readme_states_the_maximal_response_sizes() -> None:
+    readme = " ".join(
+        (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8").split()
+    )
+
+    assert (
+        "At the default limits a `GET /responses` page is at most 1,406,937 bytes (32 maximal "
+        "frame envelopes of 32,926 bytes and a 128-character `next` cursor) and a `GET /bundles` "
+        "page at most 1,399,133 bytes (16 bundles of 65,536 bytes). `FetchTransport`'s default "
+        "`maxResponseBytes` (2,097,152) covers both. A host that raises `max_page` above 47 or "
+        "`max_bundles` above 23 passes a larger `maxResponseBytes`." in readme
+    )

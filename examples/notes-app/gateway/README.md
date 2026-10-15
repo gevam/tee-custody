@@ -127,6 +127,12 @@ is at most `max_concurrency`, `body_read_timeout_s` and `header_read_timeout_s` 
 `max_header_count` is an `int` in 16..256, and `write_timeout_s` is a finite number in 1.0..60.0. They then check
 `cors_origins`.
 
+**Response sizes.** Gateway JSON is compact and escape-free, so a page's size follows from the limits. At the
+default limits a `GET /responses` page is at most 1,406,937 bytes (32 maximal frame envelopes of 32,926 bytes and
+a 128-character `next` cursor) and a `GET /bundles` page at most 1,399,133 bytes (16 bundles of 65,536 bytes).
+`FetchTransport`'s default `maxResponseBytes` (2,097,152) covers both. A host that raises `max_page` above 47 or
+`max_bundles` above 23 passes a larger `maxResponseBytes`.
+
 ## Server hardening
 
 `notes_gateway.server.uvicorn_config(app, *, limits=GatewayLimits(), host, port)` returns the `uvicorn.Config`
