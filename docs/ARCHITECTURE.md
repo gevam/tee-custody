@@ -179,6 +179,22 @@ The profile carries no public-key bytes. Profile generators (`teecustody-sim pro
 
 The `signature` bytes are not decoded or verified by the client (D-016).
 
+**Time check (spec §6.4; ADR 0013, D-064).** `checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void`. It is synchronous. `verifyAttestation` passes it `deps.now()`, which it reads at the time check, after the JWKS fetch, on every call. Nothing caches a clock value or a result (ADR 0013 S1).
+
+Core has one bounded clock-skew tolerance, and it applies only on the not-yet-valid side. `CLOCK_SKEW_S = 300` is a **module-private** constant in `claims.ts`:
+- It is not exported, not in the trust profile and not configurable.
+- Nothing reads `profile_kind` for it, so the rule is identical under both profiles (I13).
+- It equals the spec §14 `REQUEST_SKEW` default.
+- It MUST stay below 600, because the approved `nbf_future` vector sits at now + 600. Changing it to 600 or more is a vector change, which goes to the human.
+
+`checkTime` runs these steps in this order, in millisecond arithmetic. Every comparison is negated, so a NaN clock or max age fails closed. Every failure is `AttestationError(code, "time")`.
+1. `exp` is absent → `CLAIM_MISSING`. `!(exp·1000 > nowMs)` → `EXPIRED`. **`exp` gets no leeway.**
+2. `iat` is absent → `CLAIM_MISSING`. `maxAgeMs = token_max_age_s·1000`. If `maxAgeMs` is not finite, or `!(nowMs − iat·1000 ≤ maxAgeMs)` → `EXPIRED`. The past side of `iat` is unchanged and gets no skew.
+3. Future `iat`: `!(iat·1000 − nowMs ≤ min(maxAgeMs, CLOCK_SKEW_S·1000))` → `NOT_YET_VALID`.
+4. `nbf` is optional and is checked only when present. `!(nbf·1000 − nowMs ≤ CLOCK_SKEW_S·1000)` → `NOT_YET_VALID`.
+
+When `exp`, `iat` or `nbf` is present but is not a non-negative safe integer, the check fails with `CLAIM_MISMATCH` when it reads that claim. The leeway moves only the start of a token's acceptance window, and by at most 300 s. It never extends the end. Example: with `nowMs = 1_760_000_000_000` and `iat = nbf = 1_760_000_299`, `exp = iat + 3600`, `checkTime` returns normally. With `nbf = 1_760_000_301`, it throws `AttestationError("NOT_YET_VALID", "time")`. Residual risk (THREAT_MODEL T-30, Low): a client whose clock is behind by D accepts tokens that expired up to D ago. The workload's `REQUEST_SKEW`, the replay cache and single-use pre-keys bound this on the server side.
+
 **`ExpectedAttestation`** is `{ identityNonce }` (32 bytes) only (CI-9, amended). The workload-digest binding in spec §5.2 step 5 is not an input to `verifyAttestation`. Instead, INC-2 bundle verification compares the `image_digest` under each pre-key signature with `VerifiedAttestation.imageDigest`. That value has already been checked against the allow-list.
 
 **`VerifiedAttestation`** can be constructed only on success. It contains `issuer`, `audience`, `imageDigest`, `signerKeyIds` (sorted ascending), `hwmodel`, `issuedAtMs` and `expiresAtMs`.
