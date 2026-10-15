@@ -987,6 +987,7 @@ def test_c12_failing_refreshes_then_expiry_stop_before_any_processing_at_or_afte
     assert len(world.queue.bundles) == bundles_before[-1]  # no republish at expiry
     assert max(processed_at) < exp
     assert attempts[-1] == exp - 1.0  # the last retry is capped to land before expiry
+    assert max(attempts) <= exp - 1.0  # every launcher call was made at or before exp - 1.0
     assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
 
 
@@ -1009,6 +1010,27 @@ def test_c12_a_long_backoff_is_capped_one_second_before_expiry(
     world.clock.now = exp - 1.0
     world.loop.tick()
     assert len(world.launcher.calls) == calls + 1
+
+
+# ---------------------------------------------------------------- criterion 17 (A2 SL2)
+def test_c17_a_failed_retry_one_second_before_expiry_is_the_last_launcher_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, exp = near_expiry(monkeypatch)
+    world.clock.now = exp - 1.0
+    assert world.loop.tick().refresh is RefreshOutcome.FAILED_KEPT_CURRENT
+    calls = len(world.launcher.calls)
+
+    for before_exp in (0.75, 0.5, 0.25):
+        world.clock.now = exp - before_exp
+        assert world.loop.tick().refresh is None, before_exp
+    assert len(world.launcher.calls) == calls
+
+    world.clock.now = exp
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+    assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
+    assert len(world.launcher.calls) == calls
 
 
 def test_c3_expiry_during_the_refresh_call_shuts_down_then_stops(

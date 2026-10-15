@@ -246,8 +246,9 @@ class RunLoop:
             self._stop(StopCode.ATTESTATION_EXPIRED)
         if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
             self._refresh_failures += 1
-            retry_at = now + self._backoff(self._refresh_failures)
-            self._next_refresh_attempt_at = max(now, min(retry_at, expires_at - 1.0))  # A1 cap
+            capped = min(now + self._backoff(self._refresh_failures), expires_at - 1.0)
+            # A2: the capped retry at expires_at - 1.0 is the last; after it, wait for expiry
+            self._next_refresh_attempt_at = capped if capped > now else expires_at
         elif outcome is RefreshOutcome.REFRESHED:
             self._refresh_failures = 0
             if not self._same_digest(live):
