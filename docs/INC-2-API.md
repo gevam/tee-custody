@@ -1491,7 +1491,9 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto;   // works 
   `@hpke/core`, an `ekm`, PSK, PSK id or sender key (C5; ESLint rule). This file is the only `@hpke/*` import site
   in the packages. Key length ≠ 32 → `INVALID_ARGUMENT`; open failure →
   `AUTHENTICATION_FAILED`; `export` label ≤ 64 bytes, length 1..64. `destroy()` drops the context; a later call →
-  `INVALID_ARGUMENT`.
+  `INVALID_ARGUMENT`. X25519 key generation, meaning the probe and the sender's ephemeral key, is attempted at most
+  3 times (ADR 0011 C8). When the attempts are exhausted → `UNSUPPORTED`. Other sender failures are not retried →
+  `INVALID_ARGUMENT`. A failed probe is not cached.
 - `aes256GcmEncrypt/Decrypt`: key 32, nonce 12 else `INVALID_ARGUMENT`; output `ct ‖ tag`; tag failure →
   `AUTHENTICATION_FAILED`.
 
