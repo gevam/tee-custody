@@ -499,6 +499,37 @@ def test_non_integer_bundle_expiry_is_invalid_argument(bad: object) -> None:
     assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
 
 
+# ---------------------------------------------------------------- edge cases
+def test_a_repeated_message_id_from_the_rng_never_replaces_a_pending_message() -> None:
+    queue = _queue(FakeClock(), rng=lambda n: b"\x07" * n)
+    queue.publish_bundle(GOOD, b"b", int(START) + 600)
+    first_id = queue.publish_request(GOOD, "01" * 16, b"first")
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_request(GOOD, "02" * 16, b"second")
+    [pending] = queue.pull_requests(GOOD, 10, 0.0)
+    queue.ack(first_id)
+
+    assert _code(caught) is QueueErrorCode.INTERNAL
+    assert (pending.message_id, pending.body) == (first_id, b"first")
+    assert queue.publish_request(GOOD, "02" * 16, b"second") == first_id
+
+
+def test_a_waiting_pull_ignores_publishes_for_other_instances() -> None:
+    queue = InMemoryQueue()
+    queue.publish_bundle(IID_B, b"b", int(time.time()) + 600)
+    publisher = threading.Timer(0.02, queue.publish_request, (IID_B, "01" * 16, b"other"))
+
+    started = time.monotonic()
+    publisher.start()
+    pulled = queue.pull_requests(IID_A, 10, 0.2)
+    elapsed = time.monotonic() - started
+    publisher.join()
+
+    assert pulled == []
+    assert elapsed >= 0.2
+
+
 # ---------------------------------------------------------------- criterion 9: thread safety
 # An exception in any worker thread fails the test (pytest's unhandled-thread-exception warning is
 # an error under this repository's filterwarnings).

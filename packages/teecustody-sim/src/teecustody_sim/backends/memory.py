@@ -1,6 +1,9 @@
 """In-memory queue and audit sink for the simulator (INC-2-API §5.1; spec §15.2 item 5; D2-11).
 
-Development only: never a dependency of `teecustody`. Bodies belong to T-24.
+Development only: never a dependency of `teecustody`. Memory is bounded (SR-4): at most
+`max_bundles` live bundles, `max_topic_depth` requests and `max_topic_depth` responses, each dropped
+after its retention; no per-client state outlives that client's last stored response. Nothing here
+logs.
 """
 
 import os
@@ -177,6 +180,41 @@ class InMemoryQueue:
             live = sorted(self._bundles.items())[:max_bundles]
             return [PublishedBundle(instance_id, bundle) for instance_id, (bundle, _) in live]
 
+    def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
+        _check_id(INSTANCE_ID_PATTERN, instance_id)
+        _check_id(RELAY_ID_PATTERN, request_id)
+        with self._cond:
+            now = self._clock()
+            self._purge(now)
+            if instance_id not in self._bundles:
+                raise QueueError(QueueErrorCode.NOT_FOUND)
+            if len(self._requests) >= self._max_topic_depth:
+                raise QueueError(QueueErrorCode.UNAVAILABLE)
+            message_id = self._rng(16).hex()
+            if message_id in self._requests:
+                raise QueueError(QueueErrorCode.INTERNAL)
+            message = QueueMessage(message_id, request_id, body, now)
+            self._requests[message_id] = _Request(instance_id, message)
+            self._cond.notify_all()
+            return message_id
+
+    def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
+        _check_id(CLIENT_ID_PATTERN, client_id)
+        _check_count(max_messages)
+        with self._cond:
+            self._purge(self._clock())
+            route = self._route(client_id)
+            if after is None:
+                floor = 0
+            elif _CURSOR_PATTERN.fullmatch(after) and int(after) <= route.last_seq:
+                floor = int(after)
+            else:
+                raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+            page = [entry for entry in route.responses if entry.seq > floor][:max_messages]
+            if not page:
+                return ResponsePage((), None)
+            return ResponsePage(tuple(entry.response for entry in page), str(page[-1].seq))
+
     def _visible(self, instance_id: str, now: float) -> list[_Request]:
         return [
             request
@@ -210,39 +248,6 @@ class InMemoryQueue:
         # so far, so a cursor from a drained route stays valid and sees only newer responses.
         route = self._routes.get(client_id)
         return _Route(last_seq=self._responses_issued) if route is None else route
-
-    def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
-        _check_id(INSTANCE_ID_PATTERN, instance_id)
-        _check_id(RELAY_ID_PATTERN, request_id)
-        with self._cond:
-            now = self._clock()
-            self._purge(now)
-            if instance_id not in self._bundles:
-                raise QueueError(QueueErrorCode.NOT_FOUND)
-            if len(self._requests) >= self._max_topic_depth:
-                raise QueueError(QueueErrorCode.UNAVAILABLE)
-            message_id = self._rng(16).hex()
-            message = QueueMessage(message_id, request_id, body, now)
-            self._requests[message_id] = _Request(instance_id, message)
-            self._cond.notify_all()
-            return message_id
-
-    def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
-        _check_id(CLIENT_ID_PATTERN, client_id)
-        _check_count(max_messages)
-        with self._cond:
-            self._purge(self._clock())
-            route = self._route(client_id)
-            if after is None:
-                floor = 0
-            elif _CURSOR_PATTERN.fullmatch(after) and int(after) <= route.last_seq:
-                floor = int(after)
-            else:
-                raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
-            page = [entry for entry in route.responses if entry.seq > floor][:max_messages]
-            if not page:
-                return ResponsePage((), None)
-            return ResponsePage(tuple(entry.response for entry in page), str(page[-1].seq))
 
 
 class InMemoryAuditSink:
