@@ -1191,3 +1191,16 @@ Participants: Code Reviewers, Security Reviewers, Tech Lead
 The same pattern appeared in T-23, T-24 and T-26: new error codes outside the frozen contract. The Tech Lead amended each case in (D-053 precedent). The retro should tighten the contract template so engineers return a CONTRACT_ISSUE instead.
 
 **Dissent:** none
+
+## D-057 — T-27 verdicts; HPKE_STORE_PATH strictness ratified (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, Security Reviewer (T-27)
+
+**Decision:**
+- T-27 (inc-2/T-27-bundle-scan, tip 2a4ce3a): Code Review APPROVE (round 3), Security Review APPROVE (round 3). Ready to merge.
+- `HPKE_STORE_PATH` no longer accepts a leading `../`. This is stricter than A7 criterion 15 allowed. The Security Review requested it, because a pinned-store path planted above the checkout passed the scan. Ratified.
+- The remaining eval/Function tripwire variants are accepted residual. Per INC-2-API §9.2 the scan is a tripwire and the enforce-mode CSP is the control.
+
+**Dissent:** none
