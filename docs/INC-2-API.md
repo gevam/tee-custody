@@ -1115,6 +1115,9 @@ class GatewayLimits:
     # Additive, 2026-10-15 (T-40; QA D-03, D-04; SR-4, T-07). Appended after body_read_timeout_s; kw_only.
     header_read_timeout_s: float = 10.0    # 1.0..60.0, finite; total deadline for one request's header block
     max_connections: int = 512             # >= max_concurrency; open connections per process, any state
+    # Additive, 2026-10-15 (T-40 A2; SR-4, T-07). Appended after max_connections; kw_only.
+    max_header_bytes: int = 8192           # 1024..12288; len(raw_path)+len(query_string)+Σ(len(name)+len(value))
+    max_header_count: int = 64             # 16..256; len(scope["headers"])
 def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
                rng: Callable[[int], bytes] = os.urandom,
                clock: Callable[[], float] = time.monotonic) -> fastapi.FastAPI: ...
@@ -1163,8 +1166,9 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
   2. Global concurrency: `max_concurrency` → 429.
   3. Global bucket → 429.
   4. Per-source bucket → 429.
-  5. Control-character path rule.
-  6. Routing.
+  5. Header limits → 400 `INVALID_ARGUMENT` (added by "Server hardening", T-40 A2).
+  6. Control-character path rule.
+  7. Routing.
 
   The slots taken in steps 1–2 are released in a `finally`: on success, on any error status, on the body deadline,
   on client disconnect and on exception. An in-flight entry is deleted when its count reaches 0, so the table never
@@ -1253,6 +1257,33 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
 - Validation: `header_read_timeout_s` must be a finite `int`/`float` in 1.0..60.0, with `bool` refused.
   `max_connections` must be an `int` ≥ `max_concurrency`, with `bool` refused. Anything else →
   `ValueError("INVALID_LIMITS")`.
+- **Header limits (T-40 A2; SR-4, T-07).** h11 bounds a header block only while it is incomplete
+  (`h11_max_incomplete_event_size`), so a complete block that arrives in one read reaches the app at any size up to
+  the asyncio read size (262,144 B). `GatewayLimits` therefore gains, appended after `max_connections`, kw_only:
+  ```python
+      max_header_bytes: int = 8192    # 1024..12288; len(raw_path)+len(query_string)+Σ(len(name)+len(value))
+      max_header_count: int = 64      # 16..256; len(scope["headers"])
+  ```
+  - Both are measured on the ASGI scope (bytes, after parsing), so the decision does not depend on how the bytes
+    were segmented. A request over either limit gets `400 {"code":"INVALID_ARGUMENT"}`, with no routing and no queue
+    call, and both slots are released. A CORS preflight is subject to the same check.
+  - The check is step 5 of "Order of checks" above: after the per-source in-flight slot, global concurrency, the
+    global bucket and the per-source bucket, and before the control-character path rule and routing. An oversized
+    request therefore spends rate budget, and a rate-limited one is answered 429 without being measured.
+  - The upper bound 12288 keeps every request these limits accept below h11's 16384-byte incomplete-block limit:
+    12288 + 4 × 256 (`": "` and CRLF per header) + 21 (request line and final CRLF) < 16384. An accepted request is
+    therefore accepted however it is segmented. (Optional whitespace that h11 strips is not counted; such padding
+    is bounded by the read size and changes only which 400 or 200 path a pathological request takes.)
+  - Sizing (browser traffic). `FetchTransport` and `FetchFetcher` send `credentials: "omit"` and
+    `referrerPolicy: "no-referrer"`, so no cookies and no `Referer` reach the gateway. A browser request or
+    preflight carries about 15–25 headers and 1–2 KB (`Host`, `User-Agent`, `sec-ch-ua*`, `Sec-Fetch-*`, `Accept*`,
+    `Origin`, `Content-Type`, `Content-Length`, `Access-Control-Request-*`). The longest path is
+    `/responses/<32hex>?after=<≤128 cursor>`, under 200 B. A fronting proxy or load balancer adds a few forwarding
+    and trace headers. The defaults leave several times that headroom, and a host can raise them within the bounds.
+  - The parser's own transient buffer is bounded per connection by the 262,144 B read size plus 16,384 B. The
+    request the app sees is bounded by these limits.
+  - Validation: each field must be an `int` in its range, with `bool` refused. Anything else →
+    `ValueError("INVALID_LIMITS")`.
 
 Dev entry point: `python -m notes_gateway.dev --host 127.0.0.1 --port 0` wires an `InMemoryQueue` (imports
 `teecustody_sim` lazily inside `dev` only). Example: `TestClient(create_app(InMemoryQueue())).get("/bundles")`.
