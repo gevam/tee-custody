@@ -44,6 +44,8 @@ rules:
     languages: [regex]
     paths:
       include: ["/packages/**/*.py", "/packages/**/*.ts"]
+      # T-35 (TL-13): the profile CLI is covered by tc-no-tls-override-cli below.
+      exclude: ["/packages/teecustody-web/src/profile/cli.ts"]
     pattern-either:
       - pattern-regex: \bverify\s*=\s*False\b
       - pattern-regex: \bcheck_hostname\s*=\s*False\b
@@ -51,6 +53,22 @@ rules:
       - pattern-regex: \bCERT_NONE\b
       - pattern-regex: \brejectUnauthorized["']?\s*[:=]\s*false\b
       - pattern-regex: \bNODE_TLS_REJECT_UNAUTHORIZED\b
+
+  - id: tc-no-tls-override-cli
+    message: TLS certificate verification is never disabled (SR-5).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-web/src/profile/cli.ts"]
+    # T-35 (TL-13, INC-2-API §16.5): the CLI names the variable only in its refusal check,
+    # process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"; every other use fires (see fixtures).
+    pattern-either:
+      - pattern-regex: \bverify\s*=\s*False\b
+      - pattern-regex: \bcheck_hostname\s*=\s*False\b
+      - pattern-regex: \b_create_unverified_context\b
+      - pattern-regex: \bCERT_NONE\b
+      - pattern-regex: \brejectUnauthorized["']?\s*[:=]\s*false\b
+      - pattern-regex: (?<!process\.env\.)\bNODE_TLS_REJECT_UNAUTHORIZED\b|\bNODE_TLS_REJECT_UNAUTHORIZED\b(?!\s*===\s*"0")
 
   - id: tc-no-sim-anchor-in-core
     message: Core ships no simulator trust anchors (§13.10).
@@ -78,8 +96,9 @@ rules:
         - "/packages/teecustody-py/src/**"
         - "/packages/teecustody-web/src/**"
     # A1/A3 (T-05, D-046): the standalone upper-case NO_VERIFIED_BUNDLE error code (INC-2-API §7.5),
-    # with no word or `$` neighbour, is the only exemption; every other spelling fires (see fixtures).
-    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!(?<![\w$])NO_VERIFIED_BUNDLE(?![\w$])))no_?verif|insecure
+    # with no word or `$` neighbour, is exempt; so is the profile CLI's INSECURE_TLS_ENVIRONMENT code
+    # (T-35, TL-13, INC-2-API §16.5). Every other spelling fires (see fixtures).
+    pattern-regex: (?i)(?:skip|disable|bypass)_?verif|(?-i:(?!(?<![\w$])NO_VERIFIED_BUNDLE(?![\w$])))no_?verif|(?-i:(?!(?<![\w$])INSECURE_TLS_ENVIRONMENT(?![\w$])))insecure
 
   - id: tc-no-sim-import-in-library
     message: The library never depends on the simulator (NFR-6, spec §15.5).

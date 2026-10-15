@@ -41,6 +41,24 @@ const WEB_NODE_BANS = {
 
 const WEB_NODE_DYNAMIC_BAN = { ...NODE_DYNAMIC_BAN, message: WEB_NODE_MESSAGE };
 
+// T-35 (INC-2-API §16.5): the Node-only profile CLI may import exactly these three built-ins.
+const CLI_NODE_IMPORTS = ["node:fs", "node:http", "node:https"];
+
+const CLI_NODE_BANS = {
+    paths: WEB_NODE_BANS.paths.filter(({ name }) => !CLI_NODE_IMPORTS.includes(name)),
+    patterns: [
+        {
+            // Re-including a module would re-include its subpaths (node:fs/promises), so those are banned again.
+            group: [
+                "node:*",
+                ...CLI_NODE_IMPORTS.map((name) => `!${name}`),
+                ...CLI_NODE_IMPORTS.map((name) => `${name}/*`),
+            ],
+            message: WEB_NODE_MESSAGE,
+        },
+    ],
+};
+
 const HPKE_MESSAGE = "SR-14, ADR 0011: @hpke/* is imported only in src/crypto/webcrypto.ts.";
 
 const HPKE_DYNAMIC_BAN = {
@@ -83,6 +101,7 @@ export default tseslint.config(
                     "packages/teecustody-core/tsconfig.test.json",
                     "packages/teecustody-web/tsconfig.json",
                     "packages/teecustody-web/tsconfig.test.json",
+                    "packages/teecustody-web/tsconfig.cli.json",
                     "tests/tsconfig.json",
                 ],
                 tsconfigRootDir: import.meta.dirname,
@@ -158,6 +177,23 @@ export default tseslint.config(
                     paths: [CBOR_X_BAN, ...WEB_NODE_BANS.paths],
                     patterns: [
                         ...WEB_NODE_BANS.patterns,
+                        { group: ["@hpke/*"], message: HPKE_MESSAGE },
+                    ],
+                },
+            ],
+        },
+    },
+    {
+        // The profile CLI runs on Node only and is never reachable from src/index.ts (INC-2-API §16.5, D-045
+        // C7a.1); every web import ban still applies except node:fs, node:http and node:https.
+        files: ["packages/teecustody-web/src/profile/{cli,bin}.ts"],
+        rules: {
+            "no-restricted-imports": [
+                "error",
+                {
+                    paths: [CBOR_X_BAN, ...CLI_NODE_BANS.paths],
+                    patterns: [
+                        ...CLI_NODE_BANS.patterns,
                         { group: ["@hpke/*"], message: HPKE_MESSAGE },
                     ],
                 },

@@ -17,6 +17,8 @@ export default defineConfig({
         coverage: {
             provider: "v8",
             include: ["src/**/*.ts"],
+            // The process-level contract test (test_profile_cli_contract.py) covers the entry point.
+            exclude: ["src/profile/bin.ts"],
             reporter: ["text"],
             thresholds: {
                 lines: 80,
@@ -27,6 +29,7 @@ export default defineConfig({
                 "src/fetch/**": FULL,
                 "src/transport/**": FULL,
                 "src/vault/**": FULL,
+                "src/profile/**": FULL,
             },
         },
     },

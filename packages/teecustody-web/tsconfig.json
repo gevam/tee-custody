@@ -9,5 +9,6 @@
             "@teecustody/core": ["../teecustody-core/src/index.ts"]
         }
     },
-    "include": ["src/**/*.ts"]
+    "include": ["src/**/*.ts"],
+    "exclude": ["src/profile/cli.ts", "src/profile/bin.ts"]
 }
