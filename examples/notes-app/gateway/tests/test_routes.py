@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import subprocess
 import sys
 import typing
@@ -656,7 +657,33 @@ def test_route_id_pattern_equals_the_channel_hex32_pattern() -> None:
     from notes_gateway import app as gateway_app
     from teecustody.channel.codec import HEX32_PATTERN
 
-    assert gateway_app._HEX32_PATTERN.pattern == HEX32_PATTERN.pattern
+    pin = gateway_app._HEX32_PATTERN
+    assert (pin.pattern, pin.flags) == (HEX32_PATTERN.pattern, HEX32_PATTERN.flags)
+
+
+def test_every_gateway_pattern_is_pinned_by_source_and_flags() -> None:
+    from notes_gateway import app as gateway_app
+    from teecustody.queue import CURSOR_PATTERN
+
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    port = r"(?::(?P<port>[1-9][0-9]{0,4}))?"
+    expected = {
+        "_HEX32_PATTERN": r"[0-9a-f]{32}",
+        "_CONTENT_LENGTH_PATTERN": r"[0-9]{1,19}",
+        "_CONTROL_CHARACTER_PATTERN": r"[\x00-\x1f\x7f-\x9f]",
+        "_HTTPS_ORIGIN_PATTERN": rf"https://{label}(?:\.{label})*{port}",
+        "_LOOPBACK_ORIGIN_PATTERN": rf"http://(?:localhost|127\.0\.0\.1|\[::1\]){port}",
+    }
+    actual = {
+        name: value for name, value in vars(gateway_app).items() if isinstance(value, re.Pattern)
+    }
+
+    assert {n: (p.pattern, p.flags) for n, p in actual.items() if n in expected} == {
+        n: (source, re.UNICODE) for n, source in expected.items()
+    }
+    assert set(actual) == {*expected, "CURSOR_PATTERN"}
+    assert actual["CURSOR_PATTERN"] is CURSOR_PATTERN
+    assert (CURSOR_PATTERN.pattern, CURSOR_PATTERN.flags) == (r"[A-Za-z0-9_-]{1,128}", re.UNICODE)
 
 
 def test_importing_the_gateway_never_imports_cbor2_or_the_simulator() -> None:
