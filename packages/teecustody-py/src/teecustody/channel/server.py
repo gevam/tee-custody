@@ -35,6 +35,7 @@ from teecustody.channel.ports import (
     HandlerOk,
     OpenRejected,
     OpenRequest,
+    OpenResult,
     RemoteErrorCode,
     SessionInfo,
     SessionOpener,
@@ -269,20 +270,19 @@ class ChannelServer:
             return self._refuse(
                 AggregateOutcome.OPEN_PAYLOAD_INVALID, RemoteErrorCode.INVALID_FRAME
             )
-        session_id = self._rng(16)
-        claimed = aad.client_id if isinstance(payload, OpenSessionPayload) else None
-        request = OpenRequest(
-            claimed_client_id=claimed,
-            request_id=aad.request_id,
-            instance_id=self._instance_id,
-            session_id=session_id,
-            payload=payload,
-        )
         try:
-            result = self._opener.open(request)
-        except Exception:  # noqa: BLE001 - a port failure is BACKEND_UNAVAILABLE, text discarded (SR-11)
-            result = OpenRejected(RemoteErrorCode.BACKEND_UNAVAILABLE)
-        finally:
+            session_id = self._rng(16)
+            claimed = aad.client_id if isinstance(payload, OpenSessionPayload) else None
+            result = self._ask_opener(
+                OpenRequest(
+                    claimed_client_id=claimed,
+                    request_id=aad.request_id,
+                    instance_id=self._instance_id,
+                    session_id=session_id,
+                    payload=payload,
+                )
+            )
+        finally:  # cs lives only until the opener has answered, whatever raised (NFR-3)
             if isinstance(payload, OpenSessionPayload):
                 payload.cs.wipe()
         if isinstance(result, OpenRejected):
@@ -310,6 +310,12 @@ class ChannelServer:
         except Exception:  # noqa: BLE001 - A1 SESSION_ID_IN_USE and any other table failure
             return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
         return _OpenDecision(ChannelOutcome.SESSION_OPENED, plaintext, session)
+
+    def _ask_opener(self, request: OpenRequest) -> OpenResult:
+        try:
+            return self._opener.open(request)
+        except Exception:  # noqa: BLE001 - a port failure is BACKEND_UNAVAILABLE, text discarded (SR-11)
+            return OpenRejected(RemoteErrorCode.BACKEND_UNAVAILABLE)
 
     def _abort(
         self, info: SessionInfo, outcome: AggregateOutcome, error: RemoteErrorCode

@@ -152,6 +152,20 @@ def test_handler_payload_over_the_result_bound_is_replaced_by_limit_exceeded() -
     assert view.body == {"re": 0, "ok": False, "error": "LIMIT_EXCEEDED"}
 
 
+def test_handler_payload_one_byte_over_the_result_bound_is_replaced_by_limit_exceeded() -> None:
+    world, sent, session_id = _opened()
+    overhead = len(cbor({"re": 0, "ok": True, "payload": b"x" * 1000})) - 1000
+    payload = b"x" * (32_769 - overhead)
+    assert len(cbor({"re": 0, "ok": True, "payload": payload})) == 32_769
+    world.handler.script = lambda _s, _op, _p: HandlerOk(payload)
+
+    result = _echo(world, sent, session_id, 0)
+
+    assert result.response is not None
+    view = read_frame_result(result.response.body, sent.t2c)
+    assert view.body == {"re": 0, "ok": False, "error": "LIMIT_EXCEEDED"}
+
+
 def test_handler_payload_exactly_at_the_result_bound_is_delivered() -> None:
     world, sent, session_id = _opened()
     overhead = len(cbor({"re": 0, "ok": True, "payload": b"x" * 1000})) - 1000

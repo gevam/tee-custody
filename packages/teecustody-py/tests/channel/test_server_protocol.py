@@ -35,7 +35,7 @@ from teecustody.channel.ports import (
     SessionInfo,
 )
 from teecustody.channel.session import T2cSealer
-from teecustody.config import ChannelParams
+from teecustody.config import BoundaryLimits, ChannelParams
 
 
 class SealSpy:
@@ -63,6 +63,21 @@ class OpenedSpy:
             return opened
 
         monkeypatch.setattr(server_module, "open_base", spy)
+
+
+class DecodedSpy:
+    """Keeps every payload `decode_open_payload` returned, so its `cs` can be checked."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.payloads: list[Any] = []
+        real = server_module.decode_open_payload
+
+        def spy(*args: Any) -> Any:
+            payload = real(*args)
+            self.payloads.append(payload)
+            return payload
+
+        monkeypatch.setattr(server_module, "decode_open_payload", spy)
 
 
 def _raise(_request: OpenRequest) -> OpenResult:
@@ -133,6 +148,7 @@ def test_every_path_after_open_seals_exactly_one_open_result_and_wipes_its_secre
     sent = world.open_session() if is_open_session else world.enroll()
     seals = SealSpy(monkeypatch)
     opened = OpenedSpy(monkeypatch)
+    decoded = DecodedSpy(monkeypatch)
 
     result = world.process(sent.body)
 
@@ -155,18 +171,75 @@ def test_every_path_after_open_seals_exactly_one_open_result_and_wipes_its_secre
         assert hpke.sk_c2t.wiped
         assert hpke.sk_t2c.wiped
         assert world.logger.calls == []
+    assert len(decoded.payloads) == 1
+    if is_open_session:
+        assert decoded.payloads[0].cs.wiped
     assert all(cs.wiped for cs in world.opener.cs_seen)
+
+
+def _open_payload_of_plaintext_size(size: int) -> bytes:
+    overhead = len(server_module.encode_open_result_plaintext(OpenAccepted(CLIENT_ID, b"x" * 1000)))
+    payload = b"x" * (size - (overhead - 1000))
+    plaintext = server_module.encode_open_result_plaintext(OpenAccepted(CLIENT_ID, payload))
+    assert len(plaintext) == size
+    return payload
 
 
 def test_payload_exactly_at_the_open_result_bound_opens_the_session() -> None:
     world = make_world()
-    overhead = len(server_module.encode_open_result_plaintext(OpenAccepted(CLIENT_ID, b"x" * 1000)))
-    world.opener.script = _accept(CLIENT_ID, b"x" * (32_768 - (overhead - 1000)))
+    world.opener.script = _accept(CLIENT_ID, _open_payload_of_plaintext_size(32_768))
     sent = world.open_session()
 
     result = world.process(sent.body)
 
     assert str(result.outcome) == "SESSION_OPENED"
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [(1.5, "INTERNAL"), (_open_payload_of_plaintext_size(32_769), "LIMIT_EXCEEDED")],
+    ids=["unencodable", "one-byte-over-the-bound"],
+)
+def test_accepted_open_whose_result_cannot_be_sent_aborts_the_open(
+    payload: Any, error: str
+) -> None:
+    world = make_world()
+    world.opener.script = _accept(CLIENT_ID, payload)
+    sent = world.open_session()
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "OPEN_REJECTED"
+    assert result.response is not None
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.body == {"ok": False, "error": error}
+    request = world.opener.requests[0]
+    assert world.opener.closed_calls == [
+        (
+            SessionInfo(
+                client_id=CLIENT_ID, session_id=request.session_id, instance_id=INSTANCE_ID
+            ),
+            CloseReason.OPEN_ABORTED,
+        )
+    ]
+    assert world.sessions.get(request.session_id) is None
+
+
+def test_failing_closed_hook_on_a_full_table_still_answers_limit_exceeded() -> None:
+    world = make_world(limits=BoundaryLimits(max_sessions=1))
+    _first, live_session_id = world.established()
+    world.opener.closed_error = RuntimeError("closed down")
+    sent = world.open_session(client_id=OTHER_CLIENT_ID)
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "CHANNEL_LIMIT_EXCEEDED"
+    assert dict(world.audit.counts) == {"CHANNEL_LIMIT_EXCEEDED": 1}
+    assert result.response is not None
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.body == {"ok": False, "error": "LIMIT_EXCEEDED"}
+    assert [reason for _info, reason in world.opener.closed_calls] == [CloseReason.OPEN_ABORTED]
+    assert world.sessions.get(live_session_id) is not None
 
 
 def test_garbage_opener_result_is_counted_once_as_open_rejected() -> None:
