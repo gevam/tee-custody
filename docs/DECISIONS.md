@@ -1665,3 +1665,22 @@ Chair / decider: Orchestrator, on the Security Reviewer's increment pass
 - **Required for INC-3, carried:** B-24, B-25, B-26, B-27, B-33, B-41 and B-51. None is High.
 
 **Dissent:** none
+
+## D-079 — INC-2 G6 passes (INC-2, 2026-10-15)
+
+Type: gate
+Chair / decider: Orchestrator, on QA's G6 run (branch inc-2/QA-G6, ec1abaf, off main 892343c)
+
+**Decision:** G6 passes.
+- **Acceptance criteria and SR-n rows:** every INC-2 row passes on main.
+- **Test counts:**
+  - Python 4,842 passed and 0 failed; `spec/vectors` 236 passed.
+  - Core 1,479, tests 673 and web 771 passed.
+  - Playwright on Chromium and Firefox passed. WebKit is not runnable on this host and needs CI evidence (§13.11; the human push question is open).
+  - Exploratory tests: 202 Python and 54 TS passed.
+  - FR-4 e2e passed 5 of 5 runs, with no NO_VERIFIED_BUNDLE or NOT_YET_VALID.
+- **Defects:** D-01..D-07 are all closed. No Critical, High or Medium defect is open.
+- **Medium and Low items deferred** to BACKLOG with an owner and a target: B-26 (Required for INC-3), B-41 (Required for INC-3), B-47..B-52, and the rest as listed in docs/qa/INC-2.md "G6 result". None is a defect against INC-2 acceptance.
+- **Traceability:** no INC-2 GAP row. The 13 remaining GAP rows belong to INC-3..INC-5.
+
+**Dissent:** none
