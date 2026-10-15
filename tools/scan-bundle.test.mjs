@@ -123,3 +123,17 @@ describe("the command line", () => {
         assert.match(usage.stderr, /^usage: /);
     });
 });
+
+describe("criterion 5: a Node built-in in the browser bundle", () => {
+    it("exits 2 for a static node:fs import", async () => {
+        const entry = fixture(
+            "node-fs.js",
+            'import { readFileSync } from "node:fs";\nexport const f = (p) => readFileSync(p);\n',
+        );
+        assert.deepEqual(await run(["--entry", entry]), {
+            code: 2,
+            stdout: "",
+            stderr: `build-error\t${entry}\t1\n`,
+        });
+    });
+});
