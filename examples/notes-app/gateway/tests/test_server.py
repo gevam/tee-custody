@@ -690,3 +690,80 @@ def test_connection_made_closes_only_beyond_max_connections(
     assert transport.written == []
     assert len(loop.handles) == int(not closed)
     assert records.outcomes() == (["GATEWAY_CONNECTION_LIMIT"] if closed else [])
+
+
+# ------------------------------------------------------------- criterion 17: segmentation (A2)
+OVERSIZED = {
+    "a: 20000-byte header value": b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+    + b"X-Big: "
+    + b"a" * 20000
+    + b"\r\n\r\n",
+    "b: 3000 headers": b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+    + b"".join(f"X-{n}: v\r\n".encode() for n in range(3000))
+    + b"\r\n",
+}
+WITHIN_LIMITS = (
+    b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Pad: " + b"a" * 4000 + b"\r\n\r\n"
+)
+UNLIMITED_RATE = {"per_source_rate": 1e6, "per_source_burst": 10**6}
+
+
+def _send(sock: socket.socket, payload: bytes, segment: int | None) -> None:
+    """All of `payload` in one sendall, or `segment`-byte writes 10 ms apart. A peer that closes
+    early ends the sending; the answer is read afterwards."""
+    chunks = (
+        [payload]
+        if segment is None
+        else [payload[i : i + segment] for i in range(0, len(payload), segment)]
+    )
+    for index, chunk in enumerate(chunks):
+        if index:
+            time.sleep(0.01)
+        try:
+            sock.sendall(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+
+def _parse(raw: bytes) -> tuple[int, dict[bytes, bytes], bytes]:
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    headers = dict(line.lower().split(b": ", 1) for line in lines[1:])
+    return int(lines[0].split(b" ")[1]), headers, body
+
+
+@pytest.mark.parametrize("segment", [None, 1024], ids=["one sendall", "1024-byte writes"])
+@pytest.mark.parametrize("payload", OVERSIZED.values(), ids=OVERSIZED.keys())
+def test_an_oversized_header_block_gets_the_json_400_however_it_is_segmented(
+    payload: bytes, segment: int | None, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(**UNLIMITED_RATE)
+    for _ in range(10):
+        sock = live.connect()
+        start = time.perf_counter()
+        _send(sock, payload, segment)
+
+        raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+        status, headers, body = _parse(raw)
+
+        assert (status, body) == (400, b'{"code":"INVALID_ARGUMENT"}')
+        assert headers[b"content-type"] == b"application/json"
+        assert headers[b"cache-control"] == b"no-store"
+        assert headers[b"x-content-type-options"] == b"nosniff"
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"] * 10
+    _assert_nothing_leaked(records)
+
+
+@pytest.mark.parametrize("segment", [None, 1024], ids=["one sendall", "1024-byte writes"])
+def test_a_header_block_within_the_limits_gets_200_however_it_is_segmented(
+    segment: int | None, gateway: Callable[..., LiveGateway]
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    _send(sock, WITHIN_LIMITS, segment)
+
+    raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert _parse(raw)[0::2] == (200, b'{"bundles":[]}')
