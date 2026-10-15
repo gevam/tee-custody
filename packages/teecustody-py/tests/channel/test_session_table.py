@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from teecustody.channel.codec import FrameAad, encode_frame_aad
+from teecustody.channel.codec import FrameAad, OpenResultAad, encode_frame_aad
 from teecustody.channel.ports import CloseReason, SessionInfo
 from teecustody.channel.session import (
     Session,
@@ -211,3 +211,35 @@ def test_sessions_past_the_idle_timeout_expire_before_any_eviction() -> None:
     assert k1.wiped
     assert world.table.get(SID_2) is s2
     assert k2.live
+
+
+# ---------------------------------------------------------------- criterion 11
+def test_a_used_sealer_is_refused_and_the_caller_keeps_it() -> None:
+    world = World()
+    existing, existing_keys = world.create(SID_1, CLIENT_A)
+    sk_c2t, sk_t2c = Secret(os.urandom(32)), Secret(os.urandom(32))
+    sealer = T2cSealer(sk_t2c)
+    sealer.seal_open_result(OpenResultAad(session_id=None, request_id=bytes(16)), b"no")
+    with pytest.raises(ValueError, match=r"^T2C_USED$"):
+        world.table.create(session_id=SID_2, client_id=CLIENT_A, sk_c2t=sk_c2t, t2c=sealer)
+    assert world.table.get(SID_2) is None
+    assert world.table.get(SID_1) is existing
+    assert world.closes == []
+    assert existing_keys.live
+    assert not sk_c2t.wiped
+    assert not sk_t2c.wiped
+    aad_bytes, ct = sealer.seal_frame_result("test.echo", SID_2, b"still mine")
+    assert AESGCM(sk_t2c.reveal()).decrypt(_nonce(1), ct, aad_bytes) == b"still mine"
+
+
+def test_a_full_table_leaves_the_fresh_sealer_with_the_caller_for_the_rejection() -> None:
+    world = World(max_sessions=1)
+    world.create(SID_1, CLIENT_A)
+    sk_c2t, sk_t2c = Secret(os.urandom(32)), Secret(os.urandom(32))
+    sealer = T2cSealer(sk_t2c)
+    with pytest.raises(OverflowError, match=r"^SESSIONS_FULL$"):
+        world.table.create(session_id=SID_2, client_id=CLIENT_B, sk_c2t=sk_c2t, t2c=sealer)
+    assert not sk_c2t.wiped
+    aad = OpenResultAad(session_id=None, request_id=bytes(16))
+    aad_bytes, ct = sealer.seal_open_result(aad, b"full")
+    assert AESGCM(sk_t2c.reveal()).decrypt(_nonce(0), ct, aad_bytes) == b"full"

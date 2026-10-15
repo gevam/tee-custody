@@ -83,6 +83,9 @@ class T2cSealer:
     def wipe(self) -> None:
         self._key.wipe()
 
+    def _is_fresh(self) -> bool:
+        return self._next_seq == 0
+
 
 class Session:
     """Constructed only by SessionTable."""
@@ -137,6 +140,8 @@ class SessionTable:
     def create(
         self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer
     ) -> Session:
+        if not t2c._is_fresh():
+            raise ValueError("T2C_USED")
         for existing in list(self._sessions.values()):
             if existing.client_id == client_id:
                 self.close(existing.session_id, CloseReason.REPLACED)
