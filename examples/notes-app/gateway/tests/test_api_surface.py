@@ -84,6 +84,10 @@ _SPEC_LIMITS: tuple[tuple[str, object], ...] = (
     ("cors_origins", ()),
     ("per_source_max_in_flight", 8),
     ("body_read_timeout_s", 10.0),
+    ("header_read_timeout_s", 10.0),
+    ("max_connections", 512),
+    ("max_header_bytes", 8192),
+    ("max_header_count", 64),
 )
 
 
@@ -93,6 +97,10 @@ def test_gateway_limits_fields_and_defaults_equal_api_section_6() -> None:
     assert actual == _SPEC_LIMITS
     for name, value in _SPEC_LIMITS:
         assert type(getattr(limits, name)) is type(value)
+
+
+def test_gateway_limits_has_the_sixteen_fields_of_the_amended_section_6() -> None:
+    assert len(dataclasses.fields(GatewayLimits)) == 16
 
 
 def test_gateway_limits_is_frozen() -> None:
@@ -115,6 +123,10 @@ class _SpecGatewayLimits:
     cors_origins: tuple[str, ...] = ()
     per_source_max_in_flight: int = 8
     body_read_timeout_s: float = 10.0
+    header_read_timeout_s: float = 10.0
+    max_connections: int = 512
+    max_header_bytes: int = 8192
+    max_header_count: int = 64
 
 
 def test_gateway_limits_signature_equals_spec_dataclass() -> None:
