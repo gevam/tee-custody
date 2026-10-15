@@ -246,6 +246,17 @@ def test_malformed_or_future_cursor_is_invalid_argument(after: str) -> None:
     assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
 
 
+@pytest.mark.parametrize("after", [1, b"1", 1.0, True], ids=repr)
+def test_a_non_string_cursor_is_invalid_argument(after: object) -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+
+    with pytest.raises(QueueError) as caught:
+        queue.pull_responses(CLIENT, after, 2)  # type: ignore[arg-type]
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
 def test_another_clients_route_returns_an_empty_page() -> None:
     queue = _queue(FakeClock())
     _five_responses(queue)

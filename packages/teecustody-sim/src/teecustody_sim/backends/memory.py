@@ -206,7 +206,11 @@ class InMemoryQueue:
             route = self._route(client_id)
             if after is None:
                 floor = 0
-            elif _CURSOR_PATTERN.fullmatch(after) and int(after) <= route.last_seq:
+            elif (
+                isinstance(after, str)
+                and _CURSOR_PATTERN.fullmatch(after)
+                and int(after) <= route.last_seq
+            ):
                 floor = int(after)
             else:
                 raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
