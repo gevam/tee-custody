@@ -2,7 +2,7 @@
 // (INC-2-API §9.4, §16.9 N1–N3; API-TL TL-8, TL-10; FR-4, FR-5, SR-1). The harness runs with a bounded
 // start-up wait and is stopped (SIGTERM, then SIGKILL) after the file, so a hung harness fails here.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,12 +84,18 @@ function readHarness(match: RegExpExecArray): Harness {
 
 function spawnHarness(options: SpawnOptions = {}): Spawned {
     const readyLine = options.readyLine ?? READY_LINE;
-    const proc = spawn("uv", ["run", "python", "tests/e2e/channel_harness.py"], {
-        cwd: REPO_ROOT,
-        env: options.env ?? process.env,
-        stdio: ["ignore", "pipe", "ignore"],
-        detached: true, // its own process group: uv and the harness are signalled together
-    });
+    // stdin is a pipe Node never writes to: if this worker dies by any means, the kernel closes it and
+    // the harness (--stop-on-stdin-eof) stops itself and removes FIXTURE_CS (T-31 A6).
+    const proc = spawn(
+        "uv",
+        ["run", "python", "tests/e2e/channel_harness.py", "--stop-on-stdin-eof"],
+        {
+            cwd: REPO_ROOT,
+            env: options.env ?? process.env,
+            stdio: ["pipe", "pipe", "ignore"],
+            detached: true, // its own process group: uv and the harness are signalled together
+        },
+    );
     const ready = new Promise<Harness>((resolveReady, reject) => {
         let out = "";
         let timedOut = false;
@@ -355,7 +361,37 @@ describe("SR-1 / D-043 pinned jwks_uri over live HTTP", () => {
     });
 });
 
+function exitWithin(proc: ChildProcess, ms: number): Promise<void> {
+    return new Promise<void>((done) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) {
+            done();
+            return;
+        }
+        const timer = setTimeout(done, ms);
+        proc.once("exit", () => {
+            clearTimeout(timer);
+            done();
+        });
+    });
+}
+
 describe("harness lifecycle", () => {
+    it("stops and cleans up on stdin EOF alone, with no signal (criterion 12)", async () => {
+        const spawned = spawnHarness();
+        try {
+            const h = await spawned.ready;
+            // When the spawner's end of the stdin pipe closes (as when the vitest worker dies)
+            spawned.proc.stdin?.end();
+            // Then the harness exits 0, its whole group is gone, and its temp dir is removed
+            await exitWithin(spawned.proc, STOP_TIMEOUT_MS);
+            expect(spawned.proc.exitCode).toBe(0);
+            expect(signalGroup(spawned.proc, 0)).toBe(false);
+            expect(existsSync(dirname(h.profilePath))).toBe(false);
+        } finally {
+            await stopProcess(spawned.proc);
+        }
+    });
+
     // Every process whose environment carries TMPDIR=<dir>: uv and the harness it started.
     function processesWithTmpdir(dir: string): number[] {
         const marker = `\0TMPDIR=${dir}\0`;
