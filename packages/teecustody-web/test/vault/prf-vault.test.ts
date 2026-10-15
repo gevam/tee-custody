@@ -286,3 +286,25 @@ describe("criterion 3: ceremony options", () => {
         );
     });
 });
+
+describe("criterion 4: PRF output from create or from get", () => {
+    it("uses the get result when create reports enabled without results (V-2.5 Chromium shape)", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create", "get"]);
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+    });
+
+    it("uses the create result without a get when create evaluates the PRF", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnGet = false;
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create"]);
+        expect(Array.from(bytes(auth.creates[0]?.publicKey.extensions?.prf?.eval?.first))).toHaveLength(32);
+        auth.behaviour.resultsOnGet = true;
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+    });
+});
