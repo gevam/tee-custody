@@ -10,7 +10,13 @@ import { fileURLToPath } from "node:url";
 
 import * as esbuild from "esbuild";
 
-import { HPKE_INPUT_ALLOWLIST, buildOptions, checkMetafile, main } from "./scan-bundle.mjs";
+import {
+    HPKE_INPUT_ALLOWLIST,
+    buildOptions,
+    checkMetafile,
+    main,
+    scanText,
+} from "./scan-bundle.mjs";
 
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
@@ -333,5 +339,141 @@ describe("criterion 10 (§16.5 D4): no trust-profile input in the bundle", () =>
 
     it("records metafile paths relative to the repository whatever the working directory", () => {
         assert.equal(buildOptions("/x/src/index.ts", {}).absWorkingDir, REPO);
+    });
+});
+
+describe("edge cases: the patterns", () => {
+    it("reports UTF-8 byte offsets, one hit per match", () => {
+        assert.deepEqual(scanText("é eval(1); eval(2)"), [
+            { id: "eval", offset: 3 },
+            { id: "eval", offset: 12 },
+        ]);
+    });
+
+    it("keeps the identifier guard on every pattern", () => {
+        const text = [
+            "retrieval(1)",
+            "renew Function",
+            "new Functional",
+            "$Function(1)",
+            "_Function(1)",
+            "reimport(x)",
+            "unsetTimeout('x')",
+            "resetInterval(`x`)",
+        ].join(";\n");
+        assert.deepEqual(scanText(text), []);
+    });
+
+    it("passes literal dynamic imports in every quote style", () => {
+        assert.deepEqual(scanText("import('a'); import(\"b\"); import(`c`)"), []);
+    });
+
+    it("flags whitespace variants and setInterval", () => {
+        assert.deepEqual(
+            scanText(
+                "eval (1); new\n Function; Function (1); import (\n x); setInterval( 'x')",
+            ).map((hit) => hit.id),
+            ["eval", "new-function", "function-call", "dynamic-import", "string-timer"],
+        );
+    });
+});
+
+describe("edge cases: several entries", () => {
+    it("scans every entry and exits with the highest code", async () => {
+        const clean = join(FIXTURES, "clean.js");
+        const evil = join(FIXTURES, "eval.js");
+        const guarded = join(FIXTURES, "guarded-import.js");
+        const result = await run(["--entry", clean, "--entry", evil, "--entry", guarded]);
+        assert.equal(result.code, 2);
+        assert.match(result.stdout, new RegExp(`^eval\\t${escape(evil)}\\t\\d+\\n`));
+        assert.ok(result.stdout.endsWith(`external-import\t${guarded}\tfs\n`));
+        assert.equal(result.stdout.split("\n").length, 3);
+    });
+});
+
+describe("edge cases: the metafile checks", () => {
+    const CRYPTO = { path: "crypto", kind: "dynamic-import", external: true };
+    const ALGORITHM = `${COMMON}algorithm.js`;
+    const MISC = `${COMMON}utils/misc.js`;
+
+    it("reports an expected importer that is missing from the inputs", () => {
+        const metafile = meta("meta-clean");
+        delete metafile.inputs[MISC];
+        assert.deepEqual(checkMetafile(metafile, ENTRY), {
+            code: 2,
+            lines: [
+                `external-attribution\t${ENTRY}\tnode_modules/@hpke/common/esm/src/utils/misc.js`,
+            ],
+        });
+    });
+
+    it("reports another importer of crypto", () => {
+        const metafile = meta("meta-clean");
+        const other = `${COMMON}utils/noble.js`;
+        metafile.inputs[other] = { bytes: 1, imports: [CRYPTO] };
+        assert.deepEqual(checkMetafile(metafile, ENTRY), {
+            code: 2,
+            lines: [`external-attribution\t${ENTRY}\t${other}`],
+        });
+    });
+
+    it("reports an attributed input whose external has another path", () => {
+        const metafile = meta("meta-clean");
+        metafile.inputs[ALGORITHM].imports = [{ ...CRYPTO, path: "node:crypto" }];
+        assert.deepEqual(checkMetafile(metafile, ENTRY).lines, [
+            `external-attribution\t${ENTRY}\t${ALGORITHM}`,
+        ]);
+    });
+
+    it("does not allow the crypto output external with another kind", () => {
+        const metafile = meta("meta-clean");
+        Object.values(metafile.outputs)[0].imports = [{ ...CRYPTO, kind: "import-statement" }];
+        assert.deepEqual(checkMetafile(metafile, ENTRY), {
+            code: 2,
+            lines: [`external-import\t${ENTRY}\tcrypto`, `external-allowance\t${ENTRY}\t0`],
+        });
+    });
+
+    it("does not allow the crypto external outside the web scan", () => {
+        const metafile = meta("meta-clean");
+        for (const input of Object.keys(metafile.inputs)) {
+            if (input.includes("@hpke/common/")) {
+                delete metafile.inputs[input];
+            }
+        }
+        assert.deepEqual(checkMetafile(metafile, ENTRY).lines, [
+            `external-import\t${ENTRY}\tcrypto`,
+        ]);
+    });
+
+    it("matches inputs by their suffix from @hpke/ in a flat node_modules layout", () => {
+        const flat = (text) => text.replace(/node_modules\/\.pnpm\/[^/]+\//g, "");
+        const metafile = JSON.parse(flat(JSON.stringify(meta("meta-clean"))));
+        assert.deepEqual(checkMetafile(metafile, ENTRY), { code: 0, lines: [] });
+        const grown = JSON.parse(flat(JSON.stringify(meta("meta-fragment-grew"))));
+        assert.equal(checkMetafile(grown, ENTRY).lines[0].split("\t")[0], "hpke-fragment-grew");
+    });
+
+    it("exits 2 when C7a.1 and C3a.1 both fail, printing both", () => {
+        const metafile = meta("meta-curve-bytes");
+        Object.values(metafile.outputs)[0].imports = [];
+        assert.deepEqual(checkMetafile(metafile, ENTRY), {
+            code: 2,
+            lines: [
+                `external-allowance\t${ENTRY}\t0`,
+                `hpke-curve-bytes\t${ENTRY}\t${COMMON}curve/montgomery.js`,
+            ],
+        });
+    });
+
+    it("passes the real Web metafile", async () => {
+        const alias = {
+            "@teecustody/core": join(REPO, "packages", "teecustody-core", "src", "index.ts"),
+        };
+        const { metafile } = await esbuild.build(
+            buildOptions(join(REPO, "packages", "teecustody-web", "src", "index.ts"), alias),
+        );
+        assert.ok("packages/teecustody-web/src/index.ts" in metafile.inputs);
+        assert.deepEqual(checkMetafile(metafile, ENTRY), { code: 0, lines: [] });
     });
 });
