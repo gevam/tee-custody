@@ -223,7 +223,7 @@ class RunLoop:
     def _backoff(self, failures: int) -> int:
         """`min(retry_max, retry_min * 2^(n-1))` for the n-th consecutive failure (B-08)."""
         retry_min = self._limits.attestation_retry_min_s
-        return min(self._limits.attestation_retry_max_s, retry_min * 2 ** (failures - 1))
+        return min(self._limits.attestation_retry_max_s, retry_min << (failures - 1))
 
     def run(self, stop: threading.Event) -> None:
         raise NotImplementedError("T-29")
