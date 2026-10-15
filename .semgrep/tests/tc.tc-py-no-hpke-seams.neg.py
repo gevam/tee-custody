@@ -8,3 +8,5 @@ enc, sender = suite.create_sender_context(pk, info)
 enc, sender = suite.create_sender_context(pk, info=b"x")
 recipient = suite.create_recipient_context(enc, sk, info)
 recipient = suite.create_recipient_context(enc, sk, info=info)
+x = kem_id
+recipient_key = _SUITE.kem.deserialize_private_key(sk.reveal())

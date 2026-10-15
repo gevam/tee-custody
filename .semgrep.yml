@@ -409,6 +409,19 @@ rules:
       - pattern: $S.create_sender_context(..., **$KW, ...)
       - pattern: $S.create_recipient_context($A, $B, $C, $D, ...)
       - pattern: $S.create_recipient_context(..., **$KW, ...)
+      # A4: a * splat carries the positional seams too.
+      - pattern: $S.create_sender_context(..., *$ARGS, ...)
+      - pattern: $S.create_recipient_context(..., *$ARGS, ...)
+      # A4/A6: no low-level KEM access (decap, encap, aliasing the KEM); the one allowed KEM call is
+      # kem.deserialize_private_key(...), which channel/hpke.py needs to load the recipient key.
+      - patterns:
+          - pattern: $S.kem.$M(...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(?!deserialize_private_key$)
+      - patterns:
+          - pattern: $S.kem
+          - pattern-not-inside: $S.kem.$M(...)
 
   - id: tc-ts-no-hpke-seams
     message: >-
