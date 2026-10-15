@@ -37,6 +37,19 @@ export const switches = {
     NO_VERIFIED_BUNDLE$: false,
     // ruleid: tc-no-verification-skip
     $NO_VERIFIED_BUNDLE: false,
+    // T-35 (TL-13): only the bare upper-case CLI code INSECURE_TLS_ENVIRONMENT is exempt.
+    // ruleid: tc-no-verification-skip
+    ALLOW_INSECURE_TLS_ENVIRONMENT: false,
+    // ruleid: tc-no-verification-skip
+    INSECURE_TLS_ENVIRONMENT$: false,
+    // ruleid: tc-no-verification-skip
+    $INSECURE_TLS_ENVIRONMENT: false,
+    // ruleid: tc-no-verification-skip
+    INSECURE_TLS_ENVIRONMENT_OK: false,
+    // ruleid: tc-no-verification-skip
+    insecure_tls_environment: false,
+    // ruleid: tc-no-verification-skip
+    INSECURE: false,
 };
 // A1: the frozen channel error code (INC-2-API §7.5) is not a switch. `ok:` cases live here because
 // semgrep --test rejects `ok:` annotations in a file where the rule never fires.
@@ -46,3 +59,7 @@ export const code = "NO_VERIFIED_BUNDLE";
 export const codes = { NO_VERIFIED_BUNDLE: code };
 // ok: tc-no-verification-skip
 export const other = "UNVERIFIED_BUNDLE";
+// ok: tc-no-verification-skip
+export const tlsCode = "INSECURE_TLS_ENVIRONMENT";
+// ok: tc-no-verification-skip
+export const tlsCodes = { INSECURE_TLS_ENVIRONMENT: tlsCode };
