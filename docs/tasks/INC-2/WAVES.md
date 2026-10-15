@@ -40,6 +40,22 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 - C8.5 check (Tech Lead): no Core, QA or contract test asserts `INVALID_ARGUMENT` for a sender key-generation
   failure. INC-2-API §8.1 carries the C8 text (1681894).
 
+**Amended 2026-10-15 (QA phase 2 defects D-03 Medium, D-04 Low; D-031).**
+- New task T-40 (Wave 6, STRONG): gateway server hardening in a new `notes_gateway/server.py`.
+  - A header-read deadline and a connection cap. Both are `GatewayLimits` fields appended after `body_read_timeout_s`.
+  - The exact JSON 400 for HTTP parse failures.
+  - A subclass of uvicorn's `H11Protocol`, used by `dev.py` and the e2e harness.
+- T-40 carries QA item QA-T-40 on `inc-2/QA-exec`:
+  - The D-03 strict `xfail` becomes a plain red test.
+  - New red D-03 (idle connection) and D-04 rows.
+- QA-exec, with QA-T-40, merges to `main` first. T-40 then branches from that `main`.
+- **Gate: Architect.** T-40 starts only after the Architect commits the INC-2-API §6 "Server hardening" text proposed in
+  T-40.md. That text adds two `GatewayLimits` fields, the `notes_gateway.server.uvicorn_config` interface and two log
+  outcomes.
+  - This is the same additive pattern as the T-14 A1 amendment (9ab6975), which had no human gate. The Orchestrator
+    confirms whether one is needed here.
+- D-03 and D-04 close when T-40 merges. Neither is downgraded by documentation alone.
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -136,10 +152,12 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 5 | T-32 | Playwright CSP harness (SR-13, V-2.2); B1–B3, favicon, exact CSP header | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02, MU-1 | |
 | 6 | QA-T-39 | QA: SR-14 C8 acceptance rows Q1–Q5; `SR14.webcrypto-hpke.test.ts` only (in T-39.md) | MID (QA) | REQUIREMENTS SR-14 | |
 | 6 | T-39 | Bounded X25519 keygen retry (ADR 0011 C8, `X25519_KEYGEN_ATTEMPTS` = 3, private); failed probe not cached; FACTS re-recorded at Playwright 1.63.0 (B-45, D-069) | STRONG | T-17, T-27, T-32 (all merged); QA-T-39 merged; SA C8 sign-off (done) | |
+| 6 | QA-T-40 | QA: D-03 row un-xfailed (red), D-03 idle row, D-04 parse-failure rows; on `inc-2/QA-exec` before it merges (in T-40.md) | MID (QA) | QA-exec | |
+| 6 | T-40 | Gateway server hardening: `header_read_timeout_s`, `max_connections`, JSON parse-failure 400 via `notes_gateway.server.uvicorn_config` (D-03, D-04) | STRONG | T-14, T-31 (merged); QA-exec + QA-T-40 merged; Architect §6 "Server hardening" text committed | Architect (§6) |
 
-Counts: 43 items (39 tasks T-01..T-39, the QA items QA-T-38 and QA-T-39, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
+Counts: 45 items (40 tasks T-01..T-40, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
 Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
-3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 2: QA-T-39, then T-39. The largest wave is Wave 1.
+3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 4: QA-T-39, then T-39 (both merged), and QA-T-40, then T-40. The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
 - B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
@@ -189,7 +207,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - sim `cli.py`, `tests/test_cli.py`: T-21 W1, T-25 W2.
   - Core `attestation/types.ts`, `test/api-surface.test.ts`: T-02 W0, T-33 W1.
   - `spec/vectors/README.md`: T-03 W0, T-34 W1.
-  - `notes_gateway/limits.py`, gateway `tests/test_api_surface.py`: T-01 W0, T-14 W1 (A1, additive fields).
+  - `notes_gateway/limits.py`, gateway `tests/test_api_surface.py`: T-01 W0, T-14 W1 (A1, additive fields), T-40 W6
+    (two appended fields).
+  - `notes_gateway/app.py` (T-40: `_validate` only), gateway `README.md`, `tests/test_limits.py`: T-14 W1, T-40 W6.
+  - Gateway `tests/test_dev.py`, `tests/e2e/channel_harness.py`, `tests/e2e/test_channel_e2e.py`: T-31 W4, T-40 W6.
+  - `tests/acceptance/test_EXPLORE_gateway_http.py`: QA-exec, QA-T-40 W6 (same branch, before merge).
   - `.gitleaksignore`: T-19 W1 (A2, one fingerprint), T-26 W2 (A3, append the 275e828 fingerprint only).
   - `tools/dependency_policy.py`, `tests/tooling/test_dependency_policy.py`: T-05 W0, T-37 W1; the test file also T-27 W2 (A6, `CI_COMMANDS` lint string only).
   - Core `src/bundle/types.ts`: T-02 W0 (final), T-16 W1 (A3: the one-line `new Uint8Array(bytes)` copy only).
@@ -197,13 +219,14 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - `tests/acceptance/test_FR03_cli.py`: T-36 W1, QA action 5 W2.
   - `docs/adr/0011-…md`: V-01 W0, T-17 W1 (append-only).
   - `packages/teecustody-web/playwright.config.ts`: T-02 W0, T-32 W5.
-  - `notes_gateway/dev.py`: T-01 W0 stub, T-31 W4.
+  - `notes_gateway/dev.py`: T-01 W0 stub, T-31 W4, T-40 W6.
   - `tests/acceptance/FR02.attestation-checks.test.ts`: T-36 W1, QA-T-38 W4 (append only).
   - Core `test/attestation/verify.test.ts`: T-33 W1, T-38 W4 (append one `describe` only).
   - Core `test/attestation/checks/claims.test.ts`: T-33 W1, T-38 W4.
   - Web `src/crypto/webcrypto.ts`, `test/crypto/webcrypto.test.ts`: T-17 W1, T-39 W6.
   - `docs/tasks/INC-2/FACTS.md`: V-02 W0, T-39 W6 (B-45 §9 items 1–4; superseded 1.64.0 table kept).
   - `tests/acceptance/SR14.webcrypto-hpke.test.ts`: QA (after W0), QA-T-39 W6 (append one `describe` only).
+- T-40 (W6) creates `notes_gateway/server.py` and gateway `tests/test_server.py`. It shares no file with T-39 or QA-T-39.
 - T-39 (W6) also creates `packages/teecustody-web/test/crypto/webcrypto-keygen-retry.test.ts`. It runs T-32's
   `csp.spec.ts` with `--repeat-each=20` and edits no T-32 file.
 - T-38 (W4) is the first INC-2 owner of Core `src/attestation/checks/claims.ts` (INC-1 T-12). It also creates
@@ -238,9 +261,10 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `CloseReason` (7), `ChannelOutcome` (4), `SessionRejectCode` (4), `EnvelopeErrorCode`, `HpkeErrorCode`, `SecretErrorCode`, `ConfigErrorCode`, `QueueErrorCode`, `AuditClass`, `AuditErrorCode`, `AppendResult`, `StopCode` | T-04 | none |
 | `ChannelErrorCode` (11), `BundleErrorCode` (6), `FrameRejectCode` (3) | T-02 | none |
 | ALERT outcome strings | — | `PREKEY_BURN_HIGH` (T-29), `ALERT_CAP_REACHED`, `AUDIT_WRITE_CONFLICT` (T-12) |
-| Log outcome strings | — | `SESSION_OPENED` (T-28); `SESSION_CLOSED`, `SESSION_EVICTED` (T-29, TL-2); `RESPONSE_PUBLISH_FAILED`, `QUEUE_PULL_FAILED`, `BUNDLE_PUBLISHED` (T-29); `AUDIT_PENDING_DROPPED`, `AUDIT_PENDING_DROPPED_<OUTCOME>`, `AUDIT_WRITE_FAILED`, `AUDIT_CLOCK_BACKWARD` (T-12, A1); `GATEWAY_<CODE>` (T-14) |
+| Log outcome strings | — | `SESSION_OPENED` (T-28); `SESSION_CLOSED`, `SESSION_EVICTED` (T-29, TL-2); `RESPONSE_PUBLISH_FAILED`, `QUEUE_PULL_FAILED`, `BUNDLE_PUBLISHED` (T-29); `AUDIT_PENDING_DROPPED`, `AUDIT_PENDING_DROPPED_<OUTCOME>`, `AUDIT_WRITE_FAILED`, `AUDIT_CLOCK_BACKWARD` (T-12, A1); `GATEWAY_<CODE>` (T-14); `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT` (T-40) |
 | Gateway error bodies (§6: 5 codes + `NOT_FOUND`, `METHOD_NOT_ALLOWED`) | T-14 | `REQUEST_TIMEOUT` (T-14 A1, §6 2026-10-15) |
-| `GatewayLimits` fields (10, T-01) | T-01 | `per_source_max_in_flight`, `body_read_timeout_s` (T-14 A1, appended, kw_only) |
+| `GatewayLimits` fields (10, T-01) | T-01 | `per_source_max_in_flight`, `body_read_timeout_s` (T-14 A1, appended, kw_only); `header_read_timeout_s`, `max_connections` (T-40, appended, kw_only) |
+| `notes_gateway.server` public names | — | `uvicorn_config` (T-40) only; `notes_gateway.__all__` unchanged |
 | Channel vector named cases (§3.2) | T-03 (README list), T-25 (generator) | none outside T-25 |
 | Semgrep rule ids (§9.5) | T-05 | `tc-core-no-oidc-discovery` (T-33); `tc-ts-hpke-common-banned`, `tc-ts-hpke-core-names` (T-27, C3a.2); `tc-no-tls-override-cli` (T-35). No others |
 | `TrustProfile` v2 (13 keys), `VerifierLimits.maxDiscoveryBytes?` (A-6) | T-33 (W1) | none |
@@ -300,6 +324,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `tests/acceptance/**` INC-2 files (QA) | per QA mapping |
 | `tests/acceptance/FR02.attestation-checks.test.ts` "SR-1 token time (ADR 0013)" rows (QA-T-38) | T-38 |
 | `tests/acceptance/SR14.webcrypto-hpke.test.ts` "SR-14 bounded X25519 key generation (ADR 0011 C8)" rows Q1–Q4 (QA-T-39) | T-39 |
+| `tests/acceptance/test_EXPLORE_gateway_http.py` `test_D03_*` (2) and `test_D04_parse_failures_get_the_json_400` (4 params) (QA-T-40) | T-40 |
 
 "Full suite green" in every DoD means: every test outside this table passes, and each red test fails only with
 `NotImplementedError('T-nn')` / `NOT_IMPLEMENTED: T-nn` or a missing vector file.
@@ -318,6 +343,21 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 `tests/e2e/channel_harness.py` (TL-8, from Wave 4). Doubles: `tests.support.channel_doubles`.
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
+
+## G4 conditions (Wave 6, T-40, against main 556be95, 2026-10-15)
+
+| Condition | Status |
+|---|---|
+| Same-wave file overlap | Met. T-40 owns gateway files and the two e2e harness files. QA-T-40 owns the EXPLORE file and the QA docs. T-39 and QA-T-39 are merged and are web-only |
+| Inputs from earlier waves | Met for code: T-14 and T-31 are merged. **Pending:** the Architect's §6 "Server hardening" text |
+| Acceptance red for the right reason | **Pending QA-T-40.** D-03 rows must fail with the connection still open after 15 s (today `xfail(strict)`), and D-04 rows with the `text/plain` body. Both were reproduced by the Tech Lead in scratch: 51/51 open at 25 s; `Invalid HTTP request received.` |
+| Contract stubs | Not applicable. There is no new cross-task boundary: `uvicorn_config` is consumed only inside T-40's own files. `test_gateway_contract.py` is unchanged and stays green |
+| New scanner or static rules | None |
+
+**Risk.** T-40 overrides uvicorn 0.54.0 `H11Protocol` hooks (`connection_made`, `on_response_complete`,
+`connection_lost`, `send_400_response`, `cycle`, `connections`). A uvicorn upgrade can silently bypass them; T-40's
+live tests fail closed, so every uvicorn lock change must re-run them. The 512-connection cap trades process
+survival for possible refusal of new connections during a flood, recovered within `header_read_timeout_s`.
 
 ## G4 conditions (Wave 6, T-39, against main 1681894, 2026-10-15)
 
