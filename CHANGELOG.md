@@ -69,3 +69,4 @@
 - QA D-01: FR-4 e2e tests aligned to INC-2 contracts
 - T-38: bounded clock skew in attestation time checks (ADR 0013; fixes D-02)
 - QA: I7 queue message content acceptance tests (Python workload + Core client producers)
+- T-32: Playwright harness — vault, transport and channel under enforce-mode hash-only CSP (SR-13)
