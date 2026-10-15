@@ -27,7 +27,6 @@ import { generateRsaKey, signJws } from "../support/jws.js";
 import { testCrypto } from "../support/webcrypto.js";
 
 const ISSUER = "https://confidentialcomputing.googleapis.com";
-const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
 const JWKS_ORIGIN = "https://www.googleapis.com";
 const JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com`;
 const KID = "1be6ff7287d640316ddc929e1a8b21fbca7e54e7";
@@ -41,7 +40,7 @@ const SIGNER_B = "0b".repeat(32);
 const ARGS = ["/app/workload"];
 const ENV = { PYTHONUNBUFFERED: "1" };
 const IDENTITY_NONCE = new Uint8Array(32).fill(7);
-const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 4_096, maxJwksBytes: 16_384 };
+const LIMITS = { maxTokenBytes: 16_384, maxJwksBytes: 16_384 };
 const HEADER = { alg: "RS256", kid: KID, typ: "JWT" };
 
 type Claims = Record<string, unknown>;
@@ -54,12 +53,11 @@ beforeAll(async () => {
     issuerKey = await generateRsaKey();
     const crypto = testCrypto();
     profileJson = {
-        profile_version: 1,
+        profile_version: 2,
         profile_kind: "production",
         token_type: "OIDC",
         issuer: ISSUER,
-        discovery_url: DISCOVERY_URL,
-        jwks_origin: JWKS_ORIGIN,
+        jwks_uri: JWKS_URI,
         expected_audience: AUDIENCE,
         token_max_age_s: 3600,
         allowed_hwmodels: ["GCP_AMD_SEV"],
@@ -132,7 +130,6 @@ interface Recorder extends Fetcher {
 function documents(): Recorder {
     const inner = mapFetcher(
         new Map([
-            [DISCOVERY_URL, json({ issuer: ISSUER, jwks_uri: JWKS_URI })],
             [
                 JWKS_URI,
                 json({
@@ -199,13 +196,15 @@ class MemorySink implements SecurityEventSink {
 describe("verifyAttestation: valid token (criterion 3)", () => {
     it("returns a frozen VerifiedAttestation with the documented fields and no report", async () => {
         const sink = new MemorySink();
+        const h = harness();
         const result = await verifyAttestation(
             await mint(),
             PROFILE,
             { identityNonce: IDENTITY_NONCE },
             sink,
-            harness().deps,
+            h.deps,
         );
+        expect(h.fetcher.calls).toEqual([JWKS_URI]);
         expect({ ...result }).toEqual({
             issuer: ISSUER,
             audience: AUDIENCE,
@@ -358,6 +357,17 @@ describe("verifyAttestation: one failing check per step (criterion 4)", () => {
         const err = await verifyWith(await token());
         expect([err.check, err.code]).toEqual([check, code]);
     });
+
+    // T-33 C1: every step from key retrieval on fetched exactly once, exactly profile.jwks_uri.
+    it.each(STEP_CASES.filter(({ check }) => check !== "token"))(
+        "$name fetched only profile.jwks_uri, once",
+        async ({ token }) => {
+            const h = harness();
+            await verifyWith(await token(), { deps: h.deps });
+            expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+            expect(h.fetcher.calls.some((url) => url.includes("openid-configuration"))).toBe(false);
+        },
+    );
 });
 
 // Image and claim defects that later steps would reject if they ran first.
@@ -601,7 +611,7 @@ describe("verifyAttestation: profile provenance (criteria 9, 9a; SR-1)", () => {
                 h.deps,
             ),
         ).resolves.toBeDefined();
-        expect(h.fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI]);
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
         expect(h.verifyCalls).toHaveLength(1);
     });
 });
@@ -769,6 +779,37 @@ describe("verifyAttestation: limits are validated at entry, before any fetch", (
         BAD.map((value) => ({ limit, check, value })),
     );
 
+    // T-33 C6 (INC-2-API §16.2; D-047 Q9d): maxDiscoveryBytes is inert; it is validated only when present.
+    it("maxDiscoveryBytes absent → accepted", async () => {
+        const h = harness();
+        expect(Object.hasOwn(h.deps.limits, "maxDiscoveryBytes")).toBe(false);
+        await expect(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                h.deps,
+            ),
+        ).resolves.toBeDefined();
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+    });
+
+    it("maxDiscoveryBytes present and valid is never read as a bound", async () => {
+        const h = harness();
+        const deps = { ...h.deps, limits: { ...LIMITS, maxDiscoveryBytes: 1 } };
+        await expect(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                { identityNonce: IDENTITY_NONCE },
+                new MemorySink(),
+                deps,
+            ),
+        ).resolves.toBeDefined();
+        expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+    });
+
     it.each(rows)(
         "$limit = $value → $check/MALFORMED, no fetch",
         async ({ limit, check, value }) => {
@@ -781,4 +822,142 @@ describe("verifyAttestation: limits are validated at entry, before any fetch", (
             expect(h.verifyCalls).toEqual([]);
         },
     );
+});
+
+// T-33 criterion 9 (A2; INC-2-API §7.1 ruling): identityNonce is caller-owned; verifyAttestation copies it at
+// entry, before its first await, and reads only the copy.
+describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33 A2)", () => {
+    function mutatingDeps(nonce: Uint8Array): VerifierDeps {
+        const h = harness();
+        return {
+            ...h.deps,
+            fetcher: {
+                get(url: string): Promise<FetchResponse> {
+                    nonce.fill(0xee);
+                    return h.fetcher.get(url);
+                },
+            },
+        };
+    }
+
+    it("a token for the original nonce passes although a Fetcher overwrote the buffer", async () => {
+        const nonce = IDENTITY_NONCE.slice();
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: nonce },
+            new MemorySink(),
+            mutatingDeps(nonce),
+        );
+        expect(result.issuer).toBe(ISSUER);
+        expect(nonce).toEqual(new Uint8Array(32).fill(0xee));
+    });
+
+    it("a Node Buffer nonce is copied, not viewed: a write after the call starts changes nothing", async () => {
+        const nonce = Buffer.from(IDENTITY_NONCE);
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: nonce },
+            new MemorySink(),
+            mutatingDeps(nonce),
+        );
+        expect(result.issuer).toBe(ISSUER);
+        expect(nonce.every((byte) => byte === 0xee)).toBe(true);
+    });
+
+    it("a token for the overwritten value is rejected at nonce", async () => {
+        const nonce = IDENTITY_NONCE.slice();
+        const token = await mint((c) => (c.eat_nonce = "ee".repeat(32)));
+        const err = await verifyWith(token, {
+            expected: { identityNonce: nonce },
+            deps: mutatingDeps(nonce),
+        });
+        expect([err.check, err.code]).toEqual(["nonce", "CLAIM_MISMATCH"]);
+    });
+
+    it.each([
+        ["a Symbol nonce", { identityNonce: Symbol("nonce") }],
+        ["a negative-length nonce", { identityNonce: -1 }],
+    ])(
+        "%s cannot be copied and is nonce/MALFORMED, after signature and issuer",
+        async (_label, expected) => {
+            const h = harness();
+            const err = await verifyWith(await mint(), {
+                expected: expected as unknown as ExpectedAttestation,
+                deps: h.deps,
+            });
+            expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+            expect(h.fetcher.calls).toEqual([PROFILE.jwks_uri]);
+        },
+    );
+
+    // Round 2 (CR High): new Uint8Array(x) turns 32 or "32" into 32 zero bytes. Only a real Uint8Array is copied;
+    // anything else is nonce/MALFORMED, even against a token whose eat_nonce is 32 zero bytes.
+    const ZERO_NONCE = "00".repeat(32);
+    it.each([
+        ["the number 32", 32],
+        ['the string "32"', "32"],
+        ["a plain array of 32 zeros", new Array<number>(32).fill(0)],
+        ["an array-like {length: 32}", { length: 32 }],
+        ["a Uint8ClampedArray(32)", new Uint8ClampedArray(32)],
+        ["a Uint16Array(16)", new Uint16Array(16)],
+        ["a DataView over 32 bytes", new DataView(new ArrayBuffer(32))],
+        ["an ArrayBuffer(32)", new ArrayBuffer(32)],
+    ])("%s is not a byte view and is nonce/MALFORMED", async (_label, identityNonce) => {
+        const err = await verifyWith(await mint((c) => (c.eat_nonce = ZERO_NONCE)), {
+            expected: { identityNonce } as unknown as ExpectedAttestation,
+        });
+        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+    });
+
+    it.each([
+        ["a null expected", (): unknown => null],
+        [
+            "an identityNonce getter that throws",
+            (): unknown => ({
+                get identityNonce(): Uint8Array {
+                    throw new Error("unreadable");
+                },
+            }),
+        ],
+    ])("%s is nonce/MALFORMED, never a raw TypeError", async (_label, make) => {
+        const err = await rejection(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                make() as ExpectedAttestation,
+                new MemorySink(),
+                harness().deps,
+            ),
+        );
+        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+    });
+
+    it("a real Uint8Array of 32 zero bytes is the control: it verifies a zero eat_nonce", async () => {
+        const result = await verifyAttestation(
+            await mint((c) => (c.eat_nonce = ZERO_NONCE)),
+            PROFILE,
+            { identityNonce: new Uint8Array(32) },
+            new MemorySink(),
+            harness().deps,
+        );
+        expect(result.issuer).toBe(ISSUER);
+    });
+
+    it("a nonce whose own slice is hostile is still copied byte for byte", async () => {
+        const hostile = Object.assign(IDENTITY_NONCE.slice(), {
+            slice(): Uint8Array {
+                throw new Error("no copy");
+            },
+        });
+        const result = await verifyAttestation(
+            await mint(),
+            PROFILE,
+            { identityNonce: hostile },
+            new MemorySink(),
+            mutatingDeps(hostile),
+        );
+        expect(result.issuer).toBe(ISSUER);
+    });
 });

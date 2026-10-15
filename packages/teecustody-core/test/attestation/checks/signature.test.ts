@@ -1,4 +1,5 @@
-// §6.1 token signature check (T-11; ADR 0009 rules 2–5; SR-1, SR-3, SR-4, SR-11).
+// §6.1 token signature check (T-11, T-33; ADR 0009 rules 2, 4, 5; ADR 0012 rule 2; INC-2-API §16.2, §16.9;
+// SR-1, SR-3, SR-4, SR-11; T-29).
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { Bytes, FetchResponse, Fetcher, RsaPublicJwk } from "../../../src/capabilities.js";
@@ -18,20 +19,20 @@ import { RFC7515_A2_COMPACT, RFC7515_A2_PUBLIC_JWK } from "../../support/rfc7515
 import { testCrypto } from "../../support/webcrypto.js";
 
 const ISSUER = "https://confidentialcomputing.googleapis.com";
-const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
 const JWKS_ORIGIN = "https://www.googleapis.com";
 const JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com`;
+// T-29: another service account's JWKS on the same shared origin.
+const ATTACKER_JWKS_URI = `${JWKS_ORIGIN}/service_accounts/v1/metadata/jwk/attacker@evil.iam.gserviceaccount.com`;
 const KID = "1be6ff7287d640316ddc929e1a8b21fbca7e54e7";
 const CLAIMS = { iss: ISSUER, aud: "https://unit.test/tee", exp: 2_000_000_000 };
-const LIMITS = { maxTokenBytes: 16_384, maxDiscoveryBytes: 4_096, maxJwksBytes: 16_384 };
+const LIMITS = { maxTokenBytes: 16_384, maxJwksBytes: 16_384 };
 
 const PROFILE: TrustProfile = brandTrustProfile({
-    profile_version: 1,
+    profile_version: 2,
     profile_kind: "production",
     token_type: "OIDC",
     issuer: ISSUER,
-    discovery_url: DISCOVERY_URL,
-    jwks_origin: JWKS_ORIGIN,
+    jwks_uri: JWKS_URI,
     expected_audience: "https://unit.test/tee",
     token_max_age_s: 3600,
     allowed_hwmodels: ["GCP_AMD_SEV"],
@@ -75,18 +76,12 @@ function jwkEntry(jwk: RsaPublicJwk, extra: object = {}): object {
 }
 
 interface Documents {
-    readonly discovery?: Bytes;
     readonly jwks?: Bytes;
-    readonly jwksUri?: string;
     readonly statuses?: ReadonlyMap<string, number>;
 }
 
 function documents(overrides: Documents = {}): Map<string, Bytes> {
-    const jwksUri = overrides.jwksUri ?? JWKS_URI;
-    return new Map([
-        [DISCOVERY_URL, overrides.discovery ?? json({ issuer: ISSUER, jwks_uri: jwksUri })],
-        [jwksUri, overrides.jwks ?? json({ keys: [jwkEntry(issuerKey.jwk)] })],
-    ]);
+    return new Map([[JWKS_URI, overrides.jwks ?? json({ keys: [jwkEntry(issuerKey.jwk)] })]]);
 }
 
 interface CountingFetcher extends Fetcher {
@@ -311,16 +306,12 @@ function padded(value: unknown, size: number): Bytes {
     return utf8Encode(text + " ".repeat(size - text.length));
 }
 
-function discoveryWith(fields: object): Bytes {
-    return json({ issuer: ISSUER, jwks_uri: JWKS_URI, ...fields });
-}
-
 function jwksWith(...entries: unknown[]): Bytes {
     return json({ keys: entries });
 }
 
-const redirect = (url: string): ReadonlyMap<string, number> => new Map([[url, 302]]);
-const serverError = (url: string): ReadonlyMap<string, number> => new Map([[url, 500]]);
+// The Fetcher never follows a redirect (D2-14); any status other than 200, a 3xx included, rejects.
+const withStatus = (status: number): ReadonlyMap<string, number> => new Map([[JWKS_URI, status]]);
 // A valid JSON document carrying a lone 0xff inside a string value: a lenient (replacement-character)
 // decode yields valid JSON, so only strict UTF-8 decoding rejects it.
 function withInvalidUtf8(value: object): Bytes {
@@ -331,38 +322,15 @@ function withInvalidUtf8(value: object): Bytes {
 
 type MatrixRow = readonly [string, () => Documents];
 
-const DISCOVERY_ROWS: readonly MatrixRow[] = [
-    ["discovery issuer differs", () => ({ discovery: discoveryWith({ issuer: `${ISSUER}/x` }) })],
-    ["discovery issuer absent", () => ({ discovery: json({ jwks_uri: JWKS_URI }) })],
-    ["jwks_uri absent", () => ({ discovery: json({ issuer: ISSUER }) })],
-    ["jwks_uri not a string", () => ({ discovery: discoveryWith({ jwks_uri: 42 }) })],
-    ["jwks_uri not a URL", () => ({ jwksUri: "www.googleapis.com/keys" })],
-    ["jwks_uri http origin", () => ({ jwksUri: "http://www.googleapis.com/keys" })],
-    ["jwks_uri other port", () => ({ jwksUri: "https://www.googleapis.com:8443/keys" })],
-    ["jwks_uri with userinfo", () => ({ jwksUri: "https://u:p@www.googleapis.com/keys" })],
-    ["jwks_uri with username only", () => ({ jwksUri: "https://u@www.googleapis.com/keys" })],
-    ["jwks_uri with password only", () => ({ jwksUri: "https://:p@www.googleapis.com/keys" })],
-    ["jwks_uri suffix host", () => ({ jwksUri: "https://www.googleapis.com.evil.test/keys" })],
-    ["discovery status 302", () => ({ statuses: redirect(DISCOVERY_URL) })],
-    ["discovery status 500", () => ({ statuses: serverError(DISCOVERY_URL) })],
-    [
-        "discovery oversize",
-        () => ({
-            discovery: padded({ issuer: ISSUER, jwks_uri: JWKS_URI }, LIMITS.maxDiscoveryBytes + 1),
-        }),
-    ],
-    [
-        "discovery not UTF-8",
-        () => ({ discovery: withInvalidUtf8({ issuer: ISSUER, jwks_uri: JWKS_URI }) }),
-    ],
-    ["discovery not JSON", () => ({ discovery: utf8Encode("<html>") })],
-    ["discovery a JSON array", () => ({ discovery: json([ISSUER, JWKS_URI]) })],
-    ["discovery JSON null", () => ({ discovery: json(null) })],
-];
-
 const JWKS_ROWS: readonly MatrixRow[] = [
-    ["JWKS status 302", () => ({ statuses: redirect(JWKS_URI) })],
-    ["JWKS status 500", () => ({ statuses: serverError(JWKS_URI) })],
+    ...[301, 302, 303, 307, 308].map((status): MatrixRow => [
+        `JWKS redirect ${String(status)}`,
+        () => ({ statuses: withStatus(status) }),
+    ]),
+    ...[201, 204, 304, 404, 500].map((status): MatrixRow => [
+        `JWKS status ${String(status)}`,
+        () => ({ statuses: withStatus(status) }),
+    ]),
     [
         "JWKS oversize",
         () => ({ jwks: padded({ keys: [jwkEntry(issuerKey.jwk)] }, LIMITS.maxJwksBytes + 1) }),
@@ -392,34 +360,26 @@ const JWKS_ROWS: readonly MatrixRow[] = [
     ],
 ];
 
-describe("checkSignature: discovery and JWKS matrix, SR-1/SR-3/SR-4 (criterion 5)", () => {
-    it.each(DISCOVERY_ROWS)("rejects %s as UNTRUSTED_SIGNER", async (_label, overrides) => {
-        const token = await tokenWith({ alg: "RS256", kid: KID });
-        await expectRejected(
-            token,
-            "UNTRUSTED_SIGNER",
-            mapFetcher(documents(overrides()), overrides().statuses),
-        );
-    });
+// T-33 C1: every case that reaches key retrieval fetches exactly once, exactly profile.jwks_uri.
+function expectPinnedFetch(fetcher: CountingFetcher): void {
+    expect(fetcher.calls).toHaveLength(1);
+    expect(fetcher.calls[0] === PROFILE.jwks_uri).toBe(true);
+    expect(fetcher.calls.some((url) => url.includes("openid-configuration"))).toBe(false);
+}
 
+describe("checkSignature: JWKS matrix, SR-1/SR-3/SR-4 (criterion 5; T-33 C1, C6)", () => {
     it.each(JWKS_ROWS)("rejects %s as UNTRUSTED_SIGNER", async (_label, overrides) => {
         const token = await tokenWith({ alg: "RS256", kid: KID });
-        await expectRejected(
-            token,
-            "UNTRUSTED_SIGNER",
-            mapFetcher(documents(overrides()), overrides().statuses),
-        );
-    });
-
-    it("rejects a discovery fetch failure as UNTRUSTED_SIGNER", async () => {
-        const token = await tokenWith({ alg: "RS256", kid: KID });
-        await expectRejected(token, "UNTRUSTED_SIGNER", mapFetcher(new Map()));
+        const fetcher = counting(mapFetcher(documents(overrides()), overrides().statuses));
+        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+        expectPinnedFetch(fetcher);
     });
 
     it("rejects a JWKS fetch failure as UNTRUSTED_SIGNER", async () => {
         const token = await tokenWith({ alg: "RS256", kid: KID });
-        const fetcher = mapFetcher(new Map([[DISCOVERY_URL, discoveryWith({})]]));
+        const fetcher = counting(mapFetcher(new Map()));
         await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+        expectPinnedFetch(fetcher);
     });
 
     it("rejects a key under 2048 bits as UNTRUSTED_SIGNER", async () => {
@@ -448,15 +408,6 @@ describe("checkSignature: discovery and JWKS matrix, SR-1/SR-3/SR-4 (criterion 5
         await expect(
             checkSignature(token, PROFILE, depsFor({ jwks: jwksWith(bare) })),
         ).resolves.toBeUndefined();
-    });
-
-    it("accepts a jwks_uri on the profile's origin with a different path", async () => {
-        const token = await tokenWith({ alg: "RS256", kid: KID });
-        const fetcher = counting(
-            mapFetcher(documents({ jwksUri: `${JWKS_ORIGIN}/other/path?x=1` })),
-        );
-        await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
-        expect(fetcher.calls).toEqual([DISCOVERY_URL, `${JWKS_ORIGIN}/other/path?x=1`]);
     });
 });
 
@@ -515,7 +466,7 @@ describe("checkSignature: error content, SR-11 (criterion 8)", () => {
     it("echoes neither the token, the kid nor fetched document content", async () => {
         const marker = "MARKER-7f3a";
         const token = await tokenWith({ alg: "RS256", kid: `${KID}${marker}` });
-        const fetcher = mapFetcher(documents({ discovery: utf8Encode(`{"issuer":"${marker}"`) }));
+        const fetcher = mapFetcher(documents({ jwks: utf8Encode(`{"keys":"${marker}"`) }));
         const error = await rejection(checkSignature(token, PROFILE, deps(fetcher)));
         expectNoContent(error, "signature: UNTRUSTED_SIGNER");
         expect(`${String(error)} ${JSON.stringify(error)} ${error.stack ?? ""}`).not.toContain(
@@ -525,10 +476,9 @@ describe("checkSignature: error content, SR-11 (criterion 8)", () => {
 });
 
 describe("checkSignature: edge cases", () => {
-    it("accepts discovery and JWKS documents of exactly the size limits", async () => {
+    it("accepts a JWKS document of exactly the size limit", async () => {
         const token = await tokenWith({ alg: "RS256", kid: KID });
         const overrides = {
-            discovery: padded({ issuer: ISSUER, jwks_uri: JWKS_URI }, LIMITS.maxDiscoveryBytes),
             jwks: padded({ keys: [jwkEntry(issuerKey.jwk)] }, LIMITS.maxJwksBytes),
         };
         await expect(checkSignature(token, PROFILE, depsFor(overrides))).resolves.toBeUndefined();
@@ -557,14 +507,14 @@ describe("checkSignature: edge cases", () => {
         await expectRejected(token, "UNTRUSTED_SIGNER", throwing);
     });
 
-    it("fetches each document once per call: no cache and no refetch on an unknown kid", async () => {
+    it("fetches the JWKS once per call: no cache and no refetch on an unknown kid", async () => {
         const unknown = await tokenWith({ alg: "RS256", kid: `${KID}-rotated` });
         const fetcher = counting(mapFetcher(documents()));
         await expectRejected(unknown, "UNTRUSTED_SIGNER", fetcher);
-        expect(fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI]);
+        expect(fetcher.calls).toEqual([JWKS_URI]);
         const known = await tokenWith({ alg: "RS256", kid: KID });
         await checkSignature(known, PROFILE, deps(fetcher));
-        expect(fetcher.calls).toEqual([DISCOVERY_URL, JWKS_URI, DISCOVERY_URL, JWKS_URI]);
+        expect(fetcher.calls).toEqual([JWKS_URI, JWKS_URI]);
     });
 
     it("passes the literal algorithm and only kty/n/e of the selected key to Crypto", async () => {
@@ -641,20 +591,6 @@ describe("checkSignature: Object.prototype pollution is ignored", () => {
         await expect(checkSignature(token, PROFILE, depsFor())).resolves.toBeUndefined();
     });
 
-    it("rejects a discovery document lacking issuer when Object.prototype.issuer is set", async () => {
-        const token = await tokenWith({ alg: "RS256", kid: KID });
-        pollute("issuer", ISSUER);
-        const fetcher = mapFetcher(documents({ discovery: json({ jwks_uri: JWKS_URI }) }));
-        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
-    });
-
-    it("rejects a discovery document lacking jwks_uri when Object.prototype.jwks_uri is set", async () => {
-        const token = await tokenWith({ alg: "RS256", kid: KID });
-        pollute("jwks_uri", JWKS_URI);
-        const fetcher = mapFetcher(documents({ discovery: json({ issuer: ISSUER }) }));
-        await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
-    });
-
     it("rejects a JWKS lacking keys when Object.prototype.keys is set", async () => {
         const token = await tokenWith({ alg: "RS256", kid: KID });
         pollute("keys", [jwkEntry(issuerKey.jwk)]);
@@ -688,23 +624,87 @@ describe("checkSignature: Object.prototype pollution is ignored", () => {
     });
 });
 
-describe("checkSignature: the JWKS is fetched at the parsed jwks_uri (review round 1, finding 3)", () => {
-    it("passes the canonical URL href to the Fetcher, never the raw jwks_uri string", async () => {
-        const raw = "HTTPS://WWW.GoogleAPIs.com:443/keys/../service_accounts/./jwk";
-        const canonical = `${JWKS_ORIGIN}/service_accounts/jwk`;
-        const token = await tokenWith({ alg: "RS256", kid: KID });
+// T-33 C1 (INC-2-API §16.2 step 2; ADR 0012 rule 2): the Fetcher sees exactly the profile's string.
+describe("checkSignature: fetches only profile.jwks_uri (T-33 C1)", () => {
+    it.each([
+        ["with typ", { alg: "RS256", kid: KID, typ: "JWT" }],
+        ["without typ", { alg: "RS256", kid: KID }],
+    ])(
+        "a valid token %s calls get exactly once, with the profile's jwks_uri",
+        async (_label, header) => {
+            const fetcher = counting(mapFetcher(documents()));
+            await expect(
+                checkSignature(await tokenWith(header), PROFILE, deps(fetcher)),
+            ).resolves.toBeUndefined();
+            expectPinnedFetch(fetcher);
+        },
+    );
+
+    it("never requests a discovery document, even when one is served", async () => {
         const fetcher = counting(
             mapFetcher(
                 new Map([
-                    [DISCOVERY_URL, discoveryWith({ jwks_uri: raw })],
-                    [raw, jwksWith()],
-                    [canonical, jwksWith(jwkEntry(issuerKey.jwk))],
+                    ...documents(),
+                    [`${ISSUER}/.well-known/openid-configuration`, json({ issuer: ISSUER })],
                 ]),
             ),
         );
-        await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
-        expect(fetcher.calls).toEqual([DISCOVERY_URL, canonical]);
+        await checkSignature(await tokenWith({ alg: "RS256", kid: KID }), PROFILE, deps(fetcher));
+        expectPinnedFetch(fetcher);
     });
+
+    it("passes a development profile's loopback jwks_uri through unchanged", async () => {
+        const devUri = "http://127.0.0.1:8791/jwks";
+        const dev = brandTrustProfile({
+            ...PROFILE,
+            profile_kind: "development",
+            jwks_uri: devUri,
+        });
+        const fetcher = counting(
+            mapFetcher(new Map([[devUri, json({ keys: [jwkEntry(issuerKey.jwk)] })]])),
+        );
+        await checkSignature(await tokenWith({ alg: "RS256", kid: KID }), dev, deps(fetcher));
+        expect(fetcher.calls).toEqual([devUri]);
+        expect(fetcher.calls[0] === dev.jwks_uri).toBe(true);
+    });
+});
+
+// T-33 C2 (T-29): a key served by another JWKS on the same origin never verifies, whatever its kid.
+let attackerKey: { privateKey: CryptoKey; jwk: RsaPublicJwk };
+
+beforeAll(async () => {
+    attackerKey = await generateRsaKey();
+});
+
+function attackerJwks(): Bytes {
+    return jwksWith(
+        jwkEntry(attackerKey.jwk, { kid: "attacker-kid" }),
+        jwkEntry(attackerKey.jwk, { kid: KID }),
+    );
+}
+
+describe("checkSignature: a same-origin attacker JWKS is never consulted (T-33 C2, T-29)", () => {
+    it.each([["attacker-kid"], [KID]])(
+        "rejects an attacker-signed token with kid %s as UNTRUSTED_SIGNER",
+        async (kid) => {
+            const token = await tokenWith({ alg: "RS256", kid }, attackerKey.privateKey);
+            const fetcher = counting(
+                mapFetcher(new Map([...documents(), [ATTACKER_JWKS_URI, attackerJwks()]])),
+            );
+            await expectRejected(token, "UNTRUSTED_SIGNER", fetcher);
+            expectPinnedFetch(fetcher);
+        },
+    );
+
+    it.each([["attacker-kid"], [KID]])(
+        "positive control: the same token with kid %s passes when profile.jwks_uri serves the attacker JWKS",
+        async (kid) => {
+            const token = await tokenWith({ alg: "RS256", kid }, attackerKey.privateKey);
+            const fetcher = counting(mapFetcher(new Map([[JWKS_URI, attackerJwks()]])));
+            await expect(checkSignature(token, PROFILE, deps(fetcher))).resolves.toBeUndefined();
+            expectPinnedFetch(fetcher);
+        },
+    );
 });
 
 describe("checkSignature: only a boolean true verifies (review round 1, finding 4)", () => {

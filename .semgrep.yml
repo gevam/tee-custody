@@ -60,6 +60,14 @@ rules:
       include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
     pattern-regex: tee-sim\.localhost|SIMULATED
 
+  - id: tc-core-no-oidc-discovery
+    message: Core never fetches or names an OIDC discovery document (D-043, ADR 0012).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-core/src/**"]
+    pattern-regex: openid-configuration
+
   - id: tc-no-verification-skip
     message: No build has a switch that skips verification (NFR-5, spec I13).
     severity: ERROR

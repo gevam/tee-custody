@@ -14,15 +14,14 @@ export interface SignerKey {
     readonly algorithm: SignerAlgorithm;
 } // D-016
 
-// spec §15.4 fields + [CI-4] additions; only parseTrustProfile creates one
+// spec §15.4 fields + [CI-4] additions, profile v2 (INC-2-API §16.1, D-043); only parseTrustProfile creates one
 export interface TrustProfile {
     readonly [parsedProfile]: true;
-    readonly profile_version: 1;
+    readonly profile_version: 2;
     readonly profile_kind: ProfileKind;
     readonly token_type: "OIDC";
     readonly issuer: string;
-    readonly discovery_url: string;
-    readonly jwks_origin: string;
+    readonly jwks_uri: string;
     readonly expected_audience: string;
     readonly token_max_age_s: number;
     readonly allowed_hwmodels: readonly string[];
@@ -92,8 +91,9 @@ export class TrustProfileError extends Error {
 
 export interface VerifierLimits {
     readonly maxTokenBytes: number;
-    readonly maxDiscoveryBytes: number;
     readonly maxJwksBytes: number;
+    /** @deprecated D-043: ignored (no discovery fetch). If present, must be a positive safe integer. Removed before v1.0.0. */
+    readonly maxDiscoveryBytes?: number;
 }
 
 // [CI-1]

@@ -1,4 +1,4 @@
-// §6.1 token signature check; ADR 0009 rules 2–5.
+// §6.1 token signature check as deviated by D-043: ADR 0009 rules 2, 4, 5 and ADR 0012 rule 2 (INC-2-API §16.2).
 import { utf8DecodeStrict } from "../../encoding.js";
 import type { FetchResponse, RsaPublicJwk } from "../../capabilities.js";
 import { getPath, isJsonObject, type JsonObject, type JsonValue } from "../../json.js";
@@ -45,20 +45,17 @@ function checkHeader(t: ParsedToken): string {
     return kid;
 }
 
-// Fetches one document through the injected Fetcher; any transport, status, size, UTF-8 or JSON-shape
-// failure is UNTRUSTED_SIGNER (ADR 0009 rule 3). Errors carry no response content (SR-11).
-async function fetchJsonObject(
-    deps: VerifierDeps,
-    url: string,
-    maxBytes: number,
-): Promise<JsonObject> {
+// Fetches the JWKS through the injected Fetcher; any transport, status (a redirect included), size, UTF-8 or
+// JSON-shape failure is UNTRUSTED_SIGNER (INC-2-API §16.2 step 2). Errors carry no response content (SR-11).
+// The Fetcher receives exactly the profile's string, once per call (ADR 0012 rule 2).
+async function fetchJwks(p: TrustProfile, deps: VerifierDeps): Promise<JsonObject> {
     let response: FetchResponse;
     try {
-        response = await deps.fetcher.get(url);
+        response = await deps.fetcher.get(p.jwks_uri);
     } catch {
         return reject("UNTRUSTED_SIGNER");
     }
-    if (response.status !== 200 || response.body.length > maxBytes) {
+    if (response.status !== 200 || response.body.length > deps.limits.maxJwksBytes) {
         return reject("UNTRUSTED_SIGNER");
     }
     let parsed: JsonValue;
@@ -71,25 +68,6 @@ async function fetchJsonObject(
         return reject("UNTRUSTED_SIGNER");
     }
     return parsed;
-}
-
-// ADR 0009 rule 3: the discovery issuer matches the profile; jwks_uri is on the profile's JWKS origin.
-// Returns the canonical href that was checked, so the Fetcher never sees the raw string.
-function jwksUriOf(discovery: JsonObject, p: TrustProfile): string {
-    const jwksUri = own(discovery, "jwks_uri");
-    if (own(discovery, "issuer") !== p.issuer || typeof jwksUri !== "string") {
-        return reject("UNTRUSTED_SIGNER");
-    }
-    let url: URL;
-    try {
-        url = new URL(jwksUri);
-    } catch {
-        return reject("UNTRUSTED_SIGNER");
-    }
-    if (url.username !== "" || url.password !== "" || url.origin !== p.jwks_origin) {
-        return reject("UNTRUSTED_SIGNER");
-    }
-    return url.href;
 }
 
 // ADR 0009 rule 4 candidate filter: exact kid, RSA, signing use, RS256 or no alg, string n and e.
@@ -137,9 +115,7 @@ export async function checkSignature(
     deps: VerifierDeps,
 ): Promise<void> {
     const kid = checkHeader(t);
-    const discovery = await fetchJsonObject(deps, p.discovery_url, deps.limits.maxDiscoveryBytes);
-    const jwksUri = jwksUriOf(discovery, p);
-    const jwks = await fetchJsonObject(deps, jwksUri, deps.limits.maxJwksBytes);
+    const jwks = await fetchJwks(p, deps);
     const jwk = selectKey(jwks, kid);
     // unknown: an adapter is outside this module's control; only a boolean true verifies.
     let valid: unknown;
