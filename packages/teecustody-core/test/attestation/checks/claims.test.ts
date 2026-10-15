@@ -200,6 +200,21 @@ describe("checkTime not-yet-valid skew (ADR 0013)", () => {
         expect(timeAt(claims, NOW_MS)).not.toThrow();
         expectRejected(timeAt(claims, NOW_MS - 1), "time", "NOT_YET_VALID");
     });
+
+    describe("criterion 3: token_max_age_s = 60", () => {
+        const short = brandTrustProfile({ ...PROFILE, token_max_age_s: 60 });
+
+        it("bounds a future iat by the max age: now + 60 s passes at now, rejects 1 ms earlier", () => {
+            const claims = { exp: E, iat: NOW_S + 60 };
+            expect(timeAt(claims, NOW_MS, short)).not.toThrow();
+            expectRejected(timeAt(claims, NOW_MS - 1, short), "time", "NOT_YET_VALID");
+        });
+
+        it("leaves the nbf bound at 300 s: iat = now, nbf = now + 300 s passes", () => {
+            const claims = { exp: E, iat: NOW_S, nbf: NOW_S + SKEW_S };
+            expect(timeAt(claims, NOW_MS, short)).not.toThrow();
+        });
+    });
 });
 
 const IDENTITY_NONCE = Uint8Array.from({ length: 32 }, (_, i) => (0xa0 + i * 7) % 256);

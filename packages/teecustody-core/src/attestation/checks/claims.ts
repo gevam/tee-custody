@@ -45,7 +45,7 @@ export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void 
     if (!Number.isFinite(maxAgeMs) || !(nowMs - iat * 1000 <= maxAgeMs)) {
         throw new AttestationError("EXPIRED", "time");
     }
-    if (!(iat * 1000 - nowMs <= CLOCK_SKEW_MS)) {
+    if (!(iat * 1000 - nowMs <= Math.min(maxAgeMs, CLOCK_SKEW_MS))) {
         throw new AttestationError("NOT_YET_VALID", "time");
     }
     const nbf = numericDate(t, "nbf");
