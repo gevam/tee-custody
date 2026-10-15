@@ -107,3 +107,19 @@ describe("criterion 4: usage and build errors exit 2", () => {
         assert.deepEqual(result, { code: 2, stdout: "", stderr: `build-error\t${entry}\t1\n` });
     });
 });
+
+describe("the command line", () => {
+    const SCAN = join(TOOLS, "scan-bundle.mjs");
+    const cli = (...args) => spawnSync(process.execPath, [SCAN, ...args], { encoding: "utf8" });
+
+    it("exits with the scan's code and writes its lines", () => {
+        const clean = cli("--entry", join(FIXTURES, "clean.js"));
+        assert.deepEqual([clean.status, clean.stdout, clean.stderr], [0, "", ""]);
+        const evil = cli("--entry", join(FIXTURES, "eval.js"));
+        assert.equal(evil.status, 1);
+        assert.match(evil.stdout, /^eval\t/);
+        const usage = cli();
+        assert.equal(usage.status, 2);
+        assert.match(usage.stderr, /^usage: /);
+    });
+});

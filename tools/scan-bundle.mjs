@@ -1,5 +1,6 @@
 // SR-13 bundle scan (T-27).
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import * as esbuild from "esbuild";
@@ -91,4 +92,12 @@ export async function main(argv, io) {
         code = Math.max(code, await scanEntry(entry, options.alias, io));
     }
     return code;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    process.exitCode = await main(process.argv.slice(2), {
+        cwd: process.cwd(),
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+    });
 }
