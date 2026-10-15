@@ -61,6 +61,7 @@ _INT_LIMITS = (
     "global_burst",
     "max_concurrency",
     "max_sources_tracked",
+    "per_source_max_in_flight",
 )
 _RATE_LIMITS = ("per_source_rate", "global_rate")
 _DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -80,11 +81,23 @@ def _validate(limits: GatewayLimits) -> None:
             raise ValueError("INVALID_LIMITS")
     for name in _RATE_LIMITS:
         value = getattr(limits, name)
-        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        if not _positive_number(value):
             raise ValueError("INVALID_LIMITS")
+    if limits.per_source_max_in_flight > limits.max_concurrency:
+        raise ValueError("INVALID_LIMITS")
+    timeout_s = limits.body_read_timeout_s
+    if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
+        raise ValueError("INVALID_LIMITS")
     origins: object = limits.cors_origins
     if type(origins) is not tuple or not all(_valid_origin(o) for o in origins):
         raise ValueError("INVALID_CORS_ORIGIN")
+
+
+def _positive_number(value: object) -> bool:
+    """A finite positive int or float; bool is refused."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value) and value > 0
 
 
 def _valid_origin(origin: object) -> bool:

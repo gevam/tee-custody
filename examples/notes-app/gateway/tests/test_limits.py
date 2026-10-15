@@ -7,6 +7,7 @@ import logging
 import threading
 import typing
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -243,16 +244,16 @@ async def _until(condition: typing.Callable[[], bool]) -> None:
 
 def test_requests_beyond_max_concurrency_are_429_with_retry_after_one() -> None:
     relay, clock = CountingRelay(block=True), Clock()
-    app = _app(relay, clock, max_concurrency=2)
-    peer = ("192.0.2.1", 40000)
+    app = _app(relay, clock, max_concurrency=2, per_source_max_in_flight=2)
+    peers = [(f"192.0.2.{i}", 40000) for i in range(3)]
 
     async def scenario() -> tuple[list[Exchange], Exchange, Exchange]:
-        held = [asyncio.create_task(_drive(app, "/bundles", peer)) for _ in range(2)]
+        held = [asyncio.create_task(_drive(app, "/bundles", p)) for p in peers[:2]]
         await _until(lambda: relay.entered == 2)
-        excess = await _drive(app, "/bundles", peer)
+        excess = await _drive(app, "/bundles", peers[2])
         relay.release.set()
         finished = list(await asyncio.gather(*held))
-        after = await _drive(app, "/bundles", peer)
+        after = await _drive(app, "/bundles", peers[2])
         return finished, excess, after
 
     finished, excess, after = asyncio.run(scenario())
@@ -265,7 +266,7 @@ def test_requests_beyond_max_concurrency_are_429_with_retry_after_one() -> None:
 
 def test_a_failing_request_releases_its_concurrency_slot() -> None:
     relay, clock = CountingRelay(), Clock()
-    app = _app(relay, clock, max_concurrency=1)
+    app = _app(relay, clock, max_concurrency=1, per_source_max_in_flight=1)
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.get("/nothing").status_code == 404
@@ -613,3 +614,60 @@ def test_a_loopback_peer_cannot_choose_its_key_with_x_forwarded_for() -> None:
     spoofed = peer.get("/bundles", headers={"X-Forwarded-For": "203.0.113.9"})
 
     assert spoofed.status_code == 429
+
+
+# ---------------------------------------------------------------- criterion 18: A1 TL-4 extended
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"per_source_max_in_flight": 0},
+        {"per_source_max_in_flight": -1},
+        {"per_source_max_in_flight": 65},
+        {"per_source_max_in_flight": 3, "max_concurrency": 2},
+        {"per_source_max_in_flight": True},
+        {"per_source_max_in_flight": 1.0},
+        {"body_read_timeout_s": 0.5},
+        {"body_read_timeout_s": 0.999},
+        {"body_read_timeout_s": 60.5},
+        {"body_read_timeout_s": 61},
+        {"body_read_timeout_s": float("inf")},
+        {"body_read_timeout_s": float("nan")},
+        {"body_read_timeout_s": True},
+        {"body_read_timeout_s": "10"},
+    ],
+    ids=repr,
+)
+def test_out_of_range_in_flight_cap_or_body_deadline_is_refused(fields: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        create_app(CountingRelay(), limits=GatewayLimits(**fields))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"per_source_max_in_flight": 1},
+        {"per_source_max_in_flight": 64},
+        {"per_source_max_in_flight": 2, "max_concurrency": 2},
+        {"body_read_timeout_s": 1},
+        {"body_read_timeout_s": 1.0},
+        {"body_read_timeout_s": 60},
+        {"body_read_timeout_s": 60.0},
+    ],
+    ids=repr,
+)
+def test_in_range_in_flight_cap_and_body_deadline_are_accepted(fields: dict[str, object]) -> None:
+    app = create_app(CountingRelay(), limits=GatewayLimits(**fields))  # type: ignore[arg-type]
+
+    assert TestClient(app).get("/bundles").status_code == 200
+
+
+def test_readme_requires_the_uvicorn_settings_that_keep_the_source_key_honest() -> None:
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+    for setting in ("proxy_headers=False", "server_header=False", "access_log=False"):
+        assert setting in readme
+    assert "forwarded_allow_ips" in readme
+    assert (
+        "Behind a reverse proxy, every client shares the proxy's peer address, so the per-source "
+        "limit collapses to the global limit." in " ".join(readme.split())
+    )
