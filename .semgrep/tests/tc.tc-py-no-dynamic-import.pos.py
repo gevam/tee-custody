@@ -41,7 +41,7 @@ import code
 import pkgutil
 import zipimport
 
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 vars(builtins)["__import__"]("cbor2")
 # ruleid: tc-py-no-dynamic-import
 __builtins__["__import__"]("cbor2")

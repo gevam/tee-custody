@@ -22,3 +22,16 @@ private = context.__dict__
 super().__init__(context._kem)
 # ruleid: tc-py-hpke-module-confined
 base = super().__class__
+# Round 2 (SR): no vars() or inspect reflection on pyhpke objects.
+# ruleid: tc-py-hpke-module-confined
+kem = vars(_SUITE)["_kem"]
+# ruleid: tc-py-hpke-module-confined
+kem = vars(_SUITE).get("kem")
+# ruleid: tc-py-hpke-module-confined
+kem = inspect.getattr_static(_SUITE, "kem")
+# ruleid: tc-py-hpke-module-confined
+members = inspect.getmembers(_SUITE)
+# ruleid: tc-py-hpke-module-confined
+import inspect
+# ruleid: tc-py-hpke-module-confined
+from inspect import getattr_static

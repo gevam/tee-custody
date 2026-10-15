@@ -444,8 +444,9 @@ rules:
   # public names, so no seam can be fetched indirectly.
   - id: tc-py-hpke-module-confined
     message: >-
-      channel/hpke.py reaches pyhpke only through called public names: no getattr, attrgetter or
-      methodcaller, no _-prefixed attribute, no uncalled context factory (ADR 0011 C5, SR-14).
+      channel/hpke.py reaches pyhpke only through called public names: no getattr, attrgetter,
+      methodcaller, vars or inspect, no _-prefixed attribute, no uncalled context factory (ADR 0011
+      C5, SR-14).
     severity: ERROR
     languages: [python]
     paths:
@@ -454,6 +455,10 @@ rules:
       - pattern: getattr(...)
       - pattern: operator.attrgetter(...)
       - pattern: operator.methodcaller(...)
+      # Round 2 (SR): no vars() or inspect reflection, by attribute or by import.
+      - pattern: vars(...)
+      - pattern: inspect.$X
+      - pattern: import inspect
       - patterns:
           - pattern: $S.$A
           - metavariable-regex:

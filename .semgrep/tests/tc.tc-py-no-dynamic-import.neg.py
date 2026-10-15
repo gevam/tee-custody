@@ -18,5 +18,6 @@ class Settings:
     debug = False
 
 
+# ruleid: tc-py-hpke-module-confined
 fields = vars(Settings())
 codes = {"ok": 0}
