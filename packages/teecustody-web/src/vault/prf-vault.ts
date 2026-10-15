@@ -374,7 +374,11 @@ function checkClient(client: unknown): void {
 
 /** PRF support is established only by a 32-byte `results.first` (INC-2-API §8.4). */
 function prfOutput(first: unknown): ArrayBuffer {
-    if (!(first instanceof ArrayBuffer) || first.byteLength !== 32) {
+    if (!(first instanceof ArrayBuffer)) {
+        throw new CapabilityError("UNSUPPORTED");
+    }
+    if (first.byteLength !== 32) {
+        new Uint8Array(first).fill(0);
         throw new CapabilityError("UNSUPPORTED");
     }
     return first;

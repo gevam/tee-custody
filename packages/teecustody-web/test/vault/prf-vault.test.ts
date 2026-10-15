@@ -16,6 +16,7 @@ const DB = "teecustody-vault";
 type StoredRecord = Record<string, unknown>;
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
@@ -1040,12 +1041,21 @@ describe("constructor validation", () => {
         );
     });
 
-    it("accepts the largest safe timeoutMs without aborting the ceremony early", async () => {
+    it("clamps the abort timer for the largest safe timeoutMs instead of firing at once", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const auth = new FakeAuthenticator();
+        auth.behaviour.hang = true;
         const v = vault(auth, new IDBFactory(), { timeoutMs: Number.MAX_SAFE_INTEGER });
-        await v.set(CLIENT, SHARE.slice());
+        const outcome = codeOf(v.set(CLIENT, SHARE.slice()));
+        while (auth.creates.length === 0) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
         expect(auth.creates[0]?.publicKey.timeout).toBe(Number.MAX_SAFE_INTEGER);
+        await vi.advanceTimersByTimeAsync(5);
         expect(auth.creates[0]?.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(2_147_483_647);
+        expect(auth.creates[0]?.signal?.aborted).toBe(true);
+        expect(await outcome).toBe("USER_PRESENCE_REQUIRED");
     });
 });
 
@@ -1066,6 +1076,29 @@ describe("wiping temporary secrets", () => {
         const auth = new FakeAuthenticator();
         await vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice());
         expect(auth.gets).toHaveLength(0);
+        expect(new Uint8Array(auth.outputs[0] ?? new ArrayBuffer(1)).every((b) => b === 0)).toBe(
+            true,
+        );
+    });
+
+    it.each([31, 33])("zeroes a rejected %i-byte PRF output from create", async (n) => {
+        const auth = new FakeAuthenticator();
+        const first = new Uint8Array(n).fill(0x77).buffer;
+        auth.behaviour.createPrf = { enabled: true, results: { first } };
+        expect(await codeOf(vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice()))).toBe(
+            "UNSUPPORTED",
+        );
+        expect(new Uint8Array(first).every((b) => b === 0)).toBe(true);
+    });
+
+    it.each([31, 33])("zeroes a rejected %i-byte PRF output from get", async (n) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        auth.behaviour.resultLength = n;
+        expect(await codeOf(vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice()))).toBe(
+            "UNSUPPORTED",
+        );
+        expect(auth.outputs).toHaveLength(1);
         expect(new Uint8Array(auth.outputs[0] ?? new ArrayBuffer(1)).every((b) => b === 0)).toBe(
             true,
         );
