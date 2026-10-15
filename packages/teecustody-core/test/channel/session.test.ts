@@ -298,6 +298,102 @@ describe("review R1: the waiter is registered before the post (no lost answer)",
     });
 });
 
+describe("review R1: decrypt-port failures other than AUTHENTICATION_FAILED fail closed", () => {
+    const KEY = new Uint8Array(32).fill(0x11);
+    const SESSION = new Uint8Array(16).fill(0x22);
+    const REQUEST = new Uint8Array(16).fill(0x33);
+
+    function failingDecrypt(error: Error): Crypto {
+        return { ...workload.crypto, aes256GcmDecrypt: () => Promise.reject(error) };
+    }
+
+    const CASES: [string, Error, string][] = [
+        ["UNSUPPORTED", new CapabilityError("UNSUPPORTED"), "UNSUPPORTED"],
+        [
+            "UNSUPPORTED_ALGORITHM",
+            new CapabilityError("UNSUPPORTED_ALGORITHM"),
+            "UNSUPPORTED_ALGORITHM",
+        ],
+        ["INVALID_ARGUMENT", new CapabilityError("INVALID_ARGUMENT"), "INVALID_ARGUMENT"],
+        ["a non-capability error", new TypeError("adapter bug"), "INVALID_RESPONSE"],
+    ];
+
+    it.each(CASES)("readOpenResult maps %s to CRYPTO_UNAVAILABLE", async (_n, error, detail) => {
+        const body = await sealOpenResult(
+            workload.crypto,
+            KEY,
+            SESSION,
+            REQUEST,
+            map({ ok: true, payload: null }),
+        );
+        await expect(
+            readOpenResult(failingDecrypt(error), KEY, REQUEST, body, TEST_LIMITS),
+        ).rejects.toEqual(new ChannelError("CRYPTO_UNAVAILABLE", detail as never));
+    });
+
+    it.each(CASES)("readFrameResult maps %s to CRYPTO_UNAVAILABLE", async (_n, error, detail) => {
+        const body = await sealFrameResult(
+            workload.crypto,
+            KEY,
+            SESSION,
+            1,
+            "test.echo",
+            map({ re: 0, ok: true, payload: null }),
+        );
+        const thrown: unknown = await readFrameResult(
+            failingDecrypt(error),
+            KEY,
+            SESSION,
+            0,
+            0,
+            body,
+            TEST_LIMITS,
+        ).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(ChannelError);
+        expect([(thrown as ChannelError).code, (thrown as ChannelError).detail]).toEqual([
+            "CRYPTO_UNAVAILABLE",
+            detail,
+        ]);
+    });
+
+    it.each(CASES)("openT2cFrame maps %s to CRYPTO_UNAVAILABLE", async (_n, error, detail) => {
+        const body = await sealFrameResult(
+            workload.crypto,
+            KEY,
+            SESSION,
+            1,
+            "test.echo",
+            map({ re: 0, ok: true, payload: null }),
+        );
+        const thrown: unknown = await openT2cFrame(
+            failingDecrypt(error),
+            KEY,
+            0,
+            body,
+            TEST_LIMITS,
+        ).catch((e: unknown) => e);
+        expect([(thrown as ChannelError).code, (thrown as ChannelError).detail]).toEqual([
+            "CRYPTO_UNAVAILABLE",
+            detail,
+        ]);
+    });
+
+    it("a request fails CRYPTO_UNAVAILABLE instead of timing out", async () => {
+        let fail = false;
+        const inner = workload.crypto;
+        const session = await connect(TEST_LIMITS, {
+            ...inner,
+            aes256GcmDecrypt: (key, n, aad, ct) =>
+                fail
+                    ? Promise.reject(new CapabilityError("UNSUPPORTED"))
+                    : inner.aes256GcmDecrypt(key, n, aad, ct),
+        });
+        fail = true;
+        const error = await failure(session.request("test.echo", echo(0)));
+        expect([error.code, error.detail]).toEqual(["CRYPTO_UNAVAILABLE", "UNSUPPORTED"]);
+    });
+});
+
 describe("criterion 10: close", () => {
     async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
         const spy = keySpy(workload.crypto);

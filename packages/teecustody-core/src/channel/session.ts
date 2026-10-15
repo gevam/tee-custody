@@ -94,7 +94,8 @@ function decodeOrUndefined(
     }
 }
 
-// The t2c plaintext, or undefined when the AEAD check fails (the queue is untrusted: ignore).
+// The t2c plaintext, or undefined when the AEAD check fails (AUTHENTICATION_FAILED: the queue is untrusted,
+// ignore). Any other decrypt-port failure is fail-closed CRYPTO_UNAVAILABLE (INC-2-API §7.5).
 async function openT2c(
     crypto: Pick<Crypto, "aes256GcmDecrypt">,
     key: Bytes,
@@ -103,9 +104,12 @@ async function openT2c(
     ct: Bytes,
 ): Promise<Bytes | undefined> {
     try {
-        return await crypto.aes256GcmDecrypt(key, nonce(seq), aadBytes, ct);
-    } catch {
-        return undefined;
+        return await viaCrypto(() => crypto.aes256GcmDecrypt(key, nonce(seq), aadBytes, ct));
+    } catch (error) {
+        if ((error as ChannelError).detail === "AUTHENTICATION_FAILED") {
+            return undefined;
+        }
+        throw error;
     }
 }
 
