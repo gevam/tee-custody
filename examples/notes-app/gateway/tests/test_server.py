@@ -6,7 +6,6 @@ sockets. Every wait is bounded, every socket is closed and every server is stopp
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import socket
@@ -598,8 +597,10 @@ WRITE_TIMEOUT_S = 3.0
 
 
 def _protocol(
-    *, max_connections: int = 64, others: int = 0
+    *, max_connections: int = 64, others: int = 0, conn: object | None = None
 ) -> tuple[Any, FakeLoop, FakeTransport, ServerState]:
+    """A gateway protocol on fakes, after `connection_made`. With `conn`, that stub replaces the
+    h11 connection before `connection_made`, so its `our_state` then is the recorded idle state."""
     limits = GatewayLimits(
         header_read_timeout_s=HOOK_TIMEOUT_S,
         max_connections=max_connections,
@@ -611,6 +612,8 @@ def _protocol(
     loop, transport, state = FakeLoop(), FakeTransport(), ServerState()
     state.connections.update(object() for _ in range(others))  # type: ignore[misc]
     protocol = config.http(config=config, server_state=state, app_state={}, _loop=loop)
+    if conn is not None:
+        protocol.conn = conn
     protocol.connection_made(transport)
     return protocol, loop, transport, state
 
@@ -683,27 +686,33 @@ def test_response_completion_rearms_for_the_completed_cycle_before_uvicorn_runs(
     assert state.total_requests == 1
 
 
+# Distinct stand-ins for h11's server states; the protocol compares them by identity only.
+IDLE, SEND_RESPONSE, SEND_BODY, DONE = (object() for _ in range(4))
+
+
+def _cycle(*, started: bool, complete: bool, more_body: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        response_started=started, response_complete=complete, more_body=more_body
+    )
+
+
 @pytest.mark.parametrize(
-    ("cycle", "written"),
+    ("cycle", "our_state", "written"),
     [
-        (None, [PARSE_FAILURE_400]),
-        (SimpleNamespace(response_started=True, response_complete=False, more_body=False), []),
-        (
-            SimpleNamespace(response_started=False, response_complete=False, more_body=False),
-            [PARSE_FAILURE_400],
-        ),
-        (
-            SimpleNamespace(response_started=True, response_complete=True, more_body=False),
-            [PARSE_FAILURE_400],
-        ),
+        (None, IDLE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=False), SEND_BODY, []),
+        (_cycle(started=False, complete=False), SEND_RESPONSE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=True), IDLE, [PARSE_FAILURE_400]),
     ],
     ids=["no cycle", "started, not complete", "not started", "started and complete"],
 )
 def test_send_400_response_never_interleaves_with_a_response_in_progress(
-    cycle: SimpleNamespace | None, written: list[bytes], records: Records
+    cycle: SimpleNamespace | None, our_state: object, written: list[bytes], records: Records
 ) -> None:
-    protocol, _loop, transport, _ = _protocol()
+    conn = SimpleNamespace(our_state=IDLE)
+    protocol, _loop, transport, _ = _protocol(conn=conn)
     protocol.cycle = cycle
+    conn.our_state = our_state
 
     protocol.send_400_response("Invalid HTTP request received.")
 
@@ -854,23 +863,35 @@ def test_readme_documents_uvicorn_config_parse_failures_and_the_connection_cap()
         assert outcome in readme
 
 
-# --------------------------------------------------------- criterion 18: no unsolicited 400 (A4.1)
+# ------------------------------------------- criterion 18: no unsolicited 400 (A4.1, amended by A6)
+# The no-write rows (a response in progress; a response sent while the same request's body still
+# arrives) cannot be reached live: a Content-Length body cannot fail to parse, a chunked body is
+# refused at step 0 (criterion 22) and every gateway response is a single message. This fake
+# transport is their only coverage; the live rows below reach the write branch.
 @pytest.mark.parametrize(
-    ("started", "complete", "more_body", "written"),
+    ("cycle", "our_state", "written"),
     [
-        (True, True, True, []),
-        (True, True, False, [PARSE_FAILURE_400]),
-        (False, False, True, [PARSE_FAILURE_400]),
+        (None, IDLE, [PARSE_FAILURE_400]),
+        (_cycle(started=False, complete=False, more_body=True), SEND_RESPONSE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=False, more_body=True), SEND_BODY, []),
+        (_cycle(started=True, complete=True, more_body=True), DONE, []),
+        (_cycle(started=True, complete=True, more_body=True), IDLE, [PARSE_FAILURE_400]),
     ],
-    ids=["complete, body still arriving", "complete, body done", "not started, body arriving"],
+    ids=[
+        "no cycle, IDLE",
+        "not started",
+        "started, SEND_BODY",
+        "complete, DONE (own body still arriving)",
+        "complete, IDLE (next cycle started; stale more_body)",
+    ],
 )
-def test_send_400_response_writes_only_when_no_response_is_owed_or_sent_early(
-    started: bool, complete: bool, more_body: bool, written: list[bytes], records: Records
+def test_send_400_response_writes_only_when_no_response_has_begun_for_the_parsed_request(
+    cycle: SimpleNamespace | None, our_state: object, written: list[bytes], records: Records
 ) -> None:
-    protocol, _loop, transport, _ = _protocol()
-    protocol.cycle = SimpleNamespace(
-        response_started=started, response_complete=complete, more_body=more_body
-    )
+    conn = SimpleNamespace(our_state=IDLE)
+    protocol, _loop, transport, _ = _protocol(conn=conn)
+    protocol.cycle = cycle
+    conn.our_state = our_state
 
     protocol.send_400_response("Invalid HTTP request received.")
 
@@ -897,36 +918,33 @@ def _read_one_response(sock: socket.socket, bound_s: float = IO_BOUND_S) -> byte
         data += chunk
 
 
-CHUNKED_BODY_STILL_ARRIVING = {
-    "GET /bundles": b"GET /bundles HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
-    b"5\r\nhello\r\n",
-    "POST /requests": f"POST /requests/{INSTANCE} HTTP/1.1\r\nHost: x\r\n".encode()
-    + b"Content-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
-    + b"5\r\nhello\r\n",
-}
+EARLY_404 = b"POST /nope HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n"
+NOT_FOUND = b'{"code":"NOT_FOUND"}'
 
 
-@pytest.mark.parametrize(
-    ("payload", "queue_calls"),
-    # Since A4.5 a Transfer-Encoding request is refused before routing: no queue call either way.
-    list(zip(CHUNKED_BODY_STILL_ARRIVING.values(), (0, 0), strict=True)),
-    ids=CHUNKED_BODY_STILL_ARRIVING.keys(),
-)
-def test_a_parse_failure_after_a_complete_response_writes_no_second_response(
-    payload: bytes, queue_calls: int, gateway: Callable[..., LiveGateway]
+@pytest.mark.parametrize("gap_s", [None, 0.05], ids=["one write", "two writes 50 ms apart"])
+def test_a_malformed_request_after_an_early_404_gets_the_json_400(
+    gap_s: float | None, gateway: Callable[..., LiveGateway], records: Records
 ) -> None:
     live = gateway()
     sock = live.connect()
-    sock.sendall(payload)
+    sock.sendall(EARLY_404)
     first = _read_one_response(sock)
+    assert _parse(first)[0::2] == (404, NOT_FOUND)
     start = time.perf_counter()
-    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-        sock.sendall(b"zz\r\n")
+    if gap_s is None:
+        sock.sendall(b"12345GARBAGE\x00\x01\r\n\r\n")
+    else:
+        sock.sendall(b"12345")
+        time.sleep(gap_s)
+        sock.sendall(b"GARBAGE\x00\x01\r\n\r\n")
 
     rest, _ = read_to_eof(sock, start, IO_BOUND_S)
 
-    assert (first + rest).count(b"HTTP/1.1 ") == 1
-    assert live.relay.calls == queue_calls
+    assert rest == PARSE_FAILURE_400
+    assert (first + rest).count(b"HTTP/1.1 ") == 2
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_NOT_FOUND", "GATEWAY_INVALID_ARGUMENT"]
 
 
 # ----------------------------------------------------------- criterion 22: Transfer-Encoding (A4.5)

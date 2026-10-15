@@ -35,8 +35,11 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
     class _GatewayProtocol(_H11Protocol):
         _deadline: asyncio.TimerHandle | None = None
         _write_deadline: asyncio.TimerHandle | None = None
+        _idle_state: object = None
 
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
+            # h11's server state before any request (IDLE), kept for identity checks: no h11 import.
+            self._idle_state = self.conn.our_state
             super().connection_made(transport)
             if len(self.connections) > max_connections:
                 self.transport.close()
@@ -80,14 +83,16 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
 
         def send_400_response(self, msg: str) -> None:
             """The §6 parse-failure answer in place of uvicorn's text/plain body. It is written only
-            when no response has started, or after a complete response to a complete request;
-            otherwise (a response in progress, or one already sent while the body still arrives)
-            nothing is written and the connection is only closed."""
+            when no response has begun for the request being parsed: no cycle, the current response
+            not started, or h11's server state back at IDLE (the previous exchange ended and a new
+            request is being parsed; a parse failure leaves our_state unchanged). Otherwise (a
+            response in progress, or one sent while the same request's body still arrives) nothing
+            is written and the connection is only closed."""
             cycle = self.cycle
             if (
                 cycle is None
                 or not cycle.response_started
-                or (cycle.response_complete and not cycle.more_body)
+                or self.conn.our_state is self._idle_state
             ):
                 self.transport.write(_PARSE_FAILURE_400)
             self.transport.close()
