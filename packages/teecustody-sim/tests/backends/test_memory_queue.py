@@ -308,10 +308,39 @@ def test_responses_older_than_retention_are_dropped() -> None:
     clock.now = START + 100
     queue.publish_response(CLIENT, "02" * 16, b"new")
 
-    clock.now = START + 300
+    clock.now = START + 300.001
     page = queue.pull_responses(CLIENT, None, 10)
 
     assert page == ResponsePage((PublishedResponse("02" * 16, b"new"),), "2")
+
+
+def test_a_request_exactly_at_its_retention_age_is_kept_and_dropped_just_after() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, request_retention_s=300.0, ack_deadline_s=0.0005)
+    queue.publish_bundle(IID_A, b"a", int(START) + 3600)
+    queue.publish_request(IID_A, "01" * 16, b"edge")
+
+    clock.now = START + 300
+    at_retention = queue.pull_requests(IID_A, 10, 0.0)
+    clock.now = START + 300.001  # visible again, but now older than its retention
+    after = queue.pull_requests(IID_A, 10, 0.0)
+
+    assert [m.body for m in at_retention] == [b"edge"]
+    assert after == []
+
+
+def test_a_response_exactly_at_its_retention_age_is_kept_and_dropped_just_after() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, response_retention_s=300.0)
+    queue.publish_response(CLIENT, "01" * 16, b"edge")
+
+    clock.now = START + 300
+    at_retention = queue.pull_responses(CLIENT, None, 10)
+    clock.now = START + 300.001
+    after = queue.pull_responses(CLIENT, None, 10)
+
+    assert [r.body for r in at_retention.responses] == [b"edge"]
+    assert after == ResponsePage((), None)
 
 
 def test_full_request_topic_is_unavailable_until_it_drains() -> None:
@@ -339,7 +368,7 @@ def test_full_response_topic_is_unavailable_until_retention_drains_it() -> None:
 
     with pytest.raises(QueueError) as caught:
         queue.publish_response(CLIENT, "03" * 16, b"3")
-    clock.now = START + 300
+    clock.now = START + 300.001
     queue.publish_response(CLIENT, "03" * 16, b"3")
 
     assert _code(caught) is QueueErrorCode.UNAVAILABLE
@@ -378,7 +407,7 @@ def test_a_drained_route_is_released_and_its_stale_cursor_still_sees_new_respons
     _five_responses(queue)
     cursor = queue.pull_responses(CLIENT, None, 10).next
 
-    clock.now = START + 300
+    clock.now = START + 300.001
     assert queue.pull_responses(CLIENT, cursor, 10) == ResponsePage((), None)
     assert queue._routes == {}  # SR-4: no per-client state outlives its responses
     queue.publish_response(CLIENT, "06" * 16, b"after-drain")

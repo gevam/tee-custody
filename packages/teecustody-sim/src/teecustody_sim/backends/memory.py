@@ -233,14 +233,14 @@ class InMemoryQueue:
         stale = [
             message_id
             for message_id, request in self._requests.items()
-            if now - request.message.published_at >= self._request_retention_s
+            if now - request.message.published_at > self._request_retention_s
         ]
         for message_id in stale:
             del self._requests[message_id]
         for client_id, route in list(self._routes.items()):
             while (
                 route.responses
-                and now - route.responses[0].published_at >= self._response_retention_s
+                and now - route.responses[0].published_at > self._response_retention_s
             ):
                 route.responses.popleft()
                 self._response_depth -= 1
