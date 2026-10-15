@@ -754,3 +754,53 @@ def test_layout_accept_cases_use_the_suite_workload_and_the_seq_boundary(
     assert layouts["hpke_info_accept"]["inputs"]["ik_pub"] == valid.ik_pub
     assert layouts["session_nonce_accept"]["inputs"]["seq"] == MAX_UNIX_S
     assert layouts["session_nonce_seq_range"]["inputs"]["seq"] == OVER_MAX
+
+
+# --- per-run keys and no state (criterion 6) -------------------------------------------------
+
+
+def _key_material(suite: dict[str, Any]) -> set[bytes]:
+    """Every key, key-derived value and random id the suite carries."""
+    found: set[bytes] = set()
+    for case in suite["opens"]:
+        found |= {case["recipient_private_key"], case["ik_pub"]}
+        found |= {case[name] for name in ("sk_c2t", "sk_t2c") if case[name] is not None}
+    found |= {case["key"] for case in [*suite["frames"], *suite["results"]]}
+    found |= {case["request_id"] or case["session_id"] for case in suite["results"]}
+    for case in suite["bundles"]:
+        found.add(case["instance_id"].encode())
+        if case["error_code"] != "MALFORMED":
+            bundle = decode_bundle(case["bundle"], BUNDLE_DECODE_LIMITS)
+            found |= {bundle.ik_pub, bundle.token.encode(), *(p.pub for p in bundle.prekeys)}
+    found |= set(suite["http"].values())
+    return found
+
+
+def test_two_runs_share_no_key_and_never_touch_a_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suite_path: Path
+) -> None:
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(cwd)
+    first = generate_channel_suite(tmp_path / "one", now=NOW)
+    second = generate_channel_suite(tmp_path / "two", now=NOW)
+
+    assert _key_material(_load(first)).isdisjoint(_key_material(_load(second)))
+    assert len(_key_material(_load(first))) > 10
+    for path in (first, second, suite_path):
+        data = path.read_bytes()
+        assert b"PRIVATE KEY" not in data
+        assert b"-----BEGIN" not in data
+    created = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert created == [
+        Path("cwd"),
+        Path("home"),
+        Path("one"),
+        Path("one", "channel"),
+        Path("one", "channel", "suite.cbor"),
+        Path("two"),
+        Path("two", "channel"),
+        Path("two", "channel", "suite.cbor"),
+    ]
