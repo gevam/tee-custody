@@ -64,3 +64,4 @@
 - T-30: Channel vector suite (spec/vectors/channel/suite.cbor)
 - T-28: ChannelServer
 - T-29: RunLoop
+- T-35: teecustody-profile check-discovery and scheduled discovery-binding job
