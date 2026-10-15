@@ -767,3 +767,21 @@ def test_a_header_block_within_the_limits_gets_200_however_it_is_segmented(
     raw, _ = read_to_eof(sock, start, IO_BOUND_S)
 
     assert _parse(raw)[0::2] == (200, b'{"bundles":[]}')
+
+
+# ------------------------------------------------------------- criterion 10: no upgrade path (live)
+UPGRADE_REQUEST = (
+    b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+    b"Sec-WebSocket-Version: 13\r\n\r\n"
+)
+
+
+def test_a_websocket_upgrade_request_reaches_the_app_and_is_never_upgraded(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(UPGRADE_REQUEST)
+
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    assert live.relay.calls == 1
