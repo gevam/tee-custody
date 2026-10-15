@@ -6,6 +6,7 @@ kills it on teardown, so a hung harness fails the test instead of hanging the su
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -16,10 +17,14 @@ import stat
 import subprocess
 import sys
 import threading
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from teecustody.channel.codec import decode_bundle
+from teecustody.wire import DecodeLimits
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS = REPO_ROOT / "tests" / "e2e" / "channel_harness.py"
@@ -28,6 +33,7 @@ READY_LINE = re.compile(
 )
 READY_TIMEOUT_S = 30.0
 STOP_TIMEOUT_S = 10.0
+BUNDLE_LIMITS = DecodeLimits(max_bytes=65536, max_depth=4, max_items=4096)
 
 
 class RunningHarness:
@@ -121,3 +127,24 @@ def test_prints_one_ready_line_with_parseable_profile_and_private_fixture(
     harness.kill()
     assert harness.lines == [line]
     assert cs_hex not in harness.output()
+
+
+def _get_json(url: str) -> tuple[int, object]:
+    assert url.startswith("http://127.0.0.1:")
+    with urllib.request.urlopen(url, timeout=STOP_TIMEOUT_S) as response:  # noqa: S310 - loopback
+        return response.status, json.loads(response.read())
+
+
+def _unb64url(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def test_gateway_lists_the_one_published_bundle(harness: RunningHarness) -> None:
+    gateway = harness.ready_line().split(" ", 1)[0].removeprefix("gateway=")
+    status, body = _get_json(f"{gateway}/bundles")
+    assert status == 200
+    assert isinstance(body, dict)
+    [listed] = body["bundles"]
+    bundle = decode_bundle(_unb64url(listed["bundle"]), BUNDLE_LIMITS)
+    assert bundle.instance_id == listed["instance_id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", bundle.instance_id)
