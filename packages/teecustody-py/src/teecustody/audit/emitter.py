@@ -174,7 +174,11 @@ class AuditEmitter:
         self._retry_pending()
         now = self._now_ms()
         end = self._start + self._interval_ms
-        if now >= end:
+        if now < self._start:
+            self._logger.warning("AUDIT_CLOCK_BACKWARD")
+            self._flush(end, now)  # nominal end keeps interval_start < interval_end
+            self._start = now
+        elif now >= end:
             self._flush(end, now)
             skipped = (now - self._start) // self._interval_ms  # empty intervals after a clock jump
             self._start += skipped * self._interval_ms

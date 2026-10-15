@@ -458,3 +458,23 @@ def test_protected_pending_is_bounded_at_256_dropping_the_oldest() -> None:
     emitter.tick()
     written = [r.request_id for _, r in sink.of(AuditClass.ALERT)]
     assert written == [_subject(i) for i in range(1, PROTECTED_PENDING_MAX + 1)]
+
+
+def test_a_backward_clock_ends_the_interval_at_its_nominal_end_and_restarts_at_now() -> None:
+    emitter, sink, clock, logger = _make()
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    clock.now = START - 500
+    emitter.tick()
+    [(key, record)] = sink.of(AuditClass.AGGREGATE)
+    assert (record.interval_start, record.interval_end) == (START_MS, START_MS + INTERVAL_MS)
+    assert record.count == 1
+    assert key.id.startswith(f"{START_MS}/OPEN_FAILED/")
+    assert logger.lines == [("warning", "AUDIT_CLOCK_BACKWARD", {})]
+    emitter.tick()
+    assert logger.lines == [("warning", "AUDIT_CLOCK_BACKWARD", {})]
+    emitter.count(AggregateOutcome.OPEN_FAILED)
+    clock.now = START - 500 + INTERVAL_S
+    emitter.tick()
+    second = sink.of(AuditClass.AGGREGATE)[1][1]
+    restart = START_MS - 500_000
+    assert (second.interval_start, second.interval_end) == (restart, restart + INTERVAL_MS)
