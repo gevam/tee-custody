@@ -121,10 +121,17 @@ const isAllowedCrypto = (imported) =>
     imported.path === HPKE_CRYPTO_EXTERNALS.output.path &&
     imported.kind === HPKE_CRYPTO_EXTERNALS.output.kind;
 
-// pnpm paths carry a node_modules/.pnpm/@hpke+<pkg>@<ver>/ prefix; match on the suffix from @hpke/.
+// A7 (C3a.1, D-051): an @hpke input must come from the pinned pnpm store entries, with the store
+// name and the package name agreeing; the allow-list keys are the path after that store prefix.
+const HPKE_STORE_PATH =
+    /^(?:\.\.\/)*node_modules\/\.pnpm\/@hpke\+(core@1\.9\.0|common@1\.10\.1)\/(node_modules\/@hpke\/(core|common)\/.*)$/s;
+
+const isHpkeInput = (input) => input.includes("/@hpke/") || input.includes("@hpke+");
+
+// The path after the pinned store prefix, or null for an input that is not a pinned @hpke input.
 function hpkeSuffix(input) {
-    const at = input.lastIndexOf("node_modules/@hpke/");
-    return at < 0 ? null : input.slice(at);
+    const match = HPKE_STORE_PATH.exec(input);
+    return match !== null && match[1].startsWith(`${match[3]}@`) ? match[2] : null;
 }
 
 function checkAttribution(metafile, entry, lines) {
@@ -164,6 +171,9 @@ function checkManifest(metafile, entry) {
         }
     }
     for (const input of Object.keys(metafile.inputs)) {
+        if (isHpkeInput(input) && hpkeSuffix(input) === null) {
+            lines.push(`hpke-input-path\t${entry}\t${input}`);
+        }
         if (input.startsWith(PROFILE_INPUTS)) {
             lines.push(`profile-input\t${entry}\t${input}`);
         }
@@ -174,7 +184,7 @@ function checkManifest(metafile, entry) {
 export function checkMetafile(metafile, entry) {
     const lines = [];
     const webScan = Object.keys(metafile.inputs).some((input) =>
-        input.includes("node_modules/@hpke/common/"),
+        hpkeSuffix(input)?.startsWith("node_modules/@hpke/common/"),
     );
     let allowed = 0;
     for (const output of Object.values(metafile.outputs)) {

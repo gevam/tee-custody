@@ -389,6 +389,40 @@ describe("criterion 9 (C3a.1): the bundle-input manifest", () => {
     });
 });
 
+describe("criterion 15 (A7, C3a.1): @hpke inputs sit under the pinned .pnpm prefixes", () => {
+    it("meta-hpke-path-planted exits 1 with hpke-input-path", () => {
+        assert.deepEqual(checkMetafile(meta("meta-hpke-path-planted"), ENTRY), {
+            code: 1,
+            lines: [`hpke-input-path\t${ENTRY}\tnode_modules/@hpke/common/esm/src/utils/noble.js`],
+        });
+    });
+
+    for (const input of [
+        "node_modules/.pnpm/@hpke+common@1.10.2/node_modules/@hpke/common/esm/src/consts.js",
+        "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/common/esm/src/consts.js",
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/core/esm/mod.js",
+        "src/node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/mod.js",
+        "vendor/@hpke+core@1.9.0/mod.js",
+        "packages/x/@hpke/core.js",
+    ]) {
+        it(`rejects ${input}`, () => {
+            const metafile = { inputs: { [input]: { bytes: 1, imports: [] } }, outputs: {} };
+            assert.deepEqual(checkMetafile(metafile, ENTRY), {
+                code: 1,
+                lines: [`hpke-input-path\t${ENTRY}\t${input}`],
+            });
+        });
+    }
+
+    it("leaves inputs that are not @hpke alone", () => {
+        const metafile = {
+            inputs: { "node_modules/hpke/x.js": { bytes: 1, imports: [] } },
+            outputs: {},
+        };
+        assert.deepEqual(checkMetafile(metafile, ENTRY), { code: 0, lines: [] });
+    });
+});
+
 describe("criterion 10 (§16.5 D4): no trust-profile input in the bundle", () => {
     it("meta-profile-input exits 1 with profile-input", () => {
         assert.deepEqual(checkMetafile(meta("meta-profile-input"), ENTRY), {
@@ -520,14 +554,13 @@ describe("edge cases: the metafile checks", () => {
         ]);
     });
 
-    it("matches inputs by their suffix from @hpke/ in a flat node_modules layout", () => {
-        const flat = (text) => text.replace(/node_modules\/\.pnpm\/[^/]+\//g, "");
-        const metafile = JSON.parse(flat(JSON.stringify(meta("meta-clean"))));
-        assert.deepEqual(checkMetafile(metafile, ENTRY), { code: 0, lines: [] });
-        const grown = JSON.parse(flat(JSON.stringify(meta("meta-fragment-grew"))));
-        assert.equal(checkMetafile(grown, ENTRY).lines[0].split("\t")[0], "hpke-fragment-grew");
+    it("accepts the pinned .pnpm prefixes after any number of ../", () => {
+        const metafile = meta("meta-clean");
+        const moved = JSON.parse(
+            JSON.stringify(metafile).replaceAll("node_modules/.pnpm/", "../../node_modules/.pnpm/"),
+        );
+        assert.deepEqual(checkMetafile(moved, ENTRY), { code: 0, lines: [] });
     });
-
     it("exits 2 when C7a.1 and C3a.1 both fail, printing both", () => {
         const metafile = meta("meta-curve-bytes");
         Object.values(metafile.outputs)[0].imports = [];
