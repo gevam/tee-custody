@@ -25,6 +25,7 @@ import pytest
 import uvicorn
 
 from notes_gateway import GatewayLimits, create_app, dev
+from teecustody.obs import JsonLogFormatter
 
 READY_TIMEOUT_S = 30.0
 STOP_TIMEOUT_S = 10.0
@@ -240,26 +241,43 @@ def test_main_accepts_a_loopback_host_without_the_flag(
 
 
 @pytest.fixture(autouse=True)
-def restore_obs_logging() -> Iterator[None]:
-    """`main` points the `teecustody` logger at the captured stderr; put it back afterwards."""
-    from teecustody.obs import logger as obs_logger
-
+def logging_spy(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[Any, int]]]:
+    """Replaces `dev.configure_logging` with a spy built on public names only. The spy records
+    `(stream, level)` and puts a JSON handler on that stream in place of its previous one.
+    Teardown removes every handler it added and restores the `teecustody` logger's level. The
+    subprocess criterion-7 test keeps the real `configure_logging` path covered."""
     base = logging.getLogger("teecustody")
-    saved = (list(base.handlers), base.level, obs_logger._handler)
+    saved_level = base.level
+    calls: list[tuple[Any, int]] = []
+    added: list[logging.Handler] = []
+
+    def spy(stream: Any, level: int) -> None:
+        calls.append((stream, level))
+        for previous in added:  # like configure_logging: one handler at a time
+            base.removeHandler(previous)
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(JsonLogFormatter())
+        added.append(handler)
+        base.addHandler(handler)
+        base.setLevel(level)
+
+    monkeypatch.setattr(dev, "configure_logging", spy)
     try:
-        yield
+        yield calls
     finally:
-        base.handlers[:] = saved[0]
-        base.setLevel(saved[1])
-        obs_logger._handler = saved[2]
+        for handler in added:
+            base.removeHandler(handler)
+        base.setLevel(saved_level)
 
 
 def test_main_with_the_flag_warns_on_every_start(
-    no_bind: _Recorder, capsys: pytest.CaptureFixture[str]
+    no_bind: _Recorder, capsys: pytest.CaptureFixture[str], logging_spy: list[tuple[Any, int]]
 ) -> None:
     argv = ["--host", "192.0.2.1", "--port", "0", "--allow-non-loopback"]
-    for _ in range(2):
+    for start in range(1, 3):
         assert dev.main(argv) == 1
+        assert len(logging_spy) == start
+        assert logging_spy[-1] == (sys.stderr, logging.WARNING)
         assert no_bind.configs[-1].host == "192.0.2.1"
         lines = capsys.readouterr().err.splitlines()
         assert len(lines) == 1
