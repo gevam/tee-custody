@@ -281,3 +281,49 @@ describe("no retry on other sender errors (criterion 5, R2.4)", () => {
         expect(createSender).not.toHaveBeenCalled();
     });
 });
+
+/** The log entries that follow each failing sender generateKey, up to the next generateKey. */
+function afterFailures(log: readonly string[]): string[][] {
+    const runs: string[][] = [];
+    log.forEach((entry, index) => {
+        if (entry === "generateKey X25519 sender fail") {
+            const rest = log.slice(index + 1);
+            const next = rest.findIndex((e) => e.startsWith("generateKey "));
+            runs.push(next === -1 ? rest : rest.slice(0, next));
+        }
+    });
+    return runs;
+}
+
+describe("a failed attempt leaves nothing (criterion 6, C8.4 a)", () => {
+    it("follows every failing sender generateKey by another generateKey or the end of the call", async () => {
+        const { pk } = x25519();
+        for (const fails of [
+            (call: number) => call === 2,
+            (call: number) => call === 2 || call === 3,
+        ]) {
+            const h = harness(fails);
+            const crypto = createWebCrypto();
+            await crypto.setupHpkeSender(pk, INFO);
+            const runs = afterFailures(h.log);
+            expect(runs.length).toBeGreaterThan(0);
+            for (const run of runs) {
+                expect(run).toEqual([]);
+            }
+            vi.restoreAllMocks();
+        }
+    });
+
+    it("makes no exportKey or deriveBits after the probe when every sender attempt fails", async () => {
+        const { pk } = x25519();
+        const h = harness((call) => call > 1);
+        const crypto = createWebCrypto();
+        await rejection(crypto.setupHpkeSender(pk, INFO));
+        const afterProbe = h.log.slice(h.log.indexOf("generateKey X25519 probe ok") + 1);
+        expect(afterProbe).toEqual([
+            "generateKey X25519 sender fail",
+            "generateKey X25519 sender fail",
+            "generateKey X25519 sender fail",
+        ]);
+    });
+});
