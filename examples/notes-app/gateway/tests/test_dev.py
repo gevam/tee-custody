@@ -6,6 +6,7 @@ Every test that starts a server has a bounded wait and stops it on teardown.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import runpy
@@ -153,8 +154,9 @@ def test_main_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
     assert config.access_log is False
     assert "forwarded_allow_ips" not in recorder.config_kwargs[0]
     assert (config.host, config.port) == ("127.0.0.1", 0)
-    match = GATEWAY_LINE.fullmatch(capsys.readouterr().out.rstrip("\n"))
-    assert match is not None
+    captured = capsys.readouterr()
+    assert GATEWAY_LINE.fullmatch(captured.out.rstrip("\n")) is not None
+    assert captured.err == ""
 
 
 @pytest.fixture
@@ -196,25 +198,25 @@ def test_running_the_module_as_main_exits_with_mains_status(
     assert capsys.readouterr().out == ""
 
 
-_NON_LOOPBACK = ("192.0.2.1", "0.0.0.0", "::", "", "127.1", "example.com", "::ffff:127.0.0.1")  # noqa: S104 - refused hosts
-
-
-@pytest.mark.parametrize("host", _NON_LOOPBACK)
-def test_main_refuses_a_non_loopback_host_without_the_flag(
-    host: str, recorder: _Recorder, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert dev.main(["--host", host, "--port", "0"]) == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == "NON_LOOPBACK_NOT_ALLOWED\n"
-    assert recorder.configs == []
-
-
 @pytest.fixture
 def no_bind(recorder: _Recorder, monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     """The `recorder` with `uvicorn.Server.run` a no-op: nothing binds and uvicorn logs nothing."""
     monkeypatch.setattr(uvicorn.Server, "run", lambda self, sockets=None: None)
     return recorder
+
+
+_NON_LOOPBACK = ("192.0.2.1", "0.0.0.0", "::", "", "127.1", "example.com", "::ffff:127.0.0.1")  # noqa: S104 - refused hosts
+
+
+@pytest.mark.parametrize("host", _NON_LOOPBACK)
+def test_main_refuses_a_non_loopback_host_without_the_flag(
+    host: str, no_bind: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert dev.main(["--host", host, "--port", "0"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "NON_LOOPBACK_NOT_ALLOWED\n"
+    assert no_bind.configs == []
 
 
 @pytest.mark.parametrize("host", ["127.5.6.7", "localhost", "::1"])
@@ -224,3 +226,33 @@ def test_main_accepts_a_loopback_host_without_the_flag(
     assert dev.main(["--host", host, "--port", "0"]) == 1
     assert no_bind.configs[0].host == host
     assert capsys.readouterr().err == ""
+
+
+@pytest.fixture(autouse=True)
+def restore_obs_logging() -> Iterator[None]:
+    """`main` points the `teecustody` logger at the captured stderr; put it back afterwards."""
+    from teecustody.obs import logger as obs_logger
+
+    base = logging.getLogger("teecustody")
+    saved = (list(base.handlers), base.level, obs_logger._handler)
+    try:
+        yield
+    finally:
+        base.handlers[:] = saved[0]
+        base.setLevel(saved[1])
+        obs_logger._handler = saved[2]
+
+
+def test_main_with_the_flag_warns_on_every_start(
+    no_bind: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["--host", "192.0.2.1", "--port", "0", "--allow-non-loopback"]
+    for _ in range(2):
+        assert dev.main(argv) == 1
+        assert no_bind.configs[-1].host == "192.0.2.1"
+        lines = capsys.readouterr().err.splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["level"] == "WARNING"
+        assert record["logger"] == "teecustody.gateway"
+        assert record["outcome"] == "SIM_NON_LOOPBACK_BIND"

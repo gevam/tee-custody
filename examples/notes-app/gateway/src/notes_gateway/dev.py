@@ -7,6 +7,7 @@ the server header and the access log off (INC-2-API §6 "Server configuration").
 import argparse
 import contextlib
 import ipaddress
+import logging
 import signal
 import sys
 import threading
@@ -16,6 +17,7 @@ from types import FrameType
 import uvicorn
 
 from notes_gateway.app import create_app
+from teecustody.obs import configure_logging, get_logger
 
 _LOOPBACK_V4 = ipaddress.IPv4Network("127.0.0.0/8")
 _LOOPBACK_V6 = ipaddress.IPv6Address("::1")
@@ -52,6 +54,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not options.allow_non_loopback and not _is_loopback(options.host):
         sys.stderr.write("NON_LOOPBACK_NOT_ALLOWED\n")
         return 2
+    configure_logging(sys.stderr, logging.WARNING)
+    if options.allow_non_loopback:
+        get_logger("gateway").warning("SIM_NON_LOOPBACK_BIND")
     config = uvicorn.Config(
         create_app(InMemoryQueue()),
         host=options.host,
