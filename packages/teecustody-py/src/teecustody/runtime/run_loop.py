@@ -114,6 +114,7 @@ class RunLoop:
         self._logger = logger if logger is not None else get_logger("runtime")
         self._instance_id = rng(16).hex()
         self._live: _Live | None = None
+        self._started = False
         self._refresh_failures = 0
         self._next_refresh_attempt_at = float("-inf")
         self._pull_failures = 0
@@ -125,6 +126,9 @@ class RunLoop:
         return self._instance_id
 
     def start(self) -> None:
+        if self._started:  # single-use: nothing live is ever replaced or wiped here (A1)
+            raise RuntimeError("ALREADY_STARTED")
+        self._started = True
         ik = IdentityKey.generate()
         lifecycle = AttestationLifecycle(
             self._launcher,

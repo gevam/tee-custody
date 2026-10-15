@@ -1022,3 +1022,36 @@ def test_c3_expiry_during_the_refresh_call_shuts_down_then_stops(
 
     assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
     assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+# ---------------------------------------------------------------- criterion 13 (A1): misuse guards
+def test_c13_a_second_start_is_refused_and_leaves_live_state_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    sk_c2t = open_session(world)
+    prekeys = world.server.kwargs["prekeys"]
+    entries = prekeys.public_entries()
+
+    with pytest.raises(RuntimeError, match="ALREADY_STARTED"):
+        world.loop.start()
+
+    assert len(FakeServer.instances) == 1
+    assert len(world.launcher.calls) == 1
+    assert len(world.queue.bundles) == 1
+    assert prekeys.public_entries() == entries
+    assert not sk_c2t.wiped
+    assert world.server.kwargs["sessions"].get(SESSION_ID) is not None
+    assert world.loop.tick().processed == 0  # still the same live loop
+
+
+def test_c13_start_after_shutdown_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch)
+    world.loop.shutdown()
+
+    with pytest.raises(RuntimeError, match="ALREADY_STARTED"):
+        world.loop.start()
+
+    assert len(world.launcher.calls) == 1
+    with pytest.raises(RuntimeError, match="NOT_STARTED"):
+        world.loop.tick()
