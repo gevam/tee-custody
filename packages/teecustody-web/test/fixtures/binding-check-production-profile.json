@@ -1,0 +1,20 @@
+{
+    "profile_version": 2,
+    "profile_kind": "production",
+    "token_type": "OIDC",
+    "issuer": "https://confidentialcomputing.googleapis.com",
+    "jwks_uri": "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com",
+    "expected_audience": "https://binding-check.teecustody.invalid/tee",
+    "token_max_age_s": 3600,
+    "allowed_hwmodels": ["GCP_AMD_SEV"],
+    "allowed_digests": ["sha256:0000000000000000000000000000000000000000000000000000000000000000"],
+    "signer_keys": [
+        {
+            "key_id": "0000000000000000000000000000000000000000000000000000000000000000",
+            "algorithm": "RSASSA_PSS_SHA256"
+        }
+    ],
+    "signers_required": 1,
+    "expected_args_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "expected_env_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+}
