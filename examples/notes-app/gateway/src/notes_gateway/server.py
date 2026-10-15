@@ -27,12 +27,14 @@ _PARSE_FAILURE_400 = (
 
 
 def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
-    """uvicorn's h11 protocol with the §6 header-read deadline and connection cap."""
+    """uvicorn's h11 protocol with the §6 header and write deadlines and the connection cap."""
     header_read_timeout_s = limits.header_read_timeout_s
     max_connections = limits.max_connections
+    write_timeout_s = limits.write_timeout_s
 
     class _GatewayProtocol(_H11Protocol):
         _deadline: asyncio.TimerHandle | None = None
+        _write_deadline: asyncio.TimerHandle | None = None
 
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
             super().connection_made(transport)
@@ -40,12 +42,35 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
                 self.transport.close()
                 _LOG.info("GATEWAY_CONNECTION_LIMIT")
                 return
+            # Any response bytes the kernel cannot take at once pause the writer (D-05).
+            transport.set_write_buffer_limits(high=0)
             self._arm()
 
         def connection_lost(self, exc: Exception | None) -> None:
-            if self._deadline is not None:
-                self._deadline.cancel()
+            for handle in (self._deadline, self._write_deadline):
+                if handle is not None:
+                    handle.cancel()
             super().connection_lost(exc)
+
+        def pause_writing(self) -> None:
+            super().pause_writing()
+            if self._write_deadline is None:
+                self._write_deadline = self.loop.call_later(write_timeout_s, self._write_expired)
+
+        def resume_writing(self) -> None:
+            if self._write_deadline is not None:
+                self._write_deadline.cancel()
+                self._write_deadline = None
+            super().resume_writing()
+
+        def _write_expired(self) -> None:
+            """The peer did not drain buffered output in time: abort (discarding it, as close()
+            would wait for a peer that never reads). uvicorn's connection_lost then ends the
+            request as a client disconnect, so the gateway releases its in-flight slots."""
+            self._write_deadline = None
+            if self.flow.write_paused:
+                self.transport.abort()
+                _LOG.info("GATEWAY_WRITE_TIMEOUT")
 
         def on_response_complete(self) -> None:
             # Arm first: super() may parse a pipelined request, which must start a new cycle.

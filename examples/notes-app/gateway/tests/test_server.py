@@ -560,7 +560,9 @@ class FakeTransport:
     def __init__(self) -> None:
         self.written: list[bytes] = []
         self.closes = 0
+        self.aborts = 0
         self.closing = False
+        self.buffer_limits: list[dict[str, int | None]] = []
 
     def write(self, data: bytes) -> None:
         self.written.append(data)
@@ -568,6 +570,13 @@ class FakeTransport:
     def close(self) -> None:
         self.closes += 1
         self.closing = True
+
+    def abort(self) -> None:
+        self.aborts += 1
+        self.closing = True
+
+    def set_write_buffer_limits(self, high: int | None = None, low: int | None = None) -> None:
+        self.buffer_limits.append({"high": high, "low": low})
 
     def is_closing(self) -> bool:
         return self.closing
@@ -583,12 +592,17 @@ class FakeTransport:
 
 
 HOOK_TIMEOUT_S = 7.0
+WRITE_TIMEOUT_S = 3.0
 
 
 def _protocol(
     *, max_connections: int = 64, others: int = 0
 ) -> tuple[Any, FakeLoop, FakeTransport, ServerState]:
-    limits = GatewayLimits(header_read_timeout_s=HOOK_TIMEOUT_S, max_connections=max_connections)
+    limits = GatewayLimits(
+        header_read_timeout_s=HOOK_TIMEOUT_S,
+        max_connections=max_connections,
+        write_timeout_s=WRITE_TIMEOUT_S,
+    )
     config = gateway_server.uvicorn_config(
         create_app(Relay(), limits=limits), limits=limits, host="127.0.0.1", port=0
     )
@@ -942,3 +956,76 @@ def test_a_transfer_encoded_request_gets_the_json_400_and_the_connection_closes(
     assert headers[b"x-content-type-options"] == b"nosniff"
     assert live.relay.calls == 0
     assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+# ------------------------------------------------------------- criterion 21: write deadline (fakes)
+def test_connection_made_sets_the_write_high_water_mark_to_zero_once() -> None:
+    _proto, _loop, transport, _ = _protocol()
+
+    assert transport.buffer_limits == [{"high": 0, "low": None}]
+
+
+def test_a_connection_closed_by_the_cap_sets_no_write_limits() -> None:
+    _proto, _loop, transport, _ = _protocol(max_connections=64, others=64)
+
+    assert transport.buffer_limits == []
+
+
+def test_pause_writing_arms_exactly_one_write_timer() -> None:
+    protocol, loop, _transport, _ = _protocol()
+
+    protocol.pause_writing()
+    protocol.pause_writing()
+
+    header, write = loop.handles
+    assert (write.delay, write.callback, write.args) == (
+        WRITE_TIMEOUT_S,
+        protocol._write_expired,
+        (),
+    )
+    assert protocol.flow.write_paused
+    assert not header.cancelled
+
+
+def test_resume_writing_cancels_the_write_timer_and_a_new_pause_rearms() -> None:
+    protocol, loop, _transport, _ = _protocol()
+    protocol.pause_writing()
+
+    protocol.resume_writing()
+
+    assert loop.handles[1].cancelled
+    assert not protocol.flow.write_paused
+    protocol.pause_writing()
+    assert len(loop.handles) == 3
+    assert not loop.handles[2].cancelled
+
+
+def test_the_write_timer_does_nothing_once_writing_resumed(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+    protocol.flow.write_paused = False
+
+    loop.handles[1].fire()
+
+    assert (transport.aborts, transport.closes, records.outcomes()) == (0, 0, [])
+    protocol.pause_writing()  # a fired timer is not pending: the next pause arms a new one
+    assert len(loop.handles) == 3
+
+
+def test_the_write_timer_aborts_a_still_paused_connection(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+
+    loop.handles[1].fire()
+
+    assert (transport.aborts, transport.closes, transport.written) == (1, 0, [])
+    assert records.outcomes() == ["GATEWAY_WRITE_TIMEOUT"]
+
+
+def test_connection_lost_cancels_both_timers() -> None:
+    protocol, loop, _transport, _ = _protocol()
+    protocol.pause_writing()
+
+    protocol.connection_lost(None)
+
+    assert [h.cancelled for h in loop.handles] == [True, True]
