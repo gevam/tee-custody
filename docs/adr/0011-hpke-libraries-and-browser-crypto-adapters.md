@@ -605,3 +605,116 @@ have verified attestations").
 recorded registry hashes.
 
 Sign-off: signed by the Security Architect on 2026-10-13, at the recorded integrities (D-051).
+
+### 2026-10-15 — Architect: C8 bounded X25519 key-generation retry (B-45)
+*Appended at Security Architect sign-off, verbatim from docs/tasks/INC-2/B-45-decision.md §8; only the sign-off line
+differs.*
+
+WebKit (Playwright 1.63.0 build) rejects X25519 `generateKey` in about 0.35% of calls. Chromium and Firefox showed 0 in
+2000. `createWebCrypto()` therefore makes at most `X25519_KEYGEN_ATTEMPTS = 3` attempts:
+- (a) for the C3a.3 probe, on any rejection. A failed probe is not cached.
+- (b) for `createSenderContext`, only when it rejects with `@hpke/core` `NotSupportedError` (`generateKeyPair`).
+
+After the attempts are exhausted, the adapter rejects `UNSUPPORTED`. Any other error is not retried. The rules:
+- The count is a private constant. There is no delay and no option.
+- Every attempt is a fresh native `generateKey` inside the library. No `ekm` is passed (C5), and no JS curve or other
+  fallback exists (C3).
+- A failed attempt yields no key material and no output.
+
+Security analysis: docs/tasks/INC-2/B-45-decision.md §6. Residual (Low, availability): about 4×10⁻⁸ per open fails closed
+as `CRYPTO_UNAVAILABLE`.
+Sign-off: Security Architect, 2026-10-15, scoped to C8, with conditions C8.1–C8.7 (next section).
+
+### 2026-10-15 — Security Architect: C8 scoped sign-off (B-45): APPROVED with conditions C8.1–C8.7
+
+**What was reviewed.** docs/tasks/INC-2/B-45-decision.md (main 334c223), the C8 text above, the proposed INC-2-API §8.1
+bullet, `webcrypto.ts` on main, and the pinned library code on the path: `@hpke/core` 1.9.0
+`kems/dhkemPrimitives/x25519.js:115–123` and `cipherSuiteNative.js:177–189`; `@hpke/common` 1.10.1
+`kems/dhkem.js:105–153`, `algorithm.js:3–32` and `errors.js:5–19`. The scope is C8 only. The library decision, the D-045
+admission and the D-051 pins are not reopened.
+
+**Analysis.**
+1. *Retry safety.*
+   - Randomness: every attempt is the library's own native `generateKey` (`x25519.js:118`) on the platform CSPRNG. The
+     `ekm === undefined` branch (`dhkem.js:107`) is the only one taken; there is no seed, `deriveKeyPair` or `ekm`.
+     Attempts are independent and only the successful context is ever used.
+   - No fallback: the suite is fixed to `DhkemX25519HkdfSha256`, whose primitive is `@hpke/core`'s native `X25519`. A
+     retry re-enters the same call. It never reaches another KEM or the vendored JS `xCurve.js` (a class the adapter
+     never constructs). Reachability is unchanged, so the C3a.1 manifest must stay identical (C8.3).
+   - No partial key: `generateKeyPair` is the first step of `encap`. When it throws, nothing is serialized and no DH,
+     key schedule, context or network output exists. Spec §3 "EK: one `Seal`" holds. Core marks the pre-key used once
+     per open before sealing (`open.ts:170`), so the retry consumes no extra pre-key.
+   - `NotSupportedError` has two sources on this path: key generation (`x25519.js:121`) and the Node ≤ 18
+     `import("crypto")` fallback (`algorithm.js:15`), which runs only when `globalThis.crypto` is undefined. C7a.3
+     excludes the second, and the retry makes it no more reachable than attempt 1 already does.
+   - Attacker influence: the only remote input, the bundle pre-key, is deserialized once outside the retry. Its failures
+     are `DeserializeError`, `EncapError` (`dh`) or `SerializeError`, and an oversize `info` gives `InvalidParamError`.
+     None of them is retried. The bound is therefore a constant 3 local `generateKey` calls per open, and no attacker
+     can trigger or amplify it.
+   - Timing: a retry adds latency an observer can see. Failed keys are discarded and attempts are independent, so the
+     latency says nothing about the `EK` that is used. If failures depend on the key value (the unproven 1/256
+     hypothesis), those keys are already excluded today (≤ 0.006 bits). C8 changes availability only.
+2. *Uncached probe failure.* There is no downgrade, because no alternative suite exists and failure stays `UNSUPPORTED`.
+   There is no oracle: the probe is a local capability check with no secret input, and any same-page script can call
+   `subtle` directly. The cost is at most 3 local calls per HPKE call on a platform without X25519. Success is still
+   cached once.
+3. *Error mapping.* `UNSUPPORTED` is already a `CapabilityErrorCode`, and Core already maps it to `CRYPTO_UNAVAILABLE`
+   (INC-2-API §7.5). The category set stays closed and unchanged; only the `detail` moves from a misleading
+   `INVALID_ARGUMENT` to the accurate code. `NotSupportedError` copies the platform's message (`errors.js:9`), so the
+   adapter must keep dropping it (C8.4 c). This is consistent with SR-11, provided §8.1 changes in the same merge (C8.5).
+4. *Scope.* There is no version, integrity, lock, reachability or import-surface change (`NotSupportedError` is an error
+   class, admitted by C3a.2 and the existing semgrep rule). Nothing is on `escalation.always_human`, and it is not a
+   `constraint-deviation` (spec §10.2 and §3 are met). **The Security Architect's sign-off is sufficient. The human is
+   informed of a new Low residual (THREAT_MODEL T-28, C8 row) and does not need to decide.** If C8.2 or C8.3 trips, the
+   work returns here first. It goes to the human only if the D-045 scope would change.
+5. *Schedule.* INC-2, before G6, as the Architect proposes. The cached-probe defect ships in INC-2 code, and T-32 C2 is
+   an SR-13 control that must not stay flaky.
+
+**Conditions (binding on T-39; a task that cannot meet one returns CONTRACT_ISSUE, never a local workaround).**
+- **C8.1 — Semantics exactly as B-45 §5 R1–R3.**
+  - The count is a private constant of 3.
+  - Sender predicate: `instanceof NotSupportedError`, imported from `@hpke/core`. The probe retries on any rejection.
+  - `deserializePublicKey` runs once, outside the retry. The retry wraps only `createSenderContext`, never `seal`,
+    `export`, the receiver, Ed25519, RS256 or AES-GCM.
+  - There is no timer, delay, logging, option or export.
+  - Every attempt passes exactly `{recipientPublicKey, info}`.
+  - Exhaustion gives `CapabilityError("UNSUPPORTED")` with no `cause`.
+- **C8.2 — Evidence gate (B-45 criterion 0).** Stop with CONTRACT_ISSUE in any of these cases:
+  - WebKit's exception `name`/`message` indicates an entropy or RNG fault;
+  - any run of ≥ 3 consecutive failures in the 20,000 calls (under independence the expected count is ≈ 10⁻³);
+  - a raw failure rate above 1%;
+  - the failing operation is not `generateKey`.
+
+  FACTS names the engine exactly (the Playwright WebKit build and its OS). It does not attribute the measurement to
+  Apple Safari.
+- **C8.3 — Reachability unchanged.**
+  - The C3a.1 input manifest is identical to the D-051 table: 43 inputs, 48,911 B, `curve/**` 0 B, `hash/hmac.js`
+    2,698 B, `hash/sha3.js` 622 B.
+  - The C7a.1 external entry is unchanged, and T-27 is green.
+  - Any difference stops the task.
+- **C8.4 — Tests.** They are deterministic and inject faults with `vi.spyOn(globalThis.crypto.subtle, "generateKey")`,
+  rejecting with a `DOMException` of the name recorded under C8.2. Required: B-45 criteria 1–7, plus:
+  - (a) A failed attempt leaves nothing. Between a failing sender `generateKey` and the next attempt there are zero
+    global `exportKey`/`deriveBits` calls. When every attempt fails, the sender makes zero such calls and returns no
+    context.
+  - (b) Native only. In the transient test, every `deriveBits` names `X25519`, with exactly one per successful encap
+    (the C3a.3 spy). Every `generateKey` attempt goes to `globalThis.crypto.subtle` with `X25519`.
+  - (c) SR-11 sentinel. The injected exception message carries a sentinel. The resulting `CapabilityError` has
+    `message === code` and no `cause`, and neither `String(error)` nor any own property contains the sentinel. This
+    applies to the `UNSUPPORTED` exhaustion path and to the `INVALID_ARGUMENT` no-retry path.
+  - (d) Concurrency. Run two concurrent HPKE calls while the first probe fails, then restore X25519. Neither call
+    overwrites a cached success, and after success at most one `CipherSuite` exists.
+  - (e) The B-45 mutation self-check, in the Task Report.
+  - Coverage of `webcrypto.ts` stays at 100% line and branch.
+- **C8.5 — Contract and gate integrity.**
+  - The INC-2-API §8.1 bullet (B-45 §8) lands no later than T-39's merge.
+  - The Tech Lead confirms that no other test (Core, QA acceptance) asserts `INVALID_ARGUMENT` for a sender
+    key-generation failure. If one exists outside T-39's files, that is a CONTRACT_ISSUE.
+  - Playwright `retries` stays 0. T-32 C2 is not relaxed and gets no test-level retry.
+  - B-45 criterion 8 is recorded in FACTS V-2.6.
+- **C8.6 — Residual.** About 4×10⁻⁸ of opens fail closed as `CRYPTO_UNAVAILABLE`. This is Low (availability) and is
+  recorded in THREAT_MODEL (T-28, C8 row).
+- **C8.7 — Re-sign triggers.** Any of these needs a new C8 sign-off: a change to the attempt count or the predicate, a
+  delay or backoff, retrying any other operation, or a change to the `@hpke/*` version.
+
+Findings: 0 Critical, 0 High, 0 Medium, 0 Low open (conditions only). Security Architect.

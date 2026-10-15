@@ -328,6 +328,15 @@ A pre-key burn rate above a configured threshold SHOULD also alert (T-17).
   - Principal binding: the enroll-with-victim-route case and the mismatched-principal case above, using `StaticShareOpener` and a mismatching opener double.
   - Replay window (R-6). A message is accepted with `timestamp = now + skew − 1`. Its identical replay at `now + 2·skew − 2` is rejected as `REQUEST_REPLAYED` when the pre-key check is bypassed in a unit test of `ReplayCache`.
   - `IdentityKey.sign` is called only from `channel/prekeys.py` (semgrep).
+  - Bounded X25519 key-generation retry (ADR 0011 C8, B-45). Inject faults deterministically into `globalThis.crypto.subtle.generateKey`:
+    - A transient failure of the probe or of the sender's key generation recovers within 3 attempts in total.
+    - A permanent failure rejects `UNSUPPORTED` after exactly 3 sender attempts, with no `cause`.
+    - Any other sender failure, including a low-order recipient key, is attempted once and rejects `INVALID_ARGUMENT`.
+    - A failed attempt makes no global `exportKey`/`deriveBits` call.
+    - Every `deriveBits` names `X25519`.
+    - A failed probe is not cached.
+    - A sentinel in the injected exception text never appears in the resulting error.
+    - The C3a.1 bundle-input manifest is unchanged.
 
 ## Defaults
 
