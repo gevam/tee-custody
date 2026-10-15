@@ -104,24 +104,41 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     return record
 
 
+@pytest.fixture
+def sigterm_guard() -> Iterator[None]:
+    """A harmless SIGTERM handler while the test runs: a SIGTERM that lands after `main` has
+    restored its predecessor can never kill pytest."""
+    previous = signal.signal(signal.SIGTERM, lambda signum, frame: None)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _terminate_when_serving(record: _Recorder, seen: list[tuple[int, Any]]) -> threading.Thread:
-    """Once the recorded server is up: GET /bundles, then SIGTERM this process (main's handler)."""
+    """Once the recorded server is up, GET /bundles. Whatever happens (a failed GET, the deadline),
+    SIGTERM this process afterwards, so `main` always returns and a broken gateway fails fast."""
 
     def run() -> None:
-        deadline = time.monotonic() + READY_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if record.servers and record.servers[0].started:
-                port = record.servers[0].servers[0].sockets[0].getsockname()[1]
-                seen.append(_get(f"http://127.0.0.1:{port}/bundles"))
-                os.kill(os.getpid(), signal.SIGTERM)
-                return
-            time.sleep(0.01)
+        try:
+            deadline = time.monotonic() + READY_TIMEOUT_S
+            while time.monotonic() < deadline:
+                if record.servers and record.servers[0].started:
+                    port = record.servers[0].servers[0].sockets[0].getsockname()[1]
+                    seen.append(_get(f"http://127.0.0.1:{port}/bundles"))
+                    return
+                time.sleep(0.01)
+        except Exception as error:  # noqa: BLE001 - recorded, so the test's assertion fails
+            seen.append((0, type(error).__name__))
+        finally:
+            os.kill(os.getpid(), signal.SIGTERM)
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     return thread
 
 
+@pytest.mark.usefixtures("sigterm_guard")
 def test_main_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
     recorder: _Recorder, capsys: pytest.CaptureFixture[str]
 ) -> None:
