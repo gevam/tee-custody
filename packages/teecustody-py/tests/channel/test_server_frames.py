@@ -211,3 +211,22 @@ def test_authenticated_frame_with_empty_plaintext_is_auth_failed_and_unanswered(
     assert dict(world.audit.counts) == {"FRAME_AUTH_FAILED": 1}
     assert world.handler.calls == []
     assert _echo(world, sent, session_id, 0).response is not None
+
+
+# ---------------------------------------------------------------- edge cases
+@pytest.mark.parametrize(
+    "body",
+    [HandlerOk(1.5), HandlerOk({"set": {1, 2}}), HandlerError("not-a-code"), None],  # type: ignore[arg-type]
+    ids=["float", "set", "bad-error-code", "not-a-result"],
+)
+def test_unencodable_handler_result_is_answered_internal(body: Any) -> None:
+    world, sent, session_id = _opened()
+    world.handler.script = lambda _s, _op, _p: body
+
+    result = _echo(world, sent, session_id, 0)
+
+    assert str(result.outcome) == "FRAME_ACCEPTED"
+    assert result.response is not None
+    view = read_frame_result(result.response.body, sent.t2c)
+    assert view.body == {"re": 0, "ok": False, "error": "INTERNAL"}
+    assert view.seq == 1

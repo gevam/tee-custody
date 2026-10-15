@@ -81,7 +81,10 @@ _INTERNAL_OPEN_RESULT: Final = encode_open_result_plaintext(OpenRejected(RemoteE
 
 
 def _frame_plaintext(re: int, body: FrameResultBody) -> bytes:
-    plaintext = encode_frame_result_plaintext(re, body)
+    try:
+        plaintext = encode_frame_result_plaintext(re, body)
+    except Exception:  # noqa: BLE001 - a handler result that cannot go on the wire is INTERNAL
+        return encode_frame_result_plaintext(re, HandlerError(RemoteErrorCode.INTERNAL))
     if len(plaintext) > _MAX_RESULT_PLAINTEXT:
         return encode_frame_result_plaintext(re, HandlerError(RemoteErrorCode.LIMIT_EXCEEDED))
     return plaintext
