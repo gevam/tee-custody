@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from support_server import (
     CLIENT_ID,
     INSTANCE_ID,
+    MINTED_ID,
     OTHER_INSTANCE_ID,
     World,
     cbor,
@@ -322,3 +323,31 @@ def test_invalid_open_payload_is_counted_and_answered_invalid_frame(plaintext: b
     assert view.request_id == sent.aad["request_id"]
     assert view.body == {"ok": False, "error": "INVALID_FRAME"}
     assert world.opener.requests == []
+
+
+# ---------------------------------------------------------------- criterion 5 (R-4, SR-14)
+def test_enroll_on_a_live_clients_route_mints_a_principal_and_leaves_the_victim_alone() -> None:
+    world = _make_world()
+    _victim, victim_session_id = world.established()
+    attack = world.enroll(route=CLIENT_ID)
+
+    result = world.process(attack.body)
+
+    assert world.opener.requests[-1].claimed_client_id is None
+    assert world.sessions.get(victim_session_id) is not None
+    assert world.table_closes == []
+    assert str(result.outcome) == "SESSION_OPENED"
+    assert result.response is not None
+    assert result.response.client_id == CLIENT_ID
+    view = read_open_result(result.response.body, attack.t2c)
+    assert view.body == {"ok": True, "payload": {"client_id": MINTED_ID}}
+    assert view.session_id is not None
+    minted_session = world.sessions.get(view.session_id)
+    assert minted_session is not None
+    assert minted_session.client_id == MINTED_ID
+    opened = [
+        fields for _level, outcome, fields in world.logger.calls if outcome == "SESSION_OPENED"
+    ]
+    assert [fields["client_id"] for fields in opened] == [CLIENT_ID, MINTED_ID]
+    assert not world.audit.counts
+    assert world.audit.other_calls == []
