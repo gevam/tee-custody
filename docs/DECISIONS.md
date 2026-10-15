@@ -1467,3 +1467,27 @@ Participants: Code Reviewer, Security Reviewer, Security Architect
 - QA-T-39 rows Q1–Q4 go green.
 
 **Dissent:** none
+
+## D-071 — D-03/D-04 fixed in INC-2 by T-40; no human sign-off for the GatewayLimits additions (INC-2, 2026-10-15)
+
+Type: gate-routing + scope
+Chair / decider: Orchestrator, on the Tech Lead's triage (T-40.md, 8252363)
+Participants: QA (D-03, D-04 found in Phase 2, branch inc-2/QA-exec a0769ec), Tech Lead, Architect
+
+**Decision:**
+1. D-03 (Medium) and D-04 (Low) are fixed in INC-2 by T-40, not deferred.
+   - D-03: no header-read deadline; idle and partial-header connections stay open indefinitely (SR-4).
+   - D-04: plain-text 400s for parse failures (the §6/§9 JSON rule).
+   - Fix: a uvicorn h11 protocol subclass in `notes_gateway/server.py` adds:
+     - a header-read deadline: `header_read_timeout_s`, default 10, closes silently;
+     - a connection cap: `max_connections`, default 512;
+     - an exact `{"code":"INVALID_ARGUMENT"}` 400 for parse failures.
+     It imports no h11, so D-049 is unchanged.
+2. The two new `GatewayLimits` fields and `uvicorn_config` belong to the **reference gateway** under `examples/`, not the library's public API. Under the T-14 precedent (9ab6975), they need an Architect §6 amendment and no human sign-off (§8 "public API" does not apply).
+3. Merge order:
+   - QA-exec gets a QA-T-40 commit that converts the D-03 strict xfail into failing tests and adds the idle-connection and D-04 tests.
+   - QA-exec then merges with D-03.md and D-04.md, red until T-40.
+   - T-40 branches from that.
+4. Risk noted: T-40 overrides uvicorn internals. Its tests must be re-run on any uvicorn version change, at the same trigger as D-049's lock-change re-check.
+
+**Dissent:** none
