@@ -181,8 +181,16 @@ class RunLoop:
         )
         live = _Live(ik, lifecycle, digest, prekeys, audit, sessions, server, self._clock())
         self._live = live
-        prekeys.top_up()
+        self._top_up(live)
         self._publish(live, token)
+
+    def _top_up(self, live: _Live) -> None:
+        try:
+            live.prekeys.top_up()
+        except RuntimeError as err:
+            if str(err) != StopCode.PREKEY_IDS_EXHAUSTED.value:
+                raise
+            self._stop(StopCode.PREKEY_IDS_EXHAUSTED)
 
     def _publish(self, live: _Live, token: AttestationToken) -> None:
         entries = live.prekeys.public_entries()
@@ -212,7 +220,7 @@ class RunLoop:
         refresh = self._refresh(live)
         live.token_refreshed |= refresh is RefreshOutcome.REFRESHED
         live.prekeys.expire()
-        live.prekeys.top_up()
+        self._top_up(live)
         bundle_published = self._republish_if_changed(live)
         processed = 0
         messages = self._pull()

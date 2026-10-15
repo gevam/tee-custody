@@ -775,3 +775,34 @@ def test_instance_id_is_sixteen_random_bytes_in_hex() -> None:
 
     assert requested == [16]
     assert loop.instance_id == bytes(range(16)).hex()
+
+
+def test_exhausted_prekey_ids_shut_down_then_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(monkeypatch)
+    prekeys = world.server.kwargs["prekeys"]
+    world.clock.now += PARAMS.prekey_ttl_s  # every key expires: top_up must generate
+
+    def exhausted() -> int:
+        raise RuntimeError("PREKEY_IDS_EXHAUSTED")
+
+    monkeypatch.setattr(prekeys, "top_up", exhausted)
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.PREKEY_IDS_EXHAUSTED
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+
+
+def test_other_prekey_store_errors_are_not_mistaken_for_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+
+    def broken() -> int:
+        raise RuntimeError("SOMETHING_ELSE")
+
+    monkeypatch.setattr(world.server.kwargs["prekeys"], "top_up", broken)
+
+    with pytest.raises(RuntimeError, match="SOMETHING_ELSE"):
+        world.loop.tick()
