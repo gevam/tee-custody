@@ -99,7 +99,6 @@ describe("checkTime (§6.4)", () => {
     it.each<[string, JsonObject]>([
         ["exp one second in the future", FRESH],
         ["iat exactly max age in the past", { ...FRESH, iat: NOW_S - MAX_AGE_S }],
-        ["iat exactly max age in the future", { ...FRESH, iat: NOW_S + MAX_AGE_S }],
         ["nbf equal to now", { ...FRESH, nbf: NOW_S }],
         ["nbf in the past", { ...FRESH, nbf: NOW_S - 10 }],
         ["nbf one second ahead (within skew)", { ...FRESH, nbf: NOW_S + 1 }],
@@ -111,6 +110,11 @@ describe("checkTime (§6.4)", () => {
         ["exp equal to now (no leeway)", { ...FRESH, exp: NOW_S }, "EXPIRED"],
         ["exp in the past", { ...FRESH, exp: NOW_S - 60 }, "EXPIRED"],
         ["iat one second older than max age", { ...FRESH, iat: NOW_S - MAX_AGE_S - 1 }, "EXPIRED"],
+        [
+            "iat exactly max age in the future",
+            { ...FRESH, iat: NOW_S + MAX_AGE_S },
+            "NOT_YET_VALID",
+        ],
         [
             "iat one second further ahead than max age",
             { ...FRESH, iat: NOW_S + MAX_AGE_S + 1 },
@@ -187,6 +191,12 @@ const timeAt =
 describe("checkTime not-yet-valid skew (ADR 0013)", () => {
     it("criterion 1: nbf = now + 300 s passes at now and rejects NOT_YET_VALID 1 ms earlier", () => {
         const claims = { exp: E, iat: NOW_S, nbf: NOW_S + SKEW_S };
+        expect(timeAt(claims, NOW_MS)).not.toThrow();
+        expectRejected(timeAt(claims, NOW_MS - 1), "time", "NOT_YET_VALID");
+    });
+
+    it("criterion 2: iat = now + 300 s passes at now and rejects NOT_YET_VALID 1 ms earlier", () => {
+        const claims = { exp: E, iat: NOW_S + SKEW_S };
         expect(timeAt(claims, NOW_MS)).not.toThrow();
         expectRejected(timeAt(claims, NOW_MS - 1), "time", "NOT_YET_VALID");
     });
