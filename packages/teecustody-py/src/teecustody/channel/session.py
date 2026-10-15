@@ -161,10 +161,11 @@ class SessionTable:
     def create(
         self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer
     ) -> Session:
-        if not t2c._is_fresh():
-            raise ValueError("T2C_USED")
+        # A1: checked first; nothing is owned, closed, expired or evicted when it is refused.
         if session_id in self._sessions:
             raise ValueError("SESSION_ID_IN_USE")
+        if not t2c._is_fresh():
+            raise ValueError("T2C_USED")
         for existing in list(self._sessions.values()):
             if existing.client_id == client_id:
                 self.close(existing.session_id, CloseReason.REPLACED)

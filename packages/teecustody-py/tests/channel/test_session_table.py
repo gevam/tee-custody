@@ -351,13 +351,48 @@ def test_the_smallest_valid_limits_are_accepted() -> None:
     assert table.get(SID_1) is None
 
 
-def test_a_session_id_already_in_use_is_refused_without_side_effects() -> None:
+# ---------------------------------------------------------------- criterion 13 (A1)
+def _refuse_in_use(world: World, client_id: str, sealer: T2cSealer) -> Secret:
+    sk_c2t = Secret(os.urandom(32))
+    with pytest.raises(ValueError, match=r"^SESSION_ID_IN_USE$"):
+        world.table.create(session_id=SID_1, client_id=client_id, sk_c2t=sk_c2t, t2c=sealer)
+    return sk_c2t
+
+
+@pytest.mark.parametrize(
+    "client_id", [CLIENT_B, CLIENT_A], ids=["other-principal", "same-principal"]
+)
+def test_a_session_id_already_in_use_is_refused_without_side_effects(client_id: str) -> None:
     world = World()
     existing, existing_keys = world.create(SID_1, CLIENT_A)
-    sk_c2t, sealer = Secret(os.urandom(32)), T2cSealer(Secret(os.urandom(32)))
-    with pytest.raises(ValueError, match=r"^SESSION_ID_IN_USE$"):
-        world.table.create(session_id=SID_1, client_id=CLIENT_B, sk_c2t=sk_c2t, t2c=sealer)
+    sk_t2c = Secret(os.urandom(32))
+    sealer = T2cSealer(sk_t2c)
+    sk_c2t = _refuse_in_use(world, client_id, sealer)
     assert world.table.get(SID_1) is existing
     assert existing_keys.live
     assert world.closes == []
     assert not sk_c2t.wiped
+    aad_bytes, ct = sealer.seal_open_result(
+        OpenResultAad(session_id=None, request_id=bytes(16)), b"x"
+    )
+    assert AESGCM(sk_t2c.reveal()).decrypt(_nonce(0), ct, aad_bytes) == b"x"
+
+
+def test_session_id_in_use_is_checked_before_expiry_or_eviction() -> None:
+    world = World(max_sessions=2)
+    existing, existing_keys = world.create(SID_1, CLIENT_A)
+    _idle, idle_keys = world.create(SID_2, CLIENT_B)
+    world.clock.now += 1000  # both past the idle timeout and the eviction minimum
+    _refuse_in_use(world, CLIENT_C, T2cSealer(Secret(os.urandom(32))))
+    assert world.closes == []
+    assert world.table.get(SID_1) is existing
+    assert existing_keys.live
+    assert idle_keys.live
+
+
+def test_session_id_in_use_is_checked_before_the_sealer_freshness() -> None:
+    world = World()
+    world.create(SID_1, CLIENT_A)
+    used = T2cSealer(Secret(os.urandom(32)))
+    used.seal_open_result(OpenResultAad(session_id=None, request_id=bytes(16)), b"x")
+    _refuse_in_use(world, CLIENT_B, used)
