@@ -866,3 +866,62 @@ describe("criterion 11: a second set reuses the credential", () => {
         expect(await records(idb)).toEqual(before);
     });
 });
+
+interface SubtleSpy {
+    readonly subtle: SubtleCrypto;
+    readonly derived: CryptoKey[];
+    readonly imported: { extractable: boolean; usages: readonly string[] }[];
+    readonly encrypted: Uint8Array[];
+}
+
+/** Real WebCrypto, recording the keys the vault derives and the plaintext it encrypts. */
+function spySubtle(): SubtleSpy {
+    const real = crypto.subtle;
+    const spy: SubtleSpy = {
+        derived: [],
+        imported: [],
+        encrypted: [],
+        subtle: {
+            importKey: (
+                format: "raw",
+                data: BufferSource,
+                algorithm: AlgorithmIdentifier,
+                extractable: boolean,
+                usages: KeyUsage[],
+            ) => {
+                spy.imported.push({ extractable, usages });
+                return real.importKey(format, data, algorithm, extractable, usages);
+            },
+            deriveKey: async (...args: Parameters<SubtleCrypto["deriveKey"]>) => {
+                const key = await real.deriveKey(...args);
+                spy.derived.push(key);
+                return key;
+            },
+            encrypt: (algorithm: AesGcmParams, key: CryptoKey, data: Uint8Array) => {
+                spy.encrypted.push(data);
+                return real.encrypt(algorithm, key, data);
+            },
+            decrypt: (...args: Parameters<SubtleCrypto["decrypt"]>) => real.decrypt(...args),
+        } as unknown as SubtleCrypto,
+    };
+    return spy;
+}
+
+describe("criterion 12: the wrapping key is non-extractable", () => {
+    it("derives an AES-GCM-256 key with extractable false and usages exactly encrypt/decrypt", async () => {
+        const spy = spySubtle();
+        const v = vault(new FakeAuthenticator(), new IDBFactory(), { subtle: spy.subtle });
+        await v.set(CLIENT, SHARE.slice());
+        await v.get(CLIENT);
+        expect(spy.derived).toHaveLength(2);
+        for (const key of spy.derived) {
+            expect(key.extractable).toBe(false);
+            expect([...key.usages].sort()).toEqual(["decrypt", "encrypt"]);
+            expect(key.algorithm).toEqual({ name: "AES-GCM", length: 256 });
+        }
+        expect(spy.imported).toEqual([
+            { extractable: false, usages: ["deriveKey"] },
+            { extractable: false, usages: ["deriveKey"] },
+        ]);
+    });
+});
