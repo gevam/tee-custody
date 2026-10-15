@@ -196,3 +196,126 @@ These need a browser or concurrent load and run in the required `browser` CI job
    - A retry of a failed `publish_response` is "may" in §4.11. The nonce test accepts both a retry and no retry,
      and fails only on two different bodies for one sequence number.
    - There is no measurable performance NFR in INC-2, so no benchmark was written.
+
+---
+
+# Phase 2: execution and exploratory testing (G6)
+
+Author: QA Engineer. Branch `inc-2/QA-exec` from `main` d58f7a5. Every INC-2 task is merged except T-39. Engineers' unit tests
+and implementation were not read (PROCESS §10); the only code read was the public contract text and, to diagnose my own test
+doubles, error messages.
+
+## 6. Execution result
+
+| Run | Result |
+|---|---|
+| `uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway tests` | 4,502 passed, 0 failed (includes all Python acceptance, integration and e2e) |
+| `uv run pytest -q spec/vectors` | 236 passed |
+| `pnpm -r --no-bail test` | core 1,478/1,478; web 715/715; tests package 659 passed, **4 failed**: the QA-T-39 rows `SR14.webcrypto-hpke` Q1-Q4 |
+| Playwright `test:browser` (T-32): Chromium and Firefox | 12 passed, 4 skipped by design (project-specific cases); no CSP violation |
+| Playwright WebKit | not run here: the browser cannot start (missing system libraries, e.g. `libgst*`, `libflite*`). Environmental; CI owns WebKit. |
+| `ruff check .`, `ruff format --check .`, `tsc`, `eslint`, `prettier --check` on the files QA added | clean |
+
+Only the four expected rows are red. They clear when T-39 merges: Q1 (transient sender keygen failure retried), Q2 (probe failing gives
+`UNSUPPORTED` with no cause), Q3 (failed probe retried), Q4 (failed probe not cached).
+
+**D-062 item 2 (NO_VERIFIED_BUNDLE cascade).** No occurrence. The FR-4 e2e file (18 live tests) ran 9 times in this phase (full
+`pnpm -r`, the JSON-reporter run and seven reruns) with no `NO_VERIFIED_BUNDLE` and no `time/NOT_YET_VALID`. The cascade is
+attributed to D-02 (D-064) and the ADR 0013 boundaries are now also tested through the full client path (E-time, below).
+
+### Acceptance and SR mapping (all pass except the four T-39 rows)
+
+Counts are tests per file in the final run. The criterion to test mapping is the Phase 1 table in section 2 above and has not changed.
+
+| Requirement / criterion | Test files | Result |
+|---|---|---|
+| FR-4 AC-1 (open, request, response) and AC-2 (bad auth, bad/replayed sequence, replay, instance, timestamp, forward secrecy) | `test_FR04_channel.py` 42, `test_SR14_channel_integrity.py` 47, `test_SR12_SR14_run_loop.py` 6, `FR04.channel-e2e.test.ts` 18, `FR04.channel-client-config.test.ts` 17, `FR04.core-channel-wire.test.ts` 47, `tests/e2e/test_channel_e2e.py` 9 | pass |
+| FR-5 AC-1 (gateway + queue relay, routing, shutdown, no inbound socket) | `test_FR05_transport.py` 48, `FR05.fetch-transport.test.ts` 41, `test_SR04_limits.py` 13 | pass |
+| FR-6 AC-1 and AC-2 (ciphertext only, fail closed, tamper) | `FR06.prf-vault.test.ts` 32; real browser C1/C4 (Chromium), C2 (Firefox) | pass (WebKit not run here) |
+| NFR-2, NFR-3, NFR-4, NFR-6, NFR-7, NFR-8 | `test_NFR03_NFR04_NFR08_channel_hygiene.py` 7, `test_NFR07_channel_vectors.py` 7, `test_NFR07_wire_canonical.py` 28, `NFR07.wire-canonical.test.ts` 31, `test_NFR08_logging_and_secrets.py` 5 | pass |
+| SR-1 (route ids are hints; Fetcher B-06; brand B-13; pinned `jwks_uri` D-043) | `SR01.*.test.ts` 140, `test_FR05_transport.py::test_SR01_*`, `FR04.channel-e2e` N1/N2 | pass |
+| SR-3, SR-4 (schema bounds, backoff, eviction, replay cache, gateway budgets) | `test_SR14_channel_integrity.py`, `test_SR04_limits.py` | pass |
+| SR-6 / SR-12 (aggregates, sink rules, `PREKEY_BURN_HIGH`, debug-mode event) | `test_SR06_SR12_audit.py` 20, `test_SR12_SR14_run_loop.py`, `SR12.debug-mode-event.test.ts` 8 | pass |
+| SR-9 (dependency admission, h11 exception) | `test_SR09_h11_age_exception.py` 6, `SR13.bundle-scan-and-pins.test.ts` | pass |
+| SR-11 (stable error categories) | `test_FR05_transport.py`, `test_FR04_channel.py` | pass |
+| SR-13 (bundle scan; CSP zero violations) | `SR13.bundle-scan-and-pins.test.ts` 11; Playwright C1-C6 in Chromium and Firefox | pass (WebKit not run here) |
+| SR-14 (layouts, nonce discipline, principal binding, replay window) | `test_SR14_channel_integrity.py`, `SR14.webcrypto-hpke.test.ts` rows other than Q1-Q4 (20 of 24) | pass |
+| **SR-14 bounded X25519 keygen (ADR 0011 C8)** | `SR14.webcrypto-hpke.test.ts` Q1, Q2, Q3, Q4 | **fail, expected, until T-39** |
+| Wire, vectors, I7 | `test_I7_queue_message_content.py` 5, `I7.queue-content.test.ts` 1, `spec/vectors` 236 | pass |
+| Wave-1 gap tests (T-09, T-13, T-15, T-37) | `test_FR04_config_validation.py` 41, `test_FR04_own_image_digest.py` 21 | pass |
+
+Section 4 items (browser criteria): item 1 and 2 (CSP, steps) pass in Chromium and Firefox through T-32's `csp.spec.ts`; item 3
+(FR-6 in a real browser) passes in Chromium for PRF and PRF-less authenticators and in Firefox for the fail-closed case; item 4
+(SR-4 concurrency, held requests) is covered by E-slowloris below, with real sockets rather than `TestClient`.
+
+## 7. Exploratory testing
+
+New files (all under `tests/acceptance/`, public interfaces only, synthetic values): `test_EXPLORE_channel_edges.py` (38),
+`test_EXPLORE_gateway_http.py` (66 green plus 8 QA-T-40 rows red until T-40), `test_EXPLORE_gateway_keying.py` (30), `test_EXPLORE_queue.py` (32),
+`EXPLORE.client-bundle-time.test.ts` (4), `EXPLORE.vault-ceremony.test.ts` (6). Live tests spawn
+`tests/e2e/channel_harness.py --stop-on-stdin-eof` in their own process group and read the per-run fixture only from its temp dir.
+No `tc-e2e-*` directory or process remained after any run.
+
+| Entry point | Probed | Outcome |
+|---|---|---|
+| E-1 gateway paths | 32 malformed paths: trailing slash, upper-case and 31/33-character ids, `%00 %0A %0D %7F`, C1 and RTL-override bytes, invalid UTF-8, `..`, `%2e%2e`, a 100 KB path, bare `%` | all 400/404, JSON `{"code"}` body, no 500 |
+| E-1 methods | PUT, DELETE, PATCH, TRACE, CONNECT, unknown verb on all three routes; GET on POST route and reverse | 404/405 stable |
+| E-1 cursors | 12 hostile `after` values (empty, 5,000 characters, control, RTL, duplicate, `[]`, 100-digit) | 200 or 400 `INVALID_ARGUMENT`, nothing else |
+| E-1 bodies | empty; no `Content-Length`; chunked; negative, hex and non-numeric length; duplicate differing lengths; CL plus TE; 65,537 and 2^63 declared; wrong or missing content type; `Expect: 100-continue`; short body then FIN; extra bytes | all 4xx/408/202 as contracted; 1 and 65,536 bytes accepted; error bodies never echo the request (sentinel check) |
+| E-1 slowloris (body) | 64 POSTs from one source declaring 65,536 bytes and sending 1 | at most 8 held, the rest 429 `RATE_LIMITED` with `Retry-After`; a second source served at once; every held request got 408 within about 10 s; source served again afterwards |
+| E-1 spoofed source headers | 120 requests rotating `X-Forwarded-For`, `Forwarded`, `X-Real-IP` | still keyed on the peer: 429 reached |
+| E-1 IPv6 and keying (in-process) | same /64 shares one bucket; different /64 does not; `::ffff:a.b.c.d` shares the IPv4 bucket; unparseable or missing peer shares `unknown`; neighbouring IPv4 not merged | as contracted |
+| E-1 CORS and Host | exact-origin match only; 11 near-miss origins (`null`, trailing slash, port, scheme, case, suffix, list, `*`); duplicate `Origin`; preflight methods and headers; credentials header never sent; no CORS header at all by default; 11 invalid origins refused at start-up; Host never reflected (evil, empty, space, duplicate, HTTP/1.0) | as contracted |
+| E-1 limits validation | 8 invalid `per_source_max_in_flight` / `body_read_timeout_s` values | `INVALID_LIMITS` |
+| E-1 headers | 200 KB header, 20,000 headers, TLS ClientHello, pipelined requests | 400 (but plain-text body, **D-04**), pipelining served; the gateway stays healthy |
+| E-1 partial headers | 300 connections stopped mid-header; 1,500 held | never closed after 5 minutes (**D-03**) |
+| E-4 queue | 32 cases at the in-memory adapter: malformed instance/request ids and cursors, wrong types, bad limits, capacity bound (`UNAVAILABLE`, bounded), ack and withdraw idempotence, expiry, 100-response paging | as contracted |
+| E-4/E-5 live garbage | 7 hostile bodies (64 KB random, 1 byte, `0xff` run, indefinite-length CBOR openers, zeros) posted to the real instance | `202`; the workload kept running; a genuine open then round-tripped an echo |
+| E-5 channel | seq 0 and 2^53-1 accepted, nothing after 2^53-1; 2^53, 2^63, 2^64-1, 2^64, -1 and non-integer `seq` values (float, string, bytes, bool, null, list, map) dropped without dispatch; backward and repeated seq after gaps; failed authentication does not burn the sequence number; ciphertext truncated to 0, 1, 15, 16, 17 bytes; truncated `enc`/`ct` on opens; unknown, negative and 2^64 pre-key ids; wrong instance; wrong or short session id; frame after `close`; 12 garbage envelopes | no exception, no response, no dispatch; the session stayed usable after every rejected frame |
+| E-5 live open | wrong share gives an authenticated refusal only; verbatim open replay gets no second response | as contracted |
+| E-3/E-15 time boundaries, full client path | live bundle, client clock fixed against its claims: `nbf` -301 s rejected with nothing posted, -299 s passes verification; future `iat` -301 s rejected; `exp` -1 ms verifies (then stops at `NO_USABLE_PREKEY` because pre-keys expire earlier), `exp`, `exp`+1 s and `exp`+1 day rejected; clock 0, 1, -1, NaN, +-Infinity, 2^53 fail closed | ADR 0013 holds end to end |
+| E-9 vault | aborted first `set`; aborted, denied, result-less and short-result re-`set` keeps the earlier share readable; aborted `get` never returns bytes; PRF not enabled at create; no credentials container; two concurrent `set`s | fail closed, nothing leaked, no corrupt record |
+| E-5 concurrency | 2 distinct-pre-key opens plus 2 opens sharing one pre-key, posted from parallel threads | the distinct opens were all answered with distinct sessions; the same-pre-key pair gave at most one answer (**B-41, accepted**) |
+
+Not explored, with reason: the WebKit browser (cannot start on this host); real Confidential Space and Pub/Sub adapters (INC-3);
+IPv6 over a real socket (the harness binds 127.0.0.1 only; keying was tested in-process against the ASGI peer); an RTL/i18n UI
+(INC-2 has no UI text); hours-long refresh and expiry of a live token (covered by the boundary tests at fixed clocks).
+
+## 8. Defects
+
+| Id | Severity | Summary | Violates |
+|---|---|---|---|
+| D-03 | Medium | The gateway never times out a connection that stops sending request headers: 300 partial-header connections stayed open for 5 minutes; the per-source and global caps and the body deadline never apply. Red tests until T-40: `test_D03_partial_header_...`, `test_D03_idle_connection_...` (T-40 QA-T-40 Q1, Q2). | SR-4 |
+| D-04 | Low | Parse failures rejected by uvicorn (oversize or too many headers, a TLS hello) return plain text `Invalid HTTP request received.`, not the documented `{"code":...}` body. | INC-2-API §6 (FR-5) |
+
+Not filed, as accepted or known: B-26 ordering, B-41 pre-key collision, B-45 WebKit keygen flake (T-39 pending), D-02 clock steps.
+Two behaviours recorded, not defects: a client FIN before the declared body arrives closes the connection with no response (nothing is
+published, nothing could be read by the client); `Content-Length` together with `Transfer-Encoding: chunked` is parsed as chunked and
+ends in the 10 s `408` (not a smuggling path, as the gateway trusts no proxy).
+
+## 9. Traceability
+
+`docs/security/traceability.md` has no GAP row that belongs to INC-2. The GAP rows are I2, I3, I4, I8, I9, I10, I11, I12, §13.4, §13.5,
+§13.6, §13.7 and §13.11. Each concerns SK and share custody, recovery, KMS gating, the image allow-list, hygiene review or the
+environment split, which arrive in INC-3 to INC-5. The INC-2 rows (I1, I5, I6, I7, I13, §13.3, §6.1-§6.9, §13.2, §13.9, partly §13.10)
+are covered by tests.
+
+## 10. G6 assessment
+
+All INC-2 acceptance criteria pass except the four QA-T-39 rows, which are expected and clear with T-39. No Critical or High defect is
+open. Open: one Medium (D-03) and one Low (D-04), for triage (fix now, or defer with human sign-off; D-03 can alternatively be closed
+by a README deployment requirement for a fronting proxy, which would make it Low). G6 is blocked only by T-39 and that triage.
+
+## 11. QA-T-40 (added before QA-exec merges)
+
+The D-03 strict xfail became a plain test, and the following were added to `test_EXPLORE_gateway_http.py` before the slowloris section.
+All are red until T-40 and the rest of the file is green (66 pass):
+`test_D03_partial_header_connection_is_closed_within_a_bounded_time`, `test_D03_idle_connection_sending_nothing_is_closed_within_a_bounded_time`,
+and `test_D04_parse_failures_get_the_json_400[20000-byte header value | 3000 headers | header named Bad Header | missing Host | TLS ClientHello prefix]`
+(exact `{"code":"INVALID_ARGUMENT"}` 400 with `cache-control: no-store` and `x-content-type-options: nosniff`). D-03 and D-04 fix contract: T-40.
+
+Update after the review of c08e112 and T-40 amendment A2: the D-04 rows are now exactly A2's Q3 inputs (a)-(f), each `test_D04_parse_failures_get_the_json_400[...]`,
+red until T-40 for the stated reasons (today (a) and (b) get 200; (c)-(f) get the `text/plain` body); `test_D04_guard_g_a_4000_byte_header_is_still_served` is a
+green guard. With the two D-03 rows, 8 tests are red and all other EXPLORE tests are green (two runs). Review fixes: the harness start-up read is bounded with `select`;
+four tests that accepted any outcome now assert the single observed, contracted outcome (the vault concurrent-set test is deterministic with its double); the
+client-bundle-time margins are 5 s inside and outside the 300 s leeway so D-02 WSL clock steps cannot flip a case (one flake was seen at a 1 s margin).
