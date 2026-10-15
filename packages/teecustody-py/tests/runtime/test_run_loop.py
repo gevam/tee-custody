@@ -14,7 +14,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from teecustody.attest.lifecycle import RefreshOutcome
 from teecustody.attest.ports import AttestationToken, LauncherError, LauncherErrorCode
+from teecustody.audit.emitter import AggregateOutcome
 from teecustody.audit.ports import AppendResult, AuditClass, AuditKey, AuditRecord
+from teecustody.channel import hpke
 from teecustody.channel.codec import decode_bundle, prekey_signing_message
 from teecustody.channel.ports import (
     CloseReason,
@@ -27,9 +29,11 @@ from teecustody.channel.ports import (
     SessionInfo,
 )
 from teecustody.channel.server import OutboundResponse, ProcessResult
+from teecustody.channel.session import SessionTable, T2cSealer
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage
 from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
+from teecustody.secrets import Secret
 from teecustody.wire import CanonicalValue, DecodeLimits
 
 AUDIENCE = "https://runloop.teecustody.test/tee"
@@ -547,3 +551,97 @@ def test_c8_a_refresh_inside_the_min_interval_is_published_once_it_has_passed(
 
     assert len(world.queue.bundles) == 3
     assert published_bundle(world).token == world.launcher.issued[-1].value
+
+
+# ---------------------------------------------------------------- criterion 10: shutdown
+SESSION_ID = bytes(range(16))
+
+
+def open_session(world: World, session_id: bytes = SESSION_ID, client_id: str = CLIENT) -> Secret:
+    sk_c2t = Secret.random(32)
+    world.server.kwargs["sessions"].create(
+        session_id=session_id, client_id=client_id, sk_c2t=sk_c2t, t2c=T2cSealer(Secret.random(32))
+    )
+    return sk_c2t
+
+
+def test_c10_shutdown_withdraws_closes_destroys_and_flushes_once_even_when_called_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    sk_c2t = open_session(world)
+    prekeys = world.server.kwargs["prekeys"]
+    private = prekeys.take(prekeys.public_entries()[0].id)  # still owned by the test
+    world.server.kwargs["audit"].count(AggregateOutcome.REQUEST_INVALID)
+
+    world.loop.shutdown()
+    world.loop.shutdown()
+
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+    info = SessionInfo(client_id=CLIENT, session_id=SESSION_ID, instance_id=world.loop.instance_id)
+    assert world.opener.closed_calls == [(info, CloseReason.SHUTDOWN)]
+    assert sk_c2t.wiped
+    closed = [line for line in world.logger.lines if line[1] == "SESSION_CLOSED"]
+    assert closed == [
+        ("info", "SESSION_CLOSED", {"client_id": CLIENT, "session_id": SESSION_ID.hex()})
+    ]
+    assert prekeys.public_entries() == ()
+    assert not private.wiped
+    aggregates = world.sink.of(AuditClass.AGGREGATE)
+    assert [(r.outcome, r.count) for r in aggregates] == [("REQUEST_INVALID", 1)]
+
+
+def test_c10_shutdown_wipes_every_live_prekey(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[Secret] = []
+    original = hpke.generate_keypair
+
+    def recording() -> tuple[Secret, bytes]:
+        private, public = original()
+        captured.append(private)
+        return private, public
+
+    monkeypatch.setattr(hpke, "generate_keypair", recording)
+    world = World(monkeypatch)
+
+    world.loop.shutdown()
+
+    assert len(captured) == PARAMS.prekey_batch
+    assert all(secret.wiped for secret in captured)
+
+
+def test_c10_an_evicted_session_is_logged_as_evicted_and_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, limits=BoundaryLimits(pull_wait_s=0.01, max_sessions=1))
+    open_session(world)
+    world.clock.now += world.limits.session_evict_min_idle_s
+
+    open_session(world, session_id=bytes(16), client_id="c2" * 16)
+
+    evicted = SessionInfo(CLIENT, SESSION_ID, world.loop.instance_id)
+    assert world.opener.closed_calls == [(evicted, CloseReason.EVICTED)]
+    lines = [line for line in world.logger.lines if line[1].startswith("SESSION_")]
+    assert lines == [
+        ("info", "SESSION_EVICTED", {"client_id": CLIENT, "session_id": SESSION_ID.hex()})
+    ]
+
+
+def test_c10_the_close_callback_itself_swallows_an_opener_failure_after_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[SessionInfo, CloseReason], None]] = []
+
+    class CapturingTable(SessionTable):
+        def __init__(self, **kwargs: Any) -> None:
+            callbacks.append(kwargs["on_close"])
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(run_loop, "SessionTable", CapturingTable)
+    world = World(monkeypatch)
+    world.opener.raise_on_close = True
+    info = SessionInfo(CLIENT, SESSION_ID, world.loop.instance_id)
+
+    callbacks[0](info, CloseReason.CLIENT_CLOSE)  # TL-2: does not raise
+
+    assert world.opener.closed_calls == [(info, CloseReason.CLIENT_CLOSE)]
+    assert world.logger.outcomes()[-1] == "SESSION_CLOSED"

@@ -197,7 +197,11 @@ class RunLoop:
         self._logger.info("BUNDLE_PUBLISHED")
 
     def _on_close(self, info: SessionInfo, reason: CloseReason) -> None:
-        raise NotImplementedError("T-29")
+        """TL-2: the one place a session close is logged and reported to the opener."""
+        self._logger.info(
+            "SESSION_CLOSED", client_id=info.client_id, session_id=info.session_id.hex()
+        )
+        self._opener.closed(info, reason)
 
     def tick(self) -> TickReport:
         live = self._require_live()
@@ -311,4 +315,11 @@ class RunLoop:
         raise NotImplementedError("T-29")
 
     def shutdown(self) -> None:
+        """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""
+        live, self._live = self._live, None
+        if live is None:
+            return
         self._queue.withdraw_bundle(self._instance_id)
+        live.sessions.close_all()
+        live.prekeys.destroy_all()
+        live.audit.close()
