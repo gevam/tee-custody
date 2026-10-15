@@ -426,3 +426,32 @@ def test_two_pipelined_requests_in_one_write_both_get_200(
 
     assert first == second == (200, b'{"bundles":[]}')
     assert live.relay.calls == 2
+
+
+# ------------------------------------------------------------- criterion 7: connection cap
+def test_a_connection_beyond_max_connections_is_closed_at_once_and_others_are_unaffected(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(
+        max_concurrency=4, per_source_max_in_flight=4, max_connections=4, header_read_timeout_s=10.0
+    )
+    held = [live.connect() for _ in range(4)]
+    live.wait_connections(4)
+    excess = live.connect()
+    start = time.perf_counter()
+
+    data, closed_at = read_to_eof(excess, start, 0.5)
+
+    assert data == b""
+    assert closed_at <= 0.5
+    assert records.outcomes() == ["GATEWAY_CONNECTION_LIMIT"]
+    live.wait_connections(4)
+    held[0].close()
+    live.wait_connections(3)
+    fresh = live.connect()
+    fresh.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(fresh) == (200, b'{"bundles":[]}')
+    for sock in held[1:]:
+        sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert read_response(sock) == (200, b'{"bundles":[]}')
+    assert records.outcomes().count("GATEWAY_CONNECTION_LIMIT") == 1

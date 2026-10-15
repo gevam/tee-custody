@@ -17,12 +17,17 @@ _LOG = _get_logger("gateway")
 
 
 def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
-    """uvicorn's h11 protocol with the §6 header-read deadline."""
+    """uvicorn's h11 protocol with the §6 header-read deadline and connection cap."""
     header_read_timeout_s = limits.header_read_timeout_s
+    max_connections = limits.max_connections
 
     class _GatewayProtocol(_H11Protocol):
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
             super().connection_made(transport)
+            if len(self.connections) > max_connections:
+                self.transport.close()
+                _LOG.info("GATEWAY_CONNECTION_LIMIT")
+                return
             self._arm()
 
         def on_response_complete(self) -> None:
