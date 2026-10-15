@@ -333,7 +333,7 @@ A pre-key burn rate above a configured threshold SHOULD also alert (T-17).
     - A permanent failure rejects `UNSUPPORTED` after exactly 3 sender attempts, with no `cause`.
     - Any other sender failure, including a low-order recipient key, is attempted once and rejects `INVALID_ARGUMENT`.
     - A failed attempt makes no global `exportKey`/`deriveBits` call.
-    - Every `deriveBits` names `X25519`.
+    - Every `deriveBits` names `X25519` or `HKDF`, with exactly one native-key `X25519` call per successful encap.
     - A failed probe is not cached.
     - A sentinel in the injected exception text never appears in the resulting error.
     - The C3a.1 bundle-input manifest is unchanged.

@@ -699,6 +699,10 @@ admission and the D-051 pins are not reopened.
     context.
   - (b) Native only. In the transient test, every `deriveBits` names `X25519`, with exactly one per successful encap
     (the C3a.3 spy). Every `generateKey` attempt goes to `globalThis.crypto.subtle` with `X25519`.
+    *Clarification (2026-10-15, T-39 criterion 7):* every global `deriveBits` names either `X25519` or `HKDF`. The
+    `HKDF` calls are the native key schedule (C2 table, `hkdf.js:131–133`); no other algorithm name is allowed. Each
+    successful encap makes exactly one `X25519` call, whose private-key argument is a `CryptoKey` with `algorithm.name
+    === "X25519"`. A failed attempt makes zero `deriveBits` calls of either kind.
   - (c) SR-11 sentinel. The injected exception message carries a sentinel. The resulting `CapabilityError` has
     `message === code` and no `cause`, and neither `String(error)` nor any own property contains the sentinel. This
     applies to the `UNSUPPORTED` exhaustion path and to the `INVALID_ARGUMENT` no-retry path.
