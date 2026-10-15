@@ -696,3 +696,59 @@ describe("criterion 8: UNAVAILABLE when IndexedDB is missing or fails", () => {
         expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
     });
 });
+
+describe("criterion 9: INVALID_ARGUMENT before any ceremony or storage access", () => {
+    const badClients: [string, unknown][] = [
+        ["uppercase hex", CLIENT.toUpperCase()],
+        ["31 characters", CLIENT.slice(1)],
+        ["33 characters", `${CLIENT}0`],
+        ["64 characters", CLIENT + CLIENT],
+        ["with a trailing newline", `${CLIENT}\n`],
+        ["with a non-hex character", `${CLIENT.slice(1)}g`],
+        ["empty", ""],
+        ["a number", 12],
+        ["undefined", undefined],
+    ];
+    it.each(badClients)("rejects a client id: %s", async (_name, client) => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const open = vi.spyOn(idb, "open");
+        const v = vault(auth, idb);
+        const id = client as string;
+        expect(await codeOf(v.set(id, SHARE.slice()))).toBe("INVALID_ARGUMENT");
+        expect(await codeOf(v.get(id))).toBe("INVALID_ARGUMENT");
+        expect(await codeOf(v.clear(id))).toBe("INVALID_ARGUMENT");
+        expect(auth.ceremonies).toHaveLength(0);
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    const badShares: [string, unknown][] = [
+        ["31 bytes", new Uint8Array(31)],
+        ["33 bytes", new Uint8Array(33)],
+        ["empty", new Uint8Array(0)],
+        ["an ArrayBuffer", new ArrayBuffer(32)],
+        ["a Uint16Array", new Uint16Array(32)],
+        ["an array of numbers", new Array<number>(32).fill(1)],
+        ["a hex string", "ab".repeat(32)],
+        ["a number", 32],
+        ["undefined", undefined],
+    ];
+    it.each(badShares)("rejects a share: %s", async (_name, share) => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const open = vi.spyOn(idb, "open");
+        expect(await codeOf(vault(auth, idb).set(CLIENT, share as Uint8Array))).toBe(
+            "INVALID_ARGUMENT",
+        );
+        expect(auth.ceremonies).toHaveLength(0);
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    it("accepts a 32-byte view into a larger buffer and stores only those bytes", async () => {
+        const backing = new Uint8Array(64).fill(0xaa);
+        backing.set(SHARE, 16);
+        const v = vault(new FakeAuthenticator(), new IDBFactory());
+        await v.set(CLIENT, backing.subarray(16, 48));
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+    });
+});

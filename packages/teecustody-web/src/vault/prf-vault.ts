@@ -19,6 +19,7 @@ export interface PrfShareVaultOptions {
 }
 
 const STORE = "shares";
+const CLIENT_ID = /^[0-9a-f]{32}$/;
 const FIELDS = "client_id,credential_id,ct,nonce,prf_salt,v";
 const MAX_CREDENTIAL_ID = 1023; // WebAuthn credential id limit
 const INFO_LABEL = "teecustody/vault/v1";
@@ -44,6 +45,7 @@ export class PrfShareVault implements ShareVault {
     }
 
     async get(client: ClientId): Promise<ClientShare | undefined> {
+        checkClient(client);
         const stored = await this.#read(client);
         if (stored === undefined) {
             return undefined;
@@ -68,6 +70,10 @@ export class PrfShareVault implements ShareVault {
     }
 
     async set(client: ClientId, share: ClientShare): Promise<void> {
+        checkClient(client);
+        if (!(share instanceof Uint8Array) || share.length !== 32) {
+            throw new CapabilityError("INVALID_ARGUMENT");
+        }
         await this.#read(client);
         const copy = new Uint8Array(share);
         const salt = this.#random(32);
@@ -120,6 +126,7 @@ export class PrfShareVault implements ShareVault {
     }
 
     async clear(client: ClientId): Promise<void> {
+        checkClient(client);
         await this.#transact("readwrite", (store) => store.delete(client));
     }
 
@@ -275,6 +282,12 @@ function aad(client: ClientId, credentialId: Uint8Array): Uint8Array {
             ["credential_id", credentialId],
         ]),
     );
+}
+
+function checkClient(client: unknown): void {
+    if (typeof client !== "string" || !CLIENT_ID.test(client)) {
+        throw new CapabilityError("INVALID_ARGUMENT");
+    }
 }
 
 /** PRF support is established only by a 32-byte `results.first` (INC-2-API §8.4). */
