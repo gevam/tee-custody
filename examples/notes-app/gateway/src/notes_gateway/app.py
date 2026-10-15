@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import functools
 import json
@@ -122,6 +123,10 @@ class _Invalid(Exception):
     """A route argument or body broke the §6 rules (400 INVALID_ARGUMENT)."""
 
 
+class _BodyTimeout(Exception):
+    """The request body did not arrive within `body_read_timeout_s` (408 REQUEST_TIMEOUT)."""
+
+
 def _guarded(endpoint: Endpoint) -> Endpoint:
     """Map every failure to a stable §6 code; the cause never reaches the body or the logs."""
 
@@ -131,6 +136,10 @@ def _guarded(endpoint: Endpoint) -> Endpoint:
             response = await endpoint(request)
         except _Invalid:
             status, code = 400, "INVALID_ARGUMENT"
+        except _BodyTimeout:
+            response = _refuse(request.scope, 408, "REQUEST_TIMEOUT")
+            response.headers["Connection"] = "close"
+            return response
         except QueueError as exc:
             status, code = _QUEUE_ERRORS.get(exc.code, _INTERNAL)
         except Exception:  # noqa: BLE001 - the relay answers INTERNAL for any other failure
@@ -149,7 +158,7 @@ def _check(pattern: re.Pattern[str], value: str) -> str:
     return value
 
 
-async def _read_body(request: Request, max_bytes: int) -> bytes:
+async def _read_body(request: Request, max_bytes: int, timeout_s: float) -> bytes:
     """The raw body; _Invalid if its headers or length break the §6 rules. Never decoded."""
     if request.headers.getlist("content-type") != [_OCTET_STREAM]:
         raise _Invalid
@@ -161,12 +170,15 @@ async def _read_body(request: Request, max_bytes: int) -> bytes:
         raise _Invalid
     body = bytearray()
     try:
-        async for chunk in request.stream():
-            body += chunk
-            if len(body) > declared:
-                raise _Invalid
+        async with asyncio.timeout(timeout_s):
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > declared:
+                    raise _Invalid
     except ClientDisconnect:
         raise _Invalid from None
+    except TimeoutError:
+        raise _BodyTimeout from None
     if len(body) != declared:
         raise _Invalid
     return bytes(body)
@@ -358,7 +370,7 @@ def create_app(
     @_guarded
     async def publish_request(request: Request) -> Response:
         instance = _check(_HEX32_PATTERN, request.path_params["instance"])
-        body = await _read_body(request, limits.max_request_bytes)
+        body = await _read_body(request, limits.max_request_bytes, limits.body_read_timeout_s)
         request_id = rng(16).hex()
         await run_in_threadpool(queue.publish_request, instance, request_id, body)
         return _json(202, {"request_id": request_id})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import typing
 from dataclasses import dataclass
@@ -181,11 +182,29 @@ class Exchange:
     body: bytes
 
 
-async def _drive(app: ASGIApp, path: str, client: tuple[str, int] | None) -> Exchange:
+async def _drive(
+    app: ASGIApp,
+    path: str,
+    client: tuple[str, int] | None,
+    *,
+    method: str = "GET",
+    headers: list[tuple[bytes, bytes]] | None = None,
+    body: list[bytes] | None = None,
+    gap_s: float = 0.0,
+) -> Exchange:
+    """One raw ASGI exchange. With `body`, each chunk arrives `gap_s` after the previous one
+    and the client then stalls without ever finishing the body."""
     sent: list[Message] = []
+    pending = list(body) if body is not None else None
 
     async def receive() -> Message:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        if pending is None:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        if pending:
+            await asyncio.sleep(gap_s)
+            return {"type": "http.request", "body": pending.pop(0), "more_body": True}
+        await asyncio.Event().wait()  # the client stalls until the gateway gives up
+        raise AssertionError  # pragma: no cover
 
     async def send(message: Message) -> None:
         sent.append(message)
@@ -194,13 +213,13 @@ async def _drive(app: ASGIApp, path: str, client: tuple[str, int] | None) -> Exc
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode(),
         "query_string": b"",
         "root_path": "",
-        "headers": [],
+        "headers": headers or [],
         "client": client,
         "server": ("testserver", 80),
     }
@@ -410,3 +429,87 @@ def test_a_request_refused_by_a_bucket_releases_both_slots() -> None:
 
     assert (limited.status_code, limited.headers["retry-after"]) == (429, "4")
     assert client.get("/bundles").status_code == 200
+
+
+# ---------------------------------------------------------------- criterion 13: A1 body deadline
+REQUEST_TIMEOUT = b'{"code":"REQUEST_TIMEOUT"}'
+
+
+def _declared(length: int) -> list[tuple[bytes, bytes]]:
+    return [
+        (b"content-type", b"application/octet-stream"),
+        (b"content-length", str(length).encode()),
+    ]
+
+
+def _guard_of(app: ASGIApp) -> typing.Any:
+    """The gateway's outer ASGI layer, found by walking the built middleware stack."""
+    layer: typing.Any = typing.cast("typing.Any", app).middleware_stack
+    while not hasattr(layer, "_in_flight_by_source"):
+        layer = layer.app
+    return layer
+
+
+def test_slow_body_drips_are_capped_per_source_and_answered_408_at_the_deadline() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, body_read_timeout_s=1.0)
+    dripper, other = ("192.0.2.1", 40000), ("192.0.2.2", 40000)
+
+    async def scenario() -> tuple[list[Exchange], Exchange, int]:
+        drips = [
+            asyncio.create_task(
+                _drive(
+                    app,
+                    f"/requests/{INSTANCE}",
+                    dripper,
+                    method="POST",
+                    headers=_declared(65536),
+                    body=[b"x"],
+                )
+            )
+            for _ in range(64)
+        ]
+        await _until(lambda: sum(t.done() for t in drips) == 56)
+        served = await _drive(app, "/bundles", other)
+        still_held = sum(not t.done() for t in drips)
+        return list(await asyncio.gather(*drips)), served, still_held
+
+    drips, served, still_held = asyncio.run(asyncio.wait_for(scenario(), 15))
+
+    assert (served.status, still_held) == (200, 8)
+    refused = [d for d in drips if d.status == 429]
+    timed_out = [d for d in drips if d.status == 408]
+    assert (len(refused), len(timed_out)) == (56, 8)
+    assert all(d.headers["retry-after"] == "1" for d in refused)
+    for d in timed_out:
+        assert d.body == REQUEST_TIMEOUT
+        assert d.headers["connection"] == "close"
+        assert d.headers["content-type"] == "application/json"
+    assert relay.calls == 1  # only the second source's GET /bundles reached the queue
+    guard = _guard_of(app)
+    assert (guard._in_flight, guard._in_flight_by_source) == (0, {})
+
+
+def test_the_body_deadline_is_total_not_per_chunk(caplog: pytest.LogCaptureFixture) -> None:
+    logging.getLogger("teecustody").addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="teecustody")
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, body_read_timeout_s=1.0)
+
+    async def scenario() -> Exchange:
+        return await _drive(
+            app,
+            f"/requests/{INSTANCE}",
+            ("192.0.2.1", 40000),
+            method="POST",
+            headers=_declared(10),
+            body=[b"a", b"b", b"c", b"d"],
+            gap_s=0.4,
+        )
+
+    result = asyncio.run(asyncio.wait_for(scenario(), 15))
+
+    logging.getLogger("teecustody").removeHandler(caplog.handler)
+    assert (result.status, result.body) == (408, REQUEST_TIMEOUT)
+    assert relay.calls == 0
+    assert [r.getMessage() for r in caplog.records] == ["GATEWAY_REQUEST_TIMEOUT"]
