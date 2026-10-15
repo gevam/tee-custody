@@ -96,6 +96,24 @@ function echo(n: number): CanonicalValue {
     return map({ n });
 }
 
+function nOf(frame: SeenFrame): unknown {
+    return asMap(frame.payload).get("n");
+}
+
+// INC-2-API §7.4 promises distinct allocated seqs, not post order (B-26): assert the set, not the sequence.
+function expectAllocatedSeqs(): void {
+    const frames = workload.frames;
+    expect(frames.map((f) => f.seq).sort((a, b) => a - b)).toEqual([0, 1, 2]);
+    expect(frames.find((f) => nOf(f) === 3)?.seq).toBe(2);
+    expect(frames.some((f) => nOf(f) === 2)).toBe(false);
+    expect(
+        frames
+            .filter((f) => nOf(f) === 0 || nOf(f) === 1)
+            .map((f) => f.seq)
+            .sort((a, b) => a - b),
+    ).toEqual([0, 1]);
+}
+
 describe("criterion 7: Session.request", () => {
     it("seals frames with seq 0, 1, 2 and returns each answer's payload", async () => {
         const session = await connect();
@@ -194,7 +212,7 @@ describe("criterion 7: Session.request", () => {
         const rejected = results[2] as PromiseRejectedResult;
         expect((rejected.reason as ChannelError).code).toBe("INVALID_ARGUMENT");
         await session.request("test.echo", echo(3));
-        expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2]);
+        expectAllocatedSeqs();
     });
 
     it("forced reorder: posts in completion order; the seqs are still exactly 0, 1, 2", async () => {
@@ -233,7 +251,7 @@ describe("criterion 7: Session.request", () => {
         expect((rejected.reason as ChannelError).code).toBe("INVALID_ARGUMENT");
         await session.request("test.echo", echo(3));
         expect(workload.frames.map((f) => f.seq).slice(0, 2)).toEqual([1, 0]);
-        expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2]);
+        expectAllocatedSeqs();
     });
 
     it("maps ok:false to REMOTE_ERROR with the detail and stays usable", async () => {
