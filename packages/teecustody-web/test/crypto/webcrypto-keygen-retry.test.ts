@@ -175,3 +175,18 @@ describe("sender permanent failure (criterion 2, C8.1)", () => {
         }
     });
 });
+
+describe("probe transient failure (criterion 3, R1)", () => {
+    it("retries a failed probe attempt and constructs the suite once", async () => {
+        const { pk } = x25519();
+        const h = harness((call) => call === 1);
+        const crypto = createWebCrypto();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+        expect(h.probeCalls()).toBe(2);
+        expect(h.senderCalls()).toBe(1);
+        expect(hpkeConstructed.mock.calls.filter(([name]) => name === "CipherSuite")).toHaveLength(
+            1,
+        );
+    });
+});

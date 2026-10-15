@@ -126,10 +126,13 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
 
     let suite: Promise<CipherSuite | undefined> | undefined;
 
-    /** ADR 0011 C3a.3: one X25519 probe per adapter, on the global subtle that @hpke/* uses. */
+    /** ADR 0011 C3a.3, C8: the X25519 probe, on the global subtle that @hpke/* uses. */
     async function probeSuite(globalSubtle: SubtleCrypto): Promise<CipherSuite | undefined> {
         try {
-            await globalSubtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+            await boundedKeygen(
+                () => globalSubtle.generateKey({ name: "X25519" }, false, ["deriveBits"]),
+                () => true,
+            );
         } catch {
             return undefined;
         }

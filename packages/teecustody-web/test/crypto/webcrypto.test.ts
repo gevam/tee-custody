@@ -540,7 +540,7 @@ describe("native X25519 only (criterion 5, C3, C3a.3)", () => {
                 "UNSUPPORTED",
             );
             expect(await sender.catch(() => "no output")).toBe("no output");
-            expect(hidden.probes()).toBe(1);
+            expect(hidden.probes()).toBe(3);
         } finally {
             hidden.restore();
         }
