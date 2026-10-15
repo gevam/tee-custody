@@ -181,9 +181,11 @@ export class ChannelClient {
         };
         // Spec §5.2: a bundle that fails verification is discarded, never used as a fallback.
         const results = await Promise.all(
-            published.slice(0, this.#limits.maxBundles).map((p) =>
-                verifyBundle(p, trustProfile, securityEvents, deps).catch(() => undefined),
-            ),
+            published
+                .slice(0, this.#limits.maxBundles)
+                .map((p) =>
+                    verifyBundle(p, trustProfile, securityEvents, deps).catch(() => undefined),
+                ),
         );
         const verified = results.filter((b): b is VerifiedBundle => b !== undefined);
         if (verified.length === 0) {

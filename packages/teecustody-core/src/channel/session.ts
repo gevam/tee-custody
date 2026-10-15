@@ -7,10 +7,20 @@ import {
     type Crypto,
     type InstanceId,
 } from "../capabilities.js";
+import { encodeCanonical } from "../wire/cbor.js";
 import type { CanonicalValue } from "../wire/types.js";
 import { ChannelError, type RemoteErrorCode } from "./errors.js";
 import type { ChannelLimits } from "./types.js";
-import { decodeOpenResultPlaintext, decodeResponse, type FrameAadFields } from "./wire.js";
+import {
+    MAX_SEQ,
+    OP_NAME_PATTERN,
+    decodeFrameResultPlaintext,
+    decodeOpenResultPlaintext,
+    decodeResponse,
+    encodeFrameAad,
+    encodeFrameRequest,
+    type FrameAadFields,
+} from "./wire.js";
 
 const SESSION_TOKEN = Symbol("Session");
 
@@ -19,7 +29,11 @@ export interface SessionLink {
     // ChannelError("TRANSPORT") on a transport failure
     post(instanceId: InstanceId, envelope: Bytes): Promise<void>;
     // Resolves with the first body `match` accepts; rejects with what `match` throws, or TIMEOUT.
-    wait<T>(route: ClientId, owner: object, match: (body: Bytes) => Promise<T | undefined>): Promise<T>;
+    wait<T>(
+        route: ClientId,
+        owner: object,
+        match: (body: Bytes) => Promise<T | undefined>,
+    ): Promise<T>;
     // Rejects every pending wait of `owner` with `error`.
     cancel(owner: object, error: Error): void;
     // A route stays known (its cursor kept) while attached.
@@ -117,12 +131,20 @@ export class Session {
     readonly instanceId: InstanceId;
     readonly clientId: ClientId;
 
-    // TypeError("INVALID_CONFIG") unless token is the module-private symbol of session.ts
     readonly #sessionId: Bytes;
     readonly #keyC2t: Bytes;
     readonly #keyT2c: Bytes;
-    readonly #init: SessionInit;
+    readonly #crypto: SessionInit["crypto"];
+    readonly #limits: ChannelLimits;
+    readonly #link: SessionLink;
+    // R-5: the next c2t seq. Only #sealNext reads or advances it; nothing ever lowers it.
+    #nextC2tSeq = 0;
+    // D2-3: t2c seq 0 was the open_result, so the first frame result must carry seq ≥ 1.
+    #lastT2cSeq = 0;
+    #pending = 0;
+    #closed = false;
 
+    // TypeError("INVALID_CONFIG") unless token is the module-private symbol of session.ts
     constructor(token: symbol, init: SessionInit) {
         if (token !== SESSION_TOKEN) {
             throw new TypeError("INVALID_CONFIG");
@@ -133,16 +155,104 @@ export class Session {
         this.clientId = init.clientId;
         this.#keyC2t = init.keyC2t;
         this.#keyT2c = init.keyT2c;
-        this.#init = init;
+        this.#crypto = init.crypto;
+        this.#limits = init.limits;
+        this.#link = init.link;
         init.link.attach(this.clientId);
     }
 
     get closed(): boolean {
-        throw new Error("NOT_IMPLEMENTED: T-26");
+        return this.#closed;
     }
 
-    request(op: string, payload: CanonicalValue): Promise<CanonicalValue> {
-        throw new Error("NOT_IMPLEMENTED: T-26");
+    async request(op: string, payload: CanonicalValue): Promise<CanonicalValue> {
+        if (this.#closed) {
+            throw new ChannelError("SESSION_CLOSED");
+        }
+        if (typeof op !== "string" || !OP_NAME_PATTERN.test(op) || op === "close") {
+            throw new ChannelError("INVALID_ARGUMENT");
+        }
+        const payloadBytes = this.#encodePayload(payload);
+        if (this.#pending >= this.#limits.maxInFlight) {
+            throw new ChannelError("INVALID_ARGUMENT");
+        }
+        this.#pending += 1;
+        try {
+            return await this.#exchange(op, payloadBytes);
+        } finally {
+            this.#pending -= 1;
+        }
+    }
+
+    #encodePayload(payload: CanonicalValue): Bytes {
+        let bytes: Bytes;
+        try {
+            bytes = encodeCanonical(payload);
+        } catch {
+            throw new ChannelError("INVALID_ARGUMENT");
+        }
+        if (bytes.length > this.#limits.maxPayloadBytes) {
+            throw new ChannelError("INVALID_ARGUMENT");
+        }
+        return bytes;
+    }
+
+    // Seals once, posts once, and waits for the matching result. Never re-seals, never retries (R-5).
+    async #exchange(op: string, payloadBytes: Bytes): Promise<CanonicalValue> {
+        const { seq, envelope } = await this.#sealNext(op, payloadBytes);
+        await this.#link.post(this.instanceId, envelope);
+        const match = await this.#link.wait(this.clientId, this, async (body) => {
+            const result = await readFrameResult(
+                this.#crypto,
+                this.#keyT2c,
+                this.#sessionId,
+                seq,
+                this.#lastT2cSeq,
+                body,
+                this.#limits,
+            );
+            if (result?.op !== op) {
+                return undefined;
+            }
+            this.#lastT2cSeq = result.seq;
+            return result;
+        });
+        if (!match.ok) {
+            throw new ChannelError("REMOTE_ERROR", match.error);
+        }
+        return match.payload;
+    }
+
+    // The one sealing method (D2-16). seq is taken and the counter advanced before the first await.
+    async #sealNext(op: string, payloadBytes: Bytes): Promise<{ seq: number; envelope: Bytes }> {
+        const seq = this.#nextC2tSeq;
+        if (seq > MAX_SEQ) {
+            this.#shutdown();
+            throw new ChannelError("SEQUENCE_EXHAUSTED");
+        }
+        this.#nextC2tSeq = seq + 1;
+        const aadBytes = encodeFrameAad({ sessionId: this.#sessionId, seq, op });
+        const envelope = await viaCrypto(async () =>
+            encodeFrameRequest(
+                aadBytes,
+                await this.#crypto.aes256GcmEncrypt(
+                    this.#keyC2t,
+                    nonce(seq),
+                    aadBytes,
+                    payloadBytes,
+                ),
+            ),
+        );
+        return { seq, envelope };
+    }
+
+    // Local close: keys zeroed, pending requests released, route detached.
+    #shutdown(): void {
+        this.#closed = true;
+        this.#keyC2t.fill(0);
+        this.#keyT2c.fill(0);
+        this.#link.cancel(this, new ChannelError("SESSION_CLOSED"));
+        this.#link.detach(this.clientId);
     }
 
     // sends op "close"; idempotent; destroys keys even on failure
@@ -216,7 +326,7 @@ export type FrameResultMatch =
 // undefined: decode failure, kind ≠ "frame_result", session mismatch, aad.seq <= lastSeq, AEAD failure,
 // or plaintext re ≠ re. ChannelError("INVALID_RESPONSE"): AEAD passed but the plaintext violates the schema.
 // Wire error codes outside RemoteErrorCode map to "UNKNOWN" (INC-2-API §7.5).
-export function readFrameResult(
+export async function readFrameResult(
     crypto: Pick<Crypto, "aes256GcmDecrypt">,
     keyT2c: Bytes,
     sessionId: Bytes,
@@ -225,5 +335,25 @@ export function readFrameResult(
     envelope: Bytes,
     limits: ChannelLimits,
 ): Promise<FrameResultMatch | undefined> {
-    throw new Error("NOT_IMPLEMENTED: T-26");
+    const decoded = decodeOrUndefined(envelope, limits);
+    // D2-3: t2c seq 0 belongs to the open_result, so a frame result needs seq ≥ 1 whatever lastSeq says.
+    if (
+        decoded?.kind !== "frame_result" ||
+        !sameBytes(decoded.aad.sessionId, sessionId) ||
+        decoded.aad.seq <= Math.max(lastSeq, 0)
+    ) {
+        return undefined;
+    }
+    const { seq, op } = decoded.aad;
+    const pt = await openT2c(crypto, keyT2c, seq, decoded.aadBytes, decoded.ct);
+    if (pt === undefined) {
+        return undefined;
+    }
+    const body = decodeFrameResultPlaintext(pt, limits.payloadDecode);
+    if (body.re !== re) {
+        return undefined;
+    }
+    return body.ok
+        ? { seq, op, re, ok: true, payload: body.payload }
+        : { seq, op, re, ok: false, error: remoteCode(body.error) };
 }

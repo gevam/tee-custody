@@ -170,7 +170,7 @@ export interface SeenFrame {
     readonly payload: CanonicalValue;
 }
 
-interface FakeSession {
+export interface FakeSession {
     readonly keyC2t: Bytes;
     readonly keyT2c: Bytes;
     readonly route: string;
@@ -233,8 +233,11 @@ export class FakeWorkload implements Transport {
             ? { kind: "ok", payload: null }
             : { kind: "ok", payload: frame.payload };
     // Extra bodies placed on a route before the workload's own answer (relay noise, forgeries).
-    beforeAnswer: (route: string, open: SeenOpen | undefined) => Promise<Bytes[]> = () =>
-        Promise.resolve([]);
+    beforeAnswer: (
+        route: string,
+        open: SeenOpen | undefined,
+        frame?: SeenFrame,
+    ) => Promise<Bytes[]> = () => Promise.resolve([]);
 
     constructor(...instances: InstanceFixture[]) {
         this.instances = instances;
@@ -374,7 +377,7 @@ export class FakeWorkload implements Transport {
         );
         const frame: SeenFrame = { sessionId, seq, op, payload: decodeValue(pt) };
         this.frames.push(frame);
-        for (const extra of await this.beforeAnswer(session.route, undefined)) {
+        for (const extra of await this.beforeAnswer(session.route, undefined, frame)) {
             this.publish(session.route, extra);
         }
         const action = this.onFrame(frame);
