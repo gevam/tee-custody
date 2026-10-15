@@ -1609,3 +1609,34 @@ Participants: Code Reviewer, Security Reviewer, Architect, Tech Lead
 **Risk carried:** T-40 overrides uvicorn 0.54.0 internals. Its tests must be re-run on any uvicorn change, at the same trigger as the D-049 lock-change check. B-49 (progress-based write deadline) is for INC-3.
 
 **Dissent:** none
+
+## D-077 — INC-2 G5 passes (INC-2, 2026-10-15)
+
+Type: gate
+Chair / decider: Orchestrator
+
+**Decision:** G5 passes on main 892343c.
+
+**Tasks.** All INC-2 tasks are merged with their verdicts recorded:
+- T-01..T-42, V-01 and V-02;
+- the QA items (QA-acceptance, QA-T-38, QA-T-39, QA-I7, QA-exec/QA-T-40, QA-D-01).
+- Defects D-01..D-07 are closed.
+
+**Tests.** Full `test_command`: 0 reds.
+- Python 4842 passed.
+- Core 1479, web 771, tests 673.
+- spec/vectors 236.
+
+**Coverage.** `coverage_command` exits 0:
+
+| Package | Statements | Branches | Functions | Lines |
+|---|---|---|---|---|
+| teecustody, teecustody_sim, notes_gateway (Python) | 100% (4650) | 100% (1000) | n/a | 100% |
+| @teecustody/core | 100% (1216) | 100% (739) | 100% (241) | 100% (1189) |
+| @teecustody/web | 100% (666) | 100% (375) | 100% (157) | 100% (649) |
+
+This meets `coverage.line_min` 80 and `security_paths_min` 100.
+
+**Known flake, not a G5 blocker:** B-47 (the Core wire-fuzz wall-clock budget).
+
+**Dissent:** none
