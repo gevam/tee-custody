@@ -184,3 +184,14 @@ test("C3 the positive-control page with one inline script reports at least one v
         await page.evaluate(() => (window as { __inlineRan?: true }).__inlineRan),
     ).toBeUndefined();
 });
+
+test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the shares store empty", async ({
+    page,
+    browserName,
+}) => {
+    test.skip(browserName !== "chromium", "CDP virtual authenticator: Chromium only (FACTS V-2.5)");
+    await addAuthenticator(page, false);
+    const result = await runHarness(page);
+    expect(result.steps.vault).toBe(NO_PRF_VAULT);
+    expect(await sharesCount(page)).toBe(0);
+});
