@@ -194,3 +194,33 @@ def test_running_the_module_as_main_exits_with_mains_status(
         runpy.run_path(dev.__file__, run_name="__main__")
     assert stopped.value.code == 1
     assert capsys.readouterr().out == ""
+
+
+_NON_LOOPBACK = ("192.0.2.1", "0.0.0.0", "::", "", "127.1", "example.com", "::ffff:127.0.0.1")  # noqa: S104 - refused hosts
+
+
+@pytest.mark.parametrize("host", _NON_LOOPBACK)
+def test_main_refuses_a_non_loopback_host_without_the_flag(
+    host: str, recorder: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert dev.main(["--host", host, "--port", "0"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "NON_LOOPBACK_NOT_ALLOWED\n"
+    assert recorder.configs == []
+
+
+@pytest.fixture
+def no_bind(recorder: _Recorder, monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    """The `recorder` with `uvicorn.Server.run` a no-op: nothing binds and uvicorn logs nothing."""
+    monkeypatch.setattr(uvicorn.Server, "run", lambda self, sockets=None: None)
+    return recorder
+
+
+@pytest.mark.parametrize("host", ["127.5.6.7", "localhost", "::1"])
+def test_main_accepts_a_loopback_host_without_the_flag(
+    host: str, no_bind: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert dev.main(["--host", host, "--port", "0"]) == 1
+    assert no_bind.configs[0].host == host
+    assert capsys.readouterr().err == ""

@@ -6,6 +6,7 @@ the server header and the access log off (INC-2-API §6 "Server configuration").
 
 import argparse
 import contextlib
+import ipaddress
 import signal
 import sys
 import threading
@@ -16,6 +17,8 @@ import uvicorn
 
 from notes_gateway.app import create_app
 
+_LOOPBACK_V4 = ipaddress.IPv4Network("127.0.0.0/8")
+_LOOPBACK_V6 = ipaddress.IPv6Address("::1")
 _POLL_S = 0.05
 _STOP_TIMEOUT_S = 5.0
 
@@ -24,7 +27,21 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m notes_gateway.dev")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--allow-non-loopback", action="store_true")
     return parser.parse_args(argv)
+
+
+def _is_loopback(host: str) -> bool:
+    """A local copy of the simulator's loopback rule (spec §15.5, T-31 A5)."""
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return address in _LOOPBACK_V4
+    return address == _LOOPBACK_V6
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -32,6 +49,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from teecustody_sim.backends import InMemoryQueue
 
     options = _parse(argv)
+    if not options.allow_non_loopback and not _is_loopback(options.host):
+        sys.stderr.write("NON_LOOPBACK_NOT_ALLOWED\n")
+        return 2
     config = uvicorn.Config(
         create_app(InMemoryQueue()),
         host=options.host,
