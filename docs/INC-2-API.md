@@ -1118,6 +1118,8 @@ class GatewayLimits:
     # Additive, 2026-10-15 (T-40 A2; SR-4, T-07). Appended after max_connections; kw_only.
     max_header_bytes: int = 8192           # 1024..12288; len(raw_path)+len(query_string)+Σ(len(name)+len(value))
     max_header_count: int = 64             # 16..256; len(scope["headers"])
+    # Additive, 2026-10-15 (T-40 A4.4; D-05; SR-4, T-07). Appended after max_header_count; kw_only.
+    write_timeout_s: float = 30.0          # 1.0..60.0, finite; deadline to drain buffered response bytes after a write pause
 def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
                rng: Callable[[int], bytes] = os.urandom,
                clock: Callable[[], float] = time.monotonic) -> fastapi.FastAPI: ...
@@ -1126,7 +1128,7 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
 | Route | Request | Success | Errors |
 |---|---|---|---|
 | `GET /bundles` | no body | `200 {"bundles":[{"instance_id":"<32hex>","bundle":"<b64url>"}]}` (≤ `max_bundles`) | 503, 500 |
-| `POST /requests/{instance}` | `Content-Type: application/octet-stream`, `Content-Length` required, 1..`max_request_bytes` raw envelope bytes | `202 {"request_id":"<32hex>"}` (relay id from `rng(16)`) | 400 (bad `instance` syntax, missing/oversized/empty body, wrong content type), 404 `UNKNOWN_INSTANCE`, 503, 500 |
+| `POST /requests/{instance}` | `Content-Type: application/octet-stream`, `Content-Length` required, 1..`max_request_bytes` raw envelope bytes | `202 {"request_id":"<32hex>"}` (relay id from `rng(16)`) | 400 (bad `instance` syntax, missing/oversized/empty body, wrong content type, any `Transfer-Encoding`), 404 `UNKNOWN_INSTANCE`, 503, 500 |
 | `GET /responses/{client}?after=<cursor>` | `after` optional, `CURSOR_PATTERN` | `200 {"responses":[{"request_id":"<32hex>","body":"<b64url>"}],"next":"<cursor>"\|null}` (≤ `max_page`) | 400 (bad `client` or cursor), 503, 500 |
 | any rate-limited request | — | — | `429 {"code":"RATE_LIMITED"}` with `Retry-After: <int s>` |
 | other path / method | — | — | `404 {"code":"NOT_FOUND"}` / `405 {"code":"METHOD_NOT_ALLOWED"}` |
@@ -1161,6 +1163,8 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
   - any other IPv6 address keys on its **/64 network**: `str(ipaddress.IPv6Network(f"{addr}/64", strict=False))`;
   - a missing or unparseable peer keys on the single key `"unknown"`.
 - **Order of checks** for every request, all before routing and before any queue call:
+  0. Transfer-Encoding → 400 `INVALID_ARGUMENT` with `Connection: close`; no slot, no token (added by "Server
+     hardening", T-40 A4.5).
   1. Per-source in-flight: if `per_source_max_in_flight` is reached for this source key → `429 RATE_LIMITED`,
      `Retry-After: 1`.
   2. Global concurrency: `max_concurrency` → 429.
@@ -1209,7 +1213,8 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
 **Server hardening (2026-10-15; T-40; QA D-03, D-04; SR-3, SR-4, SR-11, T-07, FR-5).** ASGI middleware cannot
 bound header time or shape parser-rejection bodies: uvicorn's h11 protocol runs those paths before the app. The
 gateway therefore ships its own uvicorn protocol subclass. `GatewayLimits` gains `header_read_timeout_s` and
-`max_connections` (code block above).
+`max_connections`, then `max_header_bytes` and `max_header_count` (A2), then `write_timeout_s` (A4.4): 17 fields
+in total, in the order of the code block above.
 ```python
 # notes_gateway/server.py (not re-exported from notes_gateway; __all__ stays ["GatewayLimits", "create_app"])
 def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimits(),
@@ -1231,9 +1236,15 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
   Every place in this repository that runs the gateway uses it (`dev.py`, `tests/e2e/channel_harness.py`). This
   replaces the "Server configuration" bullet's list of settings; its test still holds.
 - **No direct h11 dependency (D-049).** `server.py` subclasses `uvicorn.protocols.http.h11_impl.H11Protocol` and
-  never imports `h11`. h11 stays admitted only as uvicorn's dependency. The subclass relies on uvicorn 0.54.0
-  internals (`connections`, `cycle`, `loop`, `send_400_response`, `on_response_complete`), so any uvicorn version
-  change re-runs the T-40 tests, at the same trigger as D-049's lock-change re-check.
+  never imports `h11`. h11 stays admitted only as uvicorn's dependency. The only name `server.py` imports from
+  `uvicorn.protocols.http.h11_impl` is `H11Protocol`. The subclass relies on these uvicorn 0.54.0 internals and no
+  others (amended T-40 A4.2/A4.4): `connections`, `cycle` (`response_started`, `response_complete`, `more_body`),
+  `loop`, `transport`, `flow` (`write_paused`), `send_400_response`, `on_response_complete`, `pause_writing` and
+  `resume_writing`. Any uvicorn version change re-runs the T-40 tests, at the same trigger as D-049's lock-change
+  re-check.
+- **Shared validation.** `notes_gateway.app.validate_limits(limits: GatewayLimits) -> None` is package-internal (not
+  in `notes_gateway.__all__`). `create_app` and `server.uvicorn_config` both call it, so the two always accept and
+  refuse the same limits (`ValueError("INVALID_LIMITS")`).
 - **Header-read deadline.** The complete header block of each request must arrive within `header_read_timeout_s`.
   The clock starts when the connection is accepted and, on a kept-alive connection, when the previous response
   completes. It is a total deadline, not reset by data. On expiry the connection is closed and no bytes are written.
@@ -1250,9 +1261,13 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
 
   No request was parsed, so the response carries no CORS headers. The body obeys the no-escapes rule above. If a
   response is already in progress on the connection (started and not complete), no bytes are written; the
-  connection is only closed, so a response is never interleaved with another.
-- Logs (outcome only, no fields): `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, and
-  `GATEWAY_INVALID_ARGUMENT` for a parse failure. None carries the input, the path or the peer address. uvicorn's own
+  connection is only closed, so a response is never interleaved with another. Likewise (T-40 A4.1), if the current
+  request's response is complete but its body is still arriving (`more_body`), no bytes are written and the
+  connection is only closed: every request gets at most one response. The constant is written only when there is
+  no cycle, the response has not started, or the response is complete and the request body has ended.
+- Logs (outcome only, no fields): `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, `GATEWAY_WRITE_TIMEOUT`
+  (T-40 A4.4), and `GATEWAY_INVALID_ARGUMENT` for a parse failure. (A Transfer-Encoding refusal is an app-level
+  `400` and is logged by the app's ordinary per-request line, like any other `400`.) None carries the input, the path or the peer address. uvicorn's own
   constant `uvicorn.error` warning for a parse failure remains; it carries neither.
 - Validation: `header_read_timeout_s` must be a finite `int`/`float` in 1.0..60.0, with `bool` refused.
   `max_connections` must be an `int` ≥ `max_concurrency`, with `bool` refused. Anything else →
@@ -1284,6 +1299,51 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
     request the app sees is bounded by these limits.
   - Validation: each field must be an `int` in its range, with `bool` refused. Anything else →
     `ValueError("INVALID_LIMITS")`.
+- **Write deadline (T-40 A4.4; D-05; SR-4, T-07).** `GatewayLimits` gains `write_timeout_s: float = 30.0`, appended
+  after `max_header_count`, kw_only (code block above).
+  - For every connection under the cap, the gateway protocol sets the transport's write high-water mark to 0
+    (`set_write_buffer_limits(high=0)`, so the low-water mark is also 0). When response bytes cannot be handed to
+    the kernel at once, the writer pauses. The peer must then drain all buffered output within `write_timeout_s`.
+    Otherwise the connection is aborted (`transport.abort()`), and its buffered bytes are discarded; `close()` would
+    wait for a peer that never reads. The in-progress request ends as a client disconnect, both in-flight slots are
+    released by the existing `finally`, and `GATEWAY_WRITE_TIMEOUT` is logged once.
+  - Each pause starts a new deadline, and a full drain (`resume_writing`) cancels it. A second pause signal while a
+    deadline is pending does not re-arm it. The expiry acts only if the writer is still paused. `connection_lost`
+    cancels both the header and the write timers.
+  - The deadline never runs while the connection is idle or the gateway is waiting for a request. It applies to
+    every write, including the parse-failure constant, 408 and 429. `GET /responses` is a short poll (it answers at
+    once, possibly with an empty page), so no server-side wait counts against it.
+  - Sizing. A gateway response is one JSON body written at once, and the writer resumes only on a full drain. So
+    `write_timeout_s` is in effect the time a client has to receive the part of one response that the kernel
+    buffers cannot hold. Typical responses are small: a page of a few frames, or 16 bundles of about 30 KB each
+    (`prekey_batch` 100) is about 0.65 MB as base64url. `FetchTransport` refuses any body over `maxResponseBytes`
+    (default 1 MiB). At the 30 s default, 1 MiB needs about 35 KB/s (about 0.3 Mbit/s), below a slow-3G link, and
+    `FetchTransport`'s own `timeoutMs` is normally the tighter bound. The decode limits allow larger worst-case
+    bodies (16 × 64 KiB bundles, or 32 × 64 KiB frames, are 1.4–2.8 MB as base64url). A host that configures limits
+    that admit such bodies raises `maxResponseBytes` and `write_timeout_s` together. A slow reader holds at most
+    `per_source_max_in_flight` slots for at most `write_timeout_s` per response.
+  - Validation: a finite `int`/`float` in 1.0..60.0, with `bool` refused. Anything else →
+    `ValueError("INVALID_LIMITS")`.
+- **Transfer-Encoding (T-40 A4.5; D-06; RFC 9112 §6.1, §6.3; SR-3, SR-4).** The gateway contract never uses a
+  transfer coding: `POST /requests/{instance}` requires `Content-Length`, and `GET` and the CORS preflight have no
+  body. Any request carrying a `Transfer-Encoding` header, with or without `Content-Length`, is answered
+  `400 {"code":"INVALID_ARGUMENT"}` with `Connection: close` and the usual security headers. It is not routed,
+  makes no queue call, takes no in-flight slot and no rate token, and its body is not read. The connection is closed
+  after the response, as RFC 9112 requires when both headers are present.
+  - This is step 0 of "Order of checks", before the per-source in-flight check. Earlier steps can answer `429` on a
+    kept-alive connection while the request body is unread, which would leave the connection's framing ambiguous;
+    step 0 closes the connection first. Like a parse failure, a refusal costs no rate budget, but each one ends its
+    connection, so the cost is bounded by `max_connections` and `header_read_timeout_s`.
+  - h11 rejects any coding other than `chunked` while parsing, and the parse-failure constant (also a `400
+    INVALID_ARGUMENT` with `connection: close`) answers it. So every Transfer-Encoding request gets the same status
+    and body, whichever layer refuses it.
+- **Request framing for every gateway (T-40 A4.5; FR-5).** `FetchTransport` (§8.3) always sends a fixed-length
+  request body. `postRequest` passes a fresh `ArrayBuffer`, never a `ReadableStream` and never `duplex`, so browsers
+  and Node `fetch` send `Content-Length` and no `Transfer-Encoding`. A host-written gateway therefore has to accept
+  only `Content-Length` bodies. It should refuse `Transfer-Encoding` as above, and it must close the connection if it
+  answers a request that carries both headers. A fronting proxy must forward the client's `Content-Length` framing
+  and must not re-encode request bodies as chunked. With request buffering on, which is the default in common
+  proxies, a proxy already does this. The gateway README states it under "Deployment requirement".
 
 Dev entry point: `python -m notes_gateway.dev --host 127.0.0.1 --port 0` wires an `InMemoryQueue` (imports
 `teecustody_sim` lazily inside `dev` only). Example: `TestClient(create_app(InMemoryQueue())).get("/bundles")`.
