@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import ipaddress
 import json
 import math
 import os
@@ -272,8 +273,7 @@ class _Guard:
         cors = len(origins) == 1 and origins[0] in self._cors_origins
         cors_headers = _cors_headers(origins[0]) if cors else []
         send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
-        client = scope.get("client")
-        source = client[0] if client else "unknown"
+        source = _source_key(scope.get("client"))
         held = self._in_flight_by_source.get(source, 0)
         if held >= self._per_source_max or self._in_flight >= self._max_concurrency:
             await _rate_limited(scope, 1)(scope, receive, send)
@@ -306,6 +306,21 @@ class _Guard:
             self._in_flight_by_source[source] = remaining
         else:
             del self._in_flight_by_source[source]
+
+
+def _source_key(client: tuple[str, int] | None) -> str:
+    """§6 source key: IPv4 address, IPv4-mapped IPv6 as IPv4, other IPv6 by /64, else "unknown"."""
+    try:
+        address = ipaddress.ip_address(client[0]) if client else None
+    except ValueError:
+        address = None
+    if address is None:
+        return "unknown"
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.IPv6Network((address.packed, 64), strict=False))
+    return str(address)
 
 
 def _cors_headers(origin: str) -> list[tuple[bytes, bytes]]:

@@ -550,3 +550,66 @@ def test_a_cancelled_request_releases_its_slots() -> None:
     assert after.status == 200
     guard = _guard_of(app)
     assert (guard._in_flight, guard._in_flight_by_source) == (0, {})
+
+
+# ---------------------------------------------------------------- criterion 15: A1 source key
+@pytest.mark.parametrize(
+    ("first", "second", "shared"),
+    [
+        ("2001:db8::1", "2001:db8::2", True),
+        ("2001:db8::1", "2001:db8:0:0:ffff:ffff:ffff:ffff", True),
+        ("2001:db8::1", "2001:db8:0:1::1", False),
+        ("::ffff:192.0.2.1", "192.0.2.1", True),
+        ("192.0.2.1", "192.0.2.2", False),
+        ("fe80::1%eth0", "fe80::2", True),
+        ("not-an-address", "unknown", True),
+        ("192.0.2.1", "unknown", False),
+    ],
+)
+def test_sources_are_keyed_by_ipv4_address_or_ipv6_slash_64(
+    first: str, second: str, shared: bool
+) -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1)
+    assert _source(app, first).get("/bundles").status_code == 200
+
+    status = _source(app, second).get("/bundles").status_code
+
+    assert status == (429 if shared else 200)
+
+
+def test_a_missing_peer_shares_the_unknown_key_with_an_unparseable_one() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1)
+    assert _source(app, "testclient").get("/bundles").status_code == 200
+
+    missing = asyncio.run(_drive(app, "/bundles", None))
+
+    assert missing.status == 429
+
+
+def test_the_in_flight_cap_uses_the_same_ipv6_slash_64_key() -> None:
+    relay, clock = CountingRelay(block=True), Clock()
+    app = _app(relay, clock, per_source_max_in_flight=1)
+
+    async def scenario() -> tuple[Exchange, Exchange]:
+        held = asyncio.create_task(_drive(app, "/bundles", ("2001:db8::1", 40000)))
+        await _until(lambda: relay.entered == 1)
+        sibling = await _drive(app, f"/responses/{'c3' * 16}", ("2001:db8::2", 40000))
+        relay.release.set()
+        return await held, sibling
+
+    first, sibling = asyncio.run(asyncio.wait_for(scenario(), 15))
+
+    assert (first.status, sibling.status) == (200, 429)
+
+
+def test_a_loopback_peer_cannot_choose_its_key_with_x_forwarded_for() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1)
+    peer = _source(app, "127.0.0.1")
+    assert peer.get("/bundles").status_code == 200
+
+    spoofed = peer.get("/bundles", headers={"X-Forwarded-For": "203.0.113.9"})
+
+    assert spoofed.status_code == 429
