@@ -122,7 +122,8 @@ export class FakeAuthenticator {
         if (this.behaviour.prfEnabled && this.behaviour.resultsOnGet && first !== undefined) {
             prf.results = { first: await this.prf(first) };
         }
-        const extensions = this.behaviour.getPrf === NONE ? { prf } : { prf: this.behaviour.getPrf };
+        const extensions =
+            this.behaviour.getPrf === NONE ? { prf } : { prf: this.behaviour.getPrf };
         return credential(this.behaviour.getRawId ?? wanted, extensions);
     }
 
@@ -166,7 +167,9 @@ function evalFirst(extensions: AuthenticationExtensionsClientInputs | undefined)
 export function bytesOf(source: BufferSource): Uint8Array {
     return source instanceof ArrayBuffer
         ? new Uint8Array(source.slice(0))
-        : new Uint8Array(source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength));
+        : new Uint8Array(
+              source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength),
+          );
 }
 
 function hex(bytes: Uint8Array): string {

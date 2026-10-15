@@ -60,7 +60,11 @@ export class PrfShareVault implements ShareVault {
         const prf = await this.#assert(record.credential_id, record.prf_salt);
         const key = await this.#deriveKey(prf, record.prf_salt, client);
         const plain = await this.#subtle().decrypt(
-            { name: "AES-GCM", iv: record.nonce, additionalData: aad(client, record.credential_id) },
+            {
+                name: "AES-GCM",
+                iv: record.nonce,
+                additionalData: aad(client, record.credential_id),
+            },
             key,
             record.ct,
         );
@@ -71,28 +75,33 @@ export class PrfShareVault implements ShareVault {
         const copy = new Uint8Array(share);
         const salt = this.#random(32);
         const credentials = this.#credentials();
-        const created = await ceremony(() => credentials.create({
-            publicKey: {
-                rp: this.#options.rp,
-                user: { id: this.#random(16), ...this.#options.user(client) },
-                challenge: this.#random(32),
-                pubKeyCredParams: [
-                    { type: "public-key", alg: -8 },
-                    { type: "public-key", alg: -7 },
-                ],
-                authenticatorSelection: { residentKey: "required", userVerification: "required" },
-                timeout: this.#timeoutMs(),
-                extensions: { prf: { eval: { first: salt } } },
-            },
-        }));
+        const created = await this.#ceremony((signal) =>
+            credentials.create({
+                signal,
+                publicKey: {
+                    rp: this.#options.rp,
+                    user: { id: this.#random(16), ...this.#options.user(client) },
+                    challenge: this.#random(32),
+                    pubKeyCredParams: [
+                        { type: "public-key", alg: -8 },
+                        { type: "public-key", alg: -7 },
+                    ],
+                    authenticatorSelection: {
+                        residentKey: "required",
+                        userVerification: "required",
+                    },
+                    timeout: this.#timeoutMs(),
+                    extensions: { prf: { eval: { first: salt } } },
+                },
+            }),
+        );
         const credentialId = new Uint8Array(created.rawId);
         const outputs = created.getClientExtensionResults().prf;
         if (outputs?.enabled !== true) {
             throw new CapabilityError("UNSUPPORTED");
         }
         const first = outputs.results?.first;
-        const prf =
-            first === undefined ? await this.#assert(credentialId, salt) : prfOutput(first);
+        const prf = first === undefined ? await this.#assert(credentialId, salt) : prfOutput(first);
         const key = await this.#deriveKey(prf, salt, client);
         const nonce = this.#random(12);
         const ct = new Uint8Array(
@@ -119,17 +128,37 @@ export class PrfShareVault implements ShareVault {
 
     async #assert(credentialId: Uint8Array, salt: Uint8Array): Promise<ArrayBuffer> {
         const credentials = this.#credentials();
-        const asserted = await ceremony(() => credentials.get({
-            publicKey: {
-                challenge: this.#random(32),
-                rpId: this.#options.rp.id,
-                allowCredentials: [{ type: "public-key", id: credentialId }],
-                userVerification: "required",
-                timeout: this.#timeoutMs(),
-                extensions: { prf: { eval: { first: salt } } },
-            },
-        }));
+        const asserted = await this.#ceremony((signal) =>
+            credentials.get({
+                signal,
+                publicKey: {
+                    challenge: this.#random(32),
+                    rpId: this.#options.rp.id,
+                    allowCredentials: [{ type: "public-key", id: credentialId }],
+                    userVerification: "required",
+                    timeout: this.#timeoutMs(),
+                    extensions: { prf: { eval: { first: salt } } },
+                },
+            }),
+        );
         return prfOutput(asserted.getClientExtensionResults().prf?.results?.first);
+    }
+
+    /** Runs a ceremony that is aborted at timeoutMs even if the browser ignores `timeout`. */
+    async #ceremony(
+        run: (signal: AbortSignal) => Promise<Credential | null>,
+    ): Promise<PublicKeyCredential> {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+            controller.abort();
+        }, this.#timeoutMs());
+        try {
+            return (await run(controller.signal)) as PublicKeyCredential;
+        } catch (error) {
+            throw ceremonyError(error);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     #credentials(): CredentialsContainer {
@@ -220,17 +249,12 @@ function prfOutput(first: unknown): ArrayBuffer {
     return first;
 }
 
-async function ceremony(run: () => Promise<Credential | null>): Promise<PublicKeyCredential> {
-    try {
-        return (await run()) as PublicKeyCredential;
-    } catch (error) {
-        throw ceremonyError(error);
-    }
-}
-
 function ceremonyError(error: unknown): CapabilityError {
     const name = error instanceof Error ? error.name : "";
     switch (name) {
+        case "NotAllowedError":
+        case "AbortError":
+            return new CapabilityError("USER_PRESENCE_REQUIRED");
         case "SecurityError":
         case "NotSupportedError":
             return new CapabilityError("UNSUPPORTED");

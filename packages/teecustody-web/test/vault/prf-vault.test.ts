@@ -86,10 +86,14 @@ describe("criterion 1: round trip with copied buffers", () => {
     });
 });
 
-
 function forms(bytes: Uint8Array): string[] {
     const b = Buffer.from(bytes);
-    return [b.toString("hex"), b.toString("hex").toUpperCase(), b.toString("base64"), b.toString("base64url")];
+    return [
+        b.toString("hex"),
+        b.toString("hex").toUpperCase(),
+        b.toString("base64"),
+        b.toString("base64url"),
+    ];
 }
 
 function leaks(value: unknown, secret: Uint8Array): boolean {
@@ -167,9 +171,14 @@ describe("criterion 2: only the documented ciphertext record is stored", () => {
         const stored = await records(idb);
         expect(stored).toHaveLength(1);
         const record = stored[0] as StoredRecord;
-        expect(Object.keys(record).sort()).toEqual(
-            ["client_id", "credential_id", "ct", "nonce", "prf_salt", "v"],
-        );
+        expect(Object.keys(record).sort()).toEqual([
+            "client_id",
+            "credential_id",
+            "ct",
+            "nonce",
+            "prf_salt",
+            "v",
+        ]);
         expect(record.v).toBe(1);
         expect(record.client_id).toBe(CLIENT);
         expect(record.credential_id).toBeInstanceOf(Uint8Array);
@@ -303,7 +312,9 @@ describe("criterion 4: PRF output from create or from get", () => {
         const v = vault(auth, new IDBFactory());
         await v.set(CLIENT, SHARE.slice());
         expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create"]);
-        expect(Array.from(bytes(auth.creates[0]?.publicKey.extensions?.prf?.eval?.first))).toHaveLength(32);
+        expect(
+            Array.from(bytes(auth.creates[0]?.publicKey.extensions?.prf?.eval?.first)),
+        ).toHaveLength(32);
         auth.behaviour.resultsOnGet = true;
         expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
     });
@@ -371,14 +382,17 @@ describe("criterion 5: UNSUPPORTED with nothing written", () => {
         await expectNothingStored(idb);
     });
 
-    it.each([31, 33, 0])("fails when create returns a %i-byte PRF output, without a get", async (n) => {
-        const auth = new FakeAuthenticator();
-        auth.behaviour.createPrf = { enabled: true, results: { first: new ArrayBuffer(n) } };
-        const idb = new IDBFactory();
-        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
-        expect(auth.gets).toHaveLength(0);
-        await expectNothingStored(idb);
-    });
+    it.each([31, 33, 0])(
+        "fails when create returns a %i-byte PRF output, without a get",
+        async (n) => {
+            const auth = new FakeAuthenticator();
+            auth.behaviour.createPrf = { enabled: true, results: { first: new ArrayBuffer(n) } };
+            const idb = new IDBFactory();
+            expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+            expect(auth.gets).toHaveLength(0);
+            await expectNothingStored(idb);
+        },
+    );
 
     it("fails when the authenticator's PRF output is 31 bytes", async () => {
         const auth = new FakeAuthenticator();
@@ -402,9 +416,7 @@ describe("criterion 5: UNSUPPORTED with nothing written", () => {
             const onGet = new FakeAuthenticator();
             onGet.behaviour.resultsOnCreate = false;
             onGet.behaviour.getError = name;
-            expect(await codeOf(vault(onGet, idb).set(CLIENT, SHARE.slice()))).toBe(
-                "UNSUPPORTED",
-            );
+            expect(await codeOf(vault(onGet, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
             await expectNothingStored(idb);
         },
     );
@@ -415,5 +427,60 @@ describe("criterion 5: UNSUPPORTED with nothing written", () => {
         await v.set(CLIENT, SHARE.slice());
         auth.behaviour.resultsOnGet = false;
         expect(await codeOf(v.get(CLIENT))).toBe("UNSUPPORTED");
+    });
+});
+
+describe("criterion 6: USER_PRESENCE_REQUIRED with nothing written", () => {
+    it.each(["NotAllowedError", "AbortError"])("maps %s from create", async (name) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.createError = name;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe(
+            "USER_PRESENCE_REQUIRED",
+        );
+        await expectNothingStored(idb);
+    });
+
+    it.each(["NotAllowedError", "AbortError"])(
+        "maps %s from the get after create",
+        async (name) => {
+            const auth = new FakeAuthenticator();
+            auth.behaviour.resultsOnCreate = false;
+            auth.behaviour.getError = name;
+            const idb = new IDBFactory();
+            expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe(
+                "USER_PRESENCE_REQUIRED",
+            );
+            await expectNothingStored(idb);
+        },
+    );
+
+    it.each(["NotAllowedError", "AbortError"])("maps %s from the get that reads", async (name) => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        auth.behaviour.getError = name;
+        expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
+    });
+
+    it("aborts a ceremony that outlives timeoutMs even if the browser ignores the timeout", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.hang = true;
+        const idb = new IDBFactory();
+        const started = Date.now();
+        expect(await codeOf(vault(auth, idb, { timeoutMs: 30 }).set(CLIENT, SHARE.slice()))).toBe(
+            "USER_PRESENCE_REQUIRED",
+        );
+        expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+        expect(auth.creates[0]?.signal?.aborted).toBe(true);
+        await expectNothingStored(idb);
+    });
+
+    it("does not abort a ceremony that completes in time", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        const v = vault(auth, new IDBFactory(), { timeoutMs: 1000 });
+        await v.set(CLIENT, SHARE.slice());
+        expect(auth.ceremonies.every((c) => c.signal?.aborted === false)).toBe(true);
     });
 });
