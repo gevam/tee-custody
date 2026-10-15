@@ -1,0 +1,123 @@
+"""T-31: the end-to-end channel harness as a process (INC-2-API §9.4; API-TL TL-8; FR-4, SR-11).
+
+Every test spawns `tests/e2e/channel_harness.py`, waits a bounded time for its ready line and
+kills it on teardown, so a hung harness fails the test instead of hanging the suite.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import threading
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+HARNESS = REPO_ROOT / "tests" / "e2e" / "channel_harness.py"
+READY_LINE = re.compile(
+    r"^gateway=http://127\.0\.0\.1:\d+ issuer=http://127\.0\.0\.1:\d+ profile=/\S+$"
+)
+READY_TIMEOUT_S = 30.0
+STOP_TIMEOUT_S = 10.0
+
+
+class RunningHarness:
+    """A harness subprocess with its stdout lines and stderr text collected by reader threads."""
+
+    def __init__(self, argv: list[str]) -> None:
+        self.proc = subprocess.Popen(  # noqa: S603 - fixed argv
+            [sys.executable, str(HARNESS), *argv],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.lines: list[str] = []
+        self.temp_dir: Path | None = None
+        self.err: list[str] = []
+        self._ready: queue.Queue[str | None] = queue.Queue()
+        self._readers = [
+            threading.Thread(target=self._read_stdout, daemon=True),
+            threading.Thread(target=self._read_stderr, daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
+
+    def _read_stdout(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self.lines.append(line.rstrip("\n"))
+            self._ready.put(self.lines[-1])
+        self._ready.put(None)
+
+    def _read_stderr(self) -> None:
+        assert self.proc.stderr is not None
+        self.err.extend(self.proc.stderr)
+
+    def ready_line(self) -> str:
+        try:
+            line = self._ready.get(timeout=READY_TIMEOUT_S)
+        except queue.Empty:
+            pytest.fail("harness printed no ready line within 30 s")
+        assert line is not None, f"harness exited before ready: {self.proc.poll()}"
+        self.temp_dir = Path(line.rsplit("profile=", 1)[1]).parent
+        return line
+
+    def terminate(self) -> int:
+        self.proc.send_signal(signal.SIGTERM)
+        code = self.proc.wait(STOP_TIMEOUT_S)
+        self.join()
+        return code
+
+    def join(self) -> None:
+        for reader in self._readers:
+            reader.join(STOP_TIMEOUT_S)
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            if pipe is not None:
+                pipe.close()
+
+    def output(self) -> str:
+        return "\n".join(self.lines) + "".join(self.err)
+
+    def kill(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(STOP_TIMEOUT_S)
+        self.join()
+        if self.temp_dir is not None and self.temp_dir.name.startswith("tc-e2e-"):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def harness() -> Iterator[RunningHarness]:
+    running = RunningHarness([])
+    try:
+        yield running
+    finally:
+        running.kill()
+
+
+def test_prints_one_ready_line_with_parseable_profile_and_private_fixture(
+    harness: RunningHarness,
+) -> None:
+    line = harness.ready_line()
+    assert READY_LINE.fullmatch(line)
+    directory = harness.temp_dir
+    assert directory is not None
+    profile = json.loads((directory / "profile.json").read_text(encoding="utf-8"))
+    assert profile["profile_version"] == 2
+    fixture_path = directory / "fixture.json"
+    assert stat.S_IMODE(os.stat(fixture_path).st_mode) == 0o600
+    cs_hex = json.loads(fixture_path.read_text(encoding="utf-8"))["cs"]
+    harness.kill()
+    assert harness.lines == [line]
+    assert cs_hex not in harness.output()
