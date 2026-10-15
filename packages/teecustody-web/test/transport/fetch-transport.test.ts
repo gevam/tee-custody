@@ -931,7 +931,8 @@ function defaulted(fetch: FetchFn): FetchTransport {
 
 function explicitlyUndefined(fetch: FetchFn): FetchTransport {
     const options = { baseUrl: BASE, maxResponseBytes: undefined, timeoutMs: 1000, fetch };
-    return new FetchTransport(options as unknown as FetchTransportOptions);
+    // @ts-expect-error exactOptionalPropertyTypes rejects an explicit undefined
+    return new FetchTransport(options);
 }
 
 describe.each([
