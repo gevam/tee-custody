@@ -15,11 +15,14 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from teecustody_sim import (
     DBGSTAT_DISABLED,
+    NEGATIVE_CASES,
     SIM_HWMODEL,
     SIM_ISSUER,
     SUPPORT_ATTRIBUTES,
     SWNAME,
+    JsonValue,
     LaunchConfig,
+    NamedCase,
     SimKeys,
     TokenMinter,
     frame_jws,
@@ -427,3 +430,75 @@ def test_claims_returns_a_fresh_copy_each_call(minter: TokenMinter) -> None:
     )
     again = json.loads(decode(minter.mint(AUDIENCE, [NONCE], NOW))[1])
     assert len(again["submods"]["container"]["image_signatures"]) == 2
+
+
+def _verifies_under_kid(token: str, jwks: dict[str, JsonValue]) -> bool:
+    """RS256 (`cryptography`) under the JWKS entry that the token header's `kid` names."""
+    header, payload, signature = token.split(".")
+    kid = json.loads(b64url_decode(header))["kid"]
+    entries = jwks["keys"]
+    assert isinstance(entries, list)
+    named = [entry for entry in entries if isinstance(entry, dict) and entry["kid"] == kid]
+    if not named:
+        return False
+    n, e = named[0]["n"], named[0]["e"]
+    assert isinstance(n, str)
+    assert isinstance(e, str)
+    public = rsa.RSAPublicNumbers(
+        int.from_bytes(b64url_decode(e), "big"), int.from_bytes(b64url_decode(n), "big")
+    ).public_key()
+    try:
+        public.verify(
+            b64url_decode(signature),
+            f"{header}.{payload}".encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except InvalidSignature:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("case_id", ["jwks_other_path", "jwks_other_path_same_kid"])
+def test_attacker_rows_verify_under_the_attacker_jwks_and_never_under_jwks(
+    keys: SimKeys, case_id: str
+) -> None:
+    """S3 positive control (INC-2-API §16.9; T-29): only the pinned key set decides."""
+    minter = TokenMinter(keys, LAUNCH, ttl_s=TTL_S, token_max_age_s=TTL_S)
+    valid = minter.mint(AUDIENCE, [NONCE], NOW)
+    token = minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case_id))
+
+    assert _verifies_under_kid(valid, keys.issuer_jwks())
+    assert _verifies_under_kid(token, keys.attacker_jwks())
+    assert not _verifies_under_kid(token, keys.issuer_jwks())
+    assert not _verifies_under_kid(valid, keys.attacker_jwks())
+    assert token.split(".")[1] == valid.split(".")[1]
+    kid = json.loads(b64url_decode(token.split(".")[0]))["kid"]
+    expected_kid = keys.attacker_issuer_kid if case_id == "jwks_other_path" else keys.issuer_kid
+    assert kid == expected_kid
+
+
+def test_the_attacker_key_signs_only_the_jwks_other_path_rows(
+    keys: SimKeys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L-1 (D-047): valid tokens and every other case never touch the attacker key."""
+    calls: list[bytes] = []
+    real = keys.sign_jws_attacker
+
+    def recording(signing_input: bytes) -> bytes:
+        calls.append(signing_input)
+        return real(signing_input)
+
+    monkeypatch.setattr(keys, "sign_jws_attacker", recording)
+    minter = TokenMinter(keys, LAUNCH, ttl_s=TTL_S, token_max_age_s=TTL_S)
+    minter.mint(AUDIENCE, [NONCE], NOW)
+    minter.mint(AUDIENCE, [], NOW)
+    signed_by_attacker = []
+    for case in NEGATIVE_CASES:
+        before = len(calls)
+        minter.mint(AUDIENCE, [NONCE], NOW, NamedCase(case.case_id))
+        if len(calls) > before:
+            signed_by_attacker.append(case.case_id)
+
+    assert signed_by_attacker == ["jwks_other_path", "jwks_other_path_same_kid"]
+    assert len(calls) == 2

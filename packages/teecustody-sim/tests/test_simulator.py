@@ -1,5 +1,6 @@
 """T-08 criteria 4-7: the `Simulator` facade (spec §15.2, §15.5; API.md §C `sim-state.json`)."""
 
+import base64
 import dataclasses
 import json
 import logging
@@ -15,6 +16,9 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody_sim import (
     DEFAULT_TOKEN_AUDIENCE,
@@ -47,6 +51,7 @@ PUBLIC_JWK: dict[str, JsonValue] = {
     "n": "sXchDaQebHnPiGvyDOAT4saGEUetSyo9MKLOoWFsueri23bOdgWp4Dy1WlUzewbg",
     "e": "AQAB",
 }
+ATTACKER_JWK: dict[str, JsonValue] = {**PUBLIC_JWK, "kid": "fake-attacker-kid", "n": "YXR0YWNr"}
 
 
 class FakeKeys:
@@ -65,6 +70,9 @@ class FakeKeys:
 
     def issuer_jwks(self) -> dict[str, JsonValue]:
         return {"keys": [dict(PUBLIC_JWK)]}
+
+    def attacker_jwks(self) -> dict[str, JsonValue]:
+        return {"keys": [dict(ATTACKER_JWK)]}
 
 
 class FakeMinter:
@@ -387,8 +395,11 @@ def test_start_serves_discovery_jwks_and_the_launcher_socket(short_dir: Path) ->
         origin = simulator.issuer_origin
         assert urlsplit(origin).hostname == "127.0.0.1"
         assert simulator.discovery_url == origin + "/.well-known/openid-configuration"
+        assert simulator.jwks_uri == origin + "/jwks"
+        assert simulator.attacker_jwks_uri == origin + "/attacker/jwks"
         discovery = http_get_json(simulator.discovery_url)
-        jwks = http_get_json(origin + "/jwks")
+        jwks = http_get_json(simulator.jwks_uri)
+        attacker_jwks = http_get_json(simulator.attacker_jwks_uri)
         status, token = post_token(config.socket_path, AUDIENCE, [NONCE])
         keys = simulator.keys
 
@@ -396,11 +407,68 @@ def test_start_serves_discovery_jwks_and_the_launcher_socket(short_dir: Path) ->
     assert discovery["issuer"] == SIM_ISSUER
     assert discovery["jwks_uri"] == origin + "/jwks"
     assert jwks == {"keys": [PUBLIC_JWK]}
+    assert attacker_jwks == {"keys": [ATTACKER_JWK]}
     assert (status, token) == (200, b"eyJmYWtl.2.c2ln")
     assert isinstance(keys, FakeKeys)
     assert FakeKeys.loaded == [(config.state_dir, 3)]
     assert FakeMinter.created == [(keys, LAUNCH, SIM_ISSUER, 1200, DEFAULT_TOKEN_MAX_AGE_S)]
     assert FakeMinter.minted[1] == (AUDIENCE, [NONCE], NOW)
+
+
+def _b64url_decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _verifies_under(token: str, jwks: JsonValue) -> bool:
+    """RS256 verification of `token` under the JWKS entry its header `kid` names, if any."""
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    kid = json.loads(_b64url_decode(header_b64))["kid"]
+    assert isinstance(jwks, dict)
+    entries = jwks["keys"]
+    assert isinstance(entries, list)
+    for entry in entries:
+        assert isinstance(entry, dict)
+        if entry["kid"] != kid:
+            continue
+        n, e = (int.from_bytes(_b64url_decode(str(entry[m])), "big") for m in ("n", "e"))
+        try:
+            rsa.RSAPublicNumbers(e, n).public_key().verify(
+                _b64url_decode(signature_b64),
+                f"{header_b64}.{payload_b64}".encode(),
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )
+        except InvalidSignature:
+            return False
+        return True
+    return False
+
+
+def test_real_simulator_never_mixes_the_issuer_and_attacker_keys(short_dir: Path) -> None:
+    """S6 (L-1): `/jwks` never carries the attacker modulus; launcher tokens never verify under
+    `/attacker/jwks`; the attacker key never reaches the token file or `sim-state.json`."""
+    config = make_config(short_dir)
+    with Simulator(config, environ=clean_environ(short_dir)) as simulator:
+        jwks_body = urllib.request.urlopen(simulator.jwks_uri, timeout=5.0).read()  # noqa: S310
+        attacker_jwks = http_get_json(simulator.attacker_jwks_uri)
+        status, token = post_token(config.socket_path, AUDIENCE, [NONCE])
+        keys = simulator.keys
+
+    assert isinstance(attacker_jwks, dict)
+    entries = attacker_jwks["keys"]
+    assert isinstance(entries, list)
+    attacker_entry = entries[0]
+    assert isinstance(attacker_entry, dict)
+    attacker_n = attacker_entry["n"]
+    assert isinstance(attacker_n, str)
+    assert attacker_n.encode() not in jwks_body
+    assert status == 200
+    for launcher_token in (token.decode(), config.token_file_path.read_text()):
+        assert _verifies_under(launcher_token, json.loads(jwks_body))
+        assert not _verifies_under(launcher_token, attacker_jwks)
+    state_text = (config.state_dir / "sim-state.json").read_text()
+    assert attacker_n not in state_text
+    assert keys.attacker_issuer_kid not in state_text
 
 
 @pytest.mark.usefixtures("fakes")
@@ -422,11 +490,10 @@ def test_start_writes_sim_state_matching_the_api_contract(short_dir: Path) -> No
 
     state_file = config.state_dir / "sim-state.json"
     assert json.loads(state_file.read_text()) == {
-        "state_version": 1,
+        "state_version": 2,
         "audience": AUDIENCE,
         "issuer": SIM_ISSUER,
-        "discovery_url": origin + "/.well-known/openid-configuration",
-        "jwks_origin": origin,
+        "jwks_uri": origin + "/jwks",
         "signers_required": 4,
         "token_ttl_s": 900,
         "launch": {
@@ -455,7 +522,9 @@ def test_stop_removes_the_socket_closes_the_issuer_and_is_idempotent(short_dir: 
         socket.create_connection(("127.0.0.1", port or 0), timeout=5.0)
 
 
-@pytest.mark.parametrize("name", ["issuer_origin", "discovery_url", "keys"])
+@pytest.mark.parametrize(
+    "name", ["issuer_origin", "discovery_url", "jwks_uri", "attacker_jwks_uri", "keys"]
+)
 def test_properties_before_start_are_state_not_initialised(short_dir: Path, name: str) -> None:
     simulator = Simulator(make_config(short_dir), environ=clean_environ(short_dir))
     with pytest.raises(SimConfigError) as caught:
@@ -777,7 +846,7 @@ def test_pre_existing_files_end_with_the_contract_modes(short_dir: Path) -> None
 
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(config.token_file_path.stat().st_mode) == 0o644
-    assert json.loads(state_file.read_text())["state_version"] == 1
+    assert json.loads(state_file.read_text())["state_version"] == 2
 
 
 R1_NAMES = (

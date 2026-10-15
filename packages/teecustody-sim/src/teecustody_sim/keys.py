@@ -135,13 +135,28 @@ class SignerKeyMaterial:
         return self._private_key.sign(payload, _PSS_SALT_32, hashes.SHA256())
 
 
+def _public_jwk(key: rsa.RSAPrivateKey) -> tuple[str, str, str]:
+    """(`kid`, `n`, `e`): `kid` is the RFC 7638 thumbprint of the public key."""
+    numbers = key.public_key().public_numbers()
+    n, e = _b64url_uint(numbers.n), _b64url_uint(numbers.e)
+    thumbprint_input = json.dumps(
+        {"e": e, "kty": "RSA", "n": n}, sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    return _b64url(hashlib.sha256(thumbprint_input).digest()), n, e
+
+
 class SimKeys:
     issuer_kid: str
+    attacker_issuer_kid: str
     signers: tuple[SignerKeyMaterial, ...]
     unknown_signer: SignerKeyMaterial
     _issuer_key: rsa.RSAPrivateKey
     _issuer_n: str
     _issuer_e: str
+    # T-29 attacker key (INC-2-API §16.3, L-1): signs only the `jwks_other_path*` cases.
+    _attacker_key: rsa.RSAPrivateKey
+    _attacker_n: str
+    _attacker_e: str
 
     @classmethod
     def _from_private_keys(
@@ -149,20 +164,15 @@ class SimKeys:
         issuer_key: rsa.RSAPrivateKey,
         signer_keys: tuple[rsa.RSAPrivateKey, ...],
         unknown_signer_key: rsa.RSAPrivateKey,
+        attacker_key: rsa.RSAPrivateKey,
     ) -> "SimKeys":
         keys = cls()
         keys._issuer_key = issuer_key
         keys.signers = tuple(SignerKeyMaterial._from_private_key(key) for key in signer_keys)
         keys.unknown_signer = SignerKeyMaterial._from_private_key(unknown_signer_key)
-        numbers = issuer_key.public_key().public_numbers()
-        keys._issuer_n = _b64url_uint(numbers.n)
-        keys._issuer_e = _b64url_uint(numbers.e)
-        thumbprint_input = json.dumps(
-            {"e": keys._issuer_e, "kty": "RSA", "n": keys._issuer_n},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("ascii")
-        keys.issuer_kid = _b64url(hashlib.sha256(thumbprint_input).digest())
+        keys.issuer_kid, keys._issuer_n, keys._issuer_e = _public_jwk(issuer_key)
+        keys._attacker_key = attacker_key
+        keys.attacker_issuer_kid, keys._attacker_n, keys._attacker_e = _public_jwk(attacker_key)
         return keys
 
     def __repr__(self) -> str:
@@ -174,6 +184,7 @@ class SimKeys:
         return cls._from_private_keys(
             _new_rsa_key(),
             tuple(_new_rsa_key() for _ in range(signers_required)),
+            _new_rsa_key(),
             _new_rsa_key(),
         )
 
@@ -190,6 +201,7 @@ class SimKeys:
                 for index in range(1, signers_required + 1)
             ),
             _load_or_create_key(keys_dir / "unknown-signer.pem"),
+            _load_or_create_key(keys_dir / "attacker-issuer.pem"),
         )
 
     def issuer_jwks(self) -> dict[str, JsonValue]:
@@ -208,3 +220,22 @@ class SimKeys:
 
     def sign_jws(self, signing_input: bytes) -> bytes:
         return self._issuer_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+
+    def attacker_jwks(self) -> dict[str, JsonValue]:
+        """The attacker key under its own `kid` and under `issuer_kid` (rows 38, 39)."""
+        return {
+            "keys": [
+                {
+                    "kty": "RSA",
+                    "alg": JWS_ALG,
+                    "use": "sig",
+                    "kid": kid,
+                    "n": self._attacker_n,
+                    "e": self._attacker_e,
+                }
+                for kid in (self.attacker_issuer_kid, self.issuer_kid)
+            ]
+        }
+
+    def sign_jws_attacker(self, signing_input: bytes) -> bytes:
+        return self._attacker_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())

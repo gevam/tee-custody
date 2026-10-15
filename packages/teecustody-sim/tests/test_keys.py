@@ -11,10 +11,11 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
-from teecustody_sim import DEV_SIGNER_ALGORITHM, SignerKeyMaterial, SimKeys
+from teecustody_sim import DEV_SIGNER_ALGORITHM, JsonValue, SignerKeyMaterial, SimKeys
 
 PRIVATE_JWK_MEMBERS = ("d", "p", "q", "dp", "dq", "qi")
 HEX64 = frozenset("0123456789abcdef")
@@ -76,6 +77,80 @@ def test_issuer_jwks_is_one_public_rs256_key_with_rfc7638_thumbprint_kid(keys: S
     assert jwk["kid"] == keys.issuer_kid
 
 
+def _b64url_int(text: JsonValue) -> int:
+    assert isinstance(text, str)
+    return int.from_bytes(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)), "big")
+
+
+def _jwk_entries(jwks: dict[str, JsonValue]) -> list[dict[str, JsonValue]]:
+    entries = jwks["keys"]
+    assert isinstance(entries, list)
+    assert all(isinstance(entry, dict) for entry in entries)
+    return entries  # type: ignore[return-value]
+
+
+def _rsa_public(jwk: dict[str, JsonValue]) -> rsa.RSAPublicKey:
+    return rsa.RSAPublicNumbers(_b64url_int(jwk["e"]), _b64url_int(jwk["n"])).public_key()
+
+
+def test_attacker_jwks_lists_one_fresh_key_under_its_own_kid_and_the_issuer_kid(
+    keys: SimKeys,
+) -> None:
+    """INC-2-API §16.3 (A-8, T-29): same-origin attacker key set; the issuer key is not in it."""
+    jwks = keys.attacker_jwks()
+    entries = _jwk_entries(jwks)
+    issuer_jwk = _jwk_entries(keys.issuer_jwks())[0]
+
+    assert set(jwks) == {"keys"}
+    assert [entry["kid"] for entry in entries] == [keys.attacker_issuer_kid, keys.issuer_kid]
+    for entry in entries:
+        assert set(entry) == {"kty", "alg", "use", "kid", "n", "e"}
+        assert (entry["kty"], entry["alg"], entry["use"], entry["e"]) == (
+            "RSA",
+            "RS256",
+            "sig",
+            "AQAB",
+        )
+        assert entry["n"] == entries[0]["n"]
+        assert entry["n"] != issuer_jwk["n"]
+    assert _rsa_public(entries[0]).key_size == 2048
+    thumbprint_input = json.dumps(
+        {"e": entries[0]["e"], "kty": "RSA", "n": entries[0]["n"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert keys.attacker_issuer_kid == _b64url(hashlib.sha256(thumbprint_input).digest())
+    assert keys.attacker_issuer_kid != keys.issuer_kid
+
+
+def test_sign_jws_attacker_is_rs256_under_the_attacker_key_only(keys: SimKeys) -> None:
+    signing_input = b"header.payload"
+    signature = keys.sign_jws_attacker(signing_input)
+    attacker = _rsa_public(_jwk_entries(keys.attacker_jwks())[0])
+    issuer = _rsa_public(_jwk_entries(keys.issuer_jwks())[0])
+
+    attacker.verify(signature, signing_input, padding.PKCS1v15(), hashes.SHA256())
+    with pytest.raises(InvalidSignature):
+        issuer.verify(signature, signing_input, padding.PKCS1v15(), hashes.SHA256())
+    with pytest.raises(InvalidSignature):
+        attacker.verify(
+            keys.sign_jws(signing_input), signing_input, padding.PKCS1v15(), hashes.SHA256()
+        )
+
+
+def test_generate_makes_a_fresh_attacker_key_each_time(keys: SimKeys) -> None:
+    assert SimKeys.generate(2).attacker_issuer_kid != keys.attacker_issuer_kid
+
+
+def test_repr_never_contains_the_attacker_key(keys: SimKeys) -> None:
+    attacker_n = _jwk_entries(keys.attacker_jwks())[0]["n"]
+    assert isinstance(attacker_n, str)
+    for text in (repr(keys), str(keys)):
+        assert attacker_n not in text
+        assert keys.attacker_issuer_kid not in text
+        assert "PRIVATE" not in text
+
+
 def test_reprs_expose_no_key_material(keys: SimKeys) -> None:
     assert repr(keys) == "SimKeys(<redacted>)"
     assert str(keys) == "SimKeys(<redacted>)"
@@ -90,14 +165,21 @@ def test_generate_rejects_signer_count_out_of_range(count: int) -> None:
         SimKeys.generate(count)
 
 
-KEY_FILES = ("issuer.pem", "signer-1.pem", "signer-2.pem", "unknown-signer.pem")
+KEY_FILES = (
+    "issuer.pem",
+    "signer-1.pem",
+    "signer-2.pem",
+    "unknown-signer.pem",
+    "attacker-issuer.pem",
+)
 
 
-def _identity(keys: SimKeys) -> tuple[str, tuple[str, ...], str]:
+def _identity(keys: SimKeys) -> tuple[str, tuple[str, ...], str, str]:
     return (
         keys.issuer_kid,
         tuple(signer.key_id for signer in keys.signers),
         keys.unknown_signer.key_id,
+        keys.attacker_issuer_kid,
     )
 
 
@@ -143,7 +225,39 @@ def test_load_or_create_generates_only_missing_key_files(tmp_path: Path) -> None
     assert grown.signers[1].key_id != created.signers[1].key_id
     assert len(grown.signers) == 3
     assert grown.unknown_signer.key_id == created.unknown_signer.key_id
+    assert grown.attacker_issuer_kid == created.attacker_issuer_kid
     assert _mode(tmp_path / "keys" / "signer-3.pem") == 0o600
+
+
+def test_attacker_key_is_created_when_absent_as_pkcs8_owner_only(tmp_path: Path) -> None:
+    """L-1 (D-047): an INC-1 state directory gains its attacker key on the next load."""
+    created = SimKeys.load_or_create(tmp_path, 2)
+    attacker_file = tmp_path / "keys" / "attacker-issuer.pem"
+    attacker_file.unlink()
+
+    reloaded = SimKeys.load_or_create(tmp_path, 2)
+
+    assert reloaded.issuer_kid == created.issuer_kid
+    assert reloaded.attacker_issuer_kid != created.attacker_issuer_kid
+    assert _mode(attacker_file) == 0o600
+    assert attacker_file.read_bytes().startswith(b"-----BEGIN PRIVATE KEY-----\n")
+    loaded = serialization.load_pem_private_key(attacker_file.read_bytes(), password=None)
+    assert isinstance(loaded, rsa.RSAPrivateKey)
+    assert (
+        _b64url(loaded.public_key().public_numbers().n.to_bytes(256, "big"))
+        == _jwk_entries(reloaded.attacker_jwks())[0]["n"]
+    )
+
+
+def test_two_state_directories_get_different_attacker_keys(tmp_path: Path) -> None:
+    """S6 (L-1): the attacker key is generated per state directory, never shared or committed."""
+    first = SimKeys.load_or_create(tmp_path / "a", 2)
+    second = SimKeys.load_or_create(tmp_path / "b", 2)
+
+    assert first.attacker_issuer_kid != second.attacker_issuer_kid
+    assert (tmp_path / "a" / "keys" / "attacker-issuer.pem").read_bytes() != (
+        tmp_path / "b" / "keys" / "attacker-issuer.pem"
+    ).read_bytes()
 
 
 @pytest.fixture(scope="module")
@@ -380,7 +494,17 @@ def test_load_or_create_rejects_directories_owned_by_another_user(
 @pytest.mark.parametrize(
     ("cls", "public"),
     [
-        (SimKeys, {"generate", "load_or_create", "issuer_jwks", "sign_jws"}),
+        (
+            SimKeys,
+            {
+                "generate",
+                "load_or_create",
+                "issuer_jwks",
+                "sign_jws",
+                "attacker_jwks",
+                "sign_jws_attacker",
+            },
+        ),
         (SignerKeyMaterial, {"sign"}),
     ],
 )

@@ -43,6 +43,8 @@ _CLAIM_PATH = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*")
 _CASE_IDS = frozenset(case.case_id for case in NEGATIVE_CASES)
 _CORRUPTED_SIGNATURE_CASES = frozenset({"token_signature_corrupted", "debug_bad_signature"})
 _UNKNOWN_KID: Final = "teecustody-sim-unknown-kid"
+# T-29 rows (INC-2-API §16.3, L-1): the only callers of `SimKeys.sign_jws_attacker`.
+_ATTACKER_SIGNED_CASES: Final = frozenset({"jwks_other_path", "jwks_other_path_same_kid"})
 
 type _Sign = Callable[[bytes], bytes]
 type _SignatureEntry = dict[str, JsonValue]
@@ -273,7 +275,13 @@ class TokenMinter:
         max_age = self._token_max_age_s
         launch = self._launch
         match case_id:
-            case "alg_none" | "token_signature_corrupted" | "kid_unknown":
+            case (
+                "alg_none"
+                | "token_signature_corrupted"
+                | "kid_unknown"
+                | "jwks_other_path"
+                | "jwks_other_path_same_kid"
+            ):
                 return ()
             case "issuer_wrong":
                 return (AlterClaim(("iss",), "https://issuer.invalid"),)
@@ -381,4 +389,8 @@ class TokenMinter:
                 sign = _corrupted(sign)
             elif alteration.case_id == "kid_unknown":
                 header = {"alg": JWS_ALG, "kid": _UNKNOWN_KID, "typ": "JWT"}
+            elif alteration.case_id in _ATTACKER_SIGNED_CASES:
+                sign = self._keys.sign_jws_attacker
+                if alteration.case_id == "jwks_other_path":
+                    header = {"alg": JWS_ALG, "kid": self._keys.attacker_issuer_kid, "typ": "JWT"}
         return frame_jws(_json_bytes(header), _json_bytes(claims), sign)

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from teecustody.attest import ConfidentialSpaceLauncher
 from teecustody_sim import (
@@ -136,14 +138,43 @@ def assert_no_key_material(*texts: str) -> None:
                 assert not _json_members(_segment(segment)) & PRIVATE_JWK_MEMBERS
 
 
+def attacker_key_texts(state_dir: Path) -> list[str]:
+    """Every text form of the state directory's attacker key (L-1), or none if it has none."""
+    path = state_dir / "keys" / "attacker-issuer.pem"
+    if not path.exists():
+        return []
+    pem = path.read_text()
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    assert isinstance(key, rsa.RSAPrivateKey)
+    n = key.public_key().public_numbers().n
+    n_bytes = n.to_bytes(256, "big")
+    body = "".join(pem.splitlines()[1:-1])
+    return [
+        body[:64],
+        base64.urlsafe_b64encode(n_bytes).rstrip(b"=").decode()[:64],
+        base64.b64encode(n_bytes).decode()[:64],
+        f"{n:x}"[:64],
+        str(n)[:64],
+    ]
+
+
+def assert_no_attacker_key(argv: Sequence[str], *texts: str) -> None:
+    """S6 (L-1): no CLI output names the attacker key of the state directory it used."""
+    state_dir = Path(argv[argv.index("--state-dir") + 1]) if "--state-dir" in argv else None
+    for needle in attacker_key_texts(state_dir) if state_dir is not None else []:
+        for text in texts:
+            assert needle not in text
+
+
 @pytest.fixture
 def cli(capsys: pytest.CaptureFixture[str]) -> Cli:
-    """Runs `main` and checks every invocation's stdout and stderr for key material (SR-7)."""
+    """Runs `main` and checks every invocation's stdout and stderr for key material (SR-7, L-1)."""
 
     def run(*argv: str) -> tuple[int, str, str]:
         code = main(list(argv))
         captured = capsys.readouterr()
         assert_no_key_material(captured.out, captured.err)
+        assert_no_attacker_key(argv, captured.out, captured.err)
         return code, captured.out, captured.err
 
     return run
@@ -285,15 +316,13 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert (code, out, err) == (0, "", "")
     [call] = builder.calls
     assert set(call) == {
-        "discovery_url",
-        "jwks_origin",
+        "jwks_uri",
         "expected_audience",
         "launch",
         "signers",
         "signers_required",
     }
-    assert call["discovery_url"] == state["discovery_url"]
-    assert call["jwks_origin"] == state["jwks_origin"]
+    assert call["jwks_uri"] == state["jwks_uri"]
     assert call["expected_audience"] == AUDIENCE
     assert call["launch"] == LAUNCH
     assert call["signers_required"] == state["signers_required"] == 2
@@ -302,6 +331,37 @@ def test_profile_writes_the_built_profile_from_the_state_values(
     assert out_file.read_text() == json.dumps(builder(), indent=2, sort_keys=True) + "\n"
     assert stat.S_IMODE(out_file.stat().st_mode) == 0o644
     assert_no_key_material(out_file.read_text())
+
+
+@pytest.mark.usefixtures("clean_environ")
+def test_profile_from_a_running_simulator_is_v2_with_its_exact_jwks_uri(
+    cli: Cli, short_dir: Path
+) -> None:
+    """S2: `profile` pins `simulator.jwks_uri`; there is no discovery_url and no jwks_origin."""
+    config = SimulatorConfig(
+        state_dir=short_dir / "state",
+        socket_path=short_dir / "l.sock",
+        token_file_path=short_dir / "token",
+        launch=LAUNCH,
+        audience=AUDIENCE,
+        issuer_port=0,
+    )
+    out_file = short_dir / "dev-profile.json"
+    with Simulator(config, environ={}) as simulator:
+        code, out, err = cli(
+            "profile", "--state-dir", str(config.state_dir), "--out", str(out_file)
+        )
+        jwks_uri = simulator.jwks_uri
+
+    assert (code, out, err) == (0, "", "")
+    profile = json.loads(out_file.read_text())
+    assert profile["profile_version"] == 2
+    assert profile["jwks_uri"] == jwks_uri
+    assert "discovery_url" not in profile
+    assert "jwks_origin" not in profile
+    assert len(profile) == 13
+    for needle in attacker_key_texts(config.state_dir):
+        assert needle not in out_file.read_text()
 
 
 GENERATED_OUTPUTS = {
@@ -749,6 +809,24 @@ def test_every_named_case_token_carries_no_key_material(
     assert JWS.fullmatch(out.strip()) is not None
 
 
+@pytest.mark.parametrize("case_id", ["jwks_other_path", "jwks_other_path_same_kid"])
+def test_token_attacker_cases_are_signed_by_the_state_dir_attacker_key(
+    cli: Cli, state_dir: Path, case_id: str
+) -> None:
+    """Criterion 7 (INC-2-API §16.3): `token --case jwks_other_path*` uses the state dir's key."""
+    keys = SimKeys.load_or_create(state_dir, 2)
+    code, out, err = cli(*_token_args(state_dir, "--case", case_id))
+    header, payload, signature = out.strip().split(".")
+    signing_input = f"{header}.{payload}".encode()
+
+    assert (code, err) == (0, "")
+    assert base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)) == (
+        keys.sign_jws_attacker(signing_input)
+    )
+    expected_kid = keys.attacker_issuer_kid if case_id == "jwks_other_path" else keys.issuer_kid
+    assert _segment(header) == {"alg": "RS256", "kid": expected_kid, "typ": "JWT"}
+
+
 @pytest.fixture
 def recorded_generators(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, Any]]:
     calls: list[tuple[str, Any, Any]] = []
@@ -1072,13 +1150,16 @@ def _with(document: dict[str, Any], path: tuple[str, ...], value: object) -> dic
 
 
 MALFORMED_STATE = [
-    (("state_version",), 2),
+    (("state_version",), 1),
+    (("state_version",), 3),
     (("state_version",), True),
     (("state_version",), KeyError),
     (("audience",), 7),
     (("issuer",), None),
-    (("discovery_url",), ["x"]),
-    (("jwks_origin",), KeyError),
+    (("jwks_uri",), ["x"]),
+    (("jwks_uri",), KeyError),
+    (("discovery_url",), "http://127.0.0.1:1/.well-known/openid-configuration"),
+    (("jwks_origin",), "http://127.0.0.1:1"),
     (("signers_required",), "2"),
     (("signers_required",), True),
     (("token_ttl_s",), 0),
@@ -1105,6 +1186,28 @@ def test_a_malformed_state_file_is_state_not_initialised(
     code, out, err = cli("token", "--state-dir", str(copy), "--audience", AUDIENCE)
 
     assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+
+
+@pytest.mark.parametrize("command", ["profile", "token"])
+def test_an_inc1_v1_state_file_is_state_not_initialised(
+    cli: Cli, state_dir: Path, tmp_path: Path, command: str
+) -> None:
+    """S5 (ADR 0012): a v1 state file is never read; the developer re-runs `serve`/`up`."""
+    copy, document = _state_copy(state_dir, tmp_path)
+    origin = document.pop("jwks_uri").removesuffix("/jwks")
+    document.update(
+        state_version=1,
+        discovery_url=origin + "/.well-known/openid-configuration",
+        jwks_origin=origin,
+    )
+    (copy / "sim-state.json").write_text(json.dumps(document))
+    out_file = tmp_path / "p.json"
+    argv = {"profile": ("--out", str(out_file)), "token": ("--audience", AUDIENCE)}[command]
+
+    code, out, err = cli(command, "--state-dir", str(copy), *argv)
+
+    assert (code, out, err) == (2, "", "STATE_NOT_INITIALISED\n")
+    assert not out_file.exists()
 
 
 @pytest.mark.parametrize("text", ["", "{", "[]", '"state"', "\xff"])

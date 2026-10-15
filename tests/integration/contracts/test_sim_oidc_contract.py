@@ -1,17 +1,21 @@
 """Contract: simulator OIDC discovery/JWKS surface, launcher socket and startup rules (FR-3).
 
 ARCHITECTURE "Simulator HTTP/OIDC surface"; spec §15.2, §15.3, §15.5; API.md §C.
+Amended T-21 (D-043; INC-2-API §16.3, §16.9 S1; CI-2-4): Google CORS parity on the JWKS routes,
+no CORS on discovery, and the same-origin attacker JWKS of T-29.
 """
 
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from tc_contract_support import (
@@ -32,6 +36,27 @@ from teecustody_sim import (
 
 PRIVATE_JWK_MEMBERS = ("d", "p", "q", "dp", "dq", "qi")
 NONCE = "a" * 64
+PAGE_ORIGIN = "http://127.0.0.1:5555"
+
+
+def _exchange(url: str, method: str, headers: dict[str, str]) -> tuple[int, list[tuple[str, str]]]:
+    parts = urlsplit(url)
+    connection = http.client.HTTPConnection(parts.hostname or "", parts.port, timeout=5.0)
+    try:
+        connection.request(method, parts.path, headers=headers)
+        response = connection.getresponse()
+        response.read()
+        return response.status, response.getheaders()
+    finally:
+        connection.close()
+
+
+def _named(headers: list[tuple[str, str]], name: str) -> list[str]:
+    return [value for key, value in headers if key.lower() == name.lower()]
+
+
+def _cors(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(key, value) for key, value in headers if key.lower().startswith("access-control-")]
 
 
 def _get_json(url: str) -> dict[str, object]:
@@ -166,3 +191,82 @@ def test_startup_rules_are_enforced_before_binding(
         Simulator(config, environ=environ).start()
     assert caught.value.code is code
     assert not config.socket_path.exists()
+
+
+def test_simulator_names_its_pinned_and_attacker_jwks_uris(
+    running_simulator: RunningSimulator,
+) -> None:
+    simulator = running_simulator.simulator
+    assert simulator.jwks_uri == simulator.issuer_origin + "/jwks"
+    assert simulator.attacker_jwks_uri == simulator.issuer_origin + "/attacker/jwks"
+
+
+def test_jwks_routes_echo_a_valid_origin_like_google(running_simulator: RunningSimulator) -> None:
+    """S1 (CI-2-4): exact echo, `Vary: Origin`, never `Access-Control-Allow-Credentials`."""
+    simulator = running_simulator.simulator
+    for url in (simulator.jwks_uri, simulator.attacker_jwks_uri):
+        status, headers = _exchange(url, "GET", {"Origin": PAGE_ORIGIN})
+        assert status == 200
+        assert _cors(headers) == [("Access-Control-Allow-Origin", PAGE_ORIGIN)]
+        assert _named(headers, "Vary") == ["Origin"]
+
+        for request_headers in ({}, {"Origin": "javascript:x"}, {"Origin": "HTTP://A.TEST"}):
+            status, headers = _exchange(url, "GET", request_headers)
+            assert status == 200
+            assert _cors(headers) == []
+            assert _named(headers, "Vary") == ["Origin"]
+
+        status, headers = _exchange(
+            url, "OPTIONS", {"Origin": PAGE_ORIGIN, "Access-Control-Request-Method": "GET"}
+        )
+        assert status == 200
+        assert sorted(_cors(headers)) == [
+            ("Access-Control-Allow-Methods", "GET"),
+            ("Access-Control-Allow-Origin", PAGE_ORIGIN),
+        ]
+        assert _named(headers, "Vary") == ["Origin"]
+        assert _named(headers, "Content-Type") == []
+
+
+def test_discovery_and_error_responses_carry_no_cors_header(
+    running_simulator: RunningSimulator,
+) -> None:
+    """S1: discovery is CORS-free (Google parity, CI-2-1); so are 404 and 405."""
+    simulator = running_simulator.simulator
+    origin = simulator.issuer_origin
+    for url, method, expected in (
+        (simulator.discovery_url, "GET", 200),
+        (simulator.discovery_url, "OPTIONS", 405),
+        (origin + "/nope", "GET", 404),
+        (simulator.jwks_uri, "POST", 405),
+    ):
+        status, headers = _exchange(url, method, {"Origin": PAGE_ORIGIN})
+        assert status == expected
+        assert _cors(headers) == []
+        assert _named(headers, "Vary") == []
+
+
+def test_attacker_jwks_never_verifies_a_launcher_token(running_simulator: RunningSimulator) -> None:
+    """S6 (L-1): the attacker key is not the issuer key and is never served at `/jwks`."""
+    simulator = running_simulator.simulator
+    token = _mint(running_simulator)
+    issuer_keys = _get_json(simulator.jwks_uri)["keys"]
+    attacker_keys = _get_json(simulator.attacker_jwks_uri)["keys"]
+    assert isinstance(issuer_keys, list)
+    assert isinstance(attacker_keys, list)
+    issuer_moduli = {key["n"] for key in issuer_keys if isinstance(key, dict)}
+    attacker_moduli = {key["n"] for key in attacker_keys if isinstance(key, dict)}
+
+    assert len(attacker_moduli) == 1
+    assert not attacker_moduli & issuer_moduli
+    signing_input, _, signature = token.rpartition(".")
+    for key in attacker_keys:
+        assert isinstance(key, dict)
+        public_key = rsa.RSAPublicNumbers(_b64url_int(key["e"]), _b64url_int(key["n"])).public_key()
+        with pytest.raises(InvalidSignature):
+            public_key.verify(
+                base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)),
+                signing_input.encode(),
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )

@@ -273,12 +273,14 @@ EXPECTED_CASES: list[tuple[str, str, str, tuple[str, ...], bool]] = [
     ("args_missing", "launch_config", "CLAIM_MISSING", ("submods.container.args",), False),
     ("env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False),
     ("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
+    ("jwks_other_path", "signature", "UNTRUSTED_SIGNER", (), False),
+    ("jwks_other_path_same_kid", "signature", "UNTRUSTED_SIGNER", (), False),
 ]
 
 
 def test_negative_cases_equal_api_catalog_in_order() -> None:
     assert isinstance(NEGATIVE_CASES, tuple)
-    assert len(NEGATIVE_CASES) == 36
+    assert len(NEGATIVE_CASES) == 38  # INC-2-API §16.3: rows 2..39
     assert [
         (c.case_id, c.check, c.error_code, c.altered, c.debug_event) for c in NEGATIVE_CASES
     ] == EXPECTED_CASES
@@ -296,8 +298,7 @@ def _spec_launch_config_hashes(
 ) -> tuple[str, str]: ...
 def _spec_build_trust_profile(
     *,
-    discovery_url: str,
-    jwks_origin: str,
+    jwks_uri: str,
     expected_audience: str,
     launch: LaunchConfig,
     signers: Sequence[SignerKeyMaterial],
@@ -323,6 +324,8 @@ class _SimKeysSpec:
     def load_or_create(cls, state_dir: Path, signers_required: int) -> SimKeys: ...
     def issuer_jwks(self) -> dict[str, JsonValue]: ...
     def sign_jws(self, signing_input: bytes) -> bytes: ...
+    def attacker_jwks(self) -> dict[str, JsonValue]: ...
+    def sign_jws_attacker(self, signing_input: bytes) -> bytes: ...
 
 
 class _TokenMinterSpec:
@@ -354,6 +357,7 @@ class _IssuerServerSpec:
         issuer: str,
         jwks: Mapping[str, JsonValue],
         limits: SimLimits,
+        attacker_jwks: Mapping[str, JsonValue] | None = None,
     ) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...
@@ -387,6 +391,10 @@ class _SimulatorSpec:
     def issuer_origin(self) -> str: ...
     @property
     def discovery_url(self) -> str: ...
+    @property
+    def jwks_uri(self) -> str: ...
+    @property
+    def attacker_jwks_uri(self) -> str: ...
     @property
     def keys(self) -> SimKeys: ...
 
