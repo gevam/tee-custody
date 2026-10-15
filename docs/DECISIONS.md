@@ -1579,3 +1579,33 @@ Participants: Code Reviewer, Security Reviewer
 D-07 closes when T-40 (A5, README and guard) and T-42 both merge.
 
 **Dissent:** none
+
+## D-076 — T-40 verdicts; D-03..D-06 fixed (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator, Tech Lead (A2–A6)
+Participants: Code Reviewer, Security Reviewer, Architect, Tech Lead
+
+**Decision:** T-40 is approved to merge (inc-2/T-40-gateway-server, tip db360ee). It is the reference gateway server hardening. It adds:
+- `notes_gateway/server.py`, an h11-protocol subclass;
+- `header_read_timeout_s`, `max_connections`, `max_header_bytes` and `max_header_count`;
+- the exact JSON 400 for parse failures;
+- `ws="none"`;
+- `write_timeout_s`;
+- the JSON 400 plus close for `Transfer-Encoding`;
+- the README framing rule and maximal page sizes.
+
+**Review history:**
+- Round 1 (c061403): Code APPROVE (2 Lows); Security APPROVE (1 Low, plus the pre-existing D-05 and D-06).
+  - Folded into A4 by D-074. A5 (D-07, README) was added.
+  - §6 updated: 84ae8fe, d7fff89, 15cee3c, 4010972.
+- Round 2 (5d4757a): Code APPROVE (2 Lows rooted in the contract); Security APPROVE.
+  - The round limit was reached, so it went to the Tech Lead. A6 (5dac26d) approved a final round.
+  - §6 wording updated: 94b4d20.
+- Final round (db360ee): Code APPROVE (1 Low, which goes to BACKLOG B-50 under A6); Security APPROVE.
+
+**Defect closure on merge:** D-03, D-04, D-05 and D-06 close. D-07 closes when T-42 also merges.
+
+**Risk carried:** T-40 overrides uvicorn 0.54.0 internals. Its tests must be re-run on any uvicorn change, at the same trigger as the D-049 lock-change check. B-49 (progress-based write deadline) is for INC-3.
+
+**Dissent:** none
