@@ -25,7 +25,9 @@ import {
     clientConfig,
     decodeValue,
     hex,
+    holdPostUntilPolled,
     instanceFixture,
+    polledAfterFrames,
     keySpy,
     map,
     zeroed,
@@ -270,6 +272,32 @@ describe("criterion 12: a failing AEAD port in request()", () => {
     });
 });
 
+describe("review R1: the waiter is registered before the post (no lost answer)", () => {
+    const SLACK = { ...TEST_LIMITS, responseTimeoutMs: 60_000 };
+
+    it("receives an answer that another loop on the route read before the post resolved", async () => {
+        const session = await connect(SLACK);
+        workload.onFrame = (frame) =>
+            frame.op === "test.slow" ? { kind: "silent" } : { kind: "ok", payload: frame.payload };
+        const slow = session.request("test.slow", null).catch((e: unknown) => e);
+        await polledAfterFrames(workload, 1);
+        holdPostUntilPolled(workload, 2);
+        expect(asMap(await session.request("test.echo", echo(1))).get("n")).toBe(1);
+        expect(((await slow) as ChannelError).code).toBe("TIMEOUT");
+    });
+
+    it("withdraws only its own waiter when the post fails", async () => {
+        const session = await connect(SLACK);
+        workload.onFrame = (frame) =>
+            frame.op === "test.slow" ? { kind: "silent" } : { kind: "ok", payload: frame.payload };
+        const slow = session.request("test.slow", null).catch((e: unknown) => e);
+        await polledAfterFrames(workload, 1);
+        workload.postFailure = () => new CapabilityError("UNAVAILABLE");
+        expect((await failure(session.request("test.echo", echo(1)))).code).toBe("TRANSPORT");
+        expect(((await slow) as ChannelError).code).toBe("TIMEOUT");
+    });
+});
+
 describe("criterion 10: close", () => {
     async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
         const spy = keySpy(workload.crypto);
@@ -333,14 +361,15 @@ describe("criterion 10: close", () => {
     it("releases a request whose post was still in flight when the session closed", async () => {
         const session = await connect();
         let release: () => void = () => undefined;
-        workload.postGate = () =>
-            new Promise<void>((resolve) => {
-                release = resolve;
-            });
-        const pending = session.request("test.echo", echo(0));
-        await vi.waitFor(() => {
-            expect(workload.posts).toHaveLength(2);
+        const reached = new Promise<void>((entered) => {
+            workload.postGate = () =>
+                new Promise<void>((resolve) => {
+                    release = resolve;
+                    entered();
+                });
         });
+        const pending = session.request("test.echo", echo(0));
+        await reached;
         workload.postGate = undefined;
         workload.postFailure = () => new CapabilityError("UNAVAILABLE");
         await failure(session.close());

@@ -107,34 +107,47 @@ class Router implements SessionLink {
         this.#limits = limits;
     }
 
-    async post(instanceId: InstanceId, envelope: Bytes): Promise<void> {
-        await this.#transport.postRequest(instanceId, envelope).catch((error: unknown) => {
-            throw transportError(error);
-        });
-    }
-
-    wait<T>(
+    // The waiter is registered before the post, so an answer read by another loop on the route while the
+    // post is in flight is not lost. A failed post withdraws only this waiter.
+    async exchange<T>(
+        instanceId: InstanceId,
+        envelope: Bytes,
         route: ClientId,
         owner: object,
         match: (body: Bytes) => Promise<T | undefined>,
     ): Promise<T> {
-        return new Promise<T>((resolve, reject) => {
-            const waiter: Waiter = {
+        let waiter: Waiter | undefined;
+        const result = new Promise<T>((resolve, reject) => {
+            waiter = {
                 owner,
                 deadline: this.#clock.now() + this.#limits.responseTimeoutMs,
                 match,
                 resolve,
                 reject,
             };
-            const waiters = this.#routes.get(route);
-            if (waiters === undefined) {
-                const fresh = new Set([waiter]);
-                this.#routes.set(route, fresh);
-                void this.#poll(route, fresh);
-            } else {
-                waiters.add(waiter);
-            }
         });
+        // Settled while the post is still pending (cancel, early answer): handled here, surfaced below.
+        result.catch(() => undefined);
+        const registered = waiter as Waiter;
+        this.#register(route, registered);
+        try {
+            await this.#transport.postRequest(instanceId, envelope);
+        } catch (error) {
+            this.#routes.get(route)?.delete(registered);
+            throw transportError(error);
+        }
+        return result;
+    }
+
+    #register(route: ClientId, waiter: Waiter): void {
+        const waiters = this.#routes.get(route);
+        if (waiters === undefined) {
+            const fresh = new Set([waiter]);
+            this.#routes.set(route, fresh);
+            void this.#poll(route, fresh);
+        } else {
+            waiters.add(waiter);
+        }
     }
 
     cancel(owner: object, error: Error): void {

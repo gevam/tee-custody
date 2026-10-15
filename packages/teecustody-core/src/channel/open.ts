@@ -181,8 +181,7 @@ async function establish(
     );
     wipe(payload, pt);
     try {
-        await link.post(instanceId, envelope);
-        const match = await link.wait(route, {}, (body) =>
+        const match = await link.exchange(instanceId, envelope, route, {}, (body) =>
             readOpenResult(crypto, exportT2c, requestId, body, limits),
         );
         if (!match.ok) {

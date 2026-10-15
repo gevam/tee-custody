@@ -27,10 +27,11 @@ const CLOSE_PAYLOAD = encodeCanonical(null);
 
 // The response router a Session and an open share (ChannelClient implements it; internal).
 export interface SessionLink {
-    // ChannelError("TRANSPORT") on a transport failure
-    post(instanceId: InstanceId, envelope: Bytes): Promise<void>;
-    // Resolves with the first body `match` accepts; rejects with what `match` throws, or TIMEOUT.
-    wait<T>(
+    // Registers a waiter on `route`, then posts the envelope. Resolves with the first body `match` accepts;
+    // rejects with what `match` throws, TIMEOUT, or TRANSPORT when the post fails (that waiter withdrawn).
+    exchange<T>(
+        instanceId: InstanceId,
+        envelope: Bytes,
         route: ClientId,
         owner: object,
         match: (body: Bytes) => Promise<T | undefined>,
@@ -200,26 +201,28 @@ export class Session {
     // Seals once, posts once, and waits for the matching result. Never re-seals, never retries (R-5).
     async #exchange(op: string, payloadBytes: Bytes): Promise<CanonicalValue> {
         const { seq, envelope } = await this.#sealNext(op, payloadBytes);
-        await this.#link.post(this.instanceId, envelope);
-        if (!this.#live) {
-            throw new ChannelError("SESSION_CLOSED");
-        }
-        const match = await this.#link.wait(this.clientId, this, async (body) => {
-            const result = await readFrameResult(
-                this.#crypto,
-                this.#keyT2c,
-                this.#sessionId,
-                seq,
-                this.#lastT2cSeq,
-                body,
-                this.#limits,
-            );
-            if (result?.op !== op) {
-                return undefined;
-            }
-            this.#lastT2cSeq = result.seq;
-            return result;
-        });
+        const match = await this.#link.exchange(
+            this.instanceId,
+            envelope,
+            this.clientId,
+            this,
+            async (body) => {
+                const result = await readFrameResult(
+                    this.#crypto,
+                    this.#keyT2c,
+                    this.#sessionId,
+                    seq,
+                    this.#lastT2cSeq,
+                    body,
+                    this.#limits,
+                );
+                if (result?.op !== op) {
+                    return undefined;
+                }
+                this.#lastT2cSeq = result.seq;
+                return result;
+            },
+        );
         if (!match.ok) {
             throw new ChannelError("REMOTE_ERROR", match.error);
         }

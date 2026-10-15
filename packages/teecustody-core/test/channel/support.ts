@@ -79,20 +79,24 @@ export function decodeValue(bytes: Bytes): CanonicalValue {
     return decodeCanonical(bytes, WIDE);
 }
 
-// A Clock whose sleep advances time instantly; every requested delay is recorded.
+// A Clock whose sleep advances time instantly; every requested delay is recorded. Time does not advance while
+// `gate` is pending (the fake workload is still handling a post), so the client's timeouts measure only the
+// time it spends polling, as they would against a workload that answers promptly.
 export class FakeClock implements Clock {
     t = NOW_MS;
     readonly sleeps: number[] = [];
+    gate: (() => Promise<void>) | undefined;
 
     now(): number {
         return this.t;
     }
 
-    // Resolves on the next macrotask so platform work (WebCrypto) interleaves as it would with real timers.
-    sleep(ms: number): Promise<void> {
+    // Resolves on a later macrotask so platform work (WebCrypto) interleaves as it would with real timers.
+    async sleep(ms: number): Promise<void> {
         this.sleeps.push(ms);
+        await this.gate?.();
         this.t += ms;
-        return new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
     }
 }
 
@@ -230,6 +234,10 @@ export class FakeWorkload implements Transport {
     pollFailure: (() => Error | undefined) | undefined;
     // Awaited at the start of every post (a slow relay).
     postGate: (() => Promise<void>) | undefined;
+    // Awaited after the workload has handled a post and published its answer, before the post resolves.
+    afterHandle: (() => Promise<void>) | undefined;
+    // Called at the start of every poll.
+    onPoll: (() => void) | undefined;
     onOpen: (open: SeenOpen) => OpenAction = () => ({ kind: "ok", payload: null });
     onFrame: (frame: SeenFrame) => FrameAction = (frame) =>
         frame.op === "close"
@@ -241,6 +249,18 @@ export class FakeWorkload implements Transport {
         open: SeenOpen | undefined,
         frame?: SeenFrame,
     ) => Promise<Bytes[]> = () => Promise.resolve([]);
+
+    #processing = 0;
+    #idle: (() => void)[] = [];
+
+    // Resolves once no post is being handled.
+    idle(): Promise<void> {
+        return this.#processing === 0
+            ? Promise.resolve()
+            : new Promise((resolve) => {
+                  this.#idle.push(resolve);
+              });
+    }
 
     constructor(...instances: InstanceFixture[]) {
         this.instances = instances;
@@ -271,17 +291,29 @@ export class FakeWorkload implements Transport {
         if (failure !== undefined) {
             throw failure;
         }
-        const envelope = decode(body);
-        if (envelope.get("kind") === "open") {
-            await this.#open(instance, envelope);
-        } else {
-            await this.#frame(envelope);
+        this.#processing += 1;
+        try {
+            const envelope = decode(body);
+            if (envelope.get("kind") === "open") {
+                await this.#open(instance, envelope);
+            } else {
+                await this.#frame(envelope);
+            }
+        } finally {
+            this.#processing -= 1;
+            if (this.#processing === 0) {
+                for (const resolve of this.#idle.splice(0)) {
+                    resolve();
+                }
+            }
         }
+        await this.afterHandle?.();
         return "00".repeat(16);
     }
 
     getResponses(client: string, after?: string): Promise<ResponsePage> {
         this.polls.push({ route: client, after });
+        this.onPoll?.();
         const failure = this.pollFailure?.();
         if (failure !== undefined) {
             return Promise.reject(failure);
@@ -409,6 +441,7 @@ export function clientConfig(
     clock: FakeClock,
     overrides: Partial<ChannelClientConfig> = {},
 ): ChannelClientConfig {
+    clock.gate = () => workload.idle();
     return {
         trustProfile: OPAQUE_PROFILE,
         transport: workload,
@@ -491,4 +524,33 @@ export function keySpy(inner: Crypto): KeySpy {
         },
     };
     return { crypto, encryptKeys, decryptKeys };
+}
+
+// Holds a post open after the workload answered until `polls` further polls have started, so another poll loop
+// on the route reads (and moves past) the answer before the post resolves.
+export function holdPostUntilPolled(workload: FakeWorkload, polls: number): void {
+    workload.afterHandle = () =>
+        new Promise<void>((resolve) => {
+            let seen = 0;
+            workload.afterHandle = undefined;
+            workload.onPoll = () => {
+                seen += 1;
+                if (seen >= polls) {
+                    workload.onPoll = undefined;
+                    resolve();
+                }
+            };
+        });
+}
+
+// Resolves at the first poll that starts once the workload has seen `frames` frames.
+export function polledAfterFrames(workload: FakeWorkload, frames: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+        workload.onPoll = () => {
+            if (workload.frames.length >= frames) {
+                workload.onPoll = undefined;
+                resolve();
+            }
+        };
+    });
 }

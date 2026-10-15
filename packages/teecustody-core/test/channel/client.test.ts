@@ -21,6 +21,8 @@ import {
     asMap,
     decode,
     hex,
+    holdPostUntilPolled,
+    polledAfterFrames,
     map,
     FakeWorkload,
     brandedBundle,
@@ -535,7 +537,9 @@ describe("response routing: one poll loop per route, cursor kept per client rout
         const before = workload.polls.length;
         await client.open(openSession());
         expect(workload.opens).toHaveLength(2);
-        expect(workload.polls.slice(before).map((p) => p.after)).toEqual(["202"]);
+        const after = workload.polls.slice(before).map((p) => p.after);
+        expect(after.length).toBeGreaterThan(0);
+        expect(after.every((cursor) => cursor === "202")).toBe(true);
     });
 
     it("never polls an enrol reply route again after its open", async () => {
@@ -543,10 +547,12 @@ describe("response routing: one poll loop per route, cursor kept per client rout
         const client = new ChannelClient(clientConfig(workload, clock));
         const { session } = await client.open({ op: "enroll" });
         const route = workload.opens[0]?.aad.get("client_id");
+        const routePolls = () => workload.polls.filter((p) => p.route === route).length;
+        const duringOpen = routePolls();
+        expect(duringOpen).toBeGreaterThan(0);
         await session.request("test.echo", map({ n: 1 }));
         await client.open(openSession());
-        const routePolls = workload.polls.filter((p) => p.route === route);
-        expect(routePolls).toHaveLength(1);
+        expect(routePolls()).toBe(duringOpen);
         expect(workload.polls.filter((p) => p.route === CLIENT).length).toBeGreaterThan(0);
     });
 
@@ -561,6 +567,22 @@ describe("response routing: one poll loop per route, cursor kept per client rout
         await a.session.close();
         expect(((await pendingA) as ChannelError).code).toBe("SESSION_CLOSED");
         expect(((await pendingB) as ChannelError).code).toBe("TIMEOUT");
+    });
+
+    it("an open receives an answer that a session's loop on the route read before the post resolved", async () => {
+        const client = new ChannelClient(
+            clientConfig(workload, clock, {
+                limits: { ...TEST_LIMITS, responseTimeoutMs: 60_000 },
+            }),
+        );
+        const first = await client.open(openSession());
+        workload.onFrame = () => ({ kind: "silent" });
+        const slow = first.session.request("test.slow", null).catch((e: unknown) => e);
+        await polledAfterFrames(workload, 1);
+        holdPostUntilPolled(workload, 2);
+        const second = await client.open(openSession());
+        expect(second.session.clientId).toBe(CLIENT);
+        expect(((await slow) as ChannelError).code).toBe("TIMEOUT");
     });
 
     it("serves two sessions of the same client from one route", async () => {
