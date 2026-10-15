@@ -75,8 +75,6 @@ class ProcessResult:
 
 _CLOSE_OP: Final = "close"
 _MAX_RESULT_PLAINTEXT: Final = 32_768  # every encoded result plaintext (§4.10 step 9, §3.1)
-
-
 _INTERNAL_OPEN_RESULT: Final = encode_open_result_plaintext(OpenRejected(RemoteErrorCode.INTERNAL))
 
 
@@ -107,6 +105,12 @@ class _OpenDecision:
 
 
 class ChannelServer:
+    """Processes one queued envelope at a time in the §4.10 order (single RunLoop thread).
+
+    Nothing before HPKE Open is answered; after Open every path seals exactly one open_result
+    (R-5). The AAD client id is only ever a reply route, never a principal (R-4).
+    """
+
     def __init__(
         self,
         *,
@@ -316,8 +320,7 @@ class ChannelServer:
         return self._refuse(outcome, error)
 
     def _refuse(self, outcome: AggregateOutcome, error: RemoteErrorCode) -> _OpenDecision:
-        plaintext = encode_open_result_plaintext(
-            OpenRejected(error)
-        )  # before counting: counted once
+        # Encoded before counting, so an opener's malformed code is counted once, by `_open`.
+        plaintext = encode_open_result_plaintext(OpenRejected(error))
         self._audit.count(outcome)
         return _OpenDecision(outcome, plaintext, None)
