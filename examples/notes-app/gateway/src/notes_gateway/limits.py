@@ -17,3 +17,5 @@ class GatewayLimits:
     max_concurrency: int = 64
     max_sources_tracked: int = 10_000  # LRU of per-source buckets
     cors_origins: tuple[str, ...] = ()  # empty = same-origin only (no CORS headers at all)
+    per_source_max_in_flight: int = 8  # 1..max_concurrency; concurrent requests per source key
+    body_read_timeout_s: float = 10.0  # 1.0..60.0; total deadline to receive the request body
