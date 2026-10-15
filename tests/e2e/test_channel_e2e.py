@@ -148,3 +148,15 @@ def test_gateway_lists_the_one_published_bundle(harness: RunningHarness) -> None
     bundle = decode_bundle(_unb64url(listed["bundle"]), BUNDLE_LIMITS)
     assert bundle.instance_id == listed["instance_id"]
     assert re.fullmatch(r"[0-9a-f]{32}", bundle.instance_id)
+
+
+def test_sigterm_exits_zero_within_ten_seconds_and_removes_the_temp_dir(
+    harness: RunningHarness,
+) -> None:
+    harness.ready_line()
+    directory = harness.temp_dir
+    assert directory is not None
+    cs_hex = json.loads((directory / "fixture.json").read_text(encoding="utf-8"))["cs"]
+    assert harness.terminate() == 0
+    assert not directory.exists()
+    assert cs_hex not in harness.output()

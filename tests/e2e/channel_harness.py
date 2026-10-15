@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -212,10 +214,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(REPO_ROOT))
     temp_dir = Path(tempfile.mkdtemp(prefix="tc-e2e-"))
     harness = _Harness(temp_dir, tuple(options.cors_origin))
+    previous = {
+        signum: signal.signal(signum, harness.request_shutdown)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
         code = harness.run()
     finally:
         harness.close()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
     if harness.failure is not None:
         sys.stderr.write(f"harness: {type(harness.failure).__name__}\n")
         return 1
