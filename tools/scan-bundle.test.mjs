@@ -109,7 +109,8 @@ describe("criterion 4: usage and build errors exit 2", () => {
         ["an unknown flag", ["--entry", "x.js", "--minify"]],
         ["a positional argument", ["x.js"]],
         ["an --alias without =", ["--entry", "x.js", "--alias", "@teecustody/core"]],
-        ["an --alias with an empty side", ["--entry", "x.js", "--alias", "=x.ts"]],
+        ["an --alias with an empty name", ["--entry", "x.js", "--alias", "=x.ts"]],
+        ["an --alias with an empty path", ["--entry", "x.js", "--alias", "@teecustody/core="]],
     ]) {
         it(`prints usage for ${name}`, async () => {
             const result = await run(args);
@@ -383,10 +384,10 @@ describe("edge cases: several entries", () => {
         const clean = join(FIXTURES, "clean.js");
         const evil = join(FIXTURES, "eval.js");
         const guarded = join(FIXTURES, "guarded-import.js");
-        const result = await run(["--entry", clean, "--entry", evil, "--entry", guarded]);
+        const result = await run(["--entry", guarded, "--entry", evil, "--entry", clean]);
         assert.equal(result.code, 2);
-        assert.match(result.stdout, new RegExp(`^eval\\t${escape(evil)}\\t\\d+\\n`));
-        assert.ok(result.stdout.endsWith(`external-import\t${guarded}\tfs\n`));
+        assert.ok(result.stdout.startsWith(`external-import\t${guarded}\tfs\n`));
+        assert.match(result.stdout, new RegExp(`\\neval\\t${escape(evil)}\\t\\d+\\n$`));
         assert.equal(result.stdout.split("\n").length, 3);
     });
 });
