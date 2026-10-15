@@ -507,6 +507,49 @@ def test_invalid_namespace_is_refused_at_construction(namespace: str) -> None:
         InMemoryQueue(namespace=namespace)
 
 
+# ---------------------------------------------------------------- constructor settings (SR-4)
+NAN, INF = float("nan"), float("inf")
+
+
+@pytest.mark.parametrize(
+    ("setting", "bad"),
+    [
+        *[("ack_deadline_s", v) for v in (0, -1.0, 600.001, NAN, INF, True, "30", None)],
+        *[("request_retention_s", v) for v in (0, -1.0, 86_400.001, NAN, INF, True, "300")],
+        *[("response_retention_s", v) for v in (0, -1.0, 86_400.001, NAN, INF, True, "300")],
+        *[("max_topic_depth", v) for v in (0, -1, 100_001, 10.0, True, "10")],
+        *[("max_bundles", v) for v in (0, -1, 1001, 64.0, True, "64")],
+    ],
+    ids=repr,
+)
+def test_out_of_range_settings_are_refused_at_construction(setting: str, bad: object) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        InMemoryQueue(**{setting: bad})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {
+            "ack_deadline_s": 0.0001,
+            "request_retention_s": 0.0001,
+            "response_retention_s": 1,
+            "max_topic_depth": 1,
+            "max_bundles": 1,
+        },
+        {
+            "ack_deadline_s": 600,
+            "request_retention_s": 86_400,
+            "response_retention_s": 86_400.0,
+            "max_topic_depth": 100_000,
+            "max_bundles": 1000,
+        },
+    ],
+)
+def test_settings_at_their_bounds_are_accepted(settings: dict[str, object]) -> None:
+    InMemoryQueue(**settings)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------- limits (R-7)
 BAD_COUNTS: list[object] = [0, 1001, -1, True, 1.0, "1", None]
 LIMIT_CALLS: dict[str, Callable[[InMemoryQueue, object], object]] = {

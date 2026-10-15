@@ -36,11 +36,25 @@ from teecustody.queue import (
 )
 
 _NAMESPACE_PATTERN: Final = re.compile(r"[a-z][a-z0-9-]{0,31}")  # fullmatch only (R-7)
-_MIN_COUNT: Final = 1  # max_messages / max_bundles per call
-_MAX_COUNT: Final = 1000
+_MAX_COUNT: Final = 1000  # max_messages / max_bundles per call, from 1
 _MAX_WAIT_S: Final = 30.0
+_MAX_ACK_DEADLINE_S: Final = 600.0  # constructor settings; ValueError("INVALID_LIMITS") outside
+_MAX_RETENTION_S: Final = 86_400.0
+_MAX_TOPIC_DEPTH: Final = 100_000
+_MAX_LIVE_BUNDLES: Final = 1000
 # Response cursor: the decimal per-client sequence number of the last returned response.
 _CURSOR_PATTERN: Final = re.compile(r"0|[1-9][0-9]{0,19}")  # fullmatch only (R-7)
+
+
+def _is_seconds(value: object, maximum: float) -> bool:
+    # Finite, positive and not bool; NaN fails both comparisons.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return 0 < value <= maximum
+
+
+def _is_size(value: object, maximum: int) -> bool:
+    return type(value) is int and 1 <= value <= maximum
 
 
 def _check_id(pattern: re.Pattern[str], value: object) -> None:
@@ -49,7 +63,7 @@ def _check_id(pattern: re.Pattern[str], value: object) -> None:
 
 
 def _check_count(value: object) -> None:
-    if not (type(value) is int and _MIN_COUNT <= value <= _MAX_COUNT):
+    if not _is_size(value, _MAX_COUNT):
         raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
 
 
@@ -96,6 +110,14 @@ class InMemoryQueue:
     ) -> None:
         if not _NAMESPACE_PATTERN.fullmatch(namespace):
             raise ValueError("NAMESPACE")
+        if not (
+            _is_seconds(ack_deadline_s, _MAX_ACK_DEADLINE_S)
+            and _is_seconds(request_retention_s, _MAX_RETENTION_S)
+            and _is_seconds(response_retention_s, _MAX_RETENTION_S)
+            and _is_size(max_topic_depth, _MAX_TOPIC_DEPTH)
+            and _is_size(max_bundles, _MAX_LIVE_BUNDLES)
+        ):
+            raise ValueError("INVALID_LIMITS")
         self._namespace = namespace
         self._ack_deadline_s = ack_deadline_s
         self._request_retention_s = request_retention_s
