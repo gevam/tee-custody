@@ -5,9 +5,8 @@ import asyncio
 import fastapi
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol as _H11Protocol
-from uvicorn.protocols.http.h11_impl import RequestResponseCycle as _RequestResponseCycle
 
-from notes_gateway.app import _validate
+from notes_gateway.app import validate_limits as _validate_limits
 from notes_gateway.limits import GatewayLimits as _GatewayLimits
 from teecustody.obs import get_logger as _get_logger
 
@@ -74,7 +73,7 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
                 self._deadline.cancel()
             self._deadline = self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
 
-        def _expire(self, cycle: _RequestResponseCycle | None) -> None:
+        def _expire(self, cycle: object | None) -> None:
             """Close if no request has been parsed since arming (a new request is a new cycle)."""
             if self.cycle is cycle and not self.transport.is_closing():
                 self.transport.close()
@@ -88,7 +87,7 @@ def uvicorn_config(
 ) -> uvicorn.Config:
     """The uvicorn configuration every runner of the gateway uses. Pass the `limits` given to
     `create_app`; invalid limits raise `ValueError("INVALID_LIMITS")` as `create_app` does."""
-    _validate(limits)
+    _validate_limits(limits)
     return uvicorn.Config(
         app,
         host=host,

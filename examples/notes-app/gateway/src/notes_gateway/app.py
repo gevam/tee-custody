@@ -73,8 +73,9 @@ _LOOPBACK_ORIGIN_PATTERN = re.compile(rf"http://(?:localhost|127\.0\.0\.1|\[::1\
 _DEFAULT_PORTS = {"https": "443", "http": "80"}
 
 
-def _validate(limits: GatewayLimits) -> None:
-    """API-TL TL-4: numeric limits first, then the CORS allow-list."""
+def validate_limits(limits: GatewayLimits) -> None:
+    """API-TL TL-4: numeric limits first, then the CORS allow-list. package-internal; used by
+    `create_app` and `server.uvicorn_config`."""
     for name in _INT_LIMITS:
         value = getattr(limits, name)
         if type(value) is not int or value <= 0:
@@ -399,7 +400,7 @@ def create_app(
     clock: Callable[[], float] = time.monotonic,
 ) -> fastapi.FastAPI:
     """Build the gateway ASGI app over `queue` (routes: INC-2-API §6)."""
-    _validate(limits)
+    validate_limits(limits)
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(_Guard, limits=limits, clock=clock)
     app.router.redirect_slashes = False

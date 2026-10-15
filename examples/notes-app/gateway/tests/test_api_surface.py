@@ -276,3 +276,43 @@ def test_test_client_imports_without_deprecation_warning() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# ------------------------------------------------- T-40 criterion 19 (A4.2, A4.3): internals
+_GATEWAY_SRC = Path(notes_gateway.__file__).resolve().parent
+
+
+def _imports_from(module_file: str) -> list[tuple[str, str]]:
+    tree = ast.parse((_GATEWAY_SRC / module_file).read_text(encoding="utf-8"))
+    return [
+        (node.module or "", alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    ]
+
+
+def test_server_imports_only_h11protocol_from_uvicorns_h11_module() -> None:
+    names = [
+        name
+        for module, name in _imports_from("server.py")
+        if module == "uvicorn.protocols.http.h11_impl"
+    ]
+    assert names == ["H11Protocol"]
+
+
+@pytest.mark.parametrize("module_file", sorted(p.name for p in _GATEWAY_SRC.glob("*.py")))
+def test_no_gateway_module_imports_a_private_name_from_another_module(module_file: str) -> None:
+    private = [(m, n) for m, n in _imports_from(module_file) if n.startswith("_")]
+    assert private == []
+
+
+def test_validate_limits_is_package_internal_in_app() -> None:
+    from notes_gateway import app
+
+    assert callable(app.validate_limits)
+    assert not hasattr(app, "_validate")
+    assert "validate_limits" not in notes_gateway.__all__
+    assert not hasattr(notes_gateway, "validate_limits")
+    doc = " ".join((app.validate_limits.__doc__ or "").split())
+    assert "package-internal; used by `create_app` and `server.uvicorn_config`" in doc
