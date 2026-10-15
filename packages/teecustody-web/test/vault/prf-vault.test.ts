@@ -1,7 +1,7 @@
 // PrfShareVault (INC-2-API §8.4; FR-6; SR-5; SR-11; spec §10.1). IndexedDB is fake-indexeddb; the
 // authenticator is fake-authenticator.ts.
 import { CapabilityError, encodeCanonical } from "@teecustody/core";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore as FakeObjectStore } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PrfShareVault, type PrfShareVaultOptions } from "../../src/vault/prf-vault.js";
@@ -15,6 +15,7 @@ type StoredRecord = Record<string, unknown>;
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
 });
 
 function vault(
@@ -592,5 +593,106 @@ describe("criterion 7: tampering gives AUTHENTICATION_FAILED", () => {
         // The record passes validation, so the vault reaches the ceremony.
         auth.behaviour.getError = "NotAllowedError";
         expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
+    });
+});
+
+describe("criterion 8: UNAVAILABLE when IndexedDB is missing or fails", () => {
+    it("fails set, get and clear without IndexedDB, before any ceremony", async () => {
+        vi.stubGlobal("indexedDB", undefined);
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, undefined);
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.get(CLIENT))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.clear(CLIENT))).toBe("UNAVAILABLE");
+        expect(auth.ceremonies).toHaveLength(0);
+    });
+
+    it("uses globalThis.indexedDB by default", async () => {
+        const idb = new IDBFactory();
+        vi.stubGlobal("indexedDB", idb);
+        const v = vault(new FakeAuthenticator(), undefined);
+        await v.set(CLIENT, SHARE.slice());
+        expect(await records(idb)).toHaveLength(1);
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+    });
+
+    it("uses dbName", async () => {
+        const idb = new IDBFactory();
+        await vault(new FakeAuthenticator(), idb, { dbName: "other" }).set(CLIENT, SHARE.slice());
+        expect((await idb.databases()).map((d) => d.name)).toEqual(["other"]);
+    });
+
+    it("fails when open throws", async () => {
+        const idb = new IDBFactory();
+        vi.spyOn(idb, "open").mockImplementation(() => {
+            throw new DOMException("denied", "SecurityError");
+        });
+        const auth = new FakeAuthenticator();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
+        expect(auth.ceremonies).toHaveLength(0);
+    });
+
+    it("fails when open errors (database at a newer version)", async () => {
+        const idb = new IDBFactory();
+        (await request(idb.open(DB, 2))).close();
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, idb);
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.get(CLIENT))).toBe("UNAVAILABLE");
+        expect(auth.ceremonies).toHaveLength(0);
+    });
+
+    it("fails when the database lacks the shares store", async () => {
+        const idb = new IDBFactory();
+        (await request(idb.open(DB, 1))).close();
+        const v = vault(new FakeAuthenticator(), idb);
+        expect(await codeOf(v.get(CLIENT))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.clear(CLIENT))).toBe("UNAVAILABLE");
+    });
+
+    it("fails, writing nothing, when the write request throws after the ceremony", async () => {
+        const idb = new IDBFactory();
+        vi.spyOn(FakeObjectStore.prototype, "put").mockImplementation(() => {
+            throw new DOMException("quota", "QuotaExceededError");
+        });
+        const auth = new FakeAuthenticator();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
+        expect(auth.creates).toHaveLength(1);
+        vi.restoreAllMocks();
+        await expectNothingStored(idb);
+    });
+
+    it("fails, writing nothing, when the write transaction aborts", async () => {
+        const idb = new IDBFactory();
+        const put = FakeObjectStore.prototype.put;
+        vi.spyOn(FakeObjectStore.prototype, "put").mockImplementation(function (
+            this: IDBObjectStore,
+            value: unknown,
+            key?: IDBValidKey,
+        ) {
+            const req = put.call(this, value, key);
+            this.transaction.abort();
+            return req;
+        });
+        expect(await codeOf(vault(new FakeAuthenticator(), idb).set(CLIENT, SHARE.slice()))).toBe(
+            "UNAVAILABLE",
+        );
+        vi.restoreAllMocks();
+        await expectNothingStored(idb);
+    });
+
+    it("fails when the read or delete request fails", async () => {
+        const idb = new IDBFactory();
+        const v = vault(new FakeAuthenticator(), idb);
+        await v.set(CLIENT, SHARE.slice());
+        vi.spyOn(FakeObjectStore.prototype, "get").mockImplementation(() => {
+            throw new DOMException("broken", "UnknownError");
+        });
+        vi.spyOn(FakeObjectStore.prototype, "delete").mockImplementation(() => {
+            throw new DOMException("broken", "UnknownError");
+        });
+        expect(await codeOf(v.get(CLIENT))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.clear(CLIENT))).toBe("UNAVAILABLE");
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("UNAVAILABLE");
     });
 });

@@ -32,17 +32,6 @@ interface ShareRecord {
     readonly ct: Uint8Array;
 }
 
-function request<T>(req: IDBRequest<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-        req.onsuccess = () => {
-            resolve(req.result);
-        };
-        req.onerror = () => {
-            reject(new Error("request failed"));
-        };
-    });
-}
-
 function ascii(text: string): Uint8Array {
     return Uint8Array.from(text, (c) => c.charCodeAt(0));
 }
@@ -79,6 +68,7 @@ export class PrfShareVault implements ShareVault {
     }
 
     async set(client: ClientId, share: ClientShare): Promise<void> {
+        await this.#read(client);
         const copy = new Uint8Array(share);
         const salt = this.#random(32);
         const credentials = this.#credentials();
@@ -129,8 +119,8 @@ export class PrfShareVault implements ShareVault {
         });
     }
 
-    clear(client: ClientId): Promise<void> {
-        throw new Error("NOT_IMPLEMENTED: T-20");
+    async clear(client: ClientId): Promise<void> {
+        await this.#transact("readwrite", (store) => store.delete(client));
     }
 
     async #assert(credentialId: Uint8Array, salt: Uint8Array): Promise<ArrayBuffer> {
@@ -212,33 +202,69 @@ export class PrfShareVault implements ShareVault {
         return this.#options.timeoutMs ?? 60_000;
     }
 
-    async #open(): Promise<IDBDatabase> {
-        const factory = this.#options.indexedDB as IDBFactory;
-        const req = factory.open(this.#options.dbName ?? "teecustody-vault", 1);
-        req.onupgradeneeded = () => {
-            req.result.createObjectStore(STORE, { keyPath: "client_id" });
-        };
-        return request(req);
-    }
-
     async #read(client: ClientId): Promise<object | undefined> {
-        const db = await this.#open();
-        try {
-            const store = db.transaction(STORE).objectStore(STORE);
-            return (await request(store.get(client))) as object | undefined;
-        } finally {
-            db.close();
-        }
+        return this.#transact(
+            "readonly",
+            (store) => store.get(client) as IDBRequest<unknown>,
+        ) as Promise<object | undefined>;
     }
 
     async #write(record: ShareRecord): Promise<void> {
-        const db = await this.#open();
+        await this.#transact("readwrite", (store) => store.put(record));
+    }
+
+    /** One IndexedDB transaction on `shares`; every IndexedDB failure is UNAVAILABLE. */
+    async #transact(
+        mode: IDBTransactionMode,
+        op: (store: IDBObjectStore) => IDBRequest<unknown>,
+    ): Promise<unknown> {
+        const factory =
+            this.#options.indexedDB ?? (globalThis as { indexedDB?: IDBFactory }).indexedDB;
+        if (factory === undefined) {
+            throw new CapabilityError("UNAVAILABLE");
+        }
+        let db: IDBDatabase | undefined;
         try {
-            await request(db.transaction(STORE, "readwrite").objectStore(STORE).put(record));
+            db = await openDatabase(factory, this.#options.dbName ?? "teecustody-vault");
+            return await transaction(db, mode, op);
+        } catch {
+            throw new CapabilityError("UNAVAILABLE");
         } finally {
-            db.close();
+            db?.close();
         }
     }
+}
+
+function openDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+        const req = factory.open(name, 1);
+        req.onupgradeneeded = () => {
+            req.result.createObjectStore(STORE, { keyPath: "client_id" });
+        };
+        req.onsuccess = () => {
+            resolve(req.result);
+        };
+        req.onerror = () => {
+            reject(new Error("open failed"));
+        };
+    });
+}
+
+function transaction(
+    db: IDBDatabase,
+    mode: IDBTransactionMode,
+    op: (store: IDBObjectStore) => IDBRequest<unknown>,
+): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, mode);
+        const req = op(tx.objectStore(STORE));
+        tx.oncomplete = () => {
+            resolve(req.result);
+        };
+        tx.onabort = () => {
+            reject(new Error("transaction aborted"));
+        };
+    });
 }
 
 function aad(client: ClientId, credentialId: Uint8Array): Uint8Array {
