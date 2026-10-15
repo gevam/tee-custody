@@ -2,6 +2,7 @@
 // verifyBundle is module-mocked (A1, TL-12); the fake workload answers through the fake Transport.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createVerifiedBundle, type VerifiedBundle } from "../../src/bundle/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
@@ -9,6 +10,7 @@ import {
     CLIENT,
     FakeClock,
     ROUTE_PATTERN,
+    TEST_LIMITS,
     asMap,
     hex,
     map,
@@ -172,5 +174,72 @@ describe("criterion 2: enroll reply route (R-4)", () => {
         workload.onOpen = () => ({ kind: "ok", payload });
         const client = new ChannelClient(clientConfig(workload, clock));
         expect((await failure(client.open({ op: "enroll" }))).code).toBe("INVALID_RESPONSE");
+    });
+});
+
+describe("criterion 3: only branded, fresh bundles are used (B-13)", () => {
+    function literalOf(bundle: VerifiedBundle): VerifiedBundle {
+        return {
+            instanceId: bundle.instanceId,
+            identityPublicKey: bundle.identityPublicKey,
+            attestation: bundle.attestation,
+            prekeys: bundle.prekeys,
+            verifiedAtMs: bundle.verifiedAtMs,
+        } as unknown as VerifiedBundle;
+    }
+
+    it("refuses a structurally identical unbranded bundle and sends nothing", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const forged = literalOf(brandedBundle(fx, clock.now()));
+        expect((await failure(client.open(openSession(), forged))).code).toBe("UNVERIFIED_BUNDLE");
+        expect(workload.posts).toHaveLength(0);
+        expect(verifyBundle).not.toHaveBeenCalled();
+    });
+
+    it("refuses a branded bundle whose attestation is an unbranded copy", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const real = brandedBundle(fx, clock.now());
+        const bundle = createVerifiedBundle({
+            instanceId: real.instanceId,
+            identityPublicKey: real.identityPublicKey,
+            attestation: { ...real.attestation },
+            prekeys: real.prekeys,
+            verifiedAtMs: real.verifiedAtMs,
+        });
+        expect((await failure(client.open({ op: "enroll" }, bundle))).code).toBe(
+            "UNVERIFIED_BUNDLE",
+        );
+        expect(workload.posts).toHaveLength(0);
+    });
+
+    it("refuses an unbranded bundle returned by the verifier as well", async () => {
+        vi.mocked(verifyBundle).mockImplementation(() =>
+            Promise.resolve(literalOf(brandedBundle(fx, clock.now()))),
+        );
+        const client = new ChannelClient(clientConfig(workload, clock));
+        expect((await failure(client.open(openSession()))).code).toBe("UNVERIFIED_BUNDLE");
+        expect(workload.posts).toHaveLength(0);
+    });
+
+    it("uses a fresh given bundle without fetching", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        await client.open(openSession(), brandedBundle(fx, clock.now() - TEST_LIMITS.bundleMaxAgeMs));
+        expect(verifyBundle).not.toHaveBeenCalled();
+        expect(workload.opens).toHaveLength(1);
+    });
+
+    it("re-fetches when the given bundle is older than bundleMaxAgeMs", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const stale = brandedBundle(fx, clock.now() - TEST_LIMITS.bundleMaxAgeMs - 1);
+        await client.open(openSession(), stale);
+        expect(verifyBundle).toHaveBeenCalledTimes(1);
+        expect(workload.opens).toHaveLength(1);
+    });
+
+    it("re-fetches when the given bundle's attestation has expired", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const expired = brandedBundle(fx, clock.now(), clock.now());
+        await client.open(openSession(), expired);
+        expect(verifyBundle).toHaveBeenCalledTimes(1);
     });
 });

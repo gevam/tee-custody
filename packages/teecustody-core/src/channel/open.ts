@@ -1,7 +1,8 @@
 // Open flow: INC-2-API §7.4 `open` steps (1)–(7); spec §5.2–§5.4. Internal to the channel module (API-TL §3);
 // nothing here is exported from index.ts.
 import { selectPreKey } from "../bundle/select.js";
-import type { VerifiedBundle } from "../bundle/types.js";
+import { isVerifiedAttestation } from "../attestation/types.js";
+import { isVerifiedBundle, type VerifiedBundle } from "../bundle/types.js";
 import type { Bytes, ClientId, Crypto, InstanceId } from "../capabilities.js";
 import { hexEncode, utf8Encode } from "../encoding.js";
 import { ChannelError } from "./errors.js";
@@ -53,6 +54,33 @@ function enrolledClientId(payload: CanonicalValue): ClientId {
     return clientId;
 }
 
+// B-13: both runtime brands are checked by the consumer itself; a structural copy is refused.
+function checkBrand(bundle: VerifiedBundle): VerifiedBundle {
+    if (!isVerifiedBundle(bundle) || !isVerifiedAttestation(bundle.attestation)) {
+        throw new ChannelError("UNVERIFIED_BUNDLE");
+    }
+    return bundle;
+}
+
+// Step (1): a given bundle is used while fresh; a stale one, or none, means a fetch.
+async function resolveBundle(
+    deps: OpenDeps,
+    given: VerifiedBundle | undefined,
+): Promise<VerifiedBundle> {
+    if (given !== undefined) {
+        checkBrand(given);
+        const now = deps.clock.now();
+        if (
+            now - given.verifiedAtMs <= deps.limits.bundleMaxAgeMs &&
+            given.attestation.expiresAtMs > now
+        ) {
+            return given;
+        }
+    }
+    const [bundle] = await deps.fetchBundles();
+    return checkBrand(bundle as VerifiedBundle);
+}
+
 async function seal(
     crypto: Crypto,
     pub: Bytes,
@@ -75,12 +103,10 @@ async function establish(
     deps: OpenDeps,
     payload: OpenPayload,
     pt: Bytes,
+    given: VerifiedBundle | undefined,
 ): Promise<OpenOutcome> {
     const { crypto, clock, limits, link } = deps;
-    const [bundle] = await deps.fetchBundles();
-    if (bundle === undefined) {
-        throw new ChannelError("NO_VERIFIED_BUNDLE");
-    }
+    const bundle = await resolveBundle(deps, given);
     const instanceId = bundle.instanceId;
     const used = deps.usedPrekeys(instanceId);
     const prekey = selectPreKey(bundle, used, clock.now(), crypto);
@@ -129,9 +155,6 @@ export async function openChannel(
     payload: OpenPayload,
     given: VerifiedBundle | undefined,
 ): Promise<OpenOutcome> {
-    if (given !== undefined) {
-        throw new ChannelError("INVALID_ARGUMENT");
-    }
     const pt = encodeOpenPlaintext(payload);
-    return establish(deps, payload, pt);
+    return establish(deps, payload, pt, given);
 }
