@@ -138,8 +138,11 @@ async function bind(
             },
         );
     } catch (error) {
-        const { code } = error as DiscoveryBindingError;
-        throw new CliFailure(code, code === "INVALID_ARGUMENT" ? 2 : 1);
+        // A3 R1: only a DiscoveryBindingError carries a code; anything else is a defect and propagates.
+        if (error instanceof DiscoveryBindingError) {
+            throw new CliFailure(error.code, error.code === "INVALID_ARGUMENT" ? 2 : 1);
+        }
+        throw error;
     }
 }
 
@@ -151,7 +154,7 @@ interface ProbeResult {
 // One GET carrying only the Origin header (plus the mandatory Host): no redirect, credentials, cookies or proxy.
 // The body is discarded after at most MAX_BYTES. Resolves null on a transport failure, a truncated body or the
 // deadline.
-function probe(url: string, origin: string, timeoutMs: number): Promise<ProbeResult | null> {
+function issueProbe(url: string, origin: string, timeoutMs: number): Promise<ProbeResult | null> {
     const send = url.startsWith("https:") ? httpsRequest : httpRequest;
     return new Promise((resolve) => {
         const request = send(url, { method: "GET", headers: { Origin: origin }, agent: false });
@@ -186,6 +189,16 @@ function probe(url: string, origin: string, timeoutMs: number): Promise<ProbeRes
         });
         request.end();
     });
+}
+
+// A3 R1: any throw while a probe is issued (a synchronous throw from `request` rejects the executor's promise) is
+// a probe transport failure.
+async function probe(url: string, origin: string, timeoutMs: number): Promise<ProbeResult | null> {
+    try {
+        return await issueProbe(url, origin, timeoutMs);
+    } catch {
+        return null;
+    }
 }
 
 function shown(acao: string | undefined): string {
@@ -245,8 +258,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         io.stdout(await checkDiscovery(argv.slice(1)));
         return 0;
     } catch (error) {
-        const failure = error as CliFailure;
-        io.stderr(failure.code);
-        return failure.exitCode;
+        if (error instanceof CliFailure) {
+            io.stderr(error.code);
+            return error.exitCode;
+        }
+        // A3 R1: a defect fails closed; its message, name and stack are never written (SR-11).
+        io.stderr("INTERNAL");
+        return 1;
     }
 }

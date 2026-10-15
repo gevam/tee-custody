@@ -2,6 +2,7 @@
 // fails unless the issuer's discovery document names the profile's `issuer` and `jwks_uri` exactly. Not exported
 // from src/index.ts; no DOM or Node imports, so it is safe in either the browser or the CLI graph.
 import {
+    CapabilityError,
     isJsonObject,
     utf8DecodeStrict,
     type FetchResponse,
@@ -83,8 +84,9 @@ function isValidArgument(input: DiscoveryBindingInput, maxDocumentBytes: number)
     return isDevelopmentDiscoveryUrl(input.discoveryUrl, input.profile.jwks_uri);
 }
 
-// One fetch, no retry. A rejection or a status other than 200 is `unavailable`; a body that is oversize, not
-// strict UTF-8, not JSON or not a JSON object is `invalid`.
+// One fetch, no retry. A body that is oversize (here, or the Fetcher's own size or Content-Length rejection,
+// CapabilityError("INVALID_RESPONSE"), A3 R2), not strict UTF-8, not JSON or not a JSON object is `invalid`. Any
+// other rejection or throw, or a status other than 200, is `unavailable`.
 async function fetchObject(
     fetcher: Fetcher,
     url: string,
@@ -95,8 +97,9 @@ async function fetchObject(
     let response: FetchResponse;
     try {
         response = await fetcher.get(url);
-    } catch {
-        throw new DiscoveryBindingError(unavailable);
+    } catch (error) {
+        const oversize = error instanceof CapabilityError && error.code === "INVALID_RESPONSE";
+        throw new DiscoveryBindingError(oversize ? invalid : unavailable);
     }
     if (response.status !== 200) {
         throw new DiscoveryBindingError(unavailable);

@@ -100,6 +100,30 @@ interface OriginBehaviour {
     jwksProbeStatus?: number;
     jwksProbe?: "hang" | "reset" | "endless" | "truncated";
     discoveryProbe?: "hang" | "reset";
+    discoveryBody?: Padded;
+    jwksBody?: Padded;
+}
+
+// A binding (non-probe) document padded with JSON whitespace to `size` bytes, sent chunked (no Content-Length) or
+// with a Content-Length.
+interface Padded {
+    readonly size: number;
+    readonly framing: "chunked" | "length";
+}
+
+function sendDocument(res: ServerResponse, text: string, padded: Padded | undefined): void {
+    if (padded === undefined) {
+        res.end(text);
+        return;
+    }
+    const body = text.padEnd(padded.size, " ");
+    if (padded.framing === "length") {
+        res.setHeader("Content-Length", String(Buffer.byteLength(body)));
+        res.end(body);
+        return;
+    }
+    res.write(body);
+    res.end();
 }
 
 class Origin {
@@ -159,11 +183,13 @@ class Origin {
                 res.setHeader("Access-Control-Allow-Origin", b.discoveryAcao);
             }
             res.setHeader("Content-Type", "application/json");
-            res.end(
+            sendDocument(
+                res,
                 JSON.stringify({
                     issuer: b.issuer ?? DEV_ISSUER,
                     jwks_uri: b.discoveryJwksUri ?? `${this.origin}/jwks`,
                 }),
+                probe ? undefined : b.discoveryBody,
             );
             return;
         }
@@ -201,7 +227,7 @@ class Origin {
                 pump();
                 return;
             }
-            res.end(JSON.stringify({ keys: [RSA_KEY] }));
+            sendDocument(res, JSON.stringify({ keys: [RSA_KEY] }), probe ? undefined : b.jwksBody);
             return;
         }
         res.statusCode = 404;
@@ -307,6 +333,9 @@ describe("row arguments → INVALID_ARGUMENT, exit 2", () => {
         ["check-discovery", "--profile", "a.json", "--skip-verification"],
         ["check-discovery", "--profile", "a.json", "--offline"],
         ["check-discovery", "--profile", "a.json", "--allow-mismatch"],
+        ["check-discovery", "--profile", "a.json", "--offline", "1"],
+        ["check-discovery", "--profile", "a.json", "--allow-mismatch", "yes"],
+        ["check-discovery", "--skip-verification", "true", "--profile", "a.json"],
         ["check-discovery", "--profile", "a.json", "extra"],
         ["check-discovery", "--profile=a.json"],
         ["check-discovery", "--profile", "a.json", "--timeout-ms", "0"],
@@ -323,6 +352,19 @@ describe("row arguments → INVALID_ARGUMENT, exit 2", () => {
         expect(await cli(...argv)).toEqual([2, [], ["INVALID_ARGUMENT"]]);
         expect(fetch).not.toHaveBeenCalled();
     });
+
+    it.each(["foo", "check-discovery-x", "CHECK-DISCOVERY"])(
+        "subcommand %j with a valid profile → INVALID_ARGUMENT, no fetch",
+        async (command) => {
+            const fetch = stubGoogle();
+            expect(await cli(command, "--profile", PRODUCTION_PATH())).toEqual([
+                2,
+                [],
+                ["INVALID_ARGUMENT"],
+            ]);
+            expect(fetch).not.toHaveBeenCalled();
+        },
+    );
 
     it.each(["1", "60000"])("--timeout-ms %s is accepted", async (value) => {
         const fetch = stubFetch({});
@@ -464,7 +506,7 @@ describe("row binding: the DiscoveryBindingErrorCode on stderr", () => {
         expect(fetch).not.toHaveBeenCalled();
     });
 
-    it("the binding uses FetchFetcher with the 65536-byte bound", async () => {
+    it("the binding uses FetchFetcher with the 65536-byte bound (A3 R2: → JWKS_INVALID)", async () => {
         stubFetch({
             [GOOGLE_DISCOVERY_URL]: jsonResponse({
                 issuer: GOOGLE_ISSUER,
@@ -475,7 +517,7 @@ describe("row binding: the DiscoveryBindingErrorCode on stderr", () => {
         expect(await cli("check-discovery", "--profile", PRODUCTION_PATH())).toEqual([
             1,
             [],
-            ["JWKS_UNAVAILABLE"],
+            ["JWKS_INVALID"],
         ]);
     });
 
@@ -712,5 +754,152 @@ describe("TL-10: main writes only through io", () => {
             const [, out, err] = await devRun(origin, "--probe-cors", PROBE_ORIGIN);
             expect([...out, ...err].join("\n")).not.toContain("AQAB");
         });
+    });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A3 criterion 9c-9d: the real FetchFetcher (cap 65536) against local servers.
+
+describe("A3 R2: an oversize document is *_INVALID, through the CLI's real FetchFetcher", () => {
+    it.each<[string, string, OriginBehaviour]>([
+        [
+            "discovery, 65537 bytes chunked",
+            "DISCOVERY_INVALID",
+            { discoveryBody: { size: 65537, framing: "chunked" } },
+        ],
+        [
+            "discovery, Content-Length: 65537",
+            "DISCOVERY_INVALID",
+            { discoveryBody: { size: 65537, framing: "length" } },
+        ],
+        [
+            "JWKS, 65537 bytes chunked",
+            "JWKS_INVALID",
+            { jwksBody: { size: 65537, framing: "chunked" } },
+        ],
+        [
+            "JWKS, Content-Length: 65537",
+            "JWKS_INVALID",
+            { jwksBody: { size: 65537, framing: "length" } },
+        ],
+    ])("%s → %s, exit 1", async (_name, code, behaviour) => {
+        await withOrigin(behaviour, async (origin) => {
+            expect(await devRun(origin)).toEqual([1, [], [code]]);
+        });
+    });
+
+    it.each<["chunked" | "length"]>([["chunked"], ["length"]])(
+        "a discovery document of exactly 65536 bytes (%s) binds, exit 0",
+        async (framing) => {
+            await withOrigin({ discoveryBody: { size: 65536, framing } }, async (origin) => {
+                const [code, out, err] = await devRun(origin);
+                expect([code, out.length, err]).toEqual([0, 1, []]);
+            });
+        },
+    );
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A3 criterion 8 (R1): every unexpected error fails closed. Each module mock is isolated: resetModules, doMock,
+// import cli.js inside the test, doUnmock.
+
+type Main = typeof main;
+type ImportOriginal = <T = unknown>() => Promise<T>;
+type MockFactory = (importOriginal: ImportOriginal) => Promise<Record<string, unknown>>;
+
+async function mainWith(path: string, factory: MockFactory): Promise<Main> {
+    vi.resetModules();
+    vi.doMock(path, factory);
+    try {
+        const isolated = await import("../../src/profile/cli.js");
+        return isolated.main;
+    } finally {
+        vi.doUnmock(path);
+    }
+}
+
+// node:http whose `request` throws synchronously on the given call (1: the JWKS probe, 2: the discovery probe).
+function requestThrowsOn(call: number): MockFactory {
+    return async (importOriginal) => {
+        const real = await importOriginal<typeof import("node:http")>();
+        const request = real.request as (...args: unknown[]) => unknown;
+        let calls = 0;
+        return {
+            ...real,
+            request: (...args: unknown[]) => {
+                calls += 1;
+                if (calls === call) {
+                    throw new TypeError("boom");
+                }
+                return request(...args);
+            },
+        };
+    };
+}
+
+function devArgv(origin: Origin, ...extra: string[]): string[] {
+    return [
+        "check-discovery",
+        "--profile",
+        developmentPath(origin.origin),
+        "--discovery-url",
+        `${origin.origin}${DISCOVERY_PATH}`,
+        ...extra,
+    ];
+}
+
+describe("A3 R1: every unexpected error fails closed", () => {
+    const PROBE = "http://127.0.0.1:1";
+
+    it("8a: a synchronous throw from request on the JWKS probe → CORS_MISSING, exit 1", async () => {
+        await withOrigin({ jwksAcao: PROBE }, async (origin) => {
+            const isolatedMain = await mainWith("node:http", requestThrowsOn(1));
+            const { io, out, err } = capture();
+            expect(await isolatedMain(devArgv(origin, "--probe-cors", PROBE), io)).toBe(1);
+            expect([out, err]).toEqual([[], ["CORS_MISSING"]]);
+        });
+    });
+
+    it("8a: a synchronous throw from request on the discovery probe is informational, exit 0", async () => {
+        await withOrigin({ jwksAcao: PROBE }, async (origin) => {
+            const isolatedMain = await mainWith("node:http", requestThrowsOn(2));
+            const { io, out, err } = capture();
+            expect(await isolatedMain(devArgv(origin, "--probe-cors", PROBE), io)).toBe(0);
+            expect(err).toEqual([]);
+            expect(out).toHaveLength(1);
+            expect(out[0]?.endsWith(` jwks_acao=${PROBE} discovery_acao=absent`)).toBe(true);
+        });
+    });
+
+    it("8b: an io.stdout that throws → INTERNAL, exit 1, nothing of the error written", async () => {
+        stubGoogle();
+        const err: string[] = [];
+        const io: CliIo = {
+            stdout: () => {
+                throw new Error("boom");
+            },
+            stderr: (line) => err.push(line),
+        };
+        expect(await main(["check-discovery", "--profile", PRODUCTION_PATH()], io)).toBe(1);
+        expect(err).toEqual(["INTERNAL"]);
+    });
+
+    it.each<[string, unknown]>([
+        ["an Error whose message is a code", new Error("ISSUER_MISMATCH")],
+        ["a plain object shaped like a failure", { code: "JWKS_INVALID", exitCode: 0 }],
+        ["undefined", undefined],
+    ])("8c: checkDiscoveryBinding rejecting with %s → INTERNAL, exit 1", async (_name, value) => {
+        stubGoogle();
+        const isolatedMain = await mainWith(
+            "../../src/profile/discovery-binding.js",
+            async (importOriginal) => ({
+                ...(await importOriginal<Record<string, unknown>>()),
+                // A non-Error rejection is the point of this test.
+                checkDiscoveryBinding: vi.fn().mockRejectedValue(value),
+            }),
+        );
+        const { io, out, err } = capture();
+        expect(await isolatedMain(["check-discovery", "--profile", PRODUCTION_PATH()], io)).toBe(1);
+        expect([out, err]).toEqual([[], ["INTERNAL"]]);
     });
 });
