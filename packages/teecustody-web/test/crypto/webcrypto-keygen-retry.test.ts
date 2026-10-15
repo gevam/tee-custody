@@ -393,3 +393,31 @@ describe("SR-11 sentinel (criterion 8, C8.4 c)", () => {
         expectNoPlatformText(await rejection(crypto.setupHpkeSender(pk, INFO)), "INVALID_ARGUMENT");
     });
 });
+
+describe("concurrency (criterion 9, C8.4 d)", () => {
+    it("shares one probe between concurrent calls, failed or successful, and caches only success", async () => {
+        const { sk, pk } = x25519();
+        const h = harness(() => true);
+        const crypto = createWebCrypto();
+        const failed = await Promise.all([
+            rejection(crypto.setupHpkeSender(pk, INFO)),
+            rejection(crypto.setupHpkeReceiver(sk, pk, INFO)),
+        ]);
+        expect(failed.map(codeOf)).toEqual(["UNSUPPORTED", "UNSUPPORTED"]);
+        expect(h.probeCalls()).toBe(3);
+        expect(hpkeConstructed).not.toHaveBeenCalled();
+        h.setFault(() => false);
+        const [first, second] = await Promise.all([
+            crypto.setupHpkeSender(pk, INFO),
+            crypto.setupHpkeSender(pk, INFO),
+        ]);
+        expect(first.encapsulatedKey).toHaveLength(32);
+        expect(second.encapsulatedKey).toHaveLength(32);
+        expect(h.probeCalls()).toBe(4);
+        expect(hpkeConstructed.mock.calls.filter(([name]) => name === "CipherSuite")).toHaveLength(
+            1,
+        );
+        await crypto.setupHpkeSender(pk, INFO);
+        expect(h.probeCalls()).toBe(4);
+    });
+});
