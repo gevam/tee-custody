@@ -184,37 +184,6 @@ class RunLoop:
         self._top_up(live)
         self._publish(live, token)
 
-    def _top_up(self, live: _Live) -> None:
-        try:
-            live.prekeys.top_up()
-        except RuntimeError as err:
-            if str(err) != StopCode.PREKEY_IDS_EXHAUSTED.value:
-                raise
-            self._stop(StopCode.PREKEY_IDS_EXHAUSTED)
-
-    def _publish(self, live: _Live, token: AttestationToken) -> None:
-        entries = live.prekeys.public_entries()
-        body = build_bundle(
-            instance_id=self._instance_id,
-            token=token,
-            ik_pub=live.ik.public_bytes(),
-            prekeys=entries,
-            published_at=int(self._clock()),
-        )
-        expires_at = min(token.expires_at, max(p.not_after for p in entries))  # TL-3
-        self._queue.publish_bundle(self._instance_id, body, expires_at)
-        live.published = entries
-        live.published_at = self._clock()
-        live.token_refreshed = False
-        self._logger.info("BUNDLE_PUBLISHED")
-
-    def _on_close(self, info: SessionInfo, reason: CloseReason) -> None:
-        """TL-2: the one place a session close is logged and reported to the opener."""
-        outcome = "SESSION_EVICTED" if reason is CloseReason.EVICTED else "SESSION_CLOSED"
-        self._logger.info(outcome, client_id=info.client_id, session_id=info.session_id.hex())
-        with contextlib.suppress(Exception):
-            self._opener.closed(info, reason)
-
     def tick(self) -> TickReport:
         live = self._require_live()
         refresh = self._refresh(live)
@@ -233,6 +202,72 @@ class RunLoop:
         live.audit.tick()
         return TickReport(refresh=refresh, bundle_published=bundle_published, processed=processed)
 
+    def run(self, stop: threading.Event) -> None:
+        try:
+            self.start()
+            while not stop.is_set():
+                self.tick()
+                if self._pull_skipped:
+                    stop.wait(min(self._limits.pull_wait_s, self._next_pull_at - self._clock()))
+        finally:
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""
+        live, self._live = self._live, None
+        if live is None:
+            return
+        with contextlib.ExitStack() as later:  # every step runs even if an earlier one raises
+            later.callback(live.audit.close)
+            later.callback(live.prekeys.destroy_all)
+            later.callback(live.sessions.close_all)
+            self._queue.withdraw_bundle(self._instance_id)
+
+    def _require_live(self) -> _Live:
+        if self._live is None:
+            raise RuntimeError("NOT_STARTED")
+        return self._live
+
+    def _refresh(self, live: _Live) -> RefreshOutcome | None:
+        """(1) B-08: the launcher is never asked before `next_refresh_attempt_at`."""
+        now = self._clock()
+        if now < self._next_refresh_attempt_at:
+            return None
+        try:
+            outcome = live.lifecycle.refresh_if_due()
+        except LauncherError:
+            self._stop(StopCode.ATTESTATION_EXPIRED)
+        if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
+            self._refresh_failures += 1
+            self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
+        elif outcome is RefreshOutcome.REFRESHED:
+            self._refresh_failures = 0
+            if not self._same_digest(live):
+                self._stop(StopCode.DIGEST_CHANGED)
+        return outcome
+
+    def _same_digest(self, live: _Live) -> bool:
+        """The refreshed token names this image; an unreadable digest is not this image."""
+        token = live.lifecycle.current()
+        try:
+            digest = own_image_digest(token, max_token_bytes=self._limits.max_token_bytes)
+        except LauncherError:
+            return False
+        return digest == live.digest
+
+    def _backoff(self, failures: int) -> int:
+        """`min(retry_max, retry_min * 2^(n-1))` for the n-th consecutive failure (B-08)."""
+        retry_min = self._limits.attestation_retry_min_s
+        return min(self._limits.attestation_retry_max_s, retry_min << (failures - 1))
+
+    def _top_up(self, live: _Live) -> None:
+        try:
+            live.prekeys.top_up()
+        except RuntimeError as err:
+            if str(err) != StopCode.PREKEY_IDS_EXHAUSTED.value:
+                raise
+            self._stop(StopCode.PREKEY_IDS_EXHAUSTED)
+
     def _republish_if_changed(self, live: _Live) -> bool:
         """(3) new token or changed pre-key set; at most once per republish min interval."""
         changed = live.token_refreshed or live.prekeys.public_entries() != live.published
@@ -242,22 +277,21 @@ class RunLoop:
         self._publish(live, live.lifecycle.current())
         return True
 
-    def _check_burn(self, live: _Live) -> None:
-        """(6) SR-12: one PREKEY_BURN_HIGH per ended interval whose own consumption is too high."""
-        now = self._clock()
-        interval = self._limits.audit_aggregate_interval_s
-        consumed_since = live.prekeys.consumed_since
-        while now >= live.burn_start + interval:
-            start, end = live.burn_start, live.burn_start + interval
-            if (
-                consumed_since(start) - consumed_since(end)
-                > self._limits.prekey_burn_alert_threshold
-            ):
-                live.audit.alert("PREKEY_BURN_HIGH", interval=(_ms(start), _ms(end)))
-            # Intervals with no consumption at all are skipped in one step.
-            live.burn_start = (
-                end if consumed_since(end) else end + (now - end) // interval * interval
-            )
+    def _publish(self, live: _Live, token: AttestationToken) -> None:
+        entries = live.prekeys.public_entries()
+        body = build_bundle(
+            instance_id=self._instance_id,
+            token=token,
+            ik_pub=live.ik.public_bytes(),
+            prekeys=entries,
+            published_at=int(self._clock()),
+        )
+        expires_at = min(token.expires_at, max(p.not_after for p in entries))  # TL-3
+        self._queue.publish_bundle(self._instance_id, body, expires_at)
+        live.published = entries
+        live.published_at = self._clock()
+        live.token_refreshed = False
+        self._logger.info("BUNDLE_PUBLISHED")
 
     def _pull(self) -> list[QueueMessage] | None:
         """(4) pull, or None while backing off (B-08 formula, own counter; 10 in a row stop)."""
@@ -294,37 +328,27 @@ class RunLoop:
                     self._logger.warning("RESPONSE_PUBLISH_FAILED")
         self._queue.ack(message.message_id)
 
-    def _require_live(self) -> _Live:
-        if self._live is None:
-            raise RuntimeError("NOT_STARTED")
-        return self._live
-
-    def _refresh(self, live: _Live) -> RefreshOutcome | None:
-        """(1) B-08: the launcher is never asked before `next_refresh_attempt_at`."""
+    def _check_burn(self, live: _Live) -> None:
+        """(6) SR-12: one PREKEY_BURN_HIGH per ended interval whose own consumption is too high."""
         now = self._clock()
-        if now < self._next_refresh_attempt_at:
-            return None
-        try:
-            outcome = live.lifecycle.refresh_if_due()
-        except LauncherError:
-            self._stop(StopCode.ATTESTATION_EXPIRED)
-        if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
-            self._refresh_failures += 1
-            self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
-        elif outcome is RefreshOutcome.REFRESHED:
-            self._refresh_failures = 0
-            if not self._same_digest(live):
-                self._stop(StopCode.DIGEST_CHANGED)
-        return outcome
+        interval = self._limits.audit_aggregate_interval_s
+        consumed_since = live.prekeys.consumed_since
+        while now >= live.burn_start + interval:
+            start, end = live.burn_start, live.burn_start + interval
+            burned = consumed_since(start) - consumed_since(end)
+            if burned > self._limits.prekey_burn_alert_threshold:
+                live.audit.alert("PREKEY_BURN_HIGH", interval=(_ms(start), _ms(end)))
+            if consumed_since(end):
+                live.burn_start = end
+            else:  # nothing consumed since: skip every empty interval in one step
+                live.burn_start = end + (now - end) // interval * interval
 
-    def _same_digest(self, live: _Live) -> bool:
-        """The refreshed token names this image; an unreadable digest is not this image."""
-        token = live.lifecycle.current()
-        try:
-            digest = own_image_digest(token, max_token_bytes=self._limits.max_token_bytes)
-        except LauncherError:
-            return False
-        return digest == live.digest
+    def _on_close(self, info: SessionInfo, reason: CloseReason) -> None:
+        """TL-2: the one place a session close is logged and reported to the opener."""
+        outcome = "SESSION_EVICTED" if reason is CloseReason.EVICTED else "SESSION_CLOSED"
+        self._logger.info(outcome, client_id=info.client_id, session_id=info.session_id.hex())
+        with contextlib.suppress(Exception):
+            self._opener.closed(info, reason)
 
     def _stop(self, code: StopCode) -> NoReturn:
         """Fail closed: shut down, then report `code` even if shutting down raised."""
@@ -332,29 +356,3 @@ class RunLoop:
             self.shutdown()
         finally:
             raise WorkloadStopped(code)
-
-    def _backoff(self, failures: int) -> int:
-        """`min(retry_max, retry_min * 2^(n-1))` for the n-th consecutive failure (B-08)."""
-        retry_min = self._limits.attestation_retry_min_s
-        return min(self._limits.attestation_retry_max_s, retry_min << (failures - 1))
-
-    def run(self, stop: threading.Event) -> None:
-        try:
-            self.start()
-            while not stop.is_set():
-                self.tick()
-                if self._pull_skipped:
-                    stop.wait(min(self._limits.pull_wait_s, self._next_pull_at - self._clock()))
-        finally:
-            self.shutdown()
-
-    def shutdown(self) -> None:
-        """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""
-        live, self._live = self._live, None
-        if live is None:
-            return
-        with contextlib.ExitStack() as later:  # every step runs even if an earlier one raises
-            later.callback(live.audit.close)
-            later.callback(live.prekeys.destroy_all)
-            later.callback(live.sessions.close_all)
-            self._queue.withdraw_bundle(self._instance_id)
