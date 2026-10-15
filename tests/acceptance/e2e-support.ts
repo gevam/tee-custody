@@ -6,14 +6,24 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+    AttestationError,
+    BundleError,
+    ChannelError,
     DEFAULT_CHANNEL_LIMITS,
+    decodeCanonical,
+    encodeCanonical,
     parseTrustProfile,
+    verifyAttestation,
+    verifyBundle,
     type Bytes,
+    type CanonicalValue,
     type ChannelClientConfig,
     type ChannelLimits,
     type Crypto,
+    type DecodeLimits,
     type FetchResponse,
     type Fetcher,
+    type PublishedBundle,
     type SecurityEvent,
     type SecurityEventSink,
     type Transport,
@@ -64,6 +74,20 @@ export async function startHarness(extraArgs: readonly string[] = []): Promise<H
         cwd: REPO_ROOT,
         stdio: ["ignore", "pipe", "pipe"],
     });
+    // Never orphan the harness (ports, the tc-e2e-* dir with the fixture share) if this runner dies:
+    // 'exit' covers a normal or SIGTERM-driven worker exit; SIGINT/SIGTERM are forwarded then re-raised.
+    const killChild = (): void => {
+        if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGTERM");
+        }
+    };
+    process.once("exit", killChild);
+    for (const sig of ["SIGINT", "SIGTERM"] as const) {
+        process.once(sig, () => {
+            killChild();
+            process.kill(process.pid, sig);
+        });
+    }
     let out = "";
     let err = "";
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -156,8 +180,169 @@ export function spyCrypto(inner: Crypto): { crypto: Crypto; calls: AeadCall[] } 
 export const FAST_LIMITS: ChannelLimits = Object.freeze({
     ...DEFAULT_CHANNEL_LIMITS,
     responseTimeoutMs: 20_000,
-    pollIntervalMs: 50,
+    pollIntervalMs: DEFAULT_CHANNEL_LIMITS.pollIntervalMs,
 });
+
+/**
+ * Stand-in for the persistent used-pre-key set of a host with one client (D-01 F4). Each test builds a
+ * fresh ChannelClient, whose own used set is empty; a pre-key consumed by an earlier test stays listed
+ * for up to bundle_republish_min_interval_s (INC-2-API 4.13), and picking it gives no response.
+ */
+const consumedPrekeys = new Map<string, Set<number>>();
+
+function recordOpen(instance: string, body: Uint8Array): void {
+    try {
+        const env = decodeCanonical(body, DEFAULT_CHANNEL_LIMITS.bundle.decode);
+        if (!(env instanceof Map) || env.get("kind") !== "open") {
+            return;
+        }
+        const aad = decodeCanonical(
+            env.get("aad") as Uint8Array,
+            DEFAULT_CHANNEL_LIMITS.bundle.decode,
+        );
+        const id = Number((aad as Map<string, CanonicalValue>).get("prekey_id"));
+        const set = consumedPrekeys.get(instance) ?? new Set<number>();
+        set.add(id);
+        consumedPrekeys.set(instance, set);
+    } catch {
+        // not an open envelope we can read: nothing to record
+    }
+}
+
+function withLedger(inner: Transport): Transport {
+    return {
+        getResponses: (client, after) => inner.getResponses(client, after),
+        postRequest: (instance, body) => {
+            recordOpen(instance, body);
+            return inner.postRequest(instance, body);
+        },
+        listBundles: async (): Promise<readonly PublishedBundle[]> => {
+            const real = await inner.listBundles();
+            const out: PublishedBundle[] = [];
+            for (const p of real) {
+                const used = consumedPrekeys.get(p.instanceId);
+                if (used === undefined || used.size === 0) {
+                    out.push(p);
+                    continue;
+                }
+                const map = new Map(
+                    decodeCanonical(p.bundle, DEFAULT_CHANNEL_LIMITS.bundle.decode) as Map<
+                        string,
+                        CanonicalValue
+                    >,
+                );
+                const keys = (map.get("prekeys") as CanonicalValue[]).filter(
+                    (entry) => !used.has(Number((entry as Map<string, CanonicalValue>).get("id"))),
+                );
+                if (keys.length === 0) {
+                    continue; // every listed pre-key is consumed; wait for the republish
+                }
+                map.set("prekeys", keys);
+                out.push({ instanceId: p.instanceId, bundle: encodeCanonical(map) });
+            }
+            return out;
+        },
+    };
+}
+
+function code(error: unknown): string {
+    if (error instanceof BundleError) {
+        return `BundleError:${error.code}`;
+    }
+    if (error instanceof AttestationError) {
+        return `AttestationError:${error.check}/${error.code}`;
+    }
+    if (error instanceof ChannelError) {
+        return `ChannelError:${error.code}`;
+    }
+    return error instanceof Error ? error.name : "non-error";
+}
+
+/** Seconds from now to the token's nbf/iat/exp claims (numbers only; no token content is printed). */
+function claimTiming(p: PublishedBundle, decode: DecodeLimits): string {
+    try {
+        const m = decodeCanonical(p.bundle, decode) as Map<string, CanonicalValue>;
+        const payload = (m.get("token") as string).split(".")[1] ?? "";
+        const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+            string,
+            unknown
+        >;
+        const now = Date.now() / 1000;
+        const delta = (k: string): string =>
+            typeof claims[k] === "number" ? (claims[k] - now).toFixed(3) : "absent";
+        return `claimDeltaSec(nbf=${delta("nbf")} iat=${delta("iat")} exp=${delta("exp")})`;
+    } catch {
+        return "claimDeltaSec(unreadable)";
+    }
+}
+
+/** Codes only (never tokens, keys or payloads): per listed bundle, what verifyBundle/verifyAttestation say. */
+export async function diagnoseBundles(h: Harness, parts: TestClientParts): Promise<string> {
+    const crypto = createWebCrypto();
+    const fetcher = new FetchFetcher({ maxBodyBytes: 65_536, timeoutMs: 10_000 });
+    const limits = parts.config.limits ?? DEFAULT_CHANNEL_LIMITS;
+    const sink = { report: () => Promise.resolve() };
+    let listed: readonly PublishedBundle[];
+    try {
+        listed = await parts.config.transport.listBundles();
+    } catch (error) {
+        return `listBundles failed: ${code(error)}`;
+    }
+    const lines: string[] = [`${String(listed.length)} bundle(s) listed`];
+    for (const [n, p] of listed.entries()) {
+        let verifyBundleResult = "ok";
+        try {
+            await verifyBundle(p, h.profile, sink, {
+                crypto,
+                fetcher,
+                now: () => Date.now(),
+                verifierLimits: limits.verifier,
+                bundleLimits: limits.bundle,
+            });
+        } catch (error) {
+            verifyBundleResult = code(error);
+        }
+        let attestResult = "ok";
+        try {
+            const m = decodeCanonical(p.bundle, limits.bundle.decode) as Map<
+                string,
+                CanonicalValue
+            >;
+            const nonce = await crypto.sha256((m.get("IK_pub") as Uint8Array).slice());
+            await verifyAttestation(
+                m.get("token") as string,
+                h.profile,
+                { identityNonce: nonce },
+                sink,
+                { crypto, fetcher, now: () => Date.now(), limits: limits.verifier },
+            );
+        } catch (error) {
+            attestResult = code(error);
+        }
+        const timing = attestResult === "ok" ? "" : ` ${claimTiming(p, limits.bundle.decode)}`;
+        lines.push(
+            `bundle[${String(n)}] verifyBundle=${verifyBundleResult} verifyAttestation=${attestResult}${timing}`,
+        );
+    }
+    return lines.join("; ");
+}
+
+/** Awaits `work`; a NO_VERIFIED_BUNDLE rejection is rethrown with per-bundle diagnostic codes (D-01 item 5). */
+export async function withBundleDiagnostics<T>(
+    h: Harness,
+    parts: TestClientParts,
+    work: Promise<T>,
+): Promise<T> {
+    try {
+        return await work;
+    } catch (error) {
+        if (error instanceof ChannelError && error.code === "NO_VERIFIED_BUNDLE") {
+            const detail = await diagnoseBundles(h, parts);
+            throw new Error(`NO_VERIFIED_BUNDLE unexpected: ${detail}`, { cause: error });
+        }
+        throw error;
+    }
+}
 
 export interface TestClientParts {
     readonly config: ChannelClientConfig;
@@ -185,7 +370,8 @@ export function clientParts(
         maxResponseBytes: 1_048_576,
         timeoutMs: 10_000,
     });
-    const transport = options.transport ? options.transport(base) : base;
+    const ledgered = withLedger(base);
+    const transport = options.transport ? options.transport(ledgered) : ledgered;
     return {
         config: {
             trustProfile: h.profile,
