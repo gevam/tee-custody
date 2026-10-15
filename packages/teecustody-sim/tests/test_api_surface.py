@@ -470,6 +470,7 @@ def test_sim_config_error_str_is_code_value_only(code: SimConfigErrorCode) -> No
 def test_simulator_runtime_requirements_are_exact_pinned() -> None:
     assert sorted(importlib.metadata.requires("teecustody-sim") or []) == [
         "cryptography==50.0.2",
+        "pyhpke==0.6.5",  # T-25 (T-08 A1): channel_vectors seals with pyhpke directly
         "teecustody==0.1.0",
     ]
 
