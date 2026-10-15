@@ -26,6 +26,8 @@ const GCM_NONCE_BYTES = 12;
 const X25519_KEY_BYTES = 32;
 const MAX_EXPORT_LABEL_BYTES = 64;
 const MAX_EXPORT_BYTES = 64;
+/** ADR 0011 C8 (B-45): total attempts per X25519 key generation; WebKit's generateKey fails transiently. */
+const X25519_KEYGEN_ATTEMPTS = 3;
 
 function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
     return { name: "AES-GCM", iv: nonce.slice(), additionalData: aad.slice() };
@@ -43,6 +45,22 @@ function platformCrypto(): PlatformCrypto | undefined {
 
 function isNotSupported(error: unknown): boolean {
     return error instanceof DOMException && error.name === "NotSupportedError";
+}
+
+/** Runs `attempt` up to X25519_KEYGEN_ATTEMPTS times; rethrows at once if `retryable(error)` is false. */
+async function boundedKeygen<T>(
+    attempt: () => Promise<T>,
+    retryable: (error: unknown) => boolean,
+): Promise<T> {
+    for (let remaining = X25519_KEYGEN_ATTEMPTS; ; remaining -= 1) {
+        try {
+            return await attempt();
+        } catch (error: unknown) {
+            if (remaining <= 1 || !retryable(error)) {
+                throw error;
+            }
+        }
+    }
 }
 
 type SenderContext = Awaited<ReturnType<CipherSuite["createSenderContext"]>>;
@@ -199,10 +217,14 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
             let context: SenderContext;
             try {
                 const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
-                context = await hpke.createSenderContext({
-                    recipientPublicKey: publicKey,
-                    info: info.slice(),
-                });
+                context = await boundedKeygen(
+                    () =>
+                        hpke.createSenderContext({
+                            recipientPublicKey: publicKey,
+                            info: info.slice(),
+                        }),
+                    () => true,
+                );
             } catch {
                 throw new CapabilityError("INVALID_ARGUMENT");
             }
