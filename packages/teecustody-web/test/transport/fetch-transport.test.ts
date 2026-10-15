@@ -998,6 +998,48 @@ describe("FetchTransport T-42 criterion 2: the default covers the §6 maximal pa
     });
 });
 
+describe("FetchTransport T-42 criterion 4: an explicit maxResponseBytes still applies", () => {
+    it("refuses the 1,406,937-byte maximal page at an explicit 1,048,576 (§6 interoperability rule)", async () => {
+        const body = streamed(MAXIMAL_PAGE);
+        const { fetch } = spy(body.response);
+        expect(await codeOf(make(fetch, { maxResponseBytes: 1_048_576 }).getResponses(CID))).toBe(
+            "INVALID_RESPONSE",
+        );
+        expect(body.cancelled()).toBe(true);
+    });
+
+    it("accepts a 2,500,000-byte page at an explicit 3,000,000", async () => {
+        const page = responsesPage(2_500_000);
+        expect(page.length).toBe(2_500_000);
+        const { fetch } = spy(streamed(page).response);
+        const result = await make(fetch, { maxResponseBytes: 3_000_000 }).getResponses(CID);
+        expect(result.responses.length).toBeGreaterThan(32);
+    });
+});
+
+describe("FetchTransport T-42 criterion 5: a given maxResponseBytes is validated as before", () => {
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53, "1024", null])(
+        "refuses maxResponseBytes %s with TypeError(INVALID_CONFIG)",
+        (value) => {
+            const error = configError({ maxResponseBytes: value as number });
+            expect(error).toBeInstanceOf(TypeError);
+            expect((error as TypeError).message).toBe("INVALID_CONFIG");
+        },
+    );
+
+    it("still requires timeoutMs", () => {
+        const options = { baseUrl: BASE, fetch: spy().fetch };
+        let error: unknown;
+        try {
+            new FetchTransport(options as unknown as FetchTransportOptions);
+        } catch (thrown) {
+            error = thrown;
+        }
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as TypeError).message).toBe("INVALID_CONFIG");
+    });
+});
+
 describe("FetchTransport T-42 criterion 6: the default is the contract number, not an export", () => {
     const source = readFileSync(
         fileURLToPath(new URL("../../src/transport/fetch-transport.ts", import.meta.url)),
@@ -1006,5 +1048,10 @@ describe("FetchTransport T-42 criterion 6: the default is the contract number, n
 
     it("states 2_097_152 exactly once in fetch-transport.ts", () => {
         expect(source.split("2_097_152")).toHaveLength(2);
+    });
+
+    it("exports no default constant from the module", async () => {
+        const module = await import("../../src/transport/fetch-transport.js");
+        expect(Object.keys(module)).toEqual(["FetchTransport"]);
     });
 });
