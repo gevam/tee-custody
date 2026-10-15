@@ -85,7 +85,7 @@ class PreKeyStore:
         return tuple(public for public, _ in self._keys.values() if public.not_after > now)
 
     def take(self, prekey_id: int) -> Secret:
-        slot = self._keys.pop(prekey_id, None)
+        slot = self._keys.pop(prekey_id, None) if type(prekey_id) is int else None
         if slot is None:
             raise KeyError("PREKEY_UNKNOWN")
         public, private = slot

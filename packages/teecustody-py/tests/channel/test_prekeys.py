@@ -417,3 +417,17 @@ def test_edge_ids_are_never_reused_after_destroy_all() -> None:
     store.top_up()
 
     assert [e.id for e in store.public_entries()] == list(range(10, 20))
+
+
+@pytest.mark.parametrize("prekey_id", [True, 1.0, "1"])
+def test_edge_take_refuses_a_non_int_id_that_compares_equal_to_a_live_id(
+    prekey_id: object,
+) -> None:
+    store = make_store()
+    store.top_up()
+
+    with pytest.raises(KeyError) as excinfo:
+        store.take(prekey_id)  # type: ignore[arg-type]
+
+    assert excinfo.value.args == ("PREKEY_UNKNOWN",)
+    assert 1 in [e.id for e in store.public_entries()]
