@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Final, NoReturn
 
 from teecustody.obs import configure_logging
+from teecustody_sim.channel_vectors import generate_channel_suite
 from teecustody_sim.config import (
     LaunchConfig,
     SimConfigError,
@@ -55,6 +56,8 @@ _CORPUS_SEED: Final = 1
 _CORPUS_COUNT: Final = 512
 _SUITE_PATH: Final = Path("attestation", "suite.cbor")  # API.md §C `vectors`
 _CORPUS_PATH: Final = Path("wire", "differential-corpus.json")
+_CHANNEL_PATH: Final = Path("channel", "suite.cbor")  # INC-2-API §5.3 (A-4)
+_VECTOR_PATHS: Final = (_SUITE_PATH, _CORPUS_PATH, _CHANNEL_PATH)  # printed in this order
 _STAGING_PREFIX: Final = ".vectors-"
 _STATE_DIR_MODE: Final = 0o700
 _LAUNCHER_DIR_MODE: Final = 0o755
@@ -322,8 +325,8 @@ def _up(options: argparse.Namespace) -> int:
 
 def _check_vectors_out(out: Path) -> None:
     """The output tree is real directories and regular files: nothing is written via a symlink."""
-    directories = (out, out / _SUITE_PATH.parent, out / _CORPUS_PATH.parent)
-    files = (out / _SUITE_PATH, out / _CORPUS_PATH)
+    directories = (out, *(out / relative.parent for relative in _VECTOR_PATHS))
+    files = tuple(out / relative for relative in _VECTOR_PATHS)
     for path, kind in [
         *((d, stat.S_ISDIR) for d in directories),
         *((f, stat.S_ISREG) for f in files),
@@ -339,16 +342,20 @@ def _check_vectors_out(out: Path) -> None:
 
 
 def _write_vectors(out: Path) -> None:
-    """Both outputs are generated in a staging directory inside `out`, then renamed into place:
+    """All outputs are generated in a staging directory inside `out`, then renamed into place:
     a failed generation leaves any existing outputs untouched."""
     out.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=out))
     try:
         generate_suite(staging)
         generate_corpus(staging, seed=_CORPUS_SEED, count=_CORPUS_COUNT)
-        for relative in (_SUITE_PATH, _CORPUS_PATH):
+        generate_channel_suite(staging)
+        for relative in _VECTOR_PATHS:
             (out / relative.parent).mkdir(exist_ok=True)
-        for relative in (_SUITE_PATH, _CORPUS_PATH):
+        # B-23: one unwritable target would fail its rename after the others had replaced theirs.
+        if not all(os.access(out / relative.parent, os.W_OK) for relative in _VECTOR_PATHS):
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
+        for relative in _VECTOR_PATHS:
             os.replace(staging / relative, out / relative)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -356,7 +363,7 @@ def _write_vectors(out: Path) -> None:
 
 def _vectors(options: argparse.Namespace) -> int:
     _check_vectors_out(options.out)
-    outputs = (options.out / _SUITE_PATH, options.out / _CORPUS_PATH)
+    outputs = tuple(options.out / relative for relative in _VECTOR_PATHS)
     if not options.force and any(os.path.lexists(path) for path in outputs):
         raise ValueError(_OUTPUT_EXISTS)
     try:

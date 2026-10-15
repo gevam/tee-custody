@@ -1050,12 +1050,14 @@ version = "0.1.0"
 source = { editable = "packages/teecustody-sim" }
 dependencies = [
     { name = "cryptography" },
+    { name = "pyhpke" },
     { name = "teecustody" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = "==50.0.2" },
+    { name = "pyhpke", specifier = "==0.6.5" },
     { name = "teecustody", editable = "packages/teecustody-py" },
 ]
 
