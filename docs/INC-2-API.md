@@ -983,16 +983,28 @@ class RunLoop:
     def run(self, stop: threading.Event) -> None: ...   # start(); tick() until stop is set; shutdown() in finally
     def shutdown(self) -> None: ...   # withdraw_bundle, sessions.close_all(SHUTDOWN), prekeys.destroy_all, audit.close
 ```
-`tick` order (aligned with T-29 A1, 2026-10-15):
+`tick` order (aligned with T-29 A1 and A2, 2026-10-15):
 1. **Expiry first.** If `clock() >= token.expires_at`: `shutdown()`, then `WorkloadStopped(ATTESTATION_EXPIRED)`.
    This check runs **before** the B-08 gate, so a backoff never delays it. After expiry nothing is pulled,
    processed or republished. Otherwise, attempt the attestation refresh **only if
    `clock() >= next_refresh_attempt_at`** (B-08).
 2. `prekeys.expire()`, `top_up()`.
 3. Republish the bundle if the token was refreshed or the pre-key set changed, at most once per
-   `bundle_republish_min_interval_s`.
+   `bundle_republish_min_interval_s`. The expiry check is re-run immediately before every `publish_bundle`.
 4. `sessions.expire_idle()`. This now runs before the pull.
-5. `pull_requests` → `process` → `publish_response` → `ack`.
+5. `pull_requests` → `process` → `publish_response` → `ack`. The expiry check is re-run immediately before every
+   `server.process` call.
+
+**Expiry re-check (T-29 A2).** One private helper does the step 1 expiry check. It reads `clock()` afresh, and if
+`clock() >= lifecycle.current().expires_at` it calls `shutdown()` and raises `WorkloadStopped(ATTESTATION_EXPIRED)`.
+`tick` calls it at step 1, immediately before every `publish_bundle` in step 3, and immediately before every
+`server.process` call in step 5. It is called per message, so the first check after a pull that blocked across
+expiry is the one before the first message. On expiry, the current message and every remaining pulled message are
+not processed, answered or acked. They stay with the adapter's ack deadline and retention (§4.11). Nothing is
+withdrawn per message, and no error response is sealed, because sealing would process the request after expiry.
+The `withdraw_bundle` in `shutdown()` is the only queue effect. A message whose `process` began before
+`expires_at` is answered and acked as usual, including the one publish retry. `start()` does not re-check, because
+its token is fresh.
 6. Pre-key burn check at interval end: if `consumed_since(interval_start) > prekey_burn_alert_threshold` →
    `audit.alert("PREKEY_BURN_HIGH", interval=…)`.
 7. `audit.tick()`.
@@ -1000,10 +1012,17 @@ class RunLoop:
 **Lifecycle.** `tick()` before `start()` or after `shutdown()` → `RuntimeError("NOT_STARTED")`. A second `start()` on
 the same instance, including after `shutdown()`, → `RuntimeError("ALREADY_STARTED")`, and live state is untouched.
 
+**`run` exception precedence (T-29 A2).** If `start()` or `tick()` raises, `run` calls `shutdown()`, suppresses a
+`QueueError` from it, and re-raises the original exception object unchanged. When `run` ends because `stop` is set,
+a `QueueError` from `shutdown()` becomes `WorkloadStopped(QUEUE_UNAVAILABLE)` raised `from` that error, not
+`from None`. A raw `QueueError` still never escapes `run`.
+
 **B-08 rule.**
-- After `FAILED_KEPT_CURRENT`, `next_refresh_attempt_at = max(now, min(now + min(retry_max, retry_min × 2^(n−1)),
-  expires_at − 1.0))` for the n-th consecutive failure. The last retry therefore lands before expiry. A `REFRESHED`
-  outcome resets n.
+- After `FAILED_KEPT_CURRENT` at `now`, for the n-th consecutive failure, compute
+  `c = min(now + min(retry_max, retry_min × 2^(n−1)), expires_at − 1.0)`. Then set
+  `next_refresh_attempt_at = c` if `c > now`, otherwise `expires_at`. The capped retry at `expires_at − 1.0` is still
+  made once. Once it fails, no launcher call is made before the expiry stop (T-29 A2; replaces the A1 formula
+  `max(now, …)`). A `REFRESHED` outcome resets n.
 - `refresh_if_due` is never called before `next_refresh_attempt_at`, however often `tick` runs.
 - If the lifecycle raises because the token expired → `shutdown()`, then `WorkloadStopped(ATTESTATION_EXPIRED)`.
 - **Queue errors.** `QueueError(UNAVAILABLE)` from any of `pull_requests`, `publish_response`, `ack` or
