@@ -243,3 +243,34 @@ def test_a_full_table_leaves_the_fresh_sealer_with_the_caller_for_the_rejection(
     aad = OpenResultAad(session_id=None, request_id=bytes(16))
     aad_bytes, ct = sealer.seal_open_result(aad, b"full")
     assert AESGCM(sk_t2c.reveal()).decrypt(_nonce(0), ct, aad_bytes) == b"full"
+
+
+# ---------------------------------------------------------------- criterion 12
+def test_expire_idle_closes_sessions_idle_for_the_timeout_and_wipes_them() -> None:
+    world = World()
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    world.clock.now += 100
+    s2, k2 = world.create(SID_2, CLIENT_B)
+    world.clock.now += 799.5
+    assert world.table.expire_idle() == 0
+    world.clock.now += 0.5
+    assert world.table.expire_idle() == 1
+    assert world.closes == [(_info(SID_1, CLIENT_A), CloseReason.IDLE_TIMEOUT)]
+    assert k1.wiped
+    assert world.table.get(SID_2) is s2
+    assert k2.live
+
+
+def test_close_all_shuts_every_session_down_and_wipes_every_key() -> None:
+    world = World()
+    _s1, k1 = world.create(SID_1, CLIENT_A)
+    _s2, k2 = world.create(SID_2, CLIENT_B)
+    world.table.close_all()
+    assert sorted(world.closes, key=lambda close: close[0].session_id) == [
+        (_info(SID_1, CLIENT_A), CloseReason.SHUTDOWN),
+        (_info(SID_2, CLIENT_B), CloseReason.SHUTDOWN),
+    ]
+    assert k1.wiped
+    assert k2.wiped
+    assert world.table.get(SID_1) is None
+    assert world.table.get(SID_2) is None

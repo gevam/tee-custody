@@ -189,7 +189,8 @@ class SessionTable:
         return len(idle)
 
     def close_all(self) -> None:
-        raise NotImplementedError("T-23")
+        for session_id in list(self._sessions):
+            self.close(session_id, CloseReason.SHUTDOWN)
 
     def _evict_one(self) -> None:
         """R-8: evict the least recently active session (ties: smallest id) if idle long enough."""
