@@ -65,3 +65,5 @@
 - T-28: ChannelServer
 - T-29: RunLoop
 - T-35: teecustody-profile check-discovery and scheduled discovery-binding job
+- T-31: end-to-end channel harness, Node/Python e2e (N1–N3)
+- QA D-01: FR-4 e2e tests aligned to INC-2 contracts
