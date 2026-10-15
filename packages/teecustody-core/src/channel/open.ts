@@ -3,10 +3,16 @@
 import { selectPreKey } from "../bundle/select.js";
 import { isVerifiedAttestation } from "../attestation/types.js";
 import { isVerifiedBundle, type VerifiedBundle } from "../bundle/types.js";
-import type { Bytes, ClientId, Crypto, InstanceId } from "../capabilities.js";
+import {
+    CapabilityError,
+    type Bytes,
+    type ClientId,
+    type Crypto,
+    type InstanceId,
+} from "../capabilities.js";
 import { hexEncode, utf8Encode } from "../encoding.js";
 import { ChannelError } from "./errors.js";
-import { createSession, readOpenResult, type SessionLink } from "./session.js";
+import { createSession, readOpenResult, viaCrypto, type SessionLink } from "./session.js";
 import type { ChannelLimits, Clock, OpenOutcome, OpenPayload } from "./types.js";
 import type { CanonicalValue } from "../wire/types.js";
 import {
@@ -81,6 +87,14 @@ async function resolveBundle(
     return checkBrand(bundle as VerifiedBundle);
 }
 
+function random16(crypto: Pick<Crypto, "randomBytes">): Bytes {
+    const bytes = crypto.randomBytes(ID_BYTES);
+    if (bytes.length !== ID_BYTES) {
+        throw new CapabilityError("INVALID_RESPONSE");
+    }
+    return bytes;
+}
+
 async function seal(
     crypto: Crypto,
     pub: Bytes,
@@ -93,6 +107,9 @@ async function seal(
         const ct = await ctx.seal(aadBytes, pt);
         const keyC2t = await ctx.export(C2T, KEY_BYTES);
         const keyT2c = await ctx.export(T2C, KEY_BYTES);
+        if (keyC2t.length !== KEY_BYTES || keyT2c.length !== KEY_BYTES) {
+            throw new CapabilityError("INVALID_RESPONSE");
+        }
         return { envelope: encodeOpenRequest(aadBytes, ctx.encapsulatedKey, ct), keyC2t, keyT2c };
     } finally {
         ctx.destroy();
@@ -109,17 +126,19 @@ async function establish(
     const bundle = await resolveBundle(deps, given);
     const instanceId = bundle.instanceId;
     const used = deps.usedPrekeys(instanceId);
-    const prekey = selectPreKey(bundle, used, clock.now(), crypto);
+    const prekey = await viaCrypto(() => selectPreKey(bundle, used, clock.now(), crypto));
     if (prekey === undefined) {
         throw new ChannelError("NO_USABLE_PREKEY");
     }
     used.add(prekey.id);
     const pub = prekey.publicKey;
     const ikPub = bundle.identityPublicKey;
-    const requestId = crypto.randomBytes(ID_BYTES);
+    const requestId = await viaCrypto(() => random16(crypto));
     // R-4: for enroll, a fresh CSPRNG reply route for this call only, never stored or reused.
     const route =
-        payload.op === "enroll" ? hexEncode(crypto.randomBytes(ID_BYTES)) : payload.clientId;
+        payload.op === "enroll"
+            ? hexEncode(await viaCrypto(() => random16(crypto)))
+            : payload.clientId;
     const aadBytes = encodeOpenAad({
         clientId: route,
         instanceId,
@@ -127,8 +146,9 @@ async function establish(
         requestId,
         timestamp: Math.floor(clock.now() / 1000),
     });
-    const info = await hpkeInfo(crypto, ikPub, prekey.id);
-    const { envelope, keyC2t, keyT2c } = await seal(crypto, pub, info, aadBytes, pt);
+    const { envelope, keyC2t, keyT2c } = await viaCrypto(async () =>
+        seal(crypto, pub, await hpkeInfo(crypto, ikPub, prekey.id), aadBytes, pt),
+    );
     wipe(payload, pt);
     try {
         await link.post(instanceId, envelope);
@@ -167,5 +187,9 @@ export async function openChannel(
     given: VerifiedBundle | undefined,
 ): Promise<OpenOutcome> {
     const pt = encodeOpenPlaintext(payload);
-    return establish(deps, payload, pt, given);
+    try {
+        return await establish(deps, payload, pt, given);
+    } finally {
+        wipe(payload, pt);
+    }
 }

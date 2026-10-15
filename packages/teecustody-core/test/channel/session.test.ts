@@ -240,6 +240,38 @@ describe("criterion 7: Session.request", () => {
     });
 });
 
+describe("criterion 12: a failing AEAD port in request()", () => {
+    it.each([
+        [new CapabilityError("UNSUPPORTED"), "UNSUPPORTED"],
+        [new CapabilityError("UNSUPPORTED_ALGORITHM"), "UNSUPPORTED_ALGORITHM"],
+    ])("maps %s to CRYPTO_UNAVAILABLE; the seq stays consumed", async (thrown, detail) => {
+        let fail = false;
+        const inner = workload.crypto;
+        const session = await connect(TEST_LIMITS, {
+            ...inner,
+            aes256GcmEncrypt: (key, n, aad, pt) =>
+                fail ? Promise.reject(thrown) : inner.aes256GcmEncrypt(key, n, aad, pt),
+        });
+        fail = true;
+        const error = await failure(session.request("test.echo", echo(0)));
+        expect([error.code, error.detail]).toEqual(["CRYPTO_UNAVAILABLE", detail]);
+        fail = false;
+        await session.request("test.echo", echo(1));
+        expect(workload.frames.map((f) => f.seq)).toEqual([1]);
+    });
+
+    it("maps a ciphertext of the wrong size to CRYPTO_UNAVAILABLE INVALID_RESPONSE", async () => {
+        const inner = workload.crypto;
+        const session = await connect(TEST_LIMITS, {
+            ...inner,
+            aes256GcmEncrypt: () => Promise.resolve(new Uint8Array(3)),
+        });
+        const error = await failure(session.request("test.echo", echo(0)));
+        expect([error.code, error.detail]).toEqual(["CRYPTO_UNAVAILABLE", "INVALID_RESPONSE"]);
+        expect(workload.posts).toHaveLength(1);
+    });
+});
+
 describe("criterion 10: close", () => {
     async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
         const spy = keySpy(workload.crypto);

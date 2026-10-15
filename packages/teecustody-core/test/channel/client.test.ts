@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BundleError, createVerifiedBundle, type VerifiedBundle } from "../../src/bundle/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
-import { CapabilityError } from "../../src/capabilities.js";
+import { CapabilityError, type Crypto, type HpkeSenderContext } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
 import { DEFAULT_CHANNEL_LIMITS } from "../../src/channel/types.js";
@@ -540,5 +540,110 @@ describe("response routing: one poll loop per route, cursor kept per client rout
         expect([asMap(ra).get("n"), asMap(rb).get("n")]).toEqual([1, 2]);
         await a.session.close();
         expect(asMap(await b.session.request("test.echo", map({ n: 3 }))).get("n")).toBe(3);
+    });
+});
+
+describe("criterion 12: Crypto-port failures fail closed as CRYPTO_UNAVAILABLE", () => {
+    type Patch = (inner: Crypto) => Partial<Crypto>;
+
+    function senderWith(
+        inner: Crypto,
+        change: (ctx: HpkeSenderContext) => Partial<HpkeSenderContext>,
+    ): Crypto["setupHpkeSender"] {
+        return async (pub, info) => {
+            const ctx = await inner.setupHpkeSender(pub, info);
+            return { ...ctx, ...change(ctx), destroy: () => ctx.destroy() };
+        };
+    }
+
+    const cases: [string, Patch, string][] = [
+        [
+            "setupHpkeSender rejecting UNSUPPORTED",
+            () => ({ setupHpkeSender: () => Promise.reject(new CapabilityError("UNSUPPORTED")) }),
+            "UNSUPPORTED",
+        ],
+        [
+            "seal rejecting UNSUPPORTED_ALGORITHM",
+            (inner) => ({
+                setupHpkeSender: senderWith(inner, () => ({
+                    seal: () => Promise.reject(new CapabilityError("UNSUPPORTED_ALGORITHM")),
+                })),
+            }),
+            "UNSUPPORTED_ALGORITHM",
+        ],
+        [
+            "sha256 rejecting UNSUPPORTED",
+            () => ({ sha256: () => Promise.reject(new CapabilityError("UNSUPPORTED")) }),
+            "UNSUPPORTED",
+        ],
+        [
+            "sha256 returning 31 bytes (note 5: hpkeInfo INVALID_RESPONSE)",
+            () => ({ sha256: () => Promise.resolve(new Uint8Array(31)) }),
+            "INVALID_RESPONSE",
+        ],
+        [
+            "export returning 16 bytes",
+            (inner) => ({
+                setupHpkeSender: senderWith(inner, (ctx) => ({
+                    export: async (label, length) => (await ctx.export(label, length)).slice(0, 16),
+                })),
+            }),
+            "INVALID_RESPONSE",
+        ],
+        [
+            "an encapsulated key of 31 bytes",
+            (inner) => ({
+                setupHpkeSender: senderWith(inner, (ctx) => ({
+                    encapsulatedKey: ctx.encapsulatedKey.slice(0, 31),
+                })),
+            }),
+            "INVALID_RESPONSE",
+        ],
+        [
+            "randomBytes throwing UNAVAILABLE",
+            () => ({
+                randomBytes: () => {
+                    throw new CapabilityError("UNAVAILABLE");
+                },
+            }),
+            "UNAVAILABLE",
+        ],
+        [
+            "randomBytes returning short output",
+            (inner) => ({ randomBytes: (n) => inner.randomBytes(n).slice(0, n - 1) }),
+            "INVALID_RESPONSE",
+        ],
+        [
+            "setupHpkeSender throwing a non-capability error",
+            () => ({ setupHpkeSender: () => Promise.reject(new TypeError("adapter bug")) }),
+            "INVALID_RESPONSE",
+        ],
+    ];
+
+    it.each(cases)(
+        "maps %s to CRYPTO_UNAVAILABLE and sends nothing",
+        async (_name, patch, detail) => {
+            const inner = workload.crypto;
+            const client = new ChannelClient(
+                clientConfig(workload, clock, { crypto: { ...inner, ...patch(inner) } }),
+            );
+            const cs = new Uint8Array(32).fill(7);
+            const error = await failure(client.open(openSession(cs)));
+            expect([error.code, error.detail]).toEqual(["CRYPTO_UNAVAILABLE", detail]);
+            expect(workload.posts).toHaveLength(0);
+            expect(zeroed(cs)).toBe(true);
+        },
+    );
+
+    it("destroys the HPKE context when sealing fails", async () => {
+        const spy = senderSpy({
+            ...workload.crypto,
+            setupHpkeSender: senderWith(workload.crypto, () => ({
+                seal: () => Promise.reject(new CapabilityError("UNSUPPORTED")),
+            })),
+        });
+        const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
+        await failure(client.open({ op: "enroll" }));
+        expect(spy.destroyed).toEqual([0]);
     });
 });
