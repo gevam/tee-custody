@@ -926,3 +926,75 @@ describe("review R1: concurrent opens never share a pre-key", () => {
         expect(new Set(ids).size).toBe(2);
     });
 });
+
+describe("review R1: exported keys are zeroed when sealing fails after an export", () => {
+    function exporting(
+        change: (ctx: HpkeSenderContext, exported: Uint8Array[]) => Partial<HpkeSenderContext>,
+    ): { crypto: Crypto; exported: Uint8Array[] } {
+        const inner = workload.crypto;
+        const exported: Uint8Array[] = [];
+        return {
+            exported,
+            crypto: {
+                ...inner,
+                setupHpkeSender: async (pub, info) => {
+                    const ctx = await inner.setupHpkeSender(pub, info);
+                    const base: HpkeSenderContext = {
+                        encapsulatedKey: ctx.encapsulatedKey,
+                        seal: (aad, pt) => ctx.seal(aad, pt),
+                        export: (label, length) => ctx.export(label, length),
+                        destroy: () => {
+                            ctx.destroy();
+                        },
+                    };
+                    const changed = { ...base, ...change(base, exported) };
+                    // Records exactly the buffers the channel receives.
+                    return {
+                        ...changed,
+                        export: async (label, length) => {
+                            const key = await changed.export(label, length);
+                            exported.push(key);
+                            return key;
+                        },
+                    };
+                },
+            },
+        };
+    }
+
+    it.each([
+        [
+            "the second export failing",
+            (ctx: HpkeSenderContext, exported: Uint8Array[]): Partial<HpkeSenderContext> => ({
+                export: (label, length) =>
+                    exported.length === 1
+                        ? Promise.reject(new CapabilityError("INTERNAL"))
+                        : ctx.export(label, length),
+            }),
+            1,
+        ],
+        [
+            "a short second export",
+            (ctx: HpkeSenderContext, exported: Uint8Array[]): Partial<HpkeSenderContext> => ({
+                export: async (label, length) => {
+                    const key = await ctx.export(label, length);
+                    return exported.length === 1 ? key.slice(0, 16) : key;
+                },
+            }),
+            2,
+        ],
+        [
+            "an encapsulated key of 31 bytes",
+            (ctx: HpkeSenderContext): Partial<HpkeSenderContext> => ({
+                encapsulatedKey: ctx.encapsulatedKey.slice(0, 31),
+            }),
+            2,
+        ],
+    ])("zeroes the keys already exported on %s", async (_name, change, count) => {
+        const { crypto, exported } = exporting(change);
+        const client = new ChannelClient(clientConfig(workload, clock, { crypto }));
+        expect((await failure(client.open(openSession()))).code).toBe("CRYPTO_UNAVAILABLE");
+        expect(exported).toHaveLength(count);
+        expect(exported.every(zeroed)).toBe(true);
+    });
+});

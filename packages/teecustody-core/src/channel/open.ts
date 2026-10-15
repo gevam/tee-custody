@@ -129,18 +129,28 @@ async function seal(
     pt: Bytes,
 ): Promise<Sealed> {
     const ctx = await crypto.setupHpkeSender(pub, info);
+    const exported: Bytes[] = [];
     try {
         const ct = await ctx.seal(aadBytes, pt);
-        const exportC2t = await ctx.export(C2T, KEY_BYTES);
-        const exportT2c = await ctx.export(T2C, KEY_BYTES);
-        if (exportC2t.length !== KEY_BYTES || exportT2c.length !== KEY_BYTES) {
-            throw new CapabilityError("INVALID_RESPONSE");
+        for (const label of [C2T, T2C]) {
+            const derived = await ctx.export(label, KEY_BYTES);
+            exported.push(derived);
+            if (derived.length !== KEY_BYTES) {
+                throw new CapabilityError("INVALID_RESPONSE");
+            }
         }
+        const [exportC2t, exportT2c] = exported as [Bytes, Bytes];
         return {
             envelope: encodeOpenRequest(aadBytes, ctx.encapsulatedKey, ct),
             exportC2t,
             exportT2c,
         };
+    } catch (error) {
+        // Keys already exported are zeroed when a later step fails.
+        for (const out of exported) {
+            out.fill(0);
+        }
+        throw error;
     } finally {
         ctx.destroy();
     }
