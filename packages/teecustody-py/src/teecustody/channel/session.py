@@ -38,6 +38,8 @@ class SessionReject(Exception):
 
 
 def _nonce(seq: int) -> bytes:
+    if not 0 <= seq <= MAX_SEQ:
+        raise ValueError("SEQ_RANGE")
     return b"\x00" * 4 + seq.to_bytes(8, "big")
 
 

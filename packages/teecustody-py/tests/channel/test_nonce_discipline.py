@@ -164,3 +164,20 @@ def test_no_key_nonce_pair_is_ever_reused_and_the_counter_never_decreases(
             counter = sealer._next_seq
     assert len(_SpyAesGcm.calls) == SEALS_PER_EXAMPLE + 1
     assert len(set(_SpyAesGcm.calls)) == len(_SpyAesGcm.calls)
+
+
+# ---------------------------------------------------------------- criterion 7
+@pytest.mark.parametrize("seq", [0, 1, 255, 256, 2**32, MAX_SEQ])
+def test_nonce_is_four_zero_bytes_then_the_seq_as_u64be(seq: int) -> None:
+    assert _nonce(seq) == b"\x00" * 4 + seq.to_bytes(8, "big")
+    assert len(_nonce(seq)) == 12
+
+
+def test_nonce_layout_is_pinned_bytewise() -> None:
+    assert _nonce(0x0102030405060708 & MAX_SEQ) == bytes.fromhex("000000000002030405060708")
+
+
+@pytest.mark.parametrize("seq", [-1, -(2**64), 2**53, 2**64])
+def test_nonce_rejects_a_seq_outside_zero_to_max_seq(seq: int) -> None:
+    with pytest.raises(ValueError, match=r"^SEQ_RANGE$"):
+        _nonce(seq)
