@@ -6,7 +6,9 @@
 from collections.abc import Callable
 from enum import StrEnum
 
-from teecustody.channel.codec import FrameAad, OpenResultAad
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from teecustody.channel.codec import FrameAad, OpenResultAad, encode_open_result_aad
 from teecustody.channel.ports import CloseReason, SessionInfo
 from teecustody.secrets import Secret
 
@@ -29,7 +31,7 @@ class SessionReject(Exception):
 
 
 def _nonce(seq: int) -> bytes:
-    raise NotImplementedError("T-23")
+    return b"\x00" * 4 + seq.to_bytes(8, "big")
 
 
 def open_frame(key: Secret, last_seq: int, aad: FrameAad, aad_bytes: bytes, ct: bytes) -> Secret:
@@ -40,15 +42,20 @@ class T2cSealer:
     """Sole owner of sk_t2c and the t2c counter (D2-16, R-5); created by ChannelServer on Open."""
 
     def __init__(self, sk_t2c: Secret) -> None:
-        raise NotImplementedError("T-23")
+        self._key = sk_t2c
+        self._next_seq = 0
 
     def seal_open_result(self, aad: OpenResultAad, plaintext: bytes) -> tuple[bytes, bytes]:
-        raise NotImplementedError("T-23")
+        if self._next_seq != 0:
+            raise SessionReject(SessionRejectCode.USED)
+        self._next_seq = 1
+        aad_bytes = encode_open_result_aad(aad)
+        return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(0), plaintext, aad_bytes)
 
     def seal_frame_result(
         self, op: str, session_id: bytes, plaintext: bytes
     ) -> tuple[bytes, bytes]:
-        raise NotImplementedError("T-23")
+        raise SessionReject(SessionRejectCode.USED)
 
     def wipe(self) -> None:
         raise NotImplementedError("T-23")
