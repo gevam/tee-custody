@@ -1,7 +1,7 @@
 // Positive fixture: @hpke/* is imported only by teecustody-web/src/crypto/webcrypto.ts (SR-14).
 // ruleid: tc-ts-hpke-import-confined
 import { CipherSuite } from "@hpke/core";
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-common-banned
 import type { KemId } from "@hpke/common";
 // ruleid: tc-ts-hpke-import-confined
 import * as dhkem from '@hpke/dhkem-x25519';
@@ -9,7 +9,7 @@ import * as dhkem from '@hpke/dhkem-x25519';
 import "@hpke/core";
 // ruleid: tc-ts-hpke-import-confined
 export { Aes256Gcm } from "@hpke/core";
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-common-banned
 export * from "@hpke/common";
 export async function load(): Promise<unknown> {
     // ruleid: tc-ts-hpke-import-confined, tc-ts-no-dynamic-import

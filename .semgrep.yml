@@ -344,6 +344,15 @@ rules:
     pattern-regex: >-
       (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*["'`]@hpke/
 
+  # ADR 0011 C3a.2 (D-045, D-047; T-27): @hpke/common is reached only through @hpke/core.
+  - id: tc-ts-hpke-common-banned
+    message: No file imports @hpke/common (ADR 0011 C3a.2, D-045).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/**/*.ts"]
+    pattern-regex: (["'`])@hpke/common(?:/[^"'`]*)?\1
+
   - id: tc-py-no-hpke-seams
     message: >-
       No HPKE test seam in production: no injected sender ephemeral key, PSK, PSK id or sender/auth
