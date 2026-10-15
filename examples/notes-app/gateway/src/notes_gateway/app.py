@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 # gateway's import graph never contains the CBOR codec. fullmatch only (R-7).
 _HEX32_PATTERN = re.compile(r"[0-9a-f]{32}")
 _CONTENT_LENGTH_PATTERN = re.compile(r"[0-9]{1,19}")
+# C0 and C1 controls and DEL anywhere in the decoded path (§6 control-character rule); search.
+_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _OCTET_STREAM = "application/octet-stream"
 _QUEUE_ERRORS: dict[QueueErrorCode, tuple[int, str]] = {
     QueueErrorCode.INVALID_ARGUMENT: (400, "INVALID_ARGUMENT"),
@@ -292,6 +294,9 @@ class _Guard:
         retry = self._limiter.admit(source)
         if retry is not None:
             await _rate_limited(scope, retry)(scope, receive, send)
+            return
+        if _CONTROL_CHARACTER_PATTERN.search(scope["path"]):
+            await _refuse(scope, 404, "NOT_FOUND")(scope, receive, send)
             return
         method, headers = scope["method"], Headers(scope=scope)
         if cors and method == "OPTIONS" and "access-control-request-method" in headers:

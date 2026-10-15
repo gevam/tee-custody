@@ -117,8 +117,6 @@ def test_request_is_relayed_unchanged_with_the_relay_id_from_rng() -> None:
 # ---------------------------------------------------------------- criterion 3: R-7 route syntax
 CLIENT = "c3" * 16
 BAD_IDS = [
-    pytest.param(INSTANCE + "%0A", id="trailing-newline"),
-    pytest.param("%0A" + INSTANCE[1:], id="leading-newline"),
     pytest.param(INSTANCE.upper(), id="uppercase"),
     pytest.param(INSTANCE[:-1], id="31-chars"),
     pytest.param(INSTANCE + "a", id="33-chars"),
@@ -682,3 +680,58 @@ def test_a_client_disconnect_mid_body_releases_its_slots() -> None:
     after = _drive(app, "GET", "/bundles", [], [])
 
     assert (dropped.status, after.status) == (400, 200)
+
+
+# -------------------------------------------------------------- criterion 16: A1 control characters
+NOT_FOUND = b'{"code":"NOT_FOUND"}'
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/bundles%0A"),
+        ("GET", "/bundles%00"),
+        ("GET", "/bundles%09"),
+        ("GET", "/bundles%1F"),
+        ("GET", "/bundles%7F"),
+        ("GET", "/bundles%C2%80"),
+        ("GET", "/bundles%C2%85"),
+        ("GET", "/bundles%C2%9F"),
+        ("GET", "/%0Abundles"),
+        ("POST", f"/requests/{INSTANCE}%0A"),
+        ("POST", f"/requests/%0A{INSTANCE[1:]}"),
+        ("GET", f"/responses/{CLIENT}%0D"),
+        ("GET", f"/responses/{CLIENT}%0A"),
+    ],
+)
+def test_a_control_character_in_the_path_is_404_before_routing(
+    method: str, path: str, all_logs: pytest.LogCaptureFixture
+) -> None:
+    relay = RecordingRelay()
+
+    response = _client(relay).request(method, path, content=b"x", headers=OCTET)
+
+    assert (response.status_code, response.content) == (404, NOT_FOUND)
+    _assert_security_headers(response)
+    assert relay.calls == []
+    assert [line[2] for line in _gateway_lines(all_logs)] == ["GATEWAY_NOT_FOUND"]
+
+
+def test_a_raw_del_byte_in_the_path_is_404() -> None:
+    relay = RecordingRelay()
+
+    result = _drive(create_app(relay), "GET", "/bundles\x7f", [], [])
+
+    assert (result.status, result.body) == (404, NOT_FOUND)
+    assert relay.calls == []
+
+
+def test_rate_limits_are_checked_before_the_control_character_rule() -> None:
+    relay = RecordingRelay()
+    limits = GatewayLimits(per_source_burst=1, per_source_rate=0.001)
+    client = TestClient(create_app(relay, limits=limits, clock=lambda: 0.0))
+    assert client.get("/bundles").status_code == 200
+
+    limited = client.get("/bundles%0A")
+
+    assert limited.status_code == 429
