@@ -48,6 +48,7 @@ class RunningHarness:
         self.proc = subprocess.Popen(  # noqa: S603 - fixed argv
             [sys.executable, str(HARNESS), *argv],
             cwd=REPO_ROOT,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -142,6 +143,13 @@ def _get_json(url: str) -> tuple[int, object]:
 
 def _unb64url(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def test_without_the_flag_stdin_eof_does_not_stop_the_harness(harness: RunningHarness) -> None:
+    harness.ready_line()
+    time.sleep(1.0)
+    assert harness.proc.poll() is None
+    assert harness.terminate() == 0
 
 
 def test_gateway_lists_the_one_published_bundle(harness: RunningHarness) -> None:
