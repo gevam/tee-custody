@@ -160,7 +160,8 @@ def test_c4_expire_destroys_and_wipes_keys_at_or_past_not_after(
     assert store.expire() == 2
 
     assert [e.id for e in store.public_entries()] == list(range(10, 18))
-    assert captured[8].wiped and captured[9].wiped
+    assert captured[8].wiped
+    assert captured[9].wiped
     assert not any(secret.wiped for secret in captured[10:])
     assert store.expire() == 0
 
