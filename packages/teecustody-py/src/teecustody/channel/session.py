@@ -6,6 +6,7 @@
 from collections.abc import Callable
 from enum import StrEnum
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from teecustody.channel.codec import (
@@ -41,7 +42,14 @@ def _nonce(seq: int) -> bytes:
 
 
 def open_frame(key: Secret, last_seq: int, aad: FrameAad, aad_bytes: bytes, ct: bytes) -> Secret:
-    raise NotImplementedError("T-23")
+    """Decrypts one c2t frame whose seq is above `last_seq` (-1: nothing accepted yet)."""
+    if aad.seq <= last_seq:
+        raise SessionReject(SessionRejectCode.SEQ_REJECTED)
+    try:
+        plaintext = AESGCM(key.reveal()).decrypt(_nonce(aad.seq), ct, aad_bytes)
+    except InvalidTag:
+        raise SessionReject(SessionRejectCode.AUTH_FAILED) from None
+    return Secret(plaintext)
 
 
 class T2cSealer:
@@ -86,8 +94,31 @@ class Session:
     opened_at: float
     last_activity: float
 
+    _sk_c2t: Secret
+    _t2c: T2cSealer
+    _last_c2t_seq: int
+
+    @classmethod
+    def _start(
+        cls, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer, now: float
+    ) -> "Session":
+        session = cls.__new__(cls)
+        session.session_id = session_id
+        session.client_id = client_id
+        session.opened_at = now
+        session.last_activity = now
+        session._sk_c2t = sk_c2t
+        session._t2c = t2c
+        session._last_c2t_seq = -1
+        return session
+
     def open_c2t(self, aad: FrameAad, aad_bytes: bytes, ct: bytes, now: float) -> Secret:
-        raise NotImplementedError("T-23")
+        if aad.session_id != self.session_id:
+            raise SessionReject(SessionRejectCode.AUTH_FAILED)
+        plaintext = open_frame(self._sk_c2t, self._last_c2t_seq, aad, aad_bytes, ct)
+        self._last_c2t_seq = aad.seq
+        self.last_activity = now
+        return plaintext
 
     def seal_open_result(self, request_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]:
         raise NotImplementedError("T-23")
@@ -107,12 +138,15 @@ class SessionTable:
         on_close: Callable[[SessionInfo, CloseReason], None],
         clock: Callable[[], float],
     ) -> None:
-        raise NotImplementedError("T-23")
+        self._clock = clock
+        self._sessions: dict[bytes, Session] = {}
 
     def create(
         self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer
     ) -> Session:
-        raise NotImplementedError("T-23")
+        session = Session._start(session_id, client_id, sk_c2t, t2c, self._clock())
+        self._sessions[session_id] = session
+        return session
 
     def get(self, session_id: bytes) -> Session | None:
         raise NotImplementedError("T-23")
