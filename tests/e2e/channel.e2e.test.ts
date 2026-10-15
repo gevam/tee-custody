@@ -53,39 +53,53 @@ interface Harness {
     readonly fixture: Fixture;
 }
 
+interface SpawnOptions {
+    readonly readyLine?: RegExp;
+    readonly readyTimeoutMs?: number;
+    readonly env?: NodeJS.ProcessEnv;
+}
+
+interface Spawned {
+    readonly proc: ChildProcess;
+    readonly ready: Promise<Harness>;
+}
+
 let child: ChildProcess | undefined;
 let harness: Harness | undefined;
 
-function startHarness(): Promise<Harness> {
+function readHarness(match: RegExpExecArray): Harness {
+    const profilePath = match[3] ?? "";
+    const profileJson = JSON.parse(readFileSync(profilePath, "utf8")) as { jwks_uri: string };
+    return {
+        gateway: match[1] ?? "",
+        profilePath,
+        profileJson,
+        profile: parseTrustProfile(profileJson),
+        fixture: JSON.parse(
+            readFileSync(join(dirname(profilePath), "fixture.json"), "utf8"),
+        ) as Fixture,
+    };
+}
+
+function spawnHarness(options: SpawnOptions = {}): Spawned {
+    const readyLine = options.readyLine ?? READY_LINE;
     const proc = spawn("uv", ["run", "python", "tests/e2e/channel_harness.py"], {
         cwd: REPO_ROOT,
+        env: options.env ?? process.env,
         stdio: ["ignore", "pipe", "ignore"],
     });
-    child = proc;
-    return new Promise<Harness>((resolveReady, reject) => {
+    const ready = new Promise<Harness>((resolveReady, reject) => {
         let out = "";
         const timer = setTimeout(() => {
             proc.kill("SIGKILL");
             reject(new Error("HARNESS_TIMEOUT"));
-        }, READY_TIMEOUT_MS);
+        }, options.readyTimeoutMs ?? READY_TIMEOUT_MS);
         proc.stdout.on("data", (chunk: Buffer) => {
             out += chunk.toString();
-            const match = READY_LINE.exec(out);
+            const match = readyLine.exec(out);
             if (match) {
                 clearTimeout(timer);
-                const profilePath = match[3] ?? "";
-                const profileJson = JSON.parse(readFileSync(profilePath, "utf8")) as {
-                    jwks_uri: string;
-                };
-                resolveReady({
-                    gateway: match[1] ?? "",
-                    profilePath,
-                    profileJson,
-                    profile: parseTrustProfile(profileJson),
-                    fixture: JSON.parse(
-                        readFileSync(join(dirname(profilePath), "fixture.json"), "utf8"),
-                    ) as Fixture,
-                });
+                resolveReady(readHarness(match));
             }
         });
         proc.on("exit", (code) => {
@@ -93,6 +107,13 @@ function startHarness(): Promise<Harness> {
             reject(new Error(`HARNESS_EXITED:${String(code)}`));
         });
     });
+    return { proc, ready };
+}
+
+function startHarness(): Promise<Harness> {
+    const spawned = spawnHarness();
+    child = spawned.proc;
+    return spawned.ready;
 }
 
 function stopHarness(): Promise<void> {
