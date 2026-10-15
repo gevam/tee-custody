@@ -15,7 +15,11 @@ import type { ChannelClientConfig, ChannelLimits, Clock } from "../../src/channe
 import { DEFAULT_CHANNEL_LIMITS } from "../../src/channel/types.js";
 import { decodeCanonical, encodeCanonical } from "../../src/wire/cbor.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
-import { fakeHpkeKeyPair, testChannelCrypto, type FakeHpkeKeyPair } from "../support/channel-crypto.js";
+import {
+    fakeHpkeKeyPair,
+    testChannelCrypto,
+    type FakeHpkeKeyPair,
+} from "../support/channel-crypto.js";
 
 export const NOW_MS = 1_800_000_000_000;
 export const INSTANCE = "b2".repeat(16);
@@ -225,7 +229,9 @@ export class FakeWorkload implements Transport {
     pollFailure: (() => Error | undefined) | undefined;
     onOpen: (open: SeenOpen) => OpenAction = () => ({ kind: "ok", payload: null });
     onFrame: (frame: SeenFrame) => FrameAction = (frame) =>
-        frame.op === "close" ? { kind: "ok", payload: null } : { kind: "ok", payload: frame.payload };
+        frame.op === "close"
+            ? { kind: "ok", payload: null }
+            : { kind: "ok", payload: frame.payload };
     // Extra bodies placed on a route before the workload's own answer (relay noise, forgeries).
     beforeAnswer: (route: string, open: SeenOpen | undefined) => Promise<Bytes[]> = () =>
         Promise.resolve([]);
@@ -245,7 +251,10 @@ export class FakeWorkload implements Transport {
             return Promise.reject(this.listFailure);
         }
         return Promise.resolve(
-            this.instances.map((fx) => ({ instanceId: fx.instanceId, bundle: new Uint8Array([1]) })),
+            this.instances.map((fx) => ({
+                instanceId: fx.instanceId,
+                bundle: new Uint8Array([1]),
+            })),
         );
     }
 
@@ -400,4 +409,52 @@ export function clientConfig(
         limits: TEST_LIMITS,
         ...overrides,
     };
+}
+
+export interface SenderSpy {
+    readonly crypto: Crypto;
+    readonly setups: { readonly publicKey: Bytes; readonly info: Bytes }[];
+    readonly sealed: Bytes[]; // the plaintext buffers passed to seal
+    readonly exported: Bytes[]; // the exported key buffers, as returned
+    readonly destroyed: number[];
+}
+
+// Wraps setupHpkeSender to record its inputs, the sealed plaintext buffers and the exported key buffers.
+export function senderSpy(inner: Crypto): SenderSpy {
+    const spy: SenderSpy = {
+        crypto: inner,
+        setups: [],
+        sealed: [],
+        exported: [],
+        destroyed: [],
+    };
+    const crypto: Crypto = {
+        ...inner,
+        setupHpkeSender: async (publicKey, info) => {
+            spy.setups.push({ publicKey: publicKey.slice(), info: info.slice() });
+            const index = spy.setups.length - 1;
+            const ctx = await inner.setupHpkeSender(publicKey, info);
+            return {
+                encapsulatedKey: ctx.encapsulatedKey,
+                seal: (aad, pt) => {
+                    spy.sealed.push(pt);
+                    return ctx.seal(aad, pt);
+                },
+                export: async (label, length) => {
+                    const key = await ctx.export(label, length);
+                    spy.exported.push(key);
+                    return key;
+                },
+                destroy: () => {
+                    spy.destroyed.push(index);
+                    ctx.destroy();
+                },
+            };
+        },
+    };
+    return { ...spy, crypto };
+}
+
+export function zeroed(b: Bytes): boolean {
+    return b.every((x) => x === 0);
 }

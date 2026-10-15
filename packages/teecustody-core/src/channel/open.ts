@@ -130,24 +130,31 @@ async function establish(
     const info = await hpkeInfo(crypto, ikPub, prekey.id);
     const { envelope, keyC2t, keyT2c } = await seal(crypto, pub, info, aadBytes, pt);
     wipe(payload, pt);
-    await link.post(instanceId, envelope);
-    const match = await link.wait(route, {}, (body) =>
-        readOpenResult(crypto, keyT2c, requestId, body, limits),
-    );
-    if (!match.ok) {
-        throw new ChannelError("REMOTE_ERROR", match.error);
+    try {
+        await link.post(instanceId, envelope);
+        const match = await link.wait(route, {}, (body) =>
+            readOpenResult(crypto, keyT2c, requestId, body, limits),
+        );
+        if (!match.ok) {
+            throw new ChannelError("REMOTE_ERROR", match.error);
+        }
+        const session = createSession({
+            sessionId: match.sessionId,
+            instanceId,
+            clientId: payload.op === "enroll" ? enrolledClientId(match.payload) : route,
+            keyC2t,
+            keyT2c,
+            crypto,
+            limits,
+            link,
+        });
+        return { session, payload: match.payload };
+    } catch (error) {
+        // Keys are zeroed on every failure (TRANSPORT, TIMEOUT, REMOTE_ERROR, INVALID_RESPONSE).
+        keyC2t.fill(0);
+        keyT2c.fill(0);
+        throw error;
     }
-    const session = createSession({
-        sessionId: match.sessionId,
-        instanceId,
-        clientId: payload.op === "enroll" ? enrolledClientId(match.payload) : route,
-        keyC2t,
-        keyT2c,
-        crypto,
-        limits,
-        link,
-    });
-    return { session, payload: match.payload };
 }
 
 export async function openChannel(

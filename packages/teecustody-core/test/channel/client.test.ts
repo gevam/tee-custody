@@ -2,11 +2,7 @@
 // verifyBundle is module-mocked (A1, TL-12); the fake workload answers through the fake Transport.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-    BundleError,
-    createVerifiedBundle,
-    type VerifiedBundle,
-} from "../../src/bundle/types.js";
+import { BundleError, createVerifiedBundle, type VerifiedBundle } from "../../src/bundle/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
 import { CapabilityError } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
@@ -17,12 +13,15 @@ import {
     ROUTE_PATTERN,
     TEST_LIMITS,
     asMap,
+    decode,
     hex,
     map,
     FakeWorkload,
     brandedBundle,
     clientConfig,
     instanceFixture,
+    senderSpy,
+    zeroed,
     type InstanceFixture,
 } from "./support.js";
 
@@ -80,12 +79,7 @@ describe("criterion 1: open_session", () => {
         const seen = workload.opens[0];
         expect(seen?.aad.get("client_id")).toBe(CLIENT);
         expect(seen?.aad.get("instance_id")).toBe(fx.instanceId);
-        expect([...(seen?.plaintext.keys() ?? [])].sort()).toEqual([
-            "cs",
-            "epoch",
-            "key_id",
-            "op",
-        ]);
+        expect([...(seen?.plaintext.keys() ?? [])].sort()).toEqual(["cs", "epoch", "key_id", "op"]);
         expect(seen?.plaintext.get("op")).toBe("open_session");
         expect(seen?.plaintext.get("cs")).toEqual(new Uint8Array(32).fill(7));
         expect(seen?.plaintext.get("key_id")).toEqual(new Uint8Array(16).fill(3));
@@ -228,7 +222,10 @@ describe("criterion 3: only branded, fresh bundles are used (B-13)", () => {
 
     it("uses a fresh given bundle without fetching", async () => {
         const client = new ChannelClient(clientConfig(workload, clock));
-        await client.open(openSession(), brandedBundle(fx, clock.now() - TEST_LIMITS.bundleMaxAgeMs));
+        await client.open(
+            openSession(),
+            brandedBundle(fx, clock.now() - TEST_LIMITS.bundleMaxAgeMs),
+        );
         expect(verifyBundle).not.toHaveBeenCalled();
         expect(workload.opens).toHaveLength(1);
     });
@@ -320,5 +317,31 @@ describe("fetchVerifiedBundles bounds and transport failures", () => {
         expect(thrown.code).toBe("TRANSPORT");
         expect(thrown.detail).toBe(detail);
         expect(verifyBundle).not.toHaveBeenCalled();
+    });
+});
+
+describe("criterion 5: a failed post", () => {
+    it("fails TRANSPORT with the capability code, keeps the pre-key used and never re-seals", async () => {
+        const spy = senderSpy(workload.crypto);
+        workload.postFailure = () => new CapabilityError("UNAVAILABLE");
+        const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
+        const error = await failure(client.open(openSession()));
+        expect(error.code).toBe("TRANSPORT");
+        expect(error.detail).toBe("UNAVAILABLE");
+        expect(spy.setups).toHaveLength(1);
+        expect(spy.sealed).toHaveLength(1);
+        expect(workload.posts).toHaveLength(1);
+        expect(spy.exported).toHaveLength(2);
+        expect(spy.exported.every(zeroed)).toBe(true);
+        expect(spy.destroyed).toEqual([0]);
+
+        workload.postFailure = undefined;
+        await client.open(openSession());
+        const prekeyOf = (body: Uint8Array): unknown =>
+            decode(decode(body).get("aad") as Uint8Array).get("prekey_id");
+        const [failedPost, retryPost] = workload.posts;
+        expect(prekeyOf(retryPost?.body ?? new Uint8Array())).not.toBe(
+            prekeyOf(failedPost?.body ?? new Uint8Array()),
+        );
     });
 });

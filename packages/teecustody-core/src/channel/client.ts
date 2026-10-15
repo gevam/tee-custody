@@ -53,7 +53,9 @@ class Router implements SessionLink {
     }
 
     async post(instanceId: InstanceId, envelope: Bytes): Promise<void> {
-        await this.#transport.postRequest(instanceId, envelope);
+        await this.#transport.postRequest(instanceId, envelope).catch((error: unknown) => {
+            throw transportError(error);
+        });
     }
 
     wait<T>(
