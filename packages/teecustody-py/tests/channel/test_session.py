@@ -1,11 +1,16 @@
-"""T-23 criteria 5-6: c2t frames are accepted once, in strictly increasing order (§4.9)."""
+"""T-23 criteria 5-6 and Session sealing: c2t frames in strictly increasing order (§4.9)."""
 
 import os
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from teecustody.channel.codec import FrameAad, encode_frame_aad
+from teecustody.channel.codec import (
+    FrameAad,
+    OpenResultAad,
+    encode_frame_aad,
+    encode_open_result_aad,
+)
 from teecustody.channel.ports import CloseReason, SessionInfo
 from teecustody.channel.session import (
     Session,
@@ -42,10 +47,9 @@ def _frame(
     return aad, aad_bytes, AESGCM(key).encrypt(_nonce(seq), plaintext, aad_bytes)
 
 
-def _session() -> tuple[Session, bytes, FakeClock]:
-    clock = FakeClock()
+def _table(clock: FakeClock) -> SessionTable:
     closes: list[tuple[SessionInfo, CloseReason]] = []
-    table = SessionTable(
+    return SessionTable(
         instance_id=INSTANCE_ID,
         max_sessions=4,
         idle_timeout_s=900,
@@ -53,14 +57,30 @@ def _session() -> tuple[Session, bytes, FakeClock]:
         on_close=lambda info, reason: closes.append((info, reason)),
         clock=clock,
     )
+
+
+def _session() -> tuple[Session, bytes, FakeClock]:
+    clock = FakeClock()
     key = os.urandom(32)
-    session = table.create(
+    session = _table(clock).create(
         session_id=SESSION_ID,
         client_id=CLIENT_ID,
         sk_c2t=Secret(key),
         t2c=T2cSealer(Secret(os.urandom(32))),
     )
     return session, key, clock
+
+
+def _sealing_session() -> tuple[Session, bytes, SessionTable]:
+    table = _table(FakeClock())
+    key = os.urandom(32)
+    session = table.create(
+        session_id=SESSION_ID,
+        client_id=CLIENT_ID,
+        sk_c2t=Secret(os.urandom(32)),
+        t2c=T2cSealer(Secret(key)),
+    )
+    return session, key, table
 
 
 def _rejected(session: Session, frame: tuple[FrameAad, bytes, bytes], now: float) -> str:
@@ -160,3 +180,29 @@ def test_open_frame_auth_failure_carries_no_library_cause() -> None:
     assert str(err.value) == "AUTH_FAILED"
     assert err.value.__cause__ is None
     assert err.value.__suppress_context__
+
+
+# ---------------------------------------------------------------- Session sealing (§4.9)
+def test_session_seals_its_open_result_once_under_nonce_zero() -> None:
+    session, key, _table = _sealing_session()
+    aad_bytes, ct = session.seal_open_result(b"r" * 16, b"accepted")
+    assert aad_bytes == encode_open_result_aad(
+        OpenResultAad(session_id=SESSION_ID, request_id=b"r" * 16)
+    )
+    assert AESGCM(key).decrypt(_nonce(0), ct, aad_bytes) == b"accepted"
+    with pytest.raises(SessionReject) as err:
+        session.seal_open_result(b"r" * 16, b"again")
+    assert err.value.code is SessionRejectCode.USED
+
+
+def test_session_seals_t2c_frames_with_seqs_from_one() -> None:
+    session, key, _table = _sealing_session()
+    with pytest.raises(SessionReject) as err:
+        session.seal_t2c(OP, b"early")
+    assert err.value.code is SessionRejectCode.USED
+    session.seal_open_result(b"r" * 16, b"accepted")
+    for seq in (1, 2):
+        aad, aad_bytes, ct = session.seal_t2c(OP, b"answer")
+        assert aad == FrameAad(session_id=SESSION_ID, seq=seq, op=OP)
+        assert aad_bytes == encode_frame_aad(aad)
+        assert AESGCM(key).decrypt(_nonce(seq), ct, aad_bytes) == b"answer"

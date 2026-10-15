@@ -71,17 +71,26 @@ class T2cSealer:
     def seal_frame_result(
         self, op: str, session_id: bytes, plaintext: bytes
     ) -> tuple[bytes, bytes]:
+        _aad, aad_bytes, ct = self._seal_frame(op, session_id, plaintext)
+        return aad_bytes, ct
+
+    def wipe(self) -> None:
+        self._key.wipe()
+
+    def _seal_frame(
+        self, op: str, session_id: bytes, plaintext: bytes
+    ) -> tuple[FrameAad, bytes, bytes]:
+        """Allocates the next t2c seq and persists it before the one AES-GCM call (R-5)."""
         seq = self._next_seq
         if seq == 0:
             raise SessionReject(SessionRejectCode.USED)
         if seq > MAX_SEQ:
             raise SessionReject(SessionRejectCode.EXHAUSTED)
         self._next_seq = seq + 1
-        aad_bytes = encode_frame_aad(FrameAad(session_id=session_id, seq=seq, op=op))
-        return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
-
-    def wipe(self) -> None:
-        self._key.wipe()
+        aad = FrameAad(session_id=session_id, seq=seq, op=op)
+        aad_bytes = encode_frame_aad(aad)
+        ct = AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
+        return aad, aad_bytes, ct
 
     def _is_fresh(self) -> bool:
         return self._next_seq == 0
@@ -112,10 +121,11 @@ class Session:
         self._t2c.wipe()
 
     def seal_open_result(self, request_id: bytes, plaintext: bytes) -> tuple[bytes, bytes]:
-        raise NotImplementedError("T-23")
+        aad = OpenResultAad(session_id=self.session_id, request_id=request_id)
+        return self._t2c.seal_open_result(aad, plaintext)
 
     def seal_t2c(self, op: str, plaintext: bytes) -> tuple[FrameAad, bytes, bytes]:
-        raise NotImplementedError("T-23")
+        return self._t2c._seal_frame(op, self.session_id, plaintext)
 
 
 class SessionTable:
