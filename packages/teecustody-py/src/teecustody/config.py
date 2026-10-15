@@ -1,9 +1,10 @@
 """Channel parameters and boundary limits (INC-2-API §4.4; spec §14 defaults).
 
-Fields and defaults are frozen. Validation (`__post_init__`) belongs to T-09.
+Fields and defaults are frozen. `__post_init__` rejects every out-of-range or wrongly typed value
+at construction (SR-3, SR-4); `RunLoop` checks the one rule that spans both classes.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Final
 
@@ -33,6 +34,76 @@ class ConfigError(Exception):
         self.field = field
 
 
+_MIN_PULL_WAIT_S: Final = 0.01
+_MAX_PULL_WAIT_S: Final = 30
+_MAX_DECODE_DEPTH: Final = 16
+
+# Fixed max_bytes cap per DecodeLimits field; None means only `<= max_request_bytes` applies.
+_DECODE_MAX_BYTES: Final[dict[str, int | None]] = {
+    "envelope_decode": None,
+    "aad_decode": 1024,
+    "open_payload_decode": 2048,
+    "payload_decode": 32768,
+}
+
+# Inclusive (low, high) per BoundaryLimits int field (INC-2-API §4.4 bounds table).
+_LIMIT_RANGES: Final[dict[str, tuple[int, int]]] = {
+    "max_token_bytes": (1024, 16384),
+    "max_request_bytes": (1024, 65536),
+    "pull_max_messages": (1, 1000),
+    "max_sessions": (1, 65536),
+    "session_evict_min_idle_s": (1, 86400),
+    "replay_cache_max_entries": (1, 1_000_000),
+    "audit_aggregate_interval_s": (10, 900),
+    "audit_alert_cap": (1, 10_000),
+    "prekey_burn_alert_threshold": (1, 10_000),
+    "attestation_retry_min_s": (1, 300),
+    "attestation_retry_max_s": (1, 3600),
+    "bundle_republish_min_interval_s": (1, 300),
+}
+
+# Inclusive (low, high) per ChannelParams field; None is unbounded. prekey_low_water's upper
+# bound is the cross-field rule `prekey_low_water < prekey_batch`.
+_CHANNEL_RANGES: Final[dict[str, tuple[int, int | None]]] = {
+    "prekey_ttl_s": (60, 3600),
+    "prekey_batch": (1, 256),
+    "prekey_low_water": (0, None),
+    "request_skew_s": (1, 3600),
+    "idle_timeout_s": (1, 86400),
+    "refresh_margin_s": (1, 3599),
+}
+
+
+def _int_in_range(value: object, low: int, high: int | None) -> bool:
+    """True iff `value` is an exact `int` (not `bool`) in [low, high]; `high=None` is unbounded."""
+    return type(value) is int and low <= value and (high is None or value <= high)
+
+
+def _valid_wait(value: object) -> bool:
+    """True iff `value` is an exact `int` or `float` (not `bool`) in [0.01, 30]; nan, inf fail."""
+    if type(value) is not int and type(value) is not float:
+        return False
+    return _MIN_PULL_WAIT_S <= value <= _MAX_PULL_WAIT_S
+
+
+def _valid_decode(name: str, value: object) -> bool:
+    """True iff `value` is exactly a `DecodeLimits` (no subclass) within the §4.4 bounds."""
+    return (
+        type(value) is DecodeLimits
+        and _int_in_range(value.max_bytes, 1, _DECODE_MAX_BYTES[name])
+        and _int_in_range(value.max_depth, 1, _MAX_DECODE_DEPTH)
+        and _int_in_range(value.max_items, 1, value.max_bytes)
+    )
+
+
+def _valid_limit(name: str, value: object) -> bool:
+    if name in _DECODE_MAX_BYTES:
+        return _valid_decode(name, value)
+    if name == "pull_wait_s":
+        return _valid_wait(value)
+    return _int_in_range(value, *_LIMIT_RANGES[name])
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChannelParams:
     prekey_ttl_s: int = 3600  # 60..3600 (bounded by token lifetime, FACTS F-10)
@@ -41,6 +112,13 @@ class ChannelParams:
     request_skew_s: int = 300  # 1..3600
     idle_timeout_s: int = 900  # 1..86400
     refresh_margin_s: int = 300  # 1..3599; passed to AttestationLifecycle
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            if not _int_in_range(getattr(self, f.name), *_CHANNEL_RANGES[f.name]):
+                raise ConfigError(ConfigErrorCode.INVALID_PARAMS, f.name)
+        if self.prekey_low_water >= self.prekey_batch:
+            raise ConfigError(ConfigErrorCode.INVALID_PARAMS, "prekey_low_water")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,7 +130,7 @@ class BoundaryLimits:
     open_payload_decode: DecodeLimits = _OPEN_PAYLOAD_DECODE
     payload_decode: DecodeLimits = _PAYLOAD_DECODE
     pull_max_messages: int = 32
-    pull_wait_s: float = 1.0  # 0 < x <= 30
+    pull_wait_s: float = 1.0  # 0.01 <= x <= 30
     max_sessions: int = 1024
     session_evict_min_idle_s: int = 60  # R-8; 1 <= x <= ChannelParams.idle_timeout_s (RunLoop)
     replay_cache_max_entries: int = 100_000
@@ -62,3 +140,14 @@ class BoundaryLimits:
     attestation_retry_min_s: int = 30  # B-08
     attestation_retry_max_s: int = 300  # B-08; >= retry_min
     bundle_republish_min_interval_s: int = 5
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            if not _valid_limit(f.name, getattr(self, f.name)):
+                raise ConfigError(ConfigErrorCode.INVALID_LIMITS, f.name)
+        for name in _DECODE_MAX_BYTES:
+            decode_limits: DecodeLimits = getattr(self, name)
+            if decode_limits.max_bytes > self.max_request_bytes:
+                raise ConfigError(ConfigErrorCode.INVALID_LIMITS, name)
+        if self.attestation_retry_max_s < self.attestation_retry_min_s:
+            raise ConfigError(ConfigErrorCode.INVALID_LIMITS, "attestation_retry_max_s")
