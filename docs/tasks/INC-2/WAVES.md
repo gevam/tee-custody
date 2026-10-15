@@ -170,7 +170,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - Core `attestation/types.ts`, `test/api-surface.test.ts`: T-02 W0, T-33 W1.
   - `spec/vectors/README.md`: T-03 W0, T-34 W1.
   - `notes_gateway/limits.py`, gateway `tests/test_api_surface.py`: T-01 W0, T-14 W1 (A1, additive fields).
-  - `.gitleaksignore`: T-19 W1 (A2, one fingerprint).
+  - `.gitleaksignore`: T-19 W1 (A2, one fingerprint), T-26 W2 (A3, append the 275e828 fingerprint only).
   - `tools/dependency_policy.py`, `tests/tooling/test_dependency_policy.py`: T-05 W0, T-37 W1.
   - Core `src/bundle/types.ts`: T-02 W0 (final), T-16 W1 (A3: the one-line `new Uint8Array(bytes)` copy only).
   - `tests/integration/contracts/test_sim_cli_contract.py`: TL W0, T-21 W1.
