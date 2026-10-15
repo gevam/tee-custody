@@ -191,22 +191,21 @@ export const FAST_LIMITS: ChannelLimits = Object.freeze({
 const consumedPrekeys = new Map<string, Set<number>>();
 
 function recordOpen(instance: string, body: Uint8Array): void {
+    let env: CanonicalValue;
     try {
-        const env = decodeCanonical(body, DEFAULT_CHANNEL_LIMITS.bundle.decode);
-        if (!(env instanceof Map) || env.get("kind") !== "open") {
-            return;
-        }
-        const aad = decodeCanonical(
-            env.get("aad") as Uint8Array,
-            DEFAULT_CHANNEL_LIMITS.bundle.decode,
-        );
-        const id = Number((aad as Map<string, CanonicalValue>).get("prekey_id"));
-        const set = consumedPrekeys.get(instance) ?? new Set<number>();
-        set.add(id);
-        consumedPrekeys.set(instance, set);
+        env = decodeCanonical(body, DEFAULT_CHANNEL_LIMITS.bundle.decode);
     } catch {
-        // not an open envelope we can read: nothing to record
+        return; // not a canonical envelope at all: not an open, nothing to record
     }
+    if (!(env instanceof Map) || env.get("kind") !== "open") {
+        return;
+    }
+    // An open envelope whose aad cannot be read must fail the test, not silently skip the ledger.
+    const aad = decodeCanonical(env.get("aad") as Uint8Array, DEFAULT_CHANNEL_LIMITS.bundle.decode);
+    const id = Number((aad as Map<string, CanonicalValue>).get("prekey_id"));
+    const set = consumedPrekeys.get(instance) ?? new Set<number>();
+    set.add(id);
+    consumedPrekeys.set(instance, set);
 }
 
 function withLedger(inner: Transport): Transport {

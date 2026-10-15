@@ -82,7 +82,7 @@ function expectContracted(error: unknown): void {
     expect(error).toBeInstanceOf(ChannelError);
     const e = error as ChannelError;
     const outcome = e.detail === undefined ? e.code : `${e.code}/${e.detail}`;
-    expect(["TIMEOUT", "TRANSPORT", "TRANSPORT/UNAVAILABLE"]).toContain(outcome);
+    expect(["TIMEOUT", "TRANSPORT/UNAVAILABLE"]).toContain(outcome);
 }
 
 describe("FR-4 session over the gateway", () => {
@@ -181,10 +181,7 @@ describe("FR-4 session over the gateway", () => {
                 fulfilled += 1;
                 expect((r.value as Map<string, CanonicalValue>).get("n")).toBe(i);
             } else {
-                const e = r.reason as ChannelError;
-                expect(e).toBeInstanceOf(ChannelError);
-                const outcome = e.detail === undefined ? e.code : `${e.code}/${e.detail}`;
-                expect(["TIMEOUT", "TRANSPORT", "TRANSPORT/UNAVAILABLE"]).toContain(outcome);
+                expectContracted(r.reason);
             }
         });
         expect(fulfilled).toBeGreaterThanOrEqual(1);
