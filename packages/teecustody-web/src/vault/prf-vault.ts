@@ -122,7 +122,7 @@ export class PrfShareVault implements ShareVault {
             const { credentialId, prf } =
                 stored === undefined
                     ? await this.#enroll(client, salt)
-                    : await this.#reuse(parseRecord(stored).credential_id, salt);
+                    : await this.#reuse(parseRecord(stored), salt);
             const key = await this.#deriveKey(prf, salt, client);
             const nonce = this.#random(12);
             const ct = new Uint8Array(
@@ -163,6 +163,9 @@ export class PrfShareVault implements ShareVault {
         };
         const created = await this.#ceremony((signal) => credentials.create({ signal, publicKey }));
         const credentialId = new Uint8Array(created.rawId);
+        if (!isBytes(credentialId, 1, MAX_CREDENTIAL_ID)) {
+            throw new CapabilityError("INTERNAL");
+        }
         const outputs = created.getClientExtensionResults().prf;
         if (outputs?.enabled !== true) {
             throw new CapabilityError("UNSUPPORTED");
@@ -172,7 +175,9 @@ export class PrfShareVault implements ShareVault {
         return { credentialId, prf };
     }
 
-    async #reuse(credentialId: Buf, salt: Buf): Promise<CredentialPrf> {
+    /** A second `set` keeps the stored passkey and evaluates its PRF over a fresh salt. */
+    async #reuse(record: ShareRecord, salt: Buf): Promise<CredentialPrf> {
+        const credentialId = record.credential_id;
         return { credentialId, prf: await this.#assert(credentialId, salt) };
     }
 

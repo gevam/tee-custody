@@ -1178,3 +1178,45 @@ describe("malformed ceremony results and unexpected failures are INTERNAL", () =
         await expectNothingStored(idb);
     });
 });
+
+describe("further edge cases", () => {
+    it.each([0, 1024])(
+        "rejects a created credential whose rawId is %i bytes as INTERNAL",
+        async (n) => {
+            const auth = new FakeAuthenticator();
+            auth.behaviour.createCredential = {
+                rawId: new ArrayBuffer(n),
+                getClientExtensionResults: () => ({
+                    prf: { enabled: true, results: { first: new ArrayBuffer(32) } },
+                }),
+            };
+            const idb = new IDBFactory();
+            expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("INTERNAL");
+            await expectNothingStored(idb);
+        },
+    );
+
+    it("cannot decrypt with another authenticator's PRF secret", async () => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        auth.secret = crypto.getRandomValues(new Uint8Array(32));
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+    });
+
+    it("keeps concurrent sets self-consistent", async () => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        const other = "fedcba9876543210fedcba9876543210";
+        const a = SHARE.slice();
+        const b = SHARE.map((x) => x ^ 0x55);
+        await Promise.all([
+            v.set(CLIENT, a.slice()),
+            v.set(CLIENT, b.slice()),
+            v.set(other, a.slice()),
+        ]);
+        const got = Array.from((await v.get(CLIENT)) ?? []);
+        expect([Array.from(a), Array.from(b)]).toContainEqual(got);
+        expect(Array.from((await v.get(other)) ?? [])).toEqual(Array.from(a));
+    });
+});
