@@ -306,10 +306,13 @@ class _IssuerHandler(_SimRequestHandler):
 
         A head with a bare CR or LF is never echoed from: the stdlib parser splits a line there, so
         the `Origin` value it reports may not be the bytes the client sent (only 0x21-0x7E are).
+        Nor is a head the parser marks defective: it stops at the malformed line, so a second
+        `Origin` after it would be hidden and a repeated Origin echoed (T-21 A2).
         """
         origins = self.headers.get_all("Origin") or []
         if (
-            cast(_HeadBudgetReader, self.rfile).bare_line_break
+            self.headers.defects
+            or cast(_HeadBudgetReader, self.rfile).bare_line_break
             or len(origins) != 1
             or len(origins[0].encode("latin-1")) > _MAX_ORIGIN_BYTES
             or _ECHO_ORIGIN.fullmatch(origins[0]) is None

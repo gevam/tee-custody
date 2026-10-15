@@ -183,15 +183,25 @@ def test_an_origin_with_a_cr_or_lf_is_not_echoed(issuer: IssuerServer, path: str
         assert _values(headers, "Vary") == ["Origin"]
 
 
+DEFECTIVE_HEADS = {
+    "malformed-line": f"Origin: {ORIGIN}\r\nbogusline\r\n",
+    "origin-hidden-by-malformed-line": f"Origin: {ORIGIN}\r\nbogusline\r\nOrigin: http://b\r\n",
+    "origin-with-space-before-colon": f"Origin: {ORIGIN}\r\nOrigin : http://b\r\n",
+}
+
+
 @pytest.mark.parametrize("path", JWKS_PATHS)
-def test_a_malformed_unrelated_header_does_not_block_a_valid_origin_echo(
-    issuer: IssuerServer, path: str
+@pytest.mark.parametrize("rest", DEFECTIVE_HEADS.values(), ids=DEFECTIVE_HEADS.keys())
+def test_a_head_the_parser_marks_defective_gets_no_echo(
+    issuer: IssuerServer, path: str, rest: str
 ) -> None:
-    head = f"GET {path} HTTP/1.1\r\nOrigin: {ORIGIN}\r\nbogusline\r\n\r\n"
+    """A2: the stdlib parser stops at a malformed line, so a second Origin after it is hidden;
+    §16.3 forbids echoing a repeated Origin, so a defective head is never echoed from."""
+    head = f"GET {path} HTTP/1.1\r\n{rest}\r\n"
     status, headers, _ = _exchange(issuer.origin, head.encode("latin-1"))
 
     assert status == 200
-    assert _cors(headers) == [("Access-Control-Allow-Origin", ORIGIN)]
+    assert _cors(headers) == []
     assert _values(headers, "Vary") == ["Origin"]
 
 
