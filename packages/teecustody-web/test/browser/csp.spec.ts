@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 
 import { expect, test, type Page } from "@playwright/test";
+import { base64UrlDecode, decodeCanonical, type CanonicalValue } from "@teecustody/core";
 
 const STEPS = [
     "crypto",
@@ -29,10 +30,12 @@ type Expectation = string | readonly string[];
 
 const RESULT_TIMEOUT_MS = 60_000;
 const CONTROL_TIMEOUT_MS = 10_000;
-const REPUBLISH_WINDOW_MS = 6_000;
+const REPUBLISH_WINDOW_MS = 8_000;
 const BUNDLE_POLL_MS = 250;
 const FAVICON_WINDOW_MS = 2_000;
 const NO_PRF_VAULT = "UNSUPPORTED";
+// DEFAULT_CHANNEL_LIMITS.bundle.decode
+const BUNDLE_DECODE = { maxBytes: 65_536, maxDepth: 4, maxItems: 4096 };
 
 // FACTS.md "Support matrix" (V-02) and INC-2-API §9.3 rev 3: Ed25519, X25519 and hash SRI are supported in
 // all three browsers, so every non-vault step is ok. No browser here yields PRF: WebKit has no
@@ -91,25 +94,52 @@ function sleep(ms: number): Promise<void> {
     return new Promise((done) => setTimeout(done, ms));
 }
 
-async function listedBundles(): Promise<string> {
-    return (await fetch(`${env("TC_GATEWAY_ORIGIN")}/bundles`)).text();
+interface ListedBundles {
+    readonly bundles: readonly { readonly instance_id: string; readonly bundle: string }[];
 }
 
-// Every page is a fresh ChannelClient with an empty used-pre-key set, while the workload republishes its
-// bundle at most once per bundle_republish_min_interval_s (5 s default). A later page could otherwise
-// pick the pre-key an earlier page consumed, whose request the workload drops (PREKEY_UNKNOWN). Any
-// publication after the run reflects that consumption, so wait for one, bounded by the interval plus 1 s.
-async function awaitRepublish(listed: string): Promise<void> {
+// "<instance>/<pre-key id>" for every pre-key the gateway lists now (decoded with Core, no verification).
+async function listedPrekeys(): Promise<Set<string>> {
+    const listed = (await (
+        await fetch(`${env("TC_GATEWAY_ORIGIN")}/bundles`)
+    ).json()) as ListedBundles;
+    const ids = new Set<string>();
+    for (const { instance_id: instance, bundle } of listed.bundles) {
+        const top = decodeCanonical(base64UrlDecode(bundle), BUNDLE_DECODE) as Map<
+            string,
+            CanonicalValue
+        >;
+        for (const entry of top.get("prekeys") as Map<string, CanonicalValue>[]) {
+            const id = entry.get("id");
+            if (typeof id !== "number" && typeof id !== "bigint") {
+                throw new Error("BUNDLE_PREKEY_ID");
+            }
+            ids.add(`${instance}/${id.toString()}`);
+        }
+    }
+    return ids;
+}
+
+// B-41: every page is a fresh ChannelClient with an empty used-pre-key set, and the workload keeps a
+// consumed pre-key listed until its next republish (at most bundle_republish_min_interval_s, 5 s, later).
+// A later page could pick it and get no response (PREKEY_UNKNOWN, then TIMEOUT). After a page whose
+// channel step opened a session, wait until a pre-key listed before that page is gone; never go on silently.
+async function awaitRepublish(before: ReadonlySet<string>): Promise<void> {
     const started = performance.now();
     while (performance.now() - started < REPUBLISH_WINDOW_MS) {
-        if ((await listedBundles()) !== listed) {
+        const now = await listedPrekeys();
+        if ([...before].some((id) => !now.has(id))) {
             return;
         }
         await sleep(BUNDLE_POLL_MS);
     }
+    throw new Error(
+        `B-41: the consumed pre-key is still listed ${String(REPUBLISH_WINDOW_MS)} ms after the run`,
+    );
 }
 
 async function runHarness(page: Page): Promise<HarnessResult> {
+    const before = await listedPrekeys();
     await page.goto(`${env("TC_SERVE_ORIGIN")}/`);
     const handle = await page.waitForFunction(
         () => (window as { __result?: HarnessResult }).__result,
@@ -117,7 +147,9 @@ async function runHarness(page: Page): Promise<HarnessResult> {
         { timeout: RESULT_TIMEOUT_MS },
     );
     const result = (await handle.jsonValue()) as HarnessResult;
-    await awaitRepublish(await listedBundles());
+    if (result.steps.channel === "ok") {
+        await awaitRepublish(before);
+    }
     return result;
 }
 
