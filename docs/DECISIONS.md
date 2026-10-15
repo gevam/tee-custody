@@ -1512,3 +1512,28 @@ It merges with exactly 8 red tests in `tests/acceptance/test_EXPLORE_gateway_htt
 Guard (g) is green.
 
 **Dissent:** none
+
+## D-073 — T-41 verdict (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, Tech Lead
+
+**Decision:** T-41 is approved to merge. It is test-only, in Core `test/channel/session.test.ts` (branch inc-2/T-41-session-test-order, tip aa14293).
+
+**What it fixes:**
+- The flaky maxInFlight test, which asserted post order (`[1,0,2]` in about 1 in 8 runs). Its assertions are now order-free and cover only what §7.4 promises.
+- A1: encrypt-count and distinct-nonce assertions on every refuse path (SR-14 "nothing re-sealed"). This closes a gap where a seal-then-rollback mutant, which reuses AES-GCM nonce 2, survived the whole Core suite.
+
+**Review history:**
+- Round 1 at c304381: APPROVE, with a Low (that seal gap).
+- A1 at aa14293: APPROVE.
+  - The seal-on-refuse mutants are caught on every path, including SEQUENCE_EXHAUSTED and criterion 10.
+  - The file passed 20/20 and 30/30 runs.
+  - `pnpm -r --no-bail test` passed 3/3.
+
+No security review: the change is test-only, and its subject (SR-14 test strength) was verified by the reviewer through mutation.
+
+**Ordering itself:** stays B-26, required for INC-3, with new evidence that Core posts frames in seal-completion order.
+
+**Dissent:** none
