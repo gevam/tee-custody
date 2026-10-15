@@ -14,6 +14,9 @@ export interface FetchFetcherOptions {
     readonly fetch?: FetchFn; // default globalThis.fetch
 }
 
+// setTimeout stores its delay as a signed 32-bit integer; a larger delay overflows and fires at once.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
 // B-06 canonical form: the URL must survive a WHATWG parse unchanged, carry no userinfo or fragment, and use
@@ -155,10 +158,13 @@ export class FetchFetcher implements Fetcher {
         const controller = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const deadline = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => {
-                reject(new CapabilityError("UNAVAILABLE"));
-                controller.abort();
-            }, this.#timeoutMs);
+            timer = setTimeout(
+                () => {
+                    reject(new CapabilityError("UNAVAILABLE"));
+                    controller.abort();
+                },
+                Math.min(this.#timeoutMs, MAX_TIMER_DELAY_MS),
+            );
         });
         try {
             return await Promise.race([this.#exchange(url, controller.signal), deadline]);

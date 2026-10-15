@@ -560,3 +560,24 @@ describe("edge: URL and status boundaries", () => {
         expect(codeOf(await rejection(make(fetch).get(URL_OK)))).toBe("HTTP_ERROR");
     });
 });
+
+describe("edge: a timeoutMs beyond the 32-bit timer range is clamped, not overflowed", () => {
+    it("timeoutMs 2**31 -> the request is not aborted at 1 ms and still completes", async () => {
+        vi.useFakeTimers();
+        const calls: Call[] = [];
+        const slow: FetchFn = (url, init) => {
+            calls.push({ url, init });
+            return new Promise<Response>((resolve) => {
+                setTimeout(() => {
+                    resolve(new Response("{}"));
+                }, 10);
+            });
+        };
+        const pending = make(slow, 1024, 2 ** 31).get(URL_OK);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls[0]?.init.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(9);
+        expect((await pending).status).toBe(200);
+        expect(calls[0]?.init.signal?.aborted).toBe(false);
+    });
+});
