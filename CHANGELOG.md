@@ -62,3 +62,4 @@
 - T-24: In-memory queue and audit sink (simulator)
 - T-25: Channel vector generator and vectors CLI
 - T-30: Channel vector suite (spec/vectors/channel/suite.cbor)
+- T-28: ChannelServer
