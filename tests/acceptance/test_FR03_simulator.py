@@ -4,6 +4,7 @@ Expected failure on trunk: NotImplementedError('T-07' | 'T-08') from stubs.
 """
 
 import json
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -46,6 +47,9 @@ def test_FR03_simulator_starts_without_cloud_credentials_and_serves_discovery(
     assert discovery["issuer"] == SIM_ISSUER
     assert discovery["jwks_uri"].startswith(sim.issuer_origin + "/")
     assert running_sim.config.socket_path.exists()
+    # And D-043: the pinned JWKS and attacker JWKS URIs are on the same origin
+    assert sim.jwks_uri == sim.issuer_origin + "/jwks"
+    assert sim.attacker_jwks_uri == sim.issuer_origin + "/attacker/jwks"
 
 
 def test_FR03_jwks_contains_only_the_issuer_signing_key(running_sim: RunningSim) -> None:
@@ -130,8 +134,7 @@ def test_FR03_development_profile_matches_running_simulator(running_sim: Running
     sim, config = running_sim.sim, running_sim.config
     # When building the development trust profile from it
     profile = build_trust_profile(
-        discovery_url=sim.discovery_url,
-        jwks_origin=sim.issuer_origin,
+        jwks_uri=sim.jwks_uri,
         expected_audience=config.audience,
         launch=config.launch,
         signers=sim.keys.signers,
@@ -140,6 +143,8 @@ def test_FR03_development_profile_matches_running_simulator(running_sim: Running
     # Then it pins the simulator issuer, hwmodel, digest, signer key_ids and launch hashes
     args_hash, env_hash = launch_config_hashes(config.launch.args, config.launch.env)
     assert profile["profile_kind"] == "development"
+    assert profile["profile_version"] == 2 and profile["jwks_uri"] == sim.jwks_uri
+    assert "discovery_url" not in profile and "jwks_origin" not in profile
     assert profile["issuer"] == SIM_ISSUER
     assert profile["allowed_hwmodels"] == [SIM_HWMODEL]
     assert profile["allowed_digests"] == [IMAGE_DIGEST]
@@ -160,3 +165,83 @@ def test_FR03_development_profile_matches_running_simulator(running_sim: Running
 
     assert not private_members & keys_of(profile)
     assert "PRIVATE KEY" not in json.dumps(profile)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "http://127.0.0.1:80/jwks",
+        "http://127.0.0.1:08791/jwks",
+        "http://127.0.0.1:8791/other",
+        "http://127.0.0.1:8791/jwks/",
+        "http://192.168.1.5:8791/jwks",
+        "https://127.0.0.1:8791/jwks",
+        "http://127.0.0.1/jwks",
+    ],
+)
+def test_FR03_profile_builder_refuses_a_non_canonical_jwks_uri(
+    running_sim: RunningSim, bad: str
+) -> None:
+    # Given a running simulator
+    sim, config = running_sim.sim, running_sim.config
+    # When building a profile with a jwks_uri that Core's canonical rule would reject
+    with pytest.raises(ValueError, match="INVALID_JWKS_URI"):
+        build_trust_profile(
+            jwks_uri=bad,
+            expected_audience=config.audience,
+            launch=config.launch,
+            signers=sim.keys.signers,
+            signers_required=config.signers_required,
+        )
+
+
+def _head(url: str, origin: str | None = None, method: str = "GET") -> tuple[int, Any]:
+    headers = {} if origin is None else {"Origin": origin}
+    request = urllib.request.Request(url, headers=headers, method=method)  # noqa: S310
+    try:
+        with urllib.request.urlopen(request, timeout=5) as resp:  # noqa: S310 - loopback only
+            return resp.status, resp.headers
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers
+
+
+def test_FR03_jwks_echoes_a_valid_origin_like_google_and_discovery_sends_no_cors(
+    running_sim: RunningSim,
+) -> None:
+    # Given a running simulator and a browser origin
+    sim = running_sim.sim
+    origin = "http://127.0.0.1:5555"
+    # When the page fetches /jwks and the attacker JWKS with and without Origin
+    for url in (sim.jwks_uri, sim.attacker_jwks_uri):
+        status, headers = _head(url, origin)
+        # Then the origin is echoed exactly, Vary: Origin is set, credentials are never allowed
+        assert status == 200
+        assert headers["Access-Control-Allow-Origin"] == origin
+        assert "Origin" in headers["Vary"]
+        assert headers["Access-Control-Allow-Credentials"] is None
+        _status, plain = _head(url)
+        assert plain["Access-Control-Allow-Origin"] is None and "Origin" in plain["Vary"]
+    # And discovery (as on Google) carries no Access-Control header at all
+    status, headers = _head(sim.discovery_url, origin)
+    assert status == 200
+    assert [h for h in headers if h.lower().startswith("access-control-")] == []
+    # And an invalid Origin is not echoed
+    for bad in ("javascript:alert(1)", "HTTP://EXAMPLE.COM", "x" * 300):
+        _status, rejected = _head(sim.jwks_uri, bad)
+        assert rejected["Access-Control-Allow-Origin"] is None
+
+
+def test_FR03_attacker_jwks_lists_a_second_key_under_two_kids_and_no_private_members(
+    running_sim: RunningSim,
+) -> None:
+    # Given the simulator's issuer JWKS and its attacker JWKS
+    sim = running_sim.sim
+    issuer_key = _get_json(sim.jwks_uri)["keys"][0]
+    attacker = _get_json(sim.attacker_jwks_uri)["keys"]
+    # Then the attacker JWKS lists one key twice, under its own kid and under the issuer's kid
+    assert len(attacker) == 2
+    assert {k["kid"] for k in attacker} == {sim.keys.issuer_kid, sim.keys.attacker_issuer_kid}
+    assert len({k["n"] for k in attacker}) == 1
+    # And it is a different key from the issuer's, with no private members
+    assert attacker[0]["n"] != issuer_key["n"]
+    assert not {"d", "p", "q", "dp", "dq", "qi"} & set(attacker[0])

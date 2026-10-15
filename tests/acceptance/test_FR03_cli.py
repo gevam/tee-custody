@@ -3,12 +3,19 @@
 Expected failure on trunk: NotImplementedError('T-07' | 'T-08' | 'T-16' | 'T-17') from stubs.
 """
 
+import base64
 import json
+import shutil
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
 
 from acc_support import RunningSim, decode_jws
 from teecustody_sim.cli import main
@@ -155,7 +162,11 @@ def test_FR03_cli_never_prints_key_material(
     assert "PRIVATE KEY" not in text
     profile = json.loads(out_file.read_text())
     assert profile["profile_kind"] == "development"
-    assert profile["profile_version"] == 1
+    # D-043: profile v2 pins the exact jwks_uri; discovery_url and jwks_origin are gone
+    assert profile["profile_version"] == 2
+    assert profile["jwks_uri"] == running_sim.sim.jwks_uri
+    assert "discovery_url" not in profile and "jwks_origin" not in profile
+    assert len(profile) == 13
     assert set(profile["signer_keys"][0]) == {"key_id", "algorithm"}
 
 
@@ -194,6 +205,91 @@ def test_FR03_corpus_is_deterministic_for_the_same_seed(cli: Cli, tmp_path: Path
     a = (tmp_path / "a/wire/differential-corpus.json").read_bytes()
     b = (tmp_path / "b/wire/differential-corpus.json").read_bytes()
     assert a == b
+
+
+def _signature_verifies(token: str, jwks_url: str) -> bool:
+    """RS256 check of the compact JWS against the key its header kid names in the JWKS at `jwks_url`."""
+    header, _ = decode_jws(token)
+    with urllib.request.urlopen(jwks_url, timeout=5) as resp:  # noqa: S310 - loopback only
+        keys = json.loads(resp.read())["keys"]
+    matching = [k for k in keys if k["kid"] == header["kid"]]
+    if len(matching) != 1:
+        return False
+
+    def num(value: str) -> int:
+        return int.from_bytes(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)), "big")
+
+    public = RSAPublicNumbers(num(matching[0]["e"]), num(matching[0]["n"])).public_key()
+    head, payload, signature = token.split(".")
+    try:
+        public.verify(
+            base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)),
+            f"{head}.{payload}".encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except InvalidSignature:
+        return False
+    return True
+
+
+VOLATILE = {"iat", "exp", "nbf"}
+
+
+def _stable_claims(claims: dict[str, Any]) -> dict[str, Any]:
+    """Claims without per-run volatile parts: timestamps and the PSS image signatures."""
+    out = {k: v for k, v in claims.items() if k not in VOLATILE}
+    container = dict(out["submods"]["container"])
+    container.pop("image_signatures", None)
+    return {**out, "submods": {**out["submods"], "container": container}}
+
+
+@pytest.mark.parametrize(
+    ("case_id", "same_kid"), [("jwks_other_path", False), ("jwks_other_path_same_kid", True)]
+)
+def test_FR03_attacker_cases_are_signed_by_the_attacker_key_only(
+    cli: Cli, running_sim: RunningSim, case_id: str, same_kid: bool
+) -> None:
+    # Given the valid token and a D-043 attacker-key case (INC-2-API 16.3 rows 38-39)
+    sim = running_sim.sim
+    valid = _token(cli, running_sim)
+    token = _token(cli, running_sim, "--case", case_id)
+    valid_header, valid_claims = decode_jws(valid)
+    header, claims = decode_jws(token)
+    # Then the attacker token verifies under the attacker JWKS and fails under the real /jwks
+    assert _signature_verifies(token, sim.attacker_jwks_uri)
+    assert not _signature_verifies(token, sim.jwks_uri)
+    # And the real token does the reverse
+    assert _signature_verifies(valid, sim.jwks_uri)
+    assert not _signature_verifies(valid, sim.attacker_jwks_uri) or same_kid
+    # And apart from volatile fields the claims and header shape are those of the valid token
+    assert _stable_claims(claims) == _stable_claims(valid_claims)
+    assert header["alg"] == "RS256" and header["typ"] == valid_header["typ"]
+    # And the header kid is the issuer's (row 39) or a different one (row 38)
+    assert (header["kid"] == valid_header["kid"]) is same_kid
+
+
+def test_FR03_a_v1_state_file_is_not_initialised_state(
+    cli: Cli, running_sim: RunningSim, tmp_path: Path
+) -> None:
+    # Given a copy of a real state directory rewritten as a v1 state (discovery_url, no jwks_uri)
+    state = tmp_path / "old-state"
+    shutil.copytree(running_sim.config.state_dir, state)
+    path = state / "sim-state.json"
+    doc = json.loads(path.read_text())
+    doc.pop("jwks_uri", None)
+    doc.update(
+        state_version=1,
+        discovery_url=running_sim.sim.discovery_url,
+        jwks_origin=running_sim.sim.issuer_origin,
+    )
+    path.write_text(json.dumps(doc))
+    # When emitting a profile from it
+    code, out, err = cli("profile", "--state-dir", str(state), "--out", str(tmp_path / "p.json"))
+    # Then it fails with the existing stable code and writes nothing
+    assert (code, out) == (2, "")
+    assert err.strip() == "STATE_NOT_INITIALISED"
+    assert not (tmp_path / "p.json").exists()
 
 
 def test_FR03_kid_unknown_case_changes_only_the_header_kid(

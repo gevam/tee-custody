@@ -69,6 +69,9 @@ const NEGATIVE: ReadonlyArray<readonly [string, string, string, boolean]> = [
     ["args_missing", "launch_config", "CLAIM_MISSING", false],
     ["env_missing", "launch_config", "CLAIM_MISSING", false],
     ["kid_unknown", "signature", "UNTRUSTED_SIGNER", false],
+    // D-043 / INC-2-API 16.3 rows 38-39: a key served at another path on the issuer origin
+    ["jwks_other_path", "signature", "UNTRUSTED_SIGNER", false],
+    ["jwks_other_path_same_kid", "signature", "UNTRUSTED_SIGNER", false],
 ];
 
 const loopbackFetcher: Fetcher = {
@@ -98,6 +101,9 @@ let work: string;
 let server: ChildProcess;
 let socket: string;
 let profile: TrustProfile;
+let profileJson: Record<string, unknown>;
+let issuerOrigin = "";
+let discoveryUrl = "";
 const stateDir = (): string => join(work, "state");
 
 function cli(...args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -128,7 +134,7 @@ async function verify(token: string, sink = new MemorySink()): Promise<{ sink: M
             crypto: nodeCrypto(),
             fetcher: loopbackFetcher,
             now: () => Date.now(),
-            limits: { maxTokenBytes: 16384, maxDiscoveryBytes: 8192, maxJwksBytes: 16384 },
+            limits: { maxTokenBytes: 16384, maxJwksBytes: 16384 },
         },
     );
     return { sink };
@@ -175,7 +181,10 @@ async function startSimulator(): Promise<void> {
         );
         server.stdout?.on("data", (c: Buffer) => {
             out += c.toString();
-            if (/issuer=\S+ discovery=\S+ socket=\S+/.test(out)) {
+            const ready = /issuer=(\S+) discovery=(\S+) socket=\S+/.exec(out);
+            if (ready) {
+                issuerOrigin = ready[1] ?? "";
+                discoveryUrl = ready[2] ?? "";
                 clearTimeout(timer);
                 resolve();
             }
@@ -188,7 +197,25 @@ async function startSimulator(): Promise<void> {
     });
     const profilePath = join(work, "dev-profile.json");
     await cli("profile", "--state-dir", stateDir(), "--out", profilePath);
-    profile = parseTrustProfile(JSON.parse(readFileSync(profilePath, "utf8")));
+    profileJson = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>;
+    profile = parseTrustProfile(profileJson);
+}
+
+interface Reply {
+    status: number;
+    headers: http.IncomingHttpHeaders;
+}
+
+function request(url: string, origin?: string): Promise<Reply> {
+    return new Promise((resolve, reject) => {
+        const headers = origin === undefined ? {} : { Origin: origin };
+        http.get(url, { headers, timeout: 5000 }, (res) => {
+            res.resume();
+            res.on("end", () => {
+                resolve({ status: res.statusCode ?? 0, headers: res.headers });
+            });
+        }).on("error", reject);
+    });
 }
 
 let started: Promise<void> | undefined;
@@ -224,12 +251,87 @@ describe("FR-3 given the running simulator and its development profile", () => {
         expect(profile.signers_required).toBe(2);
         expect(readFileSync(join(work, "dev-profile.json"), "utf8")).not.toContain("PRIVATE");
     });
+
+    it("emits a v2 profile that pins the issuer's jwks_uri and carries no discovery fields (D-043)", () => {
+        expect(profileJson.profile_version).toBe(2);
+        expect(profileJson.jwks_uri).toBe(`${issuerOrigin}/jwks`);
+        expect(profileJson).not.toHaveProperty("discovery_url");
+        expect(profileJson).not.toHaveProperty("jwks_origin");
+        expect(Object.keys(profileJson)).toHaveLength(13);
+    });
+
+    it("emulates Google's CORS: /jwks echoes an Origin, discovery sends no CORS header", async () => {
+        const origin = "http://127.0.0.1:5555";
+        const jwks = await request(`${issuerOrigin}/jwks`, origin);
+        expect(jwks.status).toBe(200);
+        expect(jwks.headers["access-control-allow-origin"]).toBe(origin);
+        expect(String(jwks.headers.vary).toLowerCase()).toContain("origin");
+        expect(jwks.headers).not.toHaveProperty("access-control-allow-credentials");
+        const noOrigin = await request(`${issuerOrigin}/jwks`);
+        expect(noOrigin.headers).not.toHaveProperty("access-control-allow-origin");
+        const discovery = await request(discoveryUrl, origin);
+        expect(discovery.status).toBe(200);
+        expect(
+            Object.keys(discovery.headers).filter((h) => h.startsWith("access-control-")),
+        ).toEqual([]);
+    });
+
+    it("serves the attacker JWKS on another path of the same origin", async () => {
+        expect((await request(`${issuerOrigin}/attacker/jwks`)).status).toBe(200);
+    });
 });
 
 describe("FR-2 / FR-3 given a valid simulator token", () => {
     it("verifies independently in the TypeScript client", async () => {
         const { sink } = await verify(await token());
         expect(sink.events).toEqual([]);
+    }, 60_000);
+
+    it("fetches exactly the pinned jwks_uri once and never a discovery document (SR-1, D-043)", async () => {
+        const urls: string[] = [];
+        const recording: Fetcher = {
+            get(url) {
+                urls.push(url);
+                return loopbackFetcher.get(url);
+            },
+        };
+        await verifyAttestation(
+            await token(),
+            profile,
+            { identityNonce: Buffer.from(HEX_NONCE, "hex") },
+            new MemorySink(),
+            {
+                crypto: nodeCrypto(),
+                fetcher: recording,
+                now: () => Date.now(),
+                limits: { maxTokenBytes: 16384, maxJwksBytes: 16384 },
+            },
+        );
+        expect(urls).toEqual([profileJson.jwks_uri]);
+        expect(urls.some((u) => u.includes("openid-configuration"))).toBe(false);
+    }, 60_000);
+
+    it("positive control: only the pin decides, so mapping the pin to the attacker JWKS accepts the attacker token", async () => {
+        const mapped: Fetcher = {
+            get: (url) =>
+                loopbackFetcher.get(
+                    url === profile.jwks_uri ? `${issuerOrigin}/attacker/jwks` : url,
+                ),
+        };
+        await expect(
+            verifyAttestation(
+                await token("--case", "jwks_other_path_same_kid"),
+                profile,
+                { identityNonce: Buffer.from(HEX_NONCE, "hex") },
+                new MemorySink(),
+                {
+                    crypto: nodeCrypto(),
+                    fetcher: mapped,
+                    now: () => Date.now(),
+                    limits: { maxTokenBytes: 16384, maxJwksBytes: 16384 },
+                },
+            ),
+        ).resolves.toBeDefined();
     }, 60_000);
 });
 
@@ -310,7 +412,7 @@ describe("FR-1 + FR-2 given a Python workload attesting through the launcher soc
             crypto: nodeCrypto(),
             fetcher: loopbackFetcher,
             now: () => Date.now(),
-            limits: { maxTokenBytes: 16384, maxDiscoveryBytes: 8192, maxJwksBytes: 16384 },
+            limits: { maxTokenBytes: 16384, maxJwksBytes: 16384 },
         });
         expect(result.audience).toBe(AUDIENCE);
         expect(result.imageDigest).toBe(DIGEST);
@@ -320,7 +422,7 @@ describe("FR-1 + FR-2 given a Python workload attesting through the launcher soc
                 crypto: nodeCrypto(),
                 fetcher: loopbackFetcher,
                 now: () => Date.now(),
-                limits: { maxTokenBytes: 16384, maxDiscoveryBytes: 8192, maxJwksBytes: 16384 },
+                limits: { maxTokenBytes: 16384, maxJwksBytes: 16384 },
             }),
         ).rejects.toBeInstanceOf(AttestationError);
     }, 90_000);

@@ -1,5 +1,5 @@
-// D-02 (SR-1 / SR-3): development trust profile URLs must already be in canonical form.
-// Expected failure on trunk: parseTrustProfile accepts the non-canonical loopback literals.
+// D-02 (SR-1 / SR-3), updated for D-043: the development jwks_uri must already be canonical.
+// Red on v1 Core (v1 profile fields); green on the MU-1 branch.
 import { TrustProfileError, parseTrustProfile } from "@teecustody/core";
 import { describe, expect, it } from "vitest";
 
@@ -7,15 +7,13 @@ import { ARGS_HASH, ENV_HASH, IMAGE_DIGEST, ISSUER } from "../support/token-fact
 
 const KEY_A = "a1".repeat(32);
 const KEY_B = "b2".repeat(32);
-const WK = "/.well-known/openid-configuration";
 
 const dev = (): Record<string, unknown> => ({
-    profile_version: 1,
+    profile_version: 2,
     profile_kind: "development",
     token_type: "OIDC",
     issuer: ISSUER,
-    discovery_url: `http://127.0.0.1:8791${WK}`,
-    jwks_origin: "http://127.0.0.1:8791",
+    jwks_uri: "http://127.0.0.1:8791/jwks",
     expected_audience: "https://acceptance.teecustody.test/tee",
     token_max_age_s: 3600,
     allowed_hwmodels: ["SIMULATED"],
@@ -38,6 +36,7 @@ const rejects = (override: Record<string, unknown>): void => {
     }
     expect(caught).toBeInstanceOf(TrustProfileError);
     expect((caught as TrustProfileError).code).toBe("INVALID_PROFILE");
+    expect((caught as TrustProfileError).field).toBe("jwks_uri");
 };
 
 describe("D-02 given a non-canonical loopback spelling in a development profile", () => {
@@ -46,25 +45,19 @@ describe("D-02 given a non-canonical loopback spelling in a development profile"
     });
 
     it.each([
-        `http://0x7f.1${WK}`,
-        `http://127.1${WK}`,
-        `http://2130706433${WK}`,
-        `http://0177.0.0.1${WK}`,
-        `http://127.0.0.1:80${WK}`,
-        `http://127.0.0.1\\@evil.test${WK}`,
-        `http://127.0.0.1:8791//.well-known/../.well-known/openid-configuration`,
-        `HTTP://127.0.0.1:8791${WK}`,
-    ])("rejects discovery_url %s", (url) => {
-        rejects({ discovery_url: url });
-    });
-
-    it.each([
-        "http://0x7f.1:8791",
-        "http://127.1:8791",
-        "http://2130706433:8791",
-        "http://127.0.0.1:8791/",
-        "http://127.0.0.1\\@evil.test:8791",
-    ])("rejects jwks_origin %s", (origin) => {
-        rejects({ jwks_origin: origin });
+        "http://0x7f.1:8791/jwks",
+        "http://127.1:8791/jwks",
+        "http://2130706433:8791/jwks",
+        "http://0177.0.0.1:8791/jwks",
+        "http://127.0.0.1:80/jwks",
+        "https://127.0.0.1:443/jwks",
+        "http://127.0.0.1\\@evil.test/jwks",
+        "http://127.0.0.1:8791//jwks",
+        "HTTP://127.0.0.1:8791/jwks",
+        "http://127.0.0.1:8791/jwks/",
+        "http://127.0.0.1:8791/JWKS",
+        "http://127.0.0.1:8791/attacker/jwks",
+    ])("rejects jwks_uri %s", (url) => {
+        rejects({ jwks_uri: url });
     });
 });
