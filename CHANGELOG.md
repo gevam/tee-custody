@@ -27,51 +27,65 @@
 - T-24: Canonical development profile URLs (D-02)
 - QA: Acceptance tests for INC-1 (expected red)
 
-### INC-2
-- T-27: SR-13 bundle scan and static rules
-- T-04: Python frozen INC-2 API, Secret hardening, IdentityKey.sign
-- T-03: Channel CDDL, byte layouts and channel vector harness
-- V-01: CFRG RFC 9180 test vectors and ADR 0011 C6 pin evidence
-- V-02: Browser capability facts
-- T-01: Reference gateway workspace member, pinned deps, frozen stubs
-- T-02: @teecustody/web package, TS tooling, Core/Web stubs, verified-bundle brand with copy-on-read keys
-- T-05: INC-2 static rules, HPKE closure policy, browser CI job
-- QA: INC-2 acceptance tests (expected red)
-- T-07: Python channel codec and byte layouts
-- T-16: Core bundle verification and pre-key selection
-- T-15: Core channel wire codec and byte layouts
-- T-08: Workload HPKE open via pyhpke with RFC 9180 KATs
-- T-13: Workload image digest read from its token
-- T-09: ChannelParams and BoundaryLimits validation
-- T-11: Audit record validation and serialisation
-- T-17: @hpke/core adoption and WebCrypto Crypto adapter
-- T-37: Scoped D-049 h11 age exception in dependency-policy tool
-- T-33: Core trust profile v2 and pinned jwks_uri verification
-- T-21: Simulator Google parity and D-043 attacker path
-- T-34: Attestation vectors regenerated for trust profile v2
-- T-36: INC-1 acceptance tests updated for trust profile v2
-- T-10: Open-request replay cache
-- T-12: Audit emitter with aggregates, capped alerts and retries
-- T-18: FetchFetcher with boundary controls
-- T-19: FetchTransport against the gateway contract
-- T-14: Reference queue gateway HTTP contract
-- T-20: WebAuthn-PRF share vault
-- T-22: Pre-keys and bundle build
-- T-23: Sessions, T2cSealer and session table
-- T-26: Core ChannelClient and Session
-- T-24: In-memory queue and audit sink (simulator)
-- T-25: Channel vector generator and vectors CLI
-- T-30: Channel vector suite (spec/vectors/channel/suite.cbor)
-- T-28: ChannelServer
-- T-29: RunLoop
-- T-35: teecustody-profile check-discovery and scheduled discovery-binding job
-- T-31: end-to-end channel harness, Node/Python e2e (N1–N3)
+## inc-2 — 2026-10-15
+
+### Added
+- T-01: Add the gateway workspace member, its dependencies and frozen stubs
+- T-02: Create `@teecustody/web`, TS tooling, Core/Web frozen stubs and the runtime brand
+- T-03: Add the channel CDDL, the channel byte-layout binding and the channel vector harness
+- T-04: Create the Python INC-2 frozen API: stubs, ports, `Secret`, `IdentityKey.sign`
+- T-07: Implement the Python channel codec and byte-layout builders
+- T-08: Adopt `pyhpke` and implement workload HPKE open with RFC 9180 KATs
+- T-09: Validate `ChannelParams` and `BoundaryLimits`
+- T-10: Implement the open-request replay cache
+- T-11: Implement audit record validation and serialisation
+- T-12: Implement the audit emitter: aggregates, capped pre-principal alerts, retries
+- T-13: Read the workload's own image digest from its token
+- T-14: Implement the reference queue gateway HTTP contract
+- T-15: Implement the Core channel wire codec
+- T-16: Implement Core pre-key bundle verification and selection
+- T-17: Adopt `@hpke/core` and implement the WebCrypto `Crypto` adapter
+- T-18: Implement `FetchFetcher` with the B-06 boundary controls
+- T-19: Implement `FetchTransport` against the gateway contract
+- T-20: Implement the WebAuthn-PRF share vault
+- T-22: Implement workload pre-keys and bundle building
+- T-23: Implement sessions, the one-shot t2c sealer and the bounded session table
+- T-24: Implement the simulator's in-memory queue and audit sink
+- T-25: Generate the channel vector suite and add it to `teecustody-sim vectors`
+- T-26: Implement Core `ChannelClient` and `Session`
+- T-28: Implement the workload `ChannelServer`
+- T-29: Implement the workload run loop with attestation-retry backoff
+- T-30: Generate and commit `spec/vectors/channel/suite.cbor`
+- T-31: Build the end-to-end channel harness and the Node/Python end-to-end tests
+- T-32: Run vault, transport and channel in real browsers under the strict CSP (Playwright harness)
+- T-35: `teecustody-profile check-discovery` and the scheduled binding job
+- V-01: Verify `pyhpke` and `@hpke/core`, write the ADR 0011 C6 pin amendment, commit the CFRG KAT file
+- V-02: Verify browser capabilities and record the support matrix
+- QA: Acceptance tests for INC-2 (expected red)
+- QA: I7 queue message content acceptance tests (Python workload and Core client producers)
+- QA: INC-2 Phase 2 execution and exploratory tests; D-03/D-04 filed
+
+### Changed
+- T-21: Simulator Google parity and the T-29 attacker path (D-043)
+- T-33: Core trust profile v2 and pinned `jwks_uri` verification (D-043)
+- T-34: Regenerate the attestation vectors for trust profile v2 and rows 38–39 (D-043)
+- T-36: Update INC-1 acceptance tests for trust profile v2 and the pinned `jwks_uri`
+- T-37: Scope the D-049 h11 age exception in the dependency-policy tool
+- T-38: Bounded not-yet-valid clock skew in `checkTime` (ADR 0013)
+- T-39: Bounded X25519 key-generation retry in the WebCrypto adapter; FACTS re-recorded at Playwright 1.63.0
+- T-41: Core session test asserts allocated seqs, not post order
 - QA D-01: FR-4 e2e tests aligned to INC-2 contracts
-- T-38: bounded clock skew in attestation time checks (ADR 0013; fixes D-02)
-- QA: I7 queue message content acceptance tests (Python workload + Core client producers)
-- T-32: Playwright harness — vault, transport and channel under enforce-mode hash-only CSP (SR-13)
-- T-39: bounded native X25519 key-generation retry in the WebCrypto adapter (ADR 0011 C8; WebKit transient failure B-45); FACTS re-recorded at Playwright 1.63.0
-- QA: INC-2 Phase 2 execution and exploratory tests; D-03/D-04 filed (fixed by T-40)
-- T-41: Core session tests assert allocated seqs order-free and no sealing on refused requests (SR-14)
-- T-40: reference gateway server hardening — header-read deadline, connection cap, header size/count limits, write/drain deadline, Transfer-Encoding rejected, JSON 400 for parse failures (D-03..D-06)
-- T-42: FetchTransport maxResponseBytes optional, default 2 MiB, fits the gateway's maximal page (D-07)
+
+### Fixed
+- T-38: bounded clock skew in attestation time checks (fixes D-02)
+- T-40: Gateway server hardening: header-read deadline, connection cap, header size/count limits, write/drain deadline, Transfer-Encoding rejected, JSON 400 for parse failures (fixes D-03..D-06)
+- T-41: flaky maxInFlight session test (order-dependent assertion)
+- T-42: `FetchTransport` default `maxResponseBytes` of 2,097,152 bytes, fits the gateway's maximal page (fixes D-07)
+
+### Security
+- T-05: INC-2 static rules, HPKE dependency-closure policy, browser CI job and gitleaks scoping
+- T-27: SR-13 bundle scan and static rules run in both packages' `lint`
+- T-33: pinned `jwks_uri` verification (D-043)
+- T-40: reference gateway DoS hardening (D-03..D-06)
+- T-39: bounded X25519 retry (ADR 0011 C8; WebKit transient failure B-45)
+- T-41: Core session tests assert no sealing on refused requests (SR-14)
