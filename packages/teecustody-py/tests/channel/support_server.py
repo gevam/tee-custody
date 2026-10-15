@@ -260,6 +260,7 @@ class World:
     server: ChannelServer
     rng: ScriptedRng
     table_closes: list[tuple[SessionInfo, CloseReason]] = field(default_factory=list)
+    instance_id: str = INSTANCE_ID
 
     @property
     def ik_pub(self) -> bytes:
@@ -273,7 +274,7 @@ class World:
         aad: dict[str, Any] = {
             "proto": PROTO,
             "client_id": CLIENT_ID,
-            "instance_id": INSTANCE_ID,
+            "instance_id": self.instance_id,
             "prekey_id": e.id,
             "request_id": os.urandom(16),
             "timestamp": int(self.clock()),
@@ -319,6 +320,7 @@ def make_world(
     limits: BoundaryLimits | None = None,
     identity: IdentityKey | None = None,
     clock: FakeClock | None = None,
+    instance_id: str = INSTANCE_ID,
 ) -> World:
     clk = clock if clock is not None else FakeClock()
     prm = params if params is not None else ChannelParams(prekey_batch=8, prekey_low_water=2)
@@ -336,11 +338,11 @@ def make_world(
         opener.closed(info, reason)
 
     prekeys = PreKeyStore(
-        instance_id=INSTANCE_ID, identity=ik, image_digest=IMAGE_DIGEST, params=prm, clock=clk
+        instance_id=instance_id, identity=ik, image_digest=IMAGE_DIGEST, params=prm, clock=clk
     )
     prekeys.top_up()
     sessions = SessionTable(
-        instance_id=INSTANCE_ID,
+        instance_id=instance_id,
         max_sessions=lim.max_sessions,
         idle_timeout_s=prm.idle_timeout_s,
         evict_min_idle_s=lim.session_evict_min_idle_s,
@@ -351,7 +353,7 @@ def make_world(
         skew_s=prm.request_skew_s, max_entries=lim.replay_cache_max_entries, clock=clk
     )
     server = ChannelServer(
-        instance_id=INSTANCE_ID,
+        instance_id=instance_id,
         ik_pub=ik.public_bytes(),
         prekeys=prekeys,
         sessions=sessions,
@@ -367,5 +369,5 @@ def make_world(
     )
     return World(
         clk, ik, prekeys, sessions, replay, opener, handler, audit, logger, prm, lim, server, rng,
-        table_closes,
+        table_closes, instance_id,
     )  # fmt: skip

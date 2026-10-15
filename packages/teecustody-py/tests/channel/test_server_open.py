@@ -15,11 +15,18 @@ from support_server import (
     INSTANCE_ID,
     OTHER_INSTANCE_ID,
     World,
+    cbor,
+    open_session_plaintext,
     read_open_result,
+    reenvelope,
+    seal_open,
 )
 from support_server import make_world as _make_world
 
 from teecustody.channel import server as server_module
+from teecustody.channel.server import ProcessResult
+from teecustody.config import ChannelParams
+from teecustody.secrets import Secret
 
 ALLOWED_LOG_FIELDS = {"client_id", "session_id", "prekey_id", "request_id"}
 
@@ -180,3 +187,112 @@ def test_replayed_request_id_on_a_live_prekey_is_counted_and_consumes_nothing(
     assert dict(world.audit.counts) == {"REQUEST_REPLAYED": 1}
     assert spy.calls == 0
     assert world.prekeys.public_entries() == live
+
+
+# ---------------------------------------------------------------- criterion 3
+class TakeSpy:
+    def __init__(self, world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.taken: list[Secret] = []
+        real = world.prekeys.take
+
+        def spy(prekey_id: int) -> Secret:
+            secret = real(prekey_id)
+            self.taken.append(secret)
+            return secret
+
+        monkeypatch.setattr(world.prekeys, "take", spy)
+
+
+def _flip_last_hex(text: str) -> str:
+    return text[:-1] + ("1" if text[-1] == "0" else "0")
+
+
+def _flip_first_byte(data: bytes) -> bytes:
+    return bytes([data[0] ^ 0x01]) + data[1:]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda aad: {"client_id": _flip_last_hex(aad["client_id"])},
+        lambda aad: {"request_id": _flip_first_byte(aad["request_id"])},
+        lambda aad: {"timestamp": aad["timestamp"] - 1},
+    ],
+    ids=["client_id", "request_id", "timestamp"],
+)
+def test_one_aad_change_that_still_decodes_fails_open(
+    monkeypatch: pytest.MonkeyPatch, change: Callable[[dict[str, Any]], dict[str, Any]]
+) -> None:
+    world = _make_world()
+    sent = world.open_session()
+    taken = TakeSpy(world, monkeypatch)
+
+    result = world.process(reenvelope(sent, **change(sent.aad)))
+
+    _assert_open_failed(world, result, sent.aad["prekey_id"], taken)
+
+
+def test_envelope_moved_from_another_instance_and_rewritten_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _make_world()
+    other = _make_world(instance_id=OTHER_INSTANCE_ID)
+    sent = other.open_session()
+    target = world.entry()
+    taken = TakeSpy(world, monkeypatch)
+
+    result = world.process(reenvelope(sent, instance_id=INSTANCE_ID, prekey_id=target.id))
+
+    _assert_open_failed(world, result, target.id, taken)
+
+
+def test_open_sealed_with_the_wrong_info_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _make_world()
+    target = world.entry()
+    sent = seal_open(
+        ik_pub=world.ik_pub,
+        prekey=target,
+        aad=world.aad(prekey=target),
+        plaintext=open_session_plaintext(),
+        info_prekey_id=target.id + 1,
+    )
+    taken = TakeSpy(world, monkeypatch)
+
+    result = world.process(sent.body)
+
+    _assert_open_failed(world, result, target.id, taken)
+
+
+def _assert_open_failed(
+    world: World, result: ProcessResult, prekey_id: int, taken: TakeSpy
+) -> None:
+    assert str(result.outcome) == "OPEN_FAILED"
+    assert result.response is None
+    assert dict(world.audit.counts) == {"OPEN_FAILED": 1}
+    assert all(entry.id != prekey_id for entry in world.prekeys.public_entries())
+    assert len(taken.taken) == 1
+    assert taken.taken[0].wiped
+    assert world.opener.requests == []
+
+
+def test_every_one_byte_aad_change_is_refused_and_reaching_hpke_means_open_failed() -> None:
+    world = _make_world(params=ChannelParams(prekey_batch=256, prekey_low_water=1))
+    reached_hpke = 0
+    probe = world.open_session()
+    for position in range(len(probe.aad_bytes)):
+        target = world.entry()
+        sent = world.open_session(prekey=target)
+        aad_bytes = bytearray(sent.aad_bytes)
+        aad_bytes[position] ^= 0x01
+        body = cbor({"kind": "open", "aad": bytes(aad_bytes), "enc": sent.enc, "ct": sent.ct})
+        before = len(world.prekeys.public_entries())
+
+        result = world.process(body)
+
+        assert result.response is None
+        assert str(result.outcome) != "SESSION_OPENED"
+        if str(result.outcome) == "OPEN_FAILED":
+            reached_hpke += 1
+            assert len(world.prekeys.public_entries()) == before - 1
+    assert reached_hpke >= 32
+    assert world.opener.requests == []

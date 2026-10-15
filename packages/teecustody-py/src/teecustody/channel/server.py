@@ -19,7 +19,7 @@ from teecustody.channel.codec import (
     encode_response_envelope,
     hpke_info,
 )
-from teecustody.channel.hpke import open_base
+from teecustody.channel.hpke import HpkeError, open_base
 from teecustody.channel.ports import (
     FrameHandler,
     OpenAccepted,
@@ -116,6 +116,8 @@ class ChannelServer:
                 envelope.aad_bytes,
                 envelope.ct,
             )
+        except HpkeError:
+            return self._drop(AggregateOutcome.OPEN_FAILED)
         finally:
             private_key.wipe()
         sealer = T2cSealer(opened.sk_t2c)
