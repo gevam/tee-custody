@@ -5,6 +5,7 @@ the server header and the access log off (INC-2-API §6 "Server configuration").
 """
 
 import argparse
+import contextlib
 import signal
 import sys
 import threading
@@ -46,12 +47,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     def request_stop(signum: int, frame: FrameType | None) -> None:
         stop.set()
 
+    def serve() -> None:
+        with contextlib.suppress(SystemExit):  # uvicorn's start-up failure: exit status 1 below
+            server.run()
+
     previous = {sig: signal.signal(sig, request_stop) for sig in (signal.SIGTERM, signal.SIGINT)}
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     try:
-        while not server.started:
+        while thread.is_alive() and not server.started:
             stop.wait(_POLL_S)
+        if not server.started:
+            return 1
         host, port = server.servers[0].sockets[0].getsockname()[:2]
         sys.stdout.write(f"gateway=http://{host}:{port}\n")
         sys.stdout.flush()

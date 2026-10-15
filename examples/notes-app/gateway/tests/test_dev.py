@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -136,3 +138,42 @@ def test_main_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
     assert (config.host, config.port) == ("127.0.0.1", 0)
     match = GATEWAY_LINE.fullmatch(capsys.readouterr().out.rstrip("\n"))
     assert match is not None
+
+
+@pytest.fixture
+def busy_port() -> Iterator[int]:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        yield holder.getsockname()[1]
+
+
+def test_module_exits_one_without_output_when_the_port_is_taken(busy_port: int) -> None:
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-m", "notes_gateway.dev", "--port", str(busy_port)],
+        capture_output=True,
+        text=True,
+        timeout=STOP_TIMEOUT_S,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_main_returns_one_and_restores_signal_handlers_when_the_port_is_taken(
+    busy_port: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    assert dev.main(["--port", str(busy_port)]) == 1
+    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == before
+    assert capsys.readouterr().out == ""
+
+
+def test_running_the_module_as_main_exits_with_mains_status(
+    busy_port: int, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["dev.py", "--port", str(busy_port)])
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_path(dev.__file__, run_name="__main__")
+    assert stopped.value.code == 1
+    assert capsys.readouterr().out == ""
