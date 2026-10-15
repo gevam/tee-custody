@@ -391,3 +391,29 @@ def test_c10_identity_signs_once_per_generated_key_and_never_in_build_bundle(
     store.expire()
 
     assert len(calls) == 18
+
+
+@pytest.mark.parametrize("now", [float(2**53), -3600.5])
+def test_edge_a_key_that_cannot_be_signed_is_wiped_and_not_stored(
+    monkeypatch: pytest.MonkeyPatch, now: float
+) -> None:
+    captured = capture_private_keys(monkeypatch)
+    store = make_store(clock=FakeClock(now))
+
+    with pytest.raises(ValueError, match=r"\ANOT_AFTER_RANGE\Z"):
+        store.top_up()
+
+    assert len(captured) == 1
+    assert captured[0].wiped
+    assert store.public_entries() == ()
+    assert store.expire() == 0
+
+
+def test_edge_ids_are_never_reused_after_destroy_all() -> None:
+    store = make_store()
+    store.top_up()
+    store.destroy_all()
+
+    store.top_up()
+
+    assert [e.id for e in store.public_entries()] == list(range(10, 20))

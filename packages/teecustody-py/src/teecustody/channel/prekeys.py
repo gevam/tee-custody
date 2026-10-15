@@ -64,9 +64,14 @@ class PreKeyStore:
         self._next_id += 1
         private, pub = hpke.generate_keypair()
         not_after = math.floor(self._clock()) + self._params.prekey_ttl_s
-        sig = self._identity.sign(
-            prekey_signing_message(self._instance_id, prekey_id, pub, not_after, self._image_digest)
-        )
+        try:
+            message = prekey_signing_message(
+                self._instance_id, prekey_id, pub, not_after, self._image_digest
+            )
+            sig = self._identity.sign(message)
+        except BaseException:
+            private.wipe()
+            raise
         self._keys[prekey_id] = (PreKeyPublic(prekey_id, pub, not_after, sig), private)
 
     def expire(self) -> int:
