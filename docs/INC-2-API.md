@@ -983,18 +983,37 @@ class RunLoop:
     def run(self, stop: threading.Event) -> None: ...   # start(); tick() until stop is set; shutdown() in finally
     def shutdown(self) -> None: ...   # withdraw_bundle, sessions.close_all(SHUTDOWN), prekeys.destroy_all, audit.close
 ```
-`tick` order: (1) attestation refresh **only if `clock() >= next_refresh_attempt_at`** (B-08); (2)
-`prekeys.expire()`, `top_up()`; (3) republish the bundle if the token was refreshed or the pre-key set changed,
-at most once per `bundle_republish_min_interval_s`; (4) `pull_requests` → `process` → `publish_response` → `ack`;
-(5) `sessions.expire_idle()`; (6) pre-key burn check at interval end
-(`consumed_since(interval_start) > prekey_burn_alert_threshold` → `audit.alert("PREKEY_BURN_HIGH", interval=…)`);
-(7) `audit.tick()`.
+`tick` order (aligned with T-29 A1, 2026-10-15):
+1. **Expiry first.** If `clock() >= token.expires_at`: `shutdown()`, then `WorkloadStopped(ATTESTATION_EXPIRED)`.
+   This check runs **before** the B-08 gate, so a backoff never delays it. After expiry nothing is pulled,
+   processed or republished. Otherwise, attempt the attestation refresh **only if
+   `clock() >= next_refresh_attempt_at`** (B-08).
+2. `prekeys.expire()`, `top_up()`.
+3. Republish the bundle if the token was refreshed or the pre-key set changed, at most once per
+   `bundle_republish_min_interval_s`.
+4. `sessions.expire_idle()`. This now runs before the pull.
+5. `pull_requests` → `process` → `publish_response` → `ack`.
+6. Pre-key burn check at interval end: if `consumed_since(interval_start) > prekey_burn_alert_threshold` →
+   `audit.alert("PREKEY_BURN_HIGH", interval=…)`.
+7. `audit.tick()`.
 
-**B-08 rule.** After `FAILED_KEPT_CURRENT`, `next_refresh_attempt_at = now + min(retry_max, retry_min × 2^(n−1))`
-for the n-th consecutive failure; a `REFRESHED` outcome resets n. `refresh_if_due` is never called before
-`next_refresh_attempt_at`, however often `tick` runs. If the lifecycle raises (token expired) → `WorkloadStopped(ATTESTATION_EXPIRED)`
-after `shutdown()`. Queue `UNAVAILABLE` on pull is retried with the same backoff; on 10 consecutive failures →
-`QUEUE_UNAVAILABLE`. Example: `loop = RunLoop(launcher=ConfidentialSpaceLauncher(timeout_s=5, max_response_bytes=16384), queue=q, audit_sink=s, opener=o, handler=h, audience=AUD, token_type="OIDC"); loop.run(stop)`.
+**Lifecycle.** `tick()` before `start()` or after `shutdown()` → `RuntimeError("NOT_STARTED")`. A second `start()` on
+the same instance, including after `shutdown()`, → `RuntimeError("ALREADY_STARTED")`, and live state is untouched.
+
+**B-08 rule.**
+- After `FAILED_KEPT_CURRENT`, `next_refresh_attempt_at = max(now, min(now + min(retry_max, retry_min × 2^(n−1)),
+  expires_at − 1.0))` for the n-th consecutive failure. The last retry therefore lands before expiry. A `REFRESHED`
+  outcome resets n.
+- `refresh_if_due` is never called before `next_refresh_attempt_at`, however often `tick` runs.
+- If the lifecycle raises because the token expired → `shutdown()`, then `WorkloadStopped(ATTESTATION_EXPIRED)`.
+- **Queue errors.** `QueueError(UNAVAILABLE)` from any of `pull_requests`, `publish_response`, `ack` or
+  `publish_bundle` adds to one shared consecutive-failure counter and ends that tick's queue work. It uses the same
+  backoff, and the next success resets the counter. A message that was not acked is redelivered, and a republish
+  that was due stays due.
+  - The 10th consecutive failure → `shutdown()`, then `WorkloadStopped(QUEUE_UNAVAILABLE)`.
+  - Any other `QueueError` code → `shutdown()`, then `WorkloadStopped(QUEUE_UNAVAILABLE)` at once.
+  - A raw `QueueError` never escapes `tick`.
+- These rules assume the single-threaded `RunLoop` (§4.9 edge rules). Example: `loop = RunLoop(launcher=ConfidentialSpaceLauncher(timeout_s=5, max_response_bytes=16384), queue=q, audit_sink=s, opener=o, handler=h, audience=AUD, token_type="OIDC"); loop.run(stop)`.
 
 ---
 
