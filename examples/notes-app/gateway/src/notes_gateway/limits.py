@@ -23,3 +23,4 @@ class GatewayLimits:
     max_connections: int = 512  # >= max_concurrency; open connections per process, any state
     max_header_bytes: int = 8192  # 1024..12288; raw_path + query_string + header names and values
     max_header_count: int = 64  # 16..256; headers per request
+    write_timeout_s: float = 30.0  # 1.0..60.0; deadline for the peer to drain buffered output

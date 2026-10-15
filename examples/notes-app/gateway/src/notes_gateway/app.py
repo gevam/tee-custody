@@ -86,7 +86,11 @@ def validate_limits(limits: GatewayLimits) -> None:
             raise ValueError("INVALID_LIMITS")
     if limits.per_source_max_in_flight > limits.max_concurrency:
         raise ValueError("INVALID_LIMITS")
-    for timeout_s in (limits.body_read_timeout_s, limits.header_read_timeout_s):
+    for timeout_s in (
+        limits.body_read_timeout_s,
+        limits.header_read_timeout_s,
+        limits.write_timeout_s,
+    ):
         if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
             raise ValueError("INVALID_LIMITS")
     ranges = (

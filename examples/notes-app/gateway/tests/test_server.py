@@ -119,6 +119,12 @@ INVALID_LIMITS: list[dict[str, object]] = [
     {"max_header_count": 15},
     {"max_header_count": 257},
     {"max_header_count": True},
+    {"write_timeout_s": 0.5},
+    {"write_timeout_s": 60.5},
+    {"write_timeout_s": float("nan")},
+    {"write_timeout_s": float("inf")},
+    {"write_timeout_s": True},
+    {"write_timeout_s": "30"},
     {"max_page": 0},
     {"cors_origins": ("*",)},
 ]
@@ -130,6 +136,8 @@ BOUNDARY_LIMITS: list[dict[str, object]] = [
     {"max_header_bytes": 12288},
     {"max_header_count": 16},
     {"max_header_count": 256},
+    {"write_timeout_s": 1.0},
+    {"write_timeout_s": 60.0},
 ]
 
 

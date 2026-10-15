@@ -119,6 +119,7 @@ _SPEC_LIMITS: tuple[tuple[str, object], ...] = (
     ("max_connections", 512),
     ("max_header_bytes", 8192),
     ("max_header_count", 64),
+    ("write_timeout_s", 30.0),
 )
 
 
@@ -130,8 +131,8 @@ def test_gateway_limits_fields_and_defaults_equal_api_section_6() -> None:
         assert type(getattr(limits, name)) is type(value)
 
 
-def test_gateway_limits_has_the_sixteen_fields_of_the_amended_section_6() -> None:
-    assert len(dataclasses.fields(GatewayLimits)) == 16
+def test_gateway_limits_has_the_seventeen_fields_of_the_amended_section_6() -> None:
+    assert len(dataclasses.fields(GatewayLimits)) == 17
 
 
 def test_gateway_limits_is_frozen() -> None:
@@ -158,6 +159,7 @@ class _SpecGatewayLimits:
     max_connections: int = 512
     max_header_bytes: int = 8192
     max_header_count: int = 64
+    write_timeout_s: float = 30.0
 
 
 def test_gateway_limits_signature_equals_spec_dataclass() -> None:
