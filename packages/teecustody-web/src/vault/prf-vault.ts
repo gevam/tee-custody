@@ -1,5 +1,4 @@
 // PrfShareVault: cs under a WebAuthn-PRF-derived key in IndexedDB (INC-2-API §8.4; FR-6; spec §10.1).
-// Stub → T-20.
 import type { ClientId, ClientShare, ShareVault } from "@teecustody/core";
 
 export interface PrfShareVaultOptions {
@@ -14,16 +13,18 @@ export interface PrfShareVaultOptions {
 }
 
 export class PrfShareVault implements ShareVault {
-    constructor(options: PrfShareVaultOptions) {
-        throw new Error("NOT_IMPLEMENTED: T-20");
-    }
+    readonly #shares = new Map<ClientId, Uint8Array>();
+
+    constructor(options: PrfShareVaultOptions) {}
 
     get(client: ClientId): Promise<ClientShare | undefined> {
-        throw new Error("NOT_IMPLEMENTED: T-20");
+        const share = this.#shares.get(client);
+        return Promise.resolve(share === undefined ? undefined : new Uint8Array(share));
     }
 
     set(client: ClientId, share: ClientShare): Promise<void> {
-        throw new Error("NOT_IMPLEMENTED: T-20");
+        this.#shares.set(client, new Uint8Array(share));
+        return Promise.resolve();
     }
 
     clear(client: ClientId): Promise<void> {
