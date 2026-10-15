@@ -99,9 +99,9 @@ describe("checkTime (§6.4)", () => {
     it.each<[string, JsonObject]>([
         ["exp one second in the future", FRESH],
         ["iat exactly max age in the past", { ...FRESH, iat: NOW_S - MAX_AGE_S }],
-        ["iat exactly max age in the future", { ...FRESH, iat: NOW_S + MAX_AGE_S }],
         ["nbf equal to now", { ...FRESH, nbf: NOW_S }],
         ["nbf in the past", { ...FRESH, nbf: NOW_S - 10 }],
+        ["nbf one second ahead (within skew)", { ...FRESH, nbf: NOW_S + 1 }],
     ])("passes with %s", (_label, claims) => {
         expect(time(claims)).not.toThrow();
     });
@@ -111,11 +111,15 @@ describe("checkTime (§6.4)", () => {
         ["exp in the past", { ...FRESH, exp: NOW_S - 60 }, "EXPIRED"],
         ["iat one second older than max age", { ...FRESH, iat: NOW_S - MAX_AGE_S - 1 }, "EXPIRED"],
         [
+            "iat exactly max age in the future",
+            { ...FRESH, iat: NOW_S + MAX_AGE_S },
+            "NOT_YET_VALID",
+        ],
+        [
             "iat one second further ahead than max age",
             { ...FRESH, iat: NOW_S + MAX_AGE_S + 1 },
             "NOT_YET_VALID",
         ],
-        ["nbf one second ahead (no skew)", { ...FRESH, nbf: NOW_S + 1 }, "NOT_YET_VALID"],
         ["absent exp", { iat: NOW_S }, "CLAIM_MISSING"],
         ["absent iat", { exp: NOW_S + 1 }, "CLAIM_MISSING"],
     ])("rejects %s", (_label, claims, code) => {
@@ -170,7 +174,78 @@ describe("checkTime (§6.4)", () => {
     );
 
     it("checks iat before nbf", () => {
-        expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 1 }), "time", "CLAIM_MISMATCH");
+        expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 301 }), "time", "CLAIM_MISMATCH");
+    });
+});
+
+// ADR 0013: a bounded 300 s skew on the not-yet-valid side only, pinned at ±1 ms.
+const SKEW_S = 300;
+const E = NOW_S + 3600;
+
+const timeAt =
+    (claims: JsonObject, nowMs: number, profile: TrustProfile = PROFILE) =>
+    (): void => {
+        checkTime(token(claims), profile, nowMs);
+    };
+
+describe("checkTime not-yet-valid skew (ADR 0013)", () => {
+    // Criterion 8: criteria 1–3 hold identically under both profile kinds; nothing reads profile_kind.
+    describe.each(["development", "production"] as const)("under a %s profile", (kind) => {
+        const profile = brandTrustProfile({ ...PROFILE, profile_kind: kind });
+        const short = brandTrustProfile({ ...profile, token_max_age_s: 60 });
+
+        it("criterion 1: nbf = now + 300 s passes at now and rejects NOT_YET_VALID 1 ms earlier", () => {
+            const claims = { exp: E, iat: NOW_S, nbf: NOW_S + SKEW_S };
+            expect(timeAt(claims, NOW_MS, profile)).not.toThrow();
+            expectRejected(timeAt(claims, NOW_MS - 1, profile), "time", "NOT_YET_VALID");
+        });
+
+        it("criterion 2: iat = now + 300 s passes at now and rejects NOT_YET_VALID 1 ms earlier", () => {
+            const claims = { exp: E, iat: NOW_S + SKEW_S };
+            expect(timeAt(claims, NOW_MS, profile)).not.toThrow();
+            expectRejected(timeAt(claims, NOW_MS - 1, profile), "time", "NOT_YET_VALID");
+        });
+
+        it("criterion 3: with token_max_age_s = 60 a future iat is bounded at 60 s", () => {
+            const claims = { exp: E, iat: NOW_S + 60 };
+            expect(timeAt(claims, NOW_MS, short)).not.toThrow();
+            expectRejected(timeAt(claims, NOW_MS - 1, short), "time", "NOT_YET_VALID");
+        });
+
+        it("criterion 3: with token_max_age_s = 60 the nbf bound stays 300 s", () => {
+            const claims = { exp: E, iat: NOW_S, nbf: NOW_S + SKEW_S };
+            expect(timeAt(claims, NOW_MS, short)).not.toThrow();
+        });
+    });
+
+    it("criterion 4: exp has no leeway: exp = now passes 1 ms earlier and rejects EXPIRED at now", () => {
+        const claims = { exp: NOW_S, iat: NOW_S - 60 };
+        expect(timeAt(claims, NOW_MS - 1)).not.toThrow();
+        expectRejected(timeAt(claims, NOW_MS), "time", "EXPIRED");
+    });
+
+    it.each<[string, JsonObject, AttestationErrorCode]>([
+        ["exp before nbf", { exp: NOW_S, iat: NOW_S, nbf: NOW_S + 301 }, "EXPIRED"],
+        ["past iat before nbf", { exp: E, iat: NOW_S - 3601, nbf: NOW_S + 301 }, "EXPIRED"],
+        [
+            "future iat before the nbf parse",
+            { exp: E, iat: NOW_S + 301, nbf: "x" },
+            "NOT_YET_VALID",
+        ],
+    ])("criterion 5: checks %s", (_label, claims, code) => {
+        expectRejected(timeAt(claims, NOW_MS), "time", code);
+    });
+
+    it("criterion 9: the skew constant is module-private", async () => {
+        const exports = Object.keys(await import("../../../src/attestation/checks/claims.js"));
+        expect(exports.sort()).toEqual([
+            "checkAudience",
+            "checkNonce",
+            "checkPlatform",
+            "checkSupportAttributes",
+            "checkTime",
+            "isDebugMode",
+        ]);
     });
 });
 
@@ -376,7 +451,7 @@ describe("own properties only", () => {
     });
 
     it("checkTime ignores an inherited nbf", () => {
-        expect(time(inheriting({ nbf: NOW_S + 60 }, FRESH))).not.toThrow();
+        expect(time(inheriting({ nbf: NOW_S + 301 }, FRESH))).not.toThrow();
     });
 
     it("checkNonce treats an inherited eat_nonce as CLAIM_MISSING", () => {
