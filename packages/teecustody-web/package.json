@@ -14,7 +14,7 @@
         "test": "vitest run",
         "coverage": "vitest run --coverage",
         "lint": "eslint . && prettier --check . && node ../../tools/scan-bundle.mjs --entry src/index.ts --alias @teecustody/core=../teecustody-core/src/index.ts",
-        "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+        "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.cli.json",
         "test:browser": "playwright test --pass-with-no-tests"
     },
     "dependencies": {
