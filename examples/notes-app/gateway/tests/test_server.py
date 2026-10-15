@@ -813,7 +813,7 @@ def test_readme_documents_uvicorn_config_parse_failures_and_the_connection_cap()
     readme = _readme()
     assert "uvicorn_config(app, limits=limits, host=" in readme
     assert "a request the HTTP parser rejects" in readme
-    assert "ws=\"none\"" in readme
+    assert 'ws="none"' in readme
     assert (
         "The connection cap is global, not per source: one source can hold up to "
         "`max_connections` connections for `header_read_timeout_s` each." in readme
