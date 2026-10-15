@@ -121,8 +121,9 @@ function harness(fails: (call: number) => boolean = () => false): Harness {
         return realExport(...args);
     }) as typeof subtle.exportKey);
     vi.spyOn(subtle, "deriveBits").mockImplementation(((...args: unknown[]) => {
-        const key = args[1] as CryptoKey;
-        log.push(`deriveBits ${algorithmName(args[0])} ${key.algorithm.name}`);
+        const key = args[1];
+        const keyAlgorithm = key instanceof CryptoKey ? key.algorithm.name : "not-a-CryptoKey";
+        log.push(`deriveBits ${algorithmName(args[0])} ${keyAlgorithm}`);
         return realDerive(...args);
     }) as typeof subtle.deriveBits);
     const count = (role: string): number =>
@@ -325,5 +326,38 @@ describe("a failed attempt leaves nothing (criterion 6, C8.4 a)", () => {
             "generateKey X25519 sender fail",
             "generateKey X25519 sender fail",
         ]);
+    });
+});
+
+describe("native only (criterion 7, C8.4 b and its clarification)", () => {
+    it("sends every attempt to the global subtle and makes one X25519 deriveBits per encap", async () => {
+        const { pk } = x25519();
+        const h = harness((call) => call === 2);
+        const injected = {
+            generateKey: vi.fn(),
+            deriveBits: vi.fn(),
+            exportKey: vi.fn(),
+        } as unknown as SubtleCrypto;
+        const crypto = createWebCrypto({ subtle: injected });
+        await crypto.setupHpkeSender(pk, INFO);
+        const generated = h.log.filter((e) => e.startsWith("generateKey "));
+        expect(generated).toEqual([
+            "generateKey X25519 probe ok",
+            "generateKey X25519 sender fail",
+            "generateKey X25519 sender ok",
+        ]);
+        const derived = h.log.filter((e) => e.startsWith("deriveBits "));
+        expect(derived.filter((e) => e.startsWith("deriveBits X25519 "))).toEqual([
+            "deriveBits X25519 X25519",
+        ]);
+        for (const entry of derived) {
+            expect(entry).toMatch(/^deriveBits (X25519 X25519|HKDF HKDF)$/);
+        }
+        const failed = h.log.indexOf("generateKey X25519 sender fail");
+        const retried = h.log.indexOf("generateKey X25519 sender ok");
+        expect(h.log.slice(failed + 1, retried)).toEqual([]);
+        for (const method of ["generateKey", "deriveBits", "exportKey"] as const) {
+            expect(Reflect.get(injected, method)).not.toHaveBeenCalled();
+        }
     });
 });
