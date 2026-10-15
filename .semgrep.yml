@@ -353,6 +353,18 @@ rules:
       include: ["/packages/**/*.ts"]
     pattern-regex: (["'`])@hpke/common(?:/[^"'`]*)?\1
 
+  - id: tc-ts-hpke-core-names
+    message: webcrypto.ts imports only CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm and error classes from @hpke/core (ADR 0011 C3a.2).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-web/src/crypto/webcrypto.ts"]
+    pattern-either:
+      - pattern-regex: \bimport\s*\{[^}]*?(?<![\w$])(?!(?:CipherSuite|DhkemX25519HkdfSha256|HkdfSha256|Aes256Gcm|[A-Za-z]+Error)(?![\w$]))[A-Za-z_$][\w$]*[^}]*\}\s*from\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bimport\s+(?:type\s+)?(?:\*|[A-Za-z_$][\w$]*)[^;'"`]*?from\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bexport\b[^;]*?\bfrom\s*["'`]@hpke/core["'`]
+      - pattern-regex: \bimport\s*\(\s*["'`]@hpke/core["'`]
+
   - id: tc-py-no-hpke-seams
     message: >-
       No HPKE test seam in production: no injected sender ephemeral key, PSK, PSK id or sender/auth

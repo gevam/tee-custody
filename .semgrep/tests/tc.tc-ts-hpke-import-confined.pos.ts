@@ -7,12 +7,12 @@ import type { KemId } from "@hpke/common";
 import * as dhkem from '@hpke/dhkem-x25519';
 // ruleid: tc-ts-hpke-import-confined
 import "@hpke/core";
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-core-names
 export { Aes256Gcm } from "@hpke/core";
 // ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-common-banned
 export * from "@hpke/common";
 export async function load(): Promise<unknown> {
-    // ruleid: tc-ts-hpke-import-confined, tc-ts-no-dynamic-import
+    // ruleid: tc-ts-hpke-import-confined, tc-ts-no-dynamic-import, tc-ts-hpke-core-names
     return import("@hpke/core");
 }
 // A3: comments between the keyword and the specifier do not hide the import.
