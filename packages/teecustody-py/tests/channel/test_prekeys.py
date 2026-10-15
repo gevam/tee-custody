@@ -1,6 +1,7 @@
 """T-22: `PreKeyStore` (INC-2-API §4.7; spec §4, §5.1; SR-14, NFR-3, SR-4)."""
 
 import math
+from collections.abc import Callable
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -400,13 +401,55 @@ def test_edge_a_key_that_cannot_be_signed_is_wiped_and_not_stored(
     captured = capture_private_keys(monkeypatch)
     store = make_store(clock=FakeClock(now))
 
-    with pytest.raises(ValueError, match=r"\ANOT_AFTER_RANGE\Z"):
+    with pytest.raises(ValueError):  # noqa: PT011 - the codec's message, not a §4.7 code
         store.top_up()
 
     assert len(captured) == 1
     assert captured[0].wiped
     assert store.public_entries() == ()
     assert store.expire() == 0
+
+
+class FailingClock:
+    """Answers `top_up`'s live count, then raises on the generation read."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> float:
+        self.calls += 1
+        if self.calls > 1:
+            raise OSError("clock unavailable")
+        return START
+
+
+@pytest.mark.parametrize(
+    ("make_clock", "error"),
+    [
+        (FailingClock, OSError),
+        (lambda: FakeClock(math.nan), ValueError),
+        (lambda: FakeClock(math.inf), OverflowError),
+    ],
+)
+def test_edge_a_clock_failure_during_generation_leaves_no_unwiped_key(
+    monkeypatch: pytest.MonkeyPatch,
+    make_clock: Callable[[], Callable[[], float]],
+    error: type[Exception],
+) -> None:
+    captured = capture_private_keys(monkeypatch)
+    store = PreKeyStore(
+        instance_id=INSTANCE_ID,
+        identity=IdentityKey.generate(),
+        image_digest=IMAGE_DIGEST,
+        params=ChannelParams(prekey_batch=10, prekey_low_water=3, prekey_ttl_s=600),
+        clock=make_clock(),
+    )
+
+    with pytest.raises(error):
+        store.top_up()
+
+    assert all(secret.wiped for secret in captured)
+    assert store._keys == {}  # white-box: nothing held
 
 
 def test_edge_ids_are_never_reused_after_destroy_all() -> None:

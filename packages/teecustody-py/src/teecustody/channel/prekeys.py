@@ -69,8 +69,8 @@ class PreKeyStore:
         if prekey_id > _MAX_PREKEY_ID:
             raise RuntimeError("PREKEY_IDS_EXHAUSTED")  # ids are never reused: restart
         self._next_id += 1
+        not_after = math.floor(self._clock()) + self._params.prekey_ttl_s  # before any key exists
         private, pub = hpke.generate_keypair()
-        not_after = math.floor(self._clock()) + self._params.prekey_ttl_s
         try:
             message = prekey_signing_message(
                 self._instance_id, prekey_id, pub, not_after, self._image_digest
