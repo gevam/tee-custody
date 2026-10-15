@@ -1338,3 +1338,21 @@ Participants: Tech Lead (Q1 triage), Architect (Q2, ADR 0013), Security Architec
 **Rationale:** spec §6.4 constrains only `exp` and `iat`. The leeway moves only the start of the acceptance window, and Google signs those claims. Real client and issuer skew would otherwise cause rejections right after every token refresh.
 
 **Dissent:** none
+
+## D-065 — QA-D-01 verdict; MU-2 cleared to merge (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, QA
+
+**Decision:**
+- inc-2/QA-D-01 (tip 6206e09; D-01 fixes 1–5 plus SIGINT/SIGTERM/exit harness cleanup) has Code Review APPROVE.
+  - Round 1 at db28d3b: REQUEST_CHANGES (a Medium: bare `TRANSPORT` was accepted; two Lows).
+  - Round 2 at 6206e09: APPROVE.
+  - The optional Low goes to B-43.
+  - Security review is not required: the change is test-only, owned by QA, and prints only codes and timing (verified by the reviewer with a tampered token).
+- D-01 acceptance: 10/10 plus 20/20 hunt runs (QA), plus 3/3 and 2/2 (reviewers).
+- MU-2 (D-062) is cleared to merge: T-31 at 661e63a (D-063), then QA-D-01 at 6206e09.
+- During the merge runs, a FR-4 failure whose diagnostics show `time/NOT_YET_VALID` is D-02, environmental (WSL2 clock steps, D-064). It does not stop the merge; rerun once. Any other FR-4 failure stops the merge.
+
+**Dissent:** none
