@@ -1,0 +1,2 @@
+# T-19 test sentinel base64("secret-body-bytes"), not a secret; Tech Lead A2 2026-10-15
+be3e5bec3a07a714095ec2a105b8410360115d9d:packages/teecustody-web/test/transport/fetch-transport.test.ts:generic-api-key:639
