@@ -828,7 +828,7 @@ def spy(monkeypatch: pytest.MonkeyPatch, order: list[str], target: object, name:
     monkeypatch.setattr(target, name, recorded)
 
 
-def test_tick_runs_steps_one_to_seven_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tick_runs_steps_one_to_seven_in_the_a1_order(monkeypatch: pytest.MonkeyPatch) -> None:
     params = ChannelParams(prekey_batch=4, prekey_low_water=1, refresh_margin_s=3599)
     world = World(monkeypatch, params=params, limits=BURN_LIMITS)
     answered(world, 1, b"req-1")
@@ -851,11 +851,11 @@ def test_tick_runs_steps_one_to_seven_in_order(monkeypatch: pytest.MonkeyPatch) 
         "expire",
         "top_up",
         "publish_bundle",
+        "expire_idle",
         "pull_requests",
         "process",
         "publish_response",
         "ack",
-        "expire_idle",
     ]
     assert order[-1] == "tick"
     assert set(order[order.index("consumed_since") : -1]) == {"consumed_since"}
@@ -1222,3 +1222,23 @@ def test_c14_a_failing_withdraw_in_run_is_reported_as_a_stop_not_a_raw_queue_err
         world.loop.run(stop)
 
     assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
+
+
+# ---------------------------------------------------------------- criterion 15 (A1): idle first
+def test_c15_a_session_idle_for_exactly_the_timeout_is_closed_before_its_frame_is_pulled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    open_session(world)
+    world.clock.now += PARAMS.idle_timeout_s
+    sessions = world.server.kwargs["sessions"]
+    seen: list[tuple[bool, list[tuple[SessionInfo, CloseReason]]]] = []
+    world.server.on_process = lambda _body: seen.append(
+        (sessions.get(SESSION_ID) is None, list(world.opener.closed_calls))
+    )
+    world.queue.inbox.append(message(1, b"frame-for-the-idle-session"))
+
+    world.loop.tick()
+
+    info = SessionInfo(CLIENT, SESSION_ID, world.loop.instance_id)
+    assert seen == [(True, [(info, CloseReason.IDLE_TIMEOUT)])]  # server answers SESSION_UNKNOWN
