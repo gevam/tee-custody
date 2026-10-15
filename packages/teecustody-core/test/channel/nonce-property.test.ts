@@ -35,7 +35,7 @@ function prng(seed: number): () => number {
 
 const SEALS = 1000;
 const LIMITS = { ...TEST_LIMITS, responseTimeoutMs: 1500, maxInFlight: 8 };
-const FAILURE_CODES = new Set(["TRANSPORT", "CRYPTO_UNAVAILABLE", "TIMEOUT"]);
+const FAILURE_CODES = new Set(["TRANSPORT", "CRYPTO_UNAVAILABLE", "TIMEOUT", "REMOTE_ERROR"]);
 
 let clock: FakeClock;
 
@@ -66,13 +66,20 @@ describe("criterion 8: R-5 nonce uniqueness property", () => {
             const spy = aeadSpy(flaky);
             workload.postFailure = () =>
                 random() < 0.1 ? new CapabilityError("UNAVAILABLE") : undefined;
-            workload.onFrame = (frame) =>
-                random() < 0.05 ? { kind: "silent" } : { kind: "ok", payload: frame.payload };
+            workload.onFrame = (frame) => {
+                const r = random();
+                return r < 0.05
+                    ? { kind: "silent" }
+                    : r < 0.15
+                      ? { kind: "error", error: "INTERNAL" }
+                      : { kind: "ok", payload: frame.payload };
+            };
             const client = new ChannelClient(
                 clientConfig(workload, clock, { crypto: spy.crypto, limits: LIMITS }),
             );
 
             let n = 0;
+            const outcomes = new Set<string>();
             while (spy.calls.length < SEALS) {
                 workload.postFailure = undefined;
                 const { session } = await client.open({
@@ -95,6 +102,7 @@ describe("criterion 8: R-5 nonce uniqueness property", () => {
                         if (result.status === "rejected") {
                             const error = result.reason as ChannelError;
                             expect(FAILURE_CODES.has(error.code)).toBe(true);
+                            outcomes.add(error.code);
                             // host retry = a new request(), which gets a new seq
                             await session
                                 .request("test.echo", map({ n: n++ }))
@@ -106,6 +114,7 @@ describe("criterion 8: R-5 nonce uniqueness property", () => {
             }
 
             expect(spy.calls.length).toBeGreaterThanOrEqual(SEALS);
+            expect([...outcomes].sort()).toEqual([...FAILURE_CODES].sort());
             const pairs = new Set(spy.calls.map((c) => `${c.keyHex}:${c.nonceHex}`));
             expect(pairs.size).toBe(spy.calls.length);
             const byKey = new Map<string, number[]>();
