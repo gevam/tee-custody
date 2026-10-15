@@ -1,8 +1,10 @@
 """T-24: the simulator's in-memory queue (INC-2-API §4.11, §5.1; spec §9, §15.2 item 5; SR-3, SR-4)."""
 
+from collections.abc import Callable
+
 import pytest
 
-from teecustody.queue import PublishedBundle, QueueError, QueueErrorCode
+from teecustody.queue import PublishedBundle, QueueError, QueueErrorCode, QueueMessage
 from teecustody_sim.backends import InMemoryQueue
 
 START = 1_800_000_000.0
@@ -83,3 +85,75 @@ def test_publish_request_without_a_live_bundle_is_not_found() -> None:
 
     assert _code(never) is QueueErrorCode.NOT_FOUND
     assert _code(expired) is QueueErrorCode.NOT_FOUND
+
+
+# ---------------------------------------------------------------- criterion 3: delivery and ack
+def _seq_rng() -> Callable[[int], bytes]:
+    counter = iter(range(1, 1_000_000))
+
+    def rng(n: int) -> bytes:
+        return next(counter).to_bytes(n, "big")
+
+    return rng
+
+
+def test_pulled_request_carries_message_id_relay_id_body_and_publish_time() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, rng=_seq_rng())
+    queue.publish_bundle(IID_A, b"a", int(START) + 600)
+    message_id = queue.publish_request(IID_A, "01" * 16, b"req")
+
+    [message] = queue.pull_requests(IID_A, 10, 0.0)
+
+    assert message_id == "00" * 15 + "01"
+    assert message == QueueMessage(message_id, "01" * 16, b"req", START)
+
+
+def test_unacked_request_reappears_after_the_ack_deadline() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, ack_deadline_s=30.0)
+    queue.publish_bundle(IID_A, b"a", int(START) + 600)
+    queue.publish_request(IID_A, "01" * 16, b"req")
+    [first] = queue.pull_requests(IID_A, 10, 0.0)
+
+    clock.now = START + 29.999
+    hidden = queue.pull_requests(IID_A, 10, 0.0)
+    clock.now = START + 30
+    [again] = queue.pull_requests(IID_A, 10, 0.0)
+
+    assert hidden == []
+    assert again == first
+
+
+def test_acked_request_never_reappears_and_unknown_ack_is_a_no_op() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, ack_deadline_s=30.0)
+    queue.publish_bundle(IID_A, b"a", int(START) + 600)
+    queue.publish_request(IID_A, "01" * 16, b"one")
+    queue.publish_request(IID_A, "02" * 16, b"two")
+    first, second = queue.pull_requests(IID_A, 10, 0.0)
+
+    queue.ack(first.message_id)
+    queue.ack(first.message_id)
+    queue.ack("ff" * 16)
+    clock.now = START + 31
+
+    assert queue.pull_requests(IID_A, 10, 0.0) == [second]
+
+
+def test_pull_returns_oldest_first_up_to_max_messages_for_the_named_instance_only() -> None:
+    clock = FakeClock()
+    queue = _queue(clock)
+    queue.publish_bundle(IID_A, b"a", int(START) + 600)
+    queue.publish_bundle(IID_B, b"b", int(START) + 600)
+    queue.publish_request(IID_A, "01" * 16, b"a1")
+    queue.publish_request(IID_B, "02" * 16, b"b1")
+    queue.publish_request(IID_A, "03" * 16, b"a2")
+    queue.publish_request(IID_A, "04" * 16, b"a3")
+
+    first = queue.pull_requests(IID_A, 2, 0.0)
+    rest = queue.pull_requests(IID_A, 2, 0.0)
+
+    assert [m.body for m in first] == [b"a1", b"a2"]
+    assert [m.body for m in rest] == [b"a3"]
+    assert [m.body for m in queue.pull_requests(IID_B, 10, 0.0)] == [b"b1"]

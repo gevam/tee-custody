@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from teecustody.audit import AppendResult, AuditClass, AuditErrorCode, AuditKey, AuditRecord
 from teecustody.queue import (
@@ -16,6 +17,13 @@ from teecustody.queue import (
     QueueMessage,
     ResponsePage,
 )
+
+
+@dataclass(slots=True)
+class _Request:
+    instance_id: str
+    message: QueueMessage
+    visible_at: float = field(default=float("-inf"))
 
 
 class InMemoryQueue:
@@ -33,9 +41,12 @@ class InMemoryQueue:
         clock: Callable[[], float] = time.time,
         rng: Callable[[int], bytes] = os.urandom,
     ) -> None:
+        self._ack_deadline_s = ack_deadline_s
         self._clock = clock
+        self._rng = rng
         self._cond = threading.Condition()
         self._bundles: dict[str, tuple[bytes, int]] = {}
+        self._requests: dict[str, _Request] = {}
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         with self._cond:
@@ -44,10 +55,20 @@ class InMemoryQueue:
     def pull_requests(
         self, instance_id: str, max_messages: int, wait_s: float
     ) -> list[QueueMessage]:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            now = self._clock()
+            due = [
+                request
+                for request in self._requests.values()
+                if request.instance_id == instance_id and request.visible_at <= now
+            ][:max_messages]
+            for request in due:
+                request.visible_at = now + self._ack_deadline_s
+            return [request.message for request in due]
 
     def ack(self, message_id: str) -> None:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            self._requests.pop(message_id, None)
 
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
         raise NotImplementedError("T-24")
@@ -69,10 +90,14 @@ class InMemoryQueue:
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         with self._cond:
-            self._purge(self._clock())
+            now = self._clock()
+            self._purge(now)
             if instance_id not in self._bundles:
                 raise QueueError(QueueErrorCode.NOT_FOUND)
-            raise NotImplementedError("T-24")
+            message_id = self._rng(16).hex()
+            message = QueueMessage(message_id, request_id, body, now)
+            self._requests[message_id] = _Request(instance_id, message)
+            return message_id
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
         raise NotImplementedError("T-24")
