@@ -7,7 +7,11 @@ import { verifyBundle } from "../../src/bundle/verify.js";
 import { CapabilityError, type Crypto, type HpkeSenderContext } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
-import { DEFAULT_CHANNEL_LIMITS } from "../../src/channel/types.js";
+import {
+    DEFAULT_CHANNEL_LIMITS,
+    type ChannelClientConfig,
+    type ChannelLimits,
+} from "../../src/channel/types.js";
 import {
     CLIENT,
     FakeClock,
@@ -645,5 +649,132 @@ describe("criterion 12: Crypto-port failures fail closed as CRYPTO_UNAVAILABLE",
         const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
         await failure(client.open({ op: "enroll" }));
         expect(spy.destroyed).toEqual([0]);
+    });
+});
+
+describe("constructor validation (TypeError INVALID_CONFIG)", () => {
+    it.each(["trustProfile", "transport", "crypto", "fetcher", "securityEvents", "clock"])(
+        "refuses a configuration without %s, or with it null",
+        (name) => {
+            const base = clientConfig(workload, clock) as unknown as Record<string, unknown>;
+            const without = Object.fromEntries(Object.entries(base).filter(([k]) => k !== name));
+            for (const config of [without, { ...base, [name]: null }, { ...base, [name]: 1 }]) {
+                expect(() => new ChannelClient(config as unknown as ChannelClientConfig)).toThrow(
+                    new TypeError("INVALID_CONFIG"),
+                );
+            }
+        },
+    );
+
+    it("accepts a configuration without limits (defaults) and with valid limits", () => {
+        const { limits, ...rest } = clientConfig(workload, clock);
+        expect(limits).toBeDefined();
+        expect(() => new ChannelClient(rest)).not.toThrow();
+        expect(() => new ChannelClient({ ...rest, limits: TEST_LIMITS })).not.toThrow();
+    });
+
+    const LEAVES: readonly (readonly string[])[] = [
+        ["maxBundles"],
+        ["bundle", "decode", "maxBytes"],
+        ["bundle", "decode", "maxDepth"],
+        ["bundle", "decode", "maxItems"],
+        ["bundle", "maxPrekeys"],
+        ["verifier", "maxTokenBytes"],
+        ["verifier", "maxDiscoveryBytes"],
+        ["verifier", "maxJwksBytes"],
+        ["envelopeDecode", "maxBytes"],
+        ["envelopeDecode", "maxDepth"],
+        ["envelopeDecode", "maxItems"],
+        ["aadDecode", "maxBytes"],
+        ["aadDecode", "maxDepth"],
+        ["aadDecode", "maxItems"],
+        ["payloadDecode", "maxBytes"],
+        ["payloadDecode", "maxDepth"],
+        ["payloadDecode", "maxItems"],
+        ["maxPayloadBytes"],
+        ["responseTimeoutMs"],
+        ["pollIntervalMs"],
+        ["maxInFlight"],
+        ["bundleMaxAgeMs"],
+    ];
+
+    function withLeaf(path: readonly string[], value: unknown): unknown {
+        const copy = JSON.parse(JSON.stringify(TEST_LIMITS)) as Record<string, unknown>;
+        let node = copy;
+        for (const key of path.slice(0, -1)) {
+            node = node[key] as Record<string, unknown>;
+        }
+        node[path[path.length - 1] as string] = value;
+        return copy;
+    }
+
+    it("covers every leaf of ChannelLimits", () => {
+        const leaves: string[] = [];
+        const walk = (node: unknown, path: string[]): void => {
+            if (typeof node === "object" && node !== null) {
+                for (const [k, v] of Object.entries(node)) {
+                    walk(v, [...path, k]);
+                }
+            } else {
+                leaves.push(path.join("."));
+            }
+        };
+        walk(TEST_LIMITS, []);
+        expect(leaves.sort()).toEqual(LEAVES.map((p) => p.join(".")).sort());
+    });
+
+    it.each(LEAVES.map((p) => [p.join("."), p] as const))(
+        "refuses limits whose %s is not a positive safe integer",
+        (_name, path) => {
+            for (const bad of [0, -1, 1.5, Number.NaN, Infinity, 2 ** 53, "8", undefined, null]) {
+                const limits = withLeaf(path, bad) as ChannelLimits;
+                expect(() => new ChannelClient(clientConfig(workload, clock, { limits }))).toThrow(
+                    new TypeError("INVALID_CONFIG"),
+                );
+            }
+        },
+    );
+
+    it.each(["bundle", "verifier", "envelopeDecode", "aadDecode", "payloadDecode"])(
+        "refuses limits whose %s group is missing",
+        (group) => {
+            const limits = { ...TEST_LIMITS, [group]: undefined } as unknown as ChannelLimits;
+            expect(() => new ChannelClient(clientConfig(workload, clock, { limits }))).toThrow(
+                new TypeError("INVALID_CONFIG"),
+            );
+        },
+    );
+
+    it("refuses non-object limits and a non-object config", () => {
+        const limits = 5 as unknown as ChannelLimits;
+        expect(() => new ChannelClient(clientConfig(workload, clock, { limits }))).toThrow(
+            new TypeError("INVALID_CONFIG"),
+        );
+        expect(() => new ChannelClient(null as unknown as ChannelClientConfig)).toThrow(
+            new TypeError("INVALID_CONFIG"),
+        );
+    });
+
+    it("snapshots the capabilities: replacing one on the config object later has no effect", async () => {
+        const config = { ...clientConfig(workload, clock) };
+        const client = new ChannelClient(config);
+        const other = new FakeWorkload(fx);
+        other.listFailure = new Error("the replaced transport must not be used");
+        (config as { transport: unknown }).transport = other;
+        await client.open(openSession());
+        expect(other.posts).toHaveLength(0);
+        expect(workload.posts).toHaveLength(1);
+    });
+
+    it("snapshots the limits: a later change by the host has no effect", async () => {
+        const limits = JSON.parse(JSON.stringify(TEST_LIMITS)) as { responseTimeoutMs: number };
+        const client = new ChannelClient(
+            clientConfig(workload, clock, { limits: limits as unknown as ChannelLimits }),
+        );
+        limits.responseTimeoutMs = 1;
+        workload.onOpen = () => ({ kind: "silent" });
+        const started = clock.now();
+        expect((await failure(client.open(openSession()))).code).toBe("TIMEOUT");
+        expect(clock.now() - started).toBeGreaterThanOrEqual(TEST_LIMITS.responseTimeoutMs);
     });
 });
