@@ -205,17 +205,21 @@ class RunLoop:
         return TickReport(refresh=refresh, bundle_published=bundle_published, processed=processed)
 
     def run(self, stop: threading.Event) -> None:
+        """Start, tick until `stop` is set, shut down; no raw `QueueError` escapes (A1, A2)."""
         try:
             self.start()
             while not stop.is_set():
                 self.tick()
                 if self._pull_skipped:
                     stop.wait(min(self._limits.pull_wait_s, self._next_queue_at - self._clock()))
-        finally:
-            try:
+        except BaseException:  # the original error wins over a failing withdraw (A2)
+            with contextlib.suppress(QueueError):
                 self.shutdown()
-            except QueueError:  # A1: no raw QueueError escapes the loop
-                raise WorkloadStopped(StopCode.QUEUE_UNAVAILABLE) from None
+            raise
+        try:
+            self.shutdown()
+        except QueueError as err:
+            raise WorkloadStopped(StopCode.QUEUE_UNAVAILABLE) from err
 
     def shutdown(self) -> None:
         """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""

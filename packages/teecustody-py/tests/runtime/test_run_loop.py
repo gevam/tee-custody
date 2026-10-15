@@ -1416,3 +1416,59 @@ def test_c16_expiry_before_a_due_republish_publishes_no_bundle(
     assert isinstance(outcome, WorkloadStopped)
     assert outcome.code is StopCode.ATTESTATION_EXPIRED
     assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+# ---------------------------------------------------------------- criterion 19 (A2 CL1): run errors
+def test_c19_a_tick_error_is_re_raised_unchanged_after_a_failing_shutdown_did_its_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    boom = RuntimeError("boom")
+    secrets: list[Secret] = []
+
+    def fail_processing(_body: bytes) -> None:
+        raise boom
+
+    def pull_into_a_failing_process(
+        instance_id: str, max_messages: int, wait_s: float
+    ) -> list[QueueMessage]:
+        secrets.append(open_session(world))
+        world.server.kwargs["audit"].count(AggregateOutcome.REQUEST_INVALID)
+        world.server.on_process = fail_processing
+        return [message(1, b"req-1")]
+
+    def failing_withdraw(instance_id: str) -> None:
+        raise unavailable()
+
+    monkeypatch.setattr(world.queue, "pull_requests", pull_into_a_failing_process)
+    monkeypatch.setattr(world.queue, "withdraw_bundle", failing_withdraw)
+
+    with pytest.raises(RuntimeError) as raised:
+        world.loop.run(BudgetStop())
+
+    assert raised.value is boom
+    [sk_c2t] = secrets
+    assert sk_c2t.wiped
+    assert [reason for _, reason in world.opener.closed_calls] == [CloseReason.SHUTDOWN]
+    assert world.server.kwargs["prekeys"].public_entries() == ()
+    assert [r.outcome for r in world.sink.of(AuditClass.AGGREGATE)] == ["REQUEST_INVALID"]
+
+
+def test_c19_a_failing_withdraw_after_a_normal_stop_is_chained_to_the_queue_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    stop = BudgetStop()
+    stop.set()
+    error = unavailable()
+
+    def failing_withdraw(instance_id: str) -> None:
+        raise error
+
+    monkeypatch.setattr(world.queue, "withdraw_bundle", failing_withdraw)
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.run(stop)
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
+    assert stopped.value.__cause__ is error
