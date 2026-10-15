@@ -907,3 +907,22 @@ describe("bundle choice", () => {
         expect([...seen.keys()].sort()).toEqual(fixtures.map((f) => f.instanceId).sort());
     });
 });
+
+describe("review R1: concurrent opens never share a pre-key", () => {
+    it("selects and marks the pre-key in one synchronous step", async () => {
+        const inner = workload.crypto;
+        const client = new ChannelClient(
+            clientConfig(workload, clock, {
+                crypto: {
+                    ...inner,
+                    // every uint32 draw is 0: the first unused candidate is always chosen
+                    randomBytes: (n) => (n === 4 ? new Uint8Array(4) : inner.randomBytes(n)),
+                },
+            }),
+        );
+        const bundle = brandedBundle(fx, clock.now());
+        await Promise.all([client.open(openSession(), bundle), client.open(openSession(), bundle)]);
+        const ids = workload.opens.map((o) => o.aad.get("prekey_id"));
+        expect(new Set(ids).size).toBe(2);
+    });
+});

@@ -156,11 +156,17 @@ async function establish(
     const bundle = await resolveBundle(deps, given);
     const instanceId = bundle.instanceId;
     const used = deps.usedPrekeys(instanceId);
-    const prekey = await viaCrypto(() => selectPreKey(bundle, used, clock.now(), crypto));
+    // Selected and marked used in one synchronous step: a concurrent open cannot pick the same pre-key.
+    const prekey = await viaCrypto(() => {
+        const chosen = selectPreKey(bundle, used, clock.now(), crypto);
+        if (chosen !== undefined) {
+            used.add(chosen.id);
+        }
+        return chosen;
+    });
     if (prekey === undefined) {
         throw new ChannelError("NO_USABLE_PREKEY");
     }
-    used.add(prekey.id);
     const pub = prekey.publicKey;
     const ikPub = bundle.identityPublicKey;
     const requestId = await viaCrypto(() => random16(crypto));
