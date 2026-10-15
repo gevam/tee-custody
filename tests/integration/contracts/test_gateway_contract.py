@@ -91,13 +91,25 @@ def test_responses_are_paged_with_cursors() -> None:
 def test_malformed_routes_are_rejected_without_a_queue_call() -> None:
     client = _client(InMemoryQueue())
     for path in (
-        f"/responses/{CLIENT}%0A",
         f"/responses/{CLIENT.upper()}",
         f"/responses/{CLIENT[:-1]}",
         f"/responses/{CLIENT}a",
     ):
         response = client.get(path)
         assert (response.status_code, response.json()) == (400, {"code": "INVALID_ARGUMENT"})
+
+
+def test_control_characters_in_the_path_are_not_found() -> None:
+    # INC-2-API §6 "Gateway hardening" (2026-10-15): a control character in the decoded path is a
+    # 404 before routing, so `/bundles%0A` can never match `/bundles`.
+    client = _client(InMemoryQueue())
+    responses = [
+        client.get(f"/responses/{CLIENT}%0A"),
+        client.get("/bundles%0A"),
+        client.post(f"/requests/{CLIENT}%0D", content=b"\x00"),
+    ]
+    for response in responses:
+        assert (response.status_code, response.json()) == (404, {"code": "NOT_FOUND"})
 
 
 def test_rate_limit_answers_429_with_retry_after() -> None:
