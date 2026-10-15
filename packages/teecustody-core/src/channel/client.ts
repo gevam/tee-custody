@@ -28,6 +28,7 @@ function transportError(error: unknown): ChannelError {
 
 interface Waiter {
     readonly owner: object;
+    readonly deadline: number;
     match(body: Bytes): Promise<unknown>;
     resolve(value: unknown): void;
     reject(error: unknown): void;
@@ -67,6 +68,7 @@ class Router implements SessionLink {
         return new Promise<T>((resolve, reject) => {
             state.waiters.add({
                 owner,
+                deadline: this.#clock.now() + this.#limits.responseTimeoutMs,
                 match,
                 resolve: resolve as (value: unknown) => void,
                 reject,
@@ -108,11 +110,16 @@ class Router implements SessionLink {
 
     async #poll(route: ClientId, state: RouteState): Promise<void> {
         while (state.waiters.size > 0) {
-            const page = await this.#transport.getResponses(route, state.cursor);
-            state.cursor = page.next ?? state.cursor;
-            for (const response of page.responses) {
-                await this.#dispatch(state, response.body);
+            try {
+                const page = await this.#transport.getResponses(route, state.cursor);
+                state.cursor = page.next ?? state.cursor;
+                for (const response of page.responses) {
+                    await this.#dispatch(state, response.body);
+                }
+            } catch {
+                // A transport error is retried on the next poll until the waiters time out.
             }
+            this.#expire(state);
             if (state.waiters.size > 0) {
                 await this.#clock.sleep(this.#limits.pollIntervalMs);
             }
@@ -120,12 +127,28 @@ class Router implements SessionLink {
         state.polling = false;
     }
 
+    // Each body goes to every pending waiter; an unmatched body is discarded.
     async #dispatch(state: RouteState, body: Bytes): Promise<void> {
         for (const waiter of [...state.waiters]) {
-            const result = await waiter.match(body);
-            if (result !== undefined) {
+            try {
+                const result = await waiter.match(body);
+                if (result !== undefined) {
+                    state.waiters.delete(waiter);
+                    waiter.resolve(result);
+                }
+            } catch (error) {
                 state.waiters.delete(waiter);
-                waiter.resolve(result);
+                waiter.reject(error);
+            }
+        }
+    }
+
+    #expire(state: RouteState): void {
+        const now = this.#clock.now();
+        for (const waiter of state.waiters) {
+            if (now >= waiter.deadline) {
+                state.waiters.delete(waiter);
+                waiter.reject(new ChannelError("TIMEOUT"));
             }
         }
     }

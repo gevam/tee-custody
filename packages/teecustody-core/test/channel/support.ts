@@ -327,10 +327,13 @@ export class FakeWorkload implements Transport {
         if (action.kind === "error") {
             this.publish(
                 route,
-                await sealOpenResult(this.crypto, keyT2c, null, requestId, {
-                    ok: false,
-                    error: action.error,
-                } as unknown as CanonicalValue),
+                await sealOpenResult(
+                    this.crypto,
+                    keyT2c,
+                    null,
+                    requestId,
+                    map({ ok: false, error: action.error }),
+                ),
             );
             return;
         }

@@ -7,6 +7,7 @@ import { verifyBundle } from "../../src/bundle/verify.js";
 import { CapabilityError } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
+import { DEFAULT_CHANNEL_LIMITS } from "../../src/channel/types.js";
 import {
     CLIENT,
     FakeClock,
@@ -20,9 +21,12 @@ import {
     brandedBundle,
     clientConfig,
     instanceFixture,
+    sealFrameResult,
+    sealOpenResult,
     senderSpy,
     zeroed,
     type InstanceFixture,
+    type SeenOpen,
 } from "./support.js";
 
 vi.mock("../../src/bundle/verify.js", () => ({ verifyBundle: vi.fn() }));
@@ -343,5 +347,146 @@ describe("criterion 5: a failed post", () => {
         expect(prekeyOf(retryPost?.body ?? new Uint8Array())).not.toBe(
             prekeyOf(failedPost?.body ?? new Uint8Array()),
         );
+    });
+});
+
+describe("criterion 6: unauthenticated responses are ignored (SR-4, FR-4 §5.6)", () => {
+    function flip(body: Uint8Array): Uint8Array {
+        const out = body.slice();
+        out[out.length - 1] = (out[out.length - 1] ?? 0) ^ 1;
+        return out;
+    }
+
+    async function noise(seen: SeenOpen | undefined, count: number): Promise<Uint8Array[]> {
+        if (seen === undefined) {
+            return [];
+        }
+        const requestId = seen.aad.get("request_id") as Uint8Array;
+        const otherId = requestId.map((b) => b ^ 0xff);
+        const sessionId = new Uint8Array(16).fill(1);
+        const genuine = await sealOpenResult(
+            workload.crypto,
+            seen.keyT2c,
+            sessionId,
+            requestId,
+            map({ ok: true, payload: null }),
+        );
+        const kinds = [
+            new Uint8Array([0xff, 0x00, 0x01]),
+            await sealOpenResult(
+                workload.crypto,
+                seen.keyT2c,
+                sessionId,
+                otherId,
+                map({ ok: true, payload: null }),
+            ),
+            flip(genuine),
+            await sealOpenResult(
+                workload.crypto,
+                new Uint8Array(32).fill(9),
+                sessionId,
+                requestId,
+                map({ ok: true, payload: null }),
+            ),
+            await sealFrameResult(
+                workload.crypto,
+                seen.keyT2c,
+                sessionId,
+                1,
+                "test.echo",
+                map({ re: 0, ok: true, payload: null }),
+            ),
+        ];
+        return Array.from({ length: count }, (_, i) => kinds[i % kinds.length] as Uint8Array);
+    }
+
+    it("ignores garbage, another request id, a bit-flipped ct, a wrong key and a frame result", async () => {
+        workload.beforeAnswer = (_route, seen) => noise(seen, 5);
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const { session } = await client.open(openSession());
+        expect(session.clientId).toBe(CLIENT);
+    });
+
+    it("survives a flood of 1 000 such bodies before the real answer (SR-4 victim flood)", async () => {
+        workload.beforeAnswer = (_route, seen) => noise(seen, 1000);
+        const client = new ChannelClient(
+            clientConfig(workload, clock, { limits: DEFAULT_CHANNEL_LIMITS }),
+        );
+        const { session } = await client.open(openSession());
+        expect(session.instanceId).toBe(fx.instanceId);
+        expect(workload.polls.length).toBeGreaterThan(1000 / workload.pageSize);
+        expect(clock.sleeps.every((ms) => ms === DEFAULT_CHANNEL_LIMITS.pollIntervalMs)).toBe(true);
+    });
+
+    it.each([
+        ["ok with a nil session id", null, map({ ok: true, payload: null })],
+        [
+            "an error with a session id",
+            new Uint8Array(16).fill(2),
+            map({ ok: false, error: "INTERNAL" }),
+        ],
+        ["a plaintext outside the schema", new Uint8Array(16).fill(2), map({ ok: "yes" })],
+    ])("fails INVALID_RESPONSE on an authenticated %s (R-3)", async (_name, sessionId, body) => {
+        const spy = senderSpy(workload.crypto);
+        workload.onOpen = () => ({ kind: "silent" });
+        workload.beforeAnswer = async (_route, seen) =>
+            seen === undefined
+                ? []
+                : [
+                      await sealOpenResult(
+                          workload.crypto,
+                          seen.keyT2c,
+                          sessionId,
+                          seen.aad.get("request_id") as Uint8Array,
+                          body,
+                      ),
+                  ];
+        const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
+        expect((await failure(client.open(openSession()))).code).toBe("INVALID_RESPONSE");
+        expect(spy.exported.every(zeroed)).toBe(true);
+    });
+
+    it.each([
+        ["AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"],
+        ["UNKNOWN_OPERATION", "UNKNOWN_OPERATION"],
+        ["SOMETHING_NEW", "UNKNOWN"],
+    ])(
+        "fails REMOTE_ERROR on ok:false %s, with the mapped detail and zeroed keys",
+        async (code, detail) => {
+            const spy = senderSpy(workload.crypto);
+            workload.onOpen = () => ({ kind: "error", error: code });
+            const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
+            const error = await failure(client.open(openSession()));
+            expect([error.code, error.detail]).toEqual(["REMOTE_ERROR", detail]);
+            expect(spy.exported.every(zeroed)).toBe(true);
+        },
+    );
+
+    it("fails TIMEOUT after responseTimeoutMs without an answer, with zeroed keys", async () => {
+        const spy = senderSpy(workload.crypto);
+        workload.onOpen = () => ({ kind: "silent" });
+        const client = new ChannelClient(clientConfig(workload, clock, { crypto: spy.crypto }));
+        const started = clock.now();
+        expect((await failure(client.open(openSession()))).code).toBe("TIMEOUT");
+        expect(clock.now() - started).toBeGreaterThanOrEqual(TEST_LIMITS.responseTimeoutMs);
+        expect(clock.now() - started).toBeLessThan(
+            TEST_LIMITS.responseTimeoutMs + 2 * TEST_LIMITS.pollIntervalMs,
+        );
+        expect(spy.exported.every(zeroed)).toBe(true);
+    });
+
+    it("retries polling after transport errors until the answer arrives", async () => {
+        let failures = 3;
+        workload.pollFailure = () =>
+            failures-- > 0 ? new CapabilityError("UNAVAILABLE") : undefined;
+        const client = new ChannelClient(clientConfig(workload, clock));
+        await client.open(openSession());
+        expect(workload.polls).toHaveLength(4);
+    });
+
+    it("fails TIMEOUT when every poll fails", async () => {
+        workload.pollFailure = () => new CapabilityError("UNAVAILABLE");
+        const client = new ChannelClient(clientConfig(workload, clock));
+        expect((await failure(client.open(openSession()))).code).toBe("TIMEOUT");
     });
 });
