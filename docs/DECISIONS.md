@@ -1204,3 +1204,18 @@ Participants: Code Reviewer, Security Reviewer (T-27)
 - The remaining eval/Function tripwire variants are accepted residual. Per INC-2-API §9.2 the scan is a tripwire and the enforce-mode CSP is the control.
 
 **Dissent:** none
+
+## D-058 — Human approves the T-30 channel vector suite (INC-2, 2026-10-15)
+
+Type: human-escalation
+Chair / decider: Human
+Participants: Orchestrator, Code Reviewer, Security Reviewer
+
+**Decision:** The human approved inc-2/T-30-channel-vectors @ e4c92af, which adds spec/vectors/channel/suite.cbor (62,977 B, sha256 55c48ed476361fbd1aaec7d8c65234badf3e80f6087e3452bc9149cc073a965c). It has 58 named cases: opens 7, frames 16, bundles 15, layouts 11, results 9. They match the outcome table approved in D-048. The trust profile is development-only with test-only keys.
+
+- Code Review: APPROVE. A regeneration from main is structurally identical, the Python harness passes 236/236 and the TS contract test passes 6/6.
+- Security Review: APPROVE, no findings. Every case was re-verified with independent crypto.
+
+**Follow-up:** B-36. `.gitleaks.toml` allow-lists all of suite.cbor, so a future regeneration gets no secret scan. Replace the allow-list with fingerprint entries for the known simulator JWTs, or with a CI check that the suite contains no PEM or private-key fields.
+
+**Dissent:** none
