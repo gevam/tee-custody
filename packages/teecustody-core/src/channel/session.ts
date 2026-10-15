@@ -23,6 +23,7 @@ import {
 } from "./wire.js";
 
 const SESSION_TOKEN = Symbol("Session");
+const CLOSE_PAYLOAD = encodeCanonical(null);
 
 // The response router a Session and an open share (ChannelClient implements it; internal).
 export interface SessionLink {
@@ -143,6 +144,7 @@ export class Session {
     #lastT2cSeq = 0;
     #pending = 0;
     #closed = false;
+    #live = true;
 
     // TypeError("INVALID_CONFIG") unless token is the module-private symbol of session.ts
     constructor(token: symbol, init: SessionInit) {
@@ -201,6 +203,9 @@ export class Session {
     async #exchange(op: string, payloadBytes: Bytes): Promise<CanonicalValue> {
         const { seq, envelope } = await this.#sealNext(op, payloadBytes);
         await this.#link.post(this.instanceId, envelope);
+        if (!this.#live) {
+            throw new ChannelError("SESSION_CLOSED");
+        }
         const match = await this.#link.wait(this.clientId, this, async (body) => {
             const result = await readFrameResult(
                 this.#crypto,
@@ -248,6 +253,10 @@ export class Session {
 
     // Local close: keys zeroed, pending requests released, route detached.
     #shutdown(): void {
+        if (!this.#live) {
+            return;
+        }
+        this.#live = false;
         this.#closed = true;
         this.#keyC2t.fill(0);
         this.#keyT2c.fill(0);
@@ -256,8 +265,16 @@ export class Session {
     }
 
     // sends op "close"; idempotent; destroys keys even on failure
-    close(): Promise<void> {
-        throw new Error("NOT_IMPLEMENTED: T-26");
+    async close(): Promise<void> {
+        if (this.#closed) {
+            return;
+        }
+        this.#closed = true;
+        try {
+            await this.#exchange("close", CLOSE_PAYLOAD);
+        } finally {
+            this.#shutdown();
+        }
     }
 }
 

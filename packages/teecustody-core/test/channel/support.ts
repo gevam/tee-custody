@@ -88,10 +88,11 @@ export class FakeClock implements Clock {
         return this.t;
     }
 
+    // Resolves on the next macrotask so platform work (WebCrypto) interleaves as it would with real timers.
     sleep(ms: number): Promise<void> {
         this.sleeps.push(ms);
         this.t += ms;
-        return Promise.resolve();
+        return new Promise((resolve) => setImmediate(resolve));
     }
 }
 
@@ -227,6 +228,8 @@ export class FakeWorkload implements Transport {
     listFailure: Error | undefined;
     postFailure: (() => Error | undefined) | undefined;
     pollFailure: (() => Error | undefined) | undefined;
+    // Awaited at the start of every post (a slow relay).
+    postGate: (() => Promise<void>) | undefined;
     onOpen: (open: SeenOpen) => OpenAction = () => ({ kind: "ok", payload: null });
     onFrame: (frame: SeenFrame) => FrameAction = (frame) =>
         frame.op === "close"
@@ -263,6 +266,7 @@ export class FakeWorkload implements Transport {
 
     async postRequest(instance: string, body: Bytes): Promise<string> {
         this.posts.push({ instance, body: body.slice() });
+        await this.postGate?.();
         const failure = this.postFailure?.();
         if (failure !== undefined) {
             throw failure;
@@ -463,4 +467,28 @@ export function senderSpy(inner: Crypto): SenderSpy {
 
 export function zeroed(b: Bytes): boolean {
     return b.every((x) => x === 0);
+}
+
+export interface KeySpy {
+    readonly crypto: Crypto;
+    readonly encryptKeys: Bytes[]; // key buffers passed to aes256GcmEncrypt, as passed
+    readonly decryptKeys: Bytes[]; // key buffers passed to aes256GcmDecrypt, as passed
+}
+
+// Records the key buffers the client hands to the AEAD, so tests can check that they were zeroed.
+export function keySpy(inner: Crypto): KeySpy {
+    const encryptKeys: Bytes[] = [];
+    const decryptKeys: Bytes[] = [];
+    const crypto: Crypto = {
+        ...inner,
+        aes256GcmEncrypt: (key, n, aad, pt) => {
+            encryptKeys.push(key);
+            return inner.aes256GcmEncrypt(key, n, aad, pt);
+        },
+        aes256GcmDecrypt: (key, n, aad, ct) => {
+            decryptKeys.push(key);
+            return inner.aes256GcmDecrypt(key, n, aad, ct);
+        },
+    };
+    return { crypto, encryptKeys, decryptKeys };
 }

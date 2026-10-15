@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { verifyBundle } from "../../src/bundle/verify.js";
-import { CapabilityError } from "../../src/capabilities.js";
+import { CapabilityError, type Crypto } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
 import type { Session } from "../../src/channel/session.js";
@@ -20,7 +20,9 @@ import {
     clientConfig,
     hex,
     instanceFixture,
+    keySpy,
     map,
+    zeroed,
     sealFrameResult,
     type FakeSession,
     type InstanceFixture,
@@ -47,8 +49,11 @@ beforeEach(async () => {
     );
 });
 
-async function connect(limits: ChannelLimits = TEST_LIMITS): Promise<Session> {
-    const client = new ChannelClient(clientConfig(workload, clock, { limits }));
+async function connect(
+    limits: ChannelLimits = TEST_LIMITS,
+    crypto: Crypto = workload.crypto,
+): Promise<Session> {
+    const client = new ChannelClient(clientConfig(workload, clock, { limits, crypto }));
     const { session } = await client.open({
         op: "open_session",
         clientId: CLIENT,
@@ -225,5 +230,95 @@ describe("criterion 7: Session.request", () => {
         expect(session.closed).toBe(true);
         expect((await failure(session.request("test.echo", echo(7)))).code).toBe("SESSION_CLOSED");
         expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4, 5]);
+    });
+});
+
+describe("criterion 10: close", () => {
+    async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
+        const spy = keySpy(workload.crypto);
+        const session = await connect(TEST_LIMITS, spy.crypto);
+        await session.request("test.echo", echo(0));
+        return { session, keys: () => [...spy.encryptKeys, ...spy.decryptKeys] };
+    }
+
+    it("seals op close with a null payload, waits for its result and zeroes the keys", async () => {
+        const { session, keys } = await keyed();
+        await session.close();
+        const last = workload.frames.at(-1);
+        expect([last?.op, last?.payload, last?.seq]).toEqual(["close", null, 1]);
+        expect(session.closed).toBe(true);
+        expect(keys().length).toBeGreaterThanOrEqual(2);
+        expect(keys().every(zeroed)).toBe(true);
+        expect((await failure(session.request("test.echo", echo(1)))).code).toBe("SESSION_CLOSED");
+        await session.close();
+        expect(workload.frames).toHaveLength(2);
+        expect(workload.posts).toHaveLength(3);
+    });
+
+    it("zeroes the keys and is closed when the transport fails; a second close is a no-op", async () => {
+        const { session, keys } = await keyed();
+        workload.postFailure = () => new CapabilityError("UNAVAILABLE");
+        const error = await failure(session.close());
+        expect([error.code, error.detail]).toEqual(["TRANSPORT", "UNAVAILABLE"]);
+        expect(session.closed).toBe(true);
+        expect(keys().every(zeroed)).toBe(true);
+        const posts = workload.posts.length;
+        await expect(session.close()).resolves.toBeUndefined();
+        expect(workload.posts).toHaveLength(posts);
+    });
+
+    it("zeroes the keys when the close result never comes (TIMEOUT)", async () => {
+        const { session, keys } = await keyed();
+        workload.onFrame = () => ({ kind: "silent" });
+        expect((await failure(session.close())).code).toBe("TIMEOUT");
+        expect(session.closed).toBe(true);
+        expect(keys().every(zeroed)).toBe(true);
+    });
+
+    it("surfaces a refused close as REMOTE_ERROR, still closed", async () => {
+        const { session, keys } = await keyed();
+        workload.onFrame = () => ({ kind: "error", error: "INTERNAL" });
+        const error = await failure(session.close());
+        expect([error.code, error.detail]).toEqual(["REMOTE_ERROR", "INTERNAL"]);
+        expect(session.closed).toBe(true);
+        expect(keys().every(zeroed)).toBe(true);
+    });
+
+    it("releases a pending request with SESSION_CLOSED", async () => {
+        const session = await connect();
+        workload.onFrame = (frame) =>
+            frame.op === "close" ? { kind: "ok", payload: null } : { kind: "silent" };
+        const pending = session.request("test.slow", null);
+        await session.close();
+        expect((await failure(pending)).code).toBe("SESSION_CLOSED");
+    });
+
+    it("releases a request whose post was still in flight when the session closed", async () => {
+        const session = await connect();
+        let release: () => void = () => undefined;
+        workload.postGate = () =>
+            new Promise<void>((resolve) => {
+                release = resolve;
+            });
+        const pending = session.request("test.echo", echo(0));
+        await vi.waitFor(() => {
+            expect(workload.posts).toHaveLength(2);
+        });
+        workload.postGate = undefined;
+        workload.postFailure = () => new CapabilityError("UNAVAILABLE");
+        await failure(session.close());
+        workload.postFailure = undefined;
+        release();
+        expect((await failure(pending)).code).toBe("SESSION_CLOSED");
+    });
+
+    it("closes locally without sending when the seq space is exhausted", async () => {
+        const session = await connect();
+        for (let n = 0; n <= 5; n += 1) {
+            await session.request("test.echo", echo(n));
+        }
+        expect((await failure(session.close())).code).toBe("SEQUENCE_EXHAUSTED");
+        expect(session.closed).toBe(true);
+        expect(workload.frames).toHaveLength(6);
     });
 });
