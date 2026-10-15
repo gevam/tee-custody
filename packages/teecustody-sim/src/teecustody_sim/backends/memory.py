@@ -22,15 +22,21 @@ from teecustody.queue import (
     ResponsePage,
 )
 
-
 # Response cursor: the decimal per-client sequence number of the last returned response.
 _CURSOR_PATTERN: Final = re.compile(r"0|[1-9][0-9]{0,19}")  # fullmatch only (R-7)
+
+
+@dataclass(frozen=True, slots=True)
+class _Response:
+    seq: int
+    published_at: float
+    response: PublishedResponse
 
 
 @dataclass(slots=True)
 class _Route:
     last_seq: int = 0
-    responses: deque[tuple[int, PublishedResponse]] = field(default_factory=deque)
+    responses: deque[_Response] = field(default_factory=deque)
 
 
 @dataclass(slots=True)
@@ -56,15 +62,26 @@ class InMemoryQueue:
         rng: Callable[[int], bytes] = os.urandom,
     ) -> None:
         self._ack_deadline_s = ack_deadline_s
+        self._request_retention_s = request_retention_s
+        self._response_retention_s = response_retention_s
+        self._max_topic_depth = max_topic_depth
+        self._max_bundles = max_bundles
         self._clock = clock
         self._rng = rng
         self._cond = threading.Condition()
         self._bundles: dict[str, tuple[bytes, int]] = {}
         self._requests: dict[str, _Request] = {}
         self._routes: dict[str, _Route] = {}
+        self._response_depth = 0
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         with self._cond:
+            now = self._clock()
+            self._purge(now)
+            if expires_at <= now:
+                raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+            if instance_id not in self._bundles and len(self._bundles) >= self._max_bundles:
+                raise QueueError(QueueErrorCode.UNAVAILABLE)
             self._bundles[instance_id] = (bundle, expires_at)
 
     def pull_requests(
@@ -74,6 +91,7 @@ class InMemoryQueue:
         with self._cond:
             while True:
                 now = self._clock()
+                self._purge(now)
                 due = self._visible(instance_id, now)[:max_messages]
                 remaining = deadline - time.monotonic()
                 if due or remaining <= 0:
@@ -85,16 +103,25 @@ class InMemoryQueue:
 
     def ack(self, message_id: str) -> None:
         with self._cond:
+            self._purge(self._clock())
             self._requests.pop(message_id, None)
 
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
         with self._cond:
+            now = self._clock()
+            self._purge(now)
+            if self._response_depth >= self._max_topic_depth:
+                raise QueueError(QueueErrorCode.UNAVAILABLE)
             route = self._routes.setdefault(client_id, _Route())
             route.last_seq += 1
-            route.responses.append((route.last_seq, PublishedResponse(request_id, body)))
+            route.responses.append(
+                _Response(route.last_seq, now, PublishedResponse(request_id, body))
+            )
+            self._response_depth += 1
 
     def withdraw_bundle(self, instance_id: str) -> None:
         with self._cond:
+            self._purge(self._clock())
             self._bundles.pop(instance_id, None)
 
     def list_bundles(self, max_bundles: int) -> list[PublishedBundle]:
@@ -114,6 +141,20 @@ class InMemoryQueue:
         expired = [iid for iid, (_, expires_at) in self._bundles.items() if expires_at <= now]
         for instance_id in expired:
             del self._bundles[instance_id]
+        stale = [
+            message_id
+            for message_id, request in self._requests.items()
+            if now - request.message.published_at >= self._request_retention_s
+        ]
+        for message_id in stale:
+            del self._requests[message_id]
+        for route in self._routes.values():
+            while (
+                route.responses
+                and now - route.responses[0].published_at >= self._response_retention_s
+            ):
+                route.responses.popleft()
+                self._response_depth -= 1
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         with self._cond:
@@ -121,6 +162,8 @@ class InMemoryQueue:
             self._purge(now)
             if instance_id not in self._bundles:
                 raise QueueError(QueueErrorCode.NOT_FOUND)
+            if len(self._requests) >= self._max_topic_depth:
+                raise QueueError(QueueErrorCode.UNAVAILABLE)
             message_id = self._rng(16).hex()
             message = QueueMessage(message_id, request_id, body, now)
             self._requests[message_id] = _Request(instance_id, message)
@@ -129,6 +172,7 @@ class InMemoryQueue:
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
         with self._cond:
+            self._purge(self._clock())
             route = self._routes.get(client_id, _Route())
             if after is None:
                 floor = 0
@@ -136,12 +180,10 @@ class InMemoryQueue:
                 floor = int(after)
             else:
                 raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
-            page = [(seq, response) for seq, response in route.responses if seq > floor][
-                :max_messages
-            ]
+            page = [entry for entry in route.responses if entry.seq > floor][:max_messages]
             if not page:
                 return ResponsePage((), None)
-            return ResponsePage(tuple(response for _, response in page), str(page[-1][0]))
+            return ResponsePage(tuple(entry.response for entry in page), str(page[-1].seq))
 
 
 class InMemoryAuditSink:

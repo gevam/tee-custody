@@ -1,4 +1,4 @@
-"""T-24: the simulator's in-memory queue (INC-2-API §4.11, §5.1; spec §9, §15.2 item 5; SR-3, SR-4)."""
+"""T-24: the simulator in-memory queue (INC-2-API §4.11, §5.1; spec §9, §15.2; SR-3, SR-4)."""
 
 import threading
 import time
@@ -260,3 +260,97 @@ def test_cursor_sequences_are_per_client() -> None:
     page = queue.pull_responses(OTHER_CLIENT, None, 10)
 
     assert page == ResponsePage((PublishedResponse("ff" * 16, b"other"),), "1")
+
+
+# ---------------------------------------------------------------- criterion 6: retention and depth
+def test_requests_older_than_retention_are_dropped_even_if_unacked() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, request_retention_s=300.0, ack_deadline_s=1.0)
+    queue.publish_bundle(IID_A, b"a", int(START) + 3600)
+    queue.publish_request(IID_A, "01" * 16, b"old")
+    clock.now = START + 100
+    queue.publish_request(IID_A, "02" * 16, b"new")
+
+    clock.now = START + 299.999
+    before = queue.pull_requests(IID_A, 10, 0.0)
+    clock.now = START + 301
+    after = queue.pull_requests(IID_A, 10, 0.0)
+    clock.now = START + 401
+    last = queue.pull_requests(IID_A, 10, 0.0)
+
+    assert [m.body for m in before] == [b"old", b"new"]
+    assert [m.body for m in after] == [b"new"]
+    assert last == []
+
+
+def test_responses_older_than_retention_are_dropped() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, response_retention_s=300.0)
+    queue.publish_response(CLIENT, "01" * 16, b"old")
+    clock.now = START + 100
+    queue.publish_response(CLIENT, "02" * 16, b"new")
+
+    clock.now = START + 300
+    page = queue.pull_responses(CLIENT, None, 10)
+
+    assert page == ResponsePage((PublishedResponse("02" * 16, b"new"),), "2")
+
+
+def test_full_request_topic_is_unavailable_until_it_drains() -> None:
+    queue = _queue(FakeClock(), max_topic_depth=2)
+    queue.publish_bundle(IID_A, b"a", int(START) + 600)
+    queue.publish_bundle(IID_B, b"b", int(START) + 600)
+    queue.publish_request(IID_A, "01" * 16, b"1")
+    queue.publish_request(IID_B, "02" * 16, b"2")
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_request(IID_A, "03" * 16, b"3")
+    [message] = queue.pull_requests(IID_B, 10, 0.0)
+    queue.ack(message.message_id)
+    queue.publish_request(IID_A, "03" * 16, b"3")
+
+    assert _code(caught) is QueueErrorCode.UNAVAILABLE
+    assert [m.body for m in queue.pull_requests(IID_A, 10, 0.0)] == [b"1", b"3"]
+
+
+def test_full_response_topic_is_unavailable_until_retention_drains_it() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, max_topic_depth=2, response_retention_s=300.0)
+    queue.publish_response(CLIENT, "01" * 16, b"1")
+    queue.publish_response(OTHER_CLIENT, "02" * 16, b"2")
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_response(CLIENT, "03" * 16, b"3")
+    clock.now = START + 300
+    queue.publish_response(CLIENT, "03" * 16, b"3")
+
+    assert _code(caught) is QueueErrorCode.UNAVAILABLE
+    assert queue.pull_responses(CLIENT, None, 10) == ResponsePage(
+        (PublishedResponse("03" * 16, b"3"),), "2"
+    )
+
+
+def test_bundles_beyond_max_bundles_live_instances_are_unavailable() -> None:
+    clock = FakeClock()
+    queue = _queue(clock, max_bundles=2)
+    queue.publish_bundle(IID_A, b"a", int(START) + 10)
+    queue.publish_bundle(IID_B, b"b", int(START) + 600)
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_bundle("cc" * 16, b"c", int(START) + 600)
+    queue.publish_bundle(IID_B, b"b2", int(START) + 600)
+    clock.now = START + 10
+    queue.publish_bundle("cc" * 16, b"c", int(START) + 600)
+
+    assert _code(caught) is QueueErrorCode.UNAVAILABLE
+    assert [b.bundle for b in queue.list_bundles(10)] == [b"b2", b"c"]
+
+
+def test_bundle_already_expired_at_publish_is_invalid_argument() -> None:
+    queue = _queue(FakeClock(START + 0.5))
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_bundle(IID_A, b"a", int(START))
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+    assert queue.list_bundles(10) == []
