@@ -17,6 +17,14 @@ Revision 3 addendum (2026-10-13):
 - §7.1, §7.2: branded byte fields are copy-on-read getters (T-02 security review, DESIGN_ISSUE).
 - §4.4: closed upper bounds for every `BoundaryLimits`/`DecodeLimits` field, and `pull_wait_s` ≥ 0.01 (T-09 security review).
 
+Revision 3 addendum (2026-10-15, T-14 reviews):
+- §6: `GatewayLimits.per_source_max_in_flight` and `body_read_timeout_s` (additive), plus a 408 `REQUEST_TIMEOUT`.
+- §6: IPv6 sources are keyed by /64.
+- §6: paths with control characters → 404 before routing.
+- §6: uvicorn runs with `proxy_headers=False`, `server_header=False` and `access_log=False`.
+- §8.3: FetchTransport maps 408 → `UNAVAILABLE`.
+- §14: the `%0A` path expectation is now 404.
+
 Revision 2 status line, kept for history: **revision 2, pre-G4** (2026-10-05). It applies the Security Architect's pre-G4 findings
 R-1..R-8, the Q3 ruling, ADR 0011 conditions C1–C7, D-039 and D-040, plus the non-blocking notes (a), (c) and (d)
 (THREAT_MODEL review log 2026-10-05; SR-14). The Tech Lead transcribes §3–§8 into Wave-0 stubs and Task
@@ -1033,6 +1041,10 @@ class GatewayLimits:
     max_concurrency: int = 64
     max_sources_tracked: int = 10_000      # LRU of per-source buckets
     cors_origins: tuple[str, ...] = ()     # empty = same-origin only (no CORS headers at all)
+    # Additive, 2026-10-15 (T-14 security review; SR-4, T-07). Appended after cors_origins; kw_only, so existing
+    # callers and the default GatewayLimits() keep working unchanged.
+    per_source_max_in_flight: int = 8      # 1..max_concurrency; concurrent requests per source key
+    body_read_timeout_s: float = 10.0      # 1.0..60.0, finite; total deadline to receive the whole request body
 def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
                rng: Callable[[int], bytes] = os.urandom,
                clock: Callable[[], float] = time.monotonic) -> fastapi.FastAPI: ...
@@ -1047,7 +1059,8 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
 | other path / method | — | — | `404 {"code":"NOT_FOUND"}` / `405 {"code":"METHOD_NOT_ALLOWED"}` |
 
 - `{instance}` and `{client}` are checked with `HEX32_PATTERN.fullmatch` on the decoded path segment (R-7). So
-  `%0A`, uppercase hex, and 31 or 33 characters are each a 400 `INVALID_ARGUMENT` with no queue call. `after` is
+  uppercase hex, and 31 or 33 characters, are each a 400 `INVALID_ARGUMENT` with no queue call. A segment containing
+  `%0A` never reaches this check, because the control-character rule below answers 404 first. `after` is
   checked with `CURSOR_PATTERN.fullmatch`. Unknown clients get `200` with an empty page (D2-13).
 - CORS (security note (c)): by default no CORS headers are sent (same-origin). With `cors_origins` set, each entry
   must be an exact `https://host[:port]` origin, or a loopback `http:` origin, and is validated at `create_app`
@@ -1058,10 +1071,59 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
   so.
 - `b64url` = RFC 4648 §5 without padding. `next: null` means "omit `after` next time".
 - Every error body is exactly `{"code":"<CODE>"}`: `INVALID_ARGUMENT` (400), `UNKNOWN_INSTANCE` (404),
-  `RATE_LIMITED` (429), `UNAVAILABLE` (503), `INTERNAL` (500). FastAPI's default validation and error bodies are
+  `NOT_FOUND` (404), `REQUEST_TIMEOUT` (408), `RATE_LIMITED` (429), `UNAVAILABLE` (503), `INTERNAL` (500). FastAPI's default validation and error bodies are
   overridden. Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 - Limits are applied before any queue call: concurrency (excess → 429), global bucket, then per-source bucket
-  keyed on the ASGI peer address (no `X-Forwarded-For` trust).
+  keyed on the ASGI peer address (no `X-Forwarded-For` trust). This bullet is refined by the 2026-10-15
+  amendment below.
+
+**Gateway hardening (2026-10-15; T-14 security and code reviews; SR-3, SR-4, T-07, R-7).**
+- **Source key.** Every per-source structure is keyed on the source key: the per-source bucket and the per-source
+  in-flight count. The key is derived from `scope["client"][0]`, the ASGI peer, as follows:
+  - an IPv4 address keys on the address itself;
+  - an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) keys on its IPv4 address;
+  - any other IPv6 address keys on its **/64 network**: `str(ipaddress.IPv6Network(f"{addr}/64", strict=False))`;
+  - a missing or unparseable peer keys on the single key `"unknown"`.
+- **Order of checks** for every request, all before routing and before any queue call:
+  1. Per-source in-flight: if `per_source_max_in_flight` is reached for this source key → `429 RATE_LIMITED`,
+     `Retry-After: 1`.
+  2. Global concurrency: `max_concurrency` → 429.
+  3. Global bucket → 429.
+  4. Per-source bucket → 429.
+  5. Control-character path rule.
+  6. Routing.
+
+  The slots taken in steps 1–2 are released in a `finally`: on success, on any error status, on the body deadline,
+  on client disconnect and on exception. An in-flight entry is deleted when its count reaches 0, so the table never
+  exceeds `max_concurrency` entries.
+- **Body-read deadline.** For `POST /requests/{instance}`, the whole body must arrive within `body_read_timeout_s`.
+  - The clock starts when the route begins reading. The deadline is total, not per chunk; implement it with
+    `asyncio.timeout` around the bounded read loop.
+  - On expiry the response is `408 {"code":"REQUEST_TIMEOUT"}` with `Connection: close`, nothing is published, and
+    both slots are released.
+  - A body that ends before `Content-Length`, or exceeds it, is 400 `INVALID_ARGUMENT` (unchanged).
+  - Reproduction test: 64 POSTs from one source, each declaring 65536 bytes and sending 1 byte.
+    - At most `per_source_max_in_flight` of them are in flight; the rest get 429.
+    - A request from a second source is served at once.
+    - After `body_read_timeout_s`, every held request has received 408 and the in-flight table is empty.
+- **Control-character paths (R-7; §14).** Starlette matches routes with `^…$` and `.match`, so
+  `/bundles%0A` would route to `/bundles`. A pure-ASGI middleware therefore inspects the decoded `scope["path"]`
+  before routing. Any character in U+0000–U+001F or U+007F–U+009F → `404 {"code":"NOT_FOUND"}`, with no routing
+  and no queue call. Tests: `/bundles%0A`, `/bundles%00`, `/requests/<32hex>%0A`, `/responses/<32hex>%0D`, and a
+  raw `%7F` all give 404 with zero queue calls.
+- **Server configuration.** Every place in this repository that runs the gateway under uvicorn passes
+  `proxy_headers=False`, `server_header=False` and `access_log=False`, and never sets `forwarded_allow_ips`. That
+  covers `notes_gateway/dev.py` and `tests/e2e/channel_harness.py`.
+  - With uvicorn's defaults, a loopback peer could spoof `X-Forwarded-For` and pick its own source key.
+  - The gateway README states this as a deployment requirement: behind a trusted proxy the per-source limit
+    collapses to the global limit, and that is accepted.
+  - Test: a request from a loopback peer carrying `X-Forwarded-For: 203.0.113.9` is keyed on the peer address. The
+    `dev.py` test also asserts the three uvicorn settings on the `uvicorn.Config` it builds.
+- **New error code.** `REQUEST_TIMEOUT` (408) joins the gateway error-body list.
+- **Validation (TL-4 extended).**
+  - `per_source_max_in_flight` must be an `int` in 1..`max_concurrency`.
+  - `body_read_timeout_s` must be a finite `float`/`int` in 1.0..60.0.
+  - Anything else → `ValueError("INVALID_LIMITS")`.
 - The body is never decoded, logged or echoed. Logs: one line per request, outcome code and HTTP status only;
   uvicorn access logging is disabled.
 - `QueueError` mapping: `INVALID_ARGUMENT`→400, `NOT_FOUND`→404 `UNKNOWN_INSTANCE`, `UNAVAILABLE`→503, other→500.
@@ -1417,7 +1479,7 @@ Same fetch options as §8.2 (`redirect: "manual"`, `credentials: "omit"`, no-sto
 `Content-Type: application/octet-stream`. Arguments not matching the §6 patterns → `INVALID_ARGUMENT` before any
 request. Status mapping: 200/202 with a body that is strict JSON of exactly the §6 shape (unknown keys rejected;
 base64url strict via `base64UrlDecode`; ids/cursor re-validated) → success, else `INVALID_RESPONSE`;
-400 → `INVALID_ARGUMENT`; 404 → `NOT_FOUND`; 429, 503 → `UNAVAILABLE`; redirect or oversize body →
+400 → `INVALID_ARGUMENT`; 404 → `NOT_FOUND`; 408 (gateway body deadline, §6), 429, 503 → `UNAVAILABLE`; redirect or oversize body →
 `INVALID_RESPONSE`; network/timeout → `UNAVAILABLE`; anything else → `INTERNAL`. `next: null` → `undefined`.
 Example: `const page = await transport.getResponses(clientId, cursor);`.
 
@@ -1745,8 +1807,9 @@ listed above are still pending (WAVES Orchestrator action 6).
 - **Time and schema bounds (R-1, R-2, R-3; SR-3):** the §3.2 vectors `*_over_max`,
   `prekey_ids_unsorted_or_duplicate`, `open_ok_nil_session` and `open_error_with_session` pass in both languages.
   The TS decoder yields `bigint` for 2^53 and the schema rejects it.
-- **Patterns (R-7; SR-3):** every Python pattern check rejects the valid value plus `"\n"`. Gateway paths with `%0A`,
-  uppercase hex, and 31 or 33 characters → 400 with no queue call. `FetchTransport` rejects gateway JSON with unknown
+- **Patterns (R-7; SR-3):** every Python pattern check rejects the valid value plus `"\n"`. Gateway paths with `%0A` or another
+  control character → 404 `NOT_FOUND` (amended 2026-10-15, §6). Uppercase hex, and 31 or 33 characters → 400. In
+  every case there is no queue call. `FetchTransport` rejects gateway JSON with unknown
   or duplicate keys, non-canonical base64url, or an id/cursor outside its pattern → `INVALID_RESPONSE`.
 - **Session eviction (R-8; SR-4; T-25):**
   - Fill the table; age one session past `session_evict_min_idle_s` → a new `create` evicts exactly that session
