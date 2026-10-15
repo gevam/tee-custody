@@ -296,3 +296,29 @@ def test_every_one_byte_aad_change_is_refused_and_reaching_hpke_means_open_faile
             assert len(world.prekeys.public_entries()) == before - 1
     assert reached_hpke >= 32
     assert world.opener.requests == []
+
+
+# ---------------------------------------------------------------- criterion 4
+@pytest.mark.parametrize(
+    "plaintext",
+    [b"\xff", cbor({"op": "nope"}), cbor({"op": "open_session", "cs": b"short"})],
+    ids=["not-cbor", "unknown-op", "schema"],
+)
+def test_invalid_open_payload_is_counted_and_answered_invalid_frame(plaintext: bytes) -> None:
+    world = _make_world()
+    target = world.entry()
+    sent = seal_open(
+        ik_pub=world.ik_pub, prekey=target, aad=world.aad(prekey=target), plaintext=plaintext
+    )
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "OPEN_PAYLOAD_INVALID"
+    assert dict(world.audit.counts) == {"OPEN_PAYLOAD_INVALID": 1}
+    assert result.response is not None
+    assert result.response.client_id == CLIENT_ID
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.session_id is None
+    assert view.request_id == sent.aad["request_id"]
+    assert view.body == {"ok": False, "error": "INVALID_FRAME"}
+    assert world.opener.requests == []

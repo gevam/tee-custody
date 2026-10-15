@@ -11,7 +11,9 @@ from typing import cast
 from teecustody.audit.emitter import AggregateOutcome, AuditEmitter
 from teecustody.channel.codec import (
     EnvelopeError,
+    OpenAad,
     OpenRequestEnvelope,
+    OpenResultAad,
     OpenSessionPayload,
     decode_open_payload,
     decode_request,
@@ -19,16 +21,18 @@ from teecustody.channel.codec import (
     encode_response_envelope,
     hpke_info,
 )
-from teecustody.channel.hpke import HpkeError, open_base
+from teecustody.channel.hpke import HpkeError, OpenedHpke, open_base
 from teecustody.channel.ports import (
     FrameHandler,
     OpenAccepted,
+    OpenRejected,
     OpenRequest,
+    RemoteErrorCode,
     SessionOpener,
 )
 from teecustody.channel.prekeys import PreKeyStore
 from teecustody.channel.replay import ReplayCache
-from teecustody.channel.session import SessionTable, T2cSealer
+from teecustody.channel.session import Session, SessionTable, T2cSealer
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.obs.types import AllowListedLogger
 
@@ -51,6 +55,15 @@ class OutboundResponse:
 class ProcessResult:
     outcome: str
     response: OutboundResponse | None
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenDecision:
+    """What one open_result says; it is sealed exactly once by the caller (R-5, D2-16)."""
+
+    outcome: str
+    plaintext: bytes = field(repr=False)
+    session: Session | None
 
 
 class ChannelServer:
@@ -121,8 +134,35 @@ class ChannelServer:
         finally:
             private_key.wipe()
         sealer = T2cSealer(opened.sk_t2c)
+        decision = self._decide_open(aad, opened, sealer)
+        if decision.session is None:
+            nil = OpenResultAad(session_id=None, request_id=aad.request_id)
+            aad_bytes, ct = sealer.seal_open_result(nil, decision.plaintext)
+        else:
+            aad_bytes, ct = decision.session.seal_open_result(aad.request_id, decision.plaintext)
+            self._logger.info(
+                "SESSION_OPENED",
+                client_id=decision.session.client_id,
+                session_id=decision.session.session_id.hex(),
+                prekey_id=aad.prekey_id,
+                request_id=aad.request_id.hex(),
+            )
+        return ProcessResult(
+            outcome=decision.outcome,
+            response=OutboundResponse(
+                client_id=aad.client_id,
+                body=encode_response_envelope("open_result", aad_bytes, ct),
+            ),
+        )
+
+    def _decide_open(self, aad: OpenAad, opened: OpenedHpke, sealer: T2cSealer) -> _OpenDecision:
         self._replay.record(aad.client_id, aad.request_id, aad.timestamp)
-        payload = decode_open_payload(opened.plaintext, self._limits.open_payload_decode)
+        try:
+            payload = decode_open_payload(opened.plaintext, self._limits.open_payload_decode)
+        except EnvelopeError:
+            return self._refuse(
+                AggregateOutcome.OPEN_PAYLOAD_INVALID, RemoteErrorCode.INVALID_FRAME
+            )
         session_id = self._rng(16)
         claimed = aad.client_id if isinstance(payload, OpenSessionPayload) else None
         result = self._opener.open(
@@ -139,18 +179,8 @@ class ChannelServer:
         session = self._sessions.create(
             session_id=session_id, client_id=result.client_id, sk_c2t=opened.sk_c2t, t2c=sealer
         )
-        aad_bytes, ct = session.seal_open_result(aad.request_id, plaintext)
-        self._logger.info(
-            "SESSION_OPENED",
-            client_id=result.client_id,
-            session_id=session_id.hex(),
-            prekey_id=aad.prekey_id,
-            request_id=aad.request_id.hex(),
-        )
-        return ProcessResult(
-            outcome=ChannelOutcome.SESSION_OPENED,
-            response=OutboundResponse(
-                client_id=aad.client_id,
-                body=encode_response_envelope("open_result", aad_bytes, ct),
-            ),
-        )
+        return _OpenDecision(ChannelOutcome.SESSION_OPENED, plaintext, session)
+
+    def _refuse(self, outcome: AggregateOutcome, error: RemoteErrorCode) -> _OpenDecision:
+        self._audit.count(outcome)
+        return _OpenDecision(outcome, encode_open_result_plaintext(OpenRejected(error)), None)
