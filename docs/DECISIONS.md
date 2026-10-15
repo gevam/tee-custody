@@ -1491,3 +1491,24 @@ Participants: QA (D-03, D-04 found in Phase 2, branch inc-2/QA-exec a0769ec), Te
 4. Risk noted: T-40 overrides uvicorn internals. Its tests must be re-run on any uvicorn version change, at the same trigger as D-049's lock-change re-check.
 
 **Dissent:** none
+
+## D-072 — QA-exec (INC-2 QA Phase 2) verdict; merges with 8 reds until T-40 (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, QA, Tech Lead
+
+**Decision:** inc-2/QA-exec (tip ddfb377) is approved to merge. It contains:
+- QA Phase 2: execution, exploratory tests (about 200 Python tests, 54 TS), D-03.md and D-04.md, and docs/qa/INC-2.md Phase 2;
+- QA-T-40.
+
+Review history:
+- Round 1 (c08e112): DESIGN_ISSUE on T-40's contract. A complete 20 KB or 3,000-header block gets 200 from h11, so the contract inputs were wrong. It was resolved by T-40 A2/A3 (explicit `max_header_bytes`/`max_header_count`) and §6 (d7fff89). The round also raised a Medium (`readline` unbounded) and 4 weak-test Lows.
+- Round 2 (ddfb377): APPROVE. The Low goes to B-48.
+
+It merges with exactly 8 red tests in `tests/acceptance/test_EXPLORE_gateway_http.py`, all for T-40:
+- 2 for D-03;
+- 6 for D-04, rows (a)–(f).
+Guard (g) is green.
+
+**Dissent:** none
