@@ -66,7 +66,7 @@ class T2cSealer:
             raise SessionReject(SessionRejectCode.USED)
         self._next_seq = 1
         aad_bytes = encode_open_result_aad(aad)
-        return aad_bytes, self._encrypt(0, plaintext, aad_bytes)
+        return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(0), plaintext, aad_bytes)
 
     def seal_frame_result(
         self, op: str, session_id: bytes, plaintext: bytes
@@ -78,11 +78,7 @@ class T2cSealer:
             raise SessionReject(SessionRejectCode.EXHAUSTED)
         self._next_seq = seq + 1
         aad_bytes = encode_frame_aad(FrameAad(session_id=session_id, seq=seq, op=op))
-        return aad_bytes, self._encrypt(seq, plaintext, aad_bytes)
-
-    def _encrypt(self, seq: int, plaintext: bytes, aad_bytes: bytes) -> bytes:
-        """The only AES-GCM encryption under sk_t2c; the caller allocated and persisted `seq`."""
-        return AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
+        return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
 
     def wipe(self) -> None:
         raise NotImplementedError("T-23")
@@ -99,20 +95,6 @@ class Session:
     _sk_c2t: Secret
     _t2c: T2cSealer
     _last_c2t_seq: int
-
-    @classmethod
-    def _start(
-        cls, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer, now: float
-    ) -> "Session":
-        session = cls.__new__(cls)
-        session.session_id = session_id
-        session.client_id = client_id
-        session.opened_at = now
-        session.last_activity = now
-        session._sk_c2t = sk_c2t
-        session._t2c = t2c
-        session._last_c2t_seq = -1
-        return session
 
     def open_c2t(self, aad: FrameAad, aad_bytes: bytes, ct: bytes, now: float) -> Secret:
         if aad.session_id != self.session_id:
@@ -146,7 +128,16 @@ class SessionTable:
     def create(
         self, *, session_id: bytes, client_id: str, sk_c2t: Secret, t2c: T2cSealer
     ) -> Session:
-        session = Session._start(session_id, client_id, sk_c2t, t2c, self._clock())
+        now = self._clock()
+        # Built here so that no Session method ever takes a key (R-5, INC-2-API §4.9).
+        session = Session.__new__(Session)
+        session.session_id = session_id
+        session.client_id = client_id
+        session.opened_at = now
+        session.last_activity = now
+        session._sk_c2t = sk_c2t
+        session._t2c = t2c
+        session._last_c2t_seq = -1
         self._sessions[session_id] = session
         return session
 
