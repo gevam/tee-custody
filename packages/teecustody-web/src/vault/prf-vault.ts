@@ -19,6 +19,8 @@ export interface PrfShareVaultOptions {
 }
 
 const STORE = "shares";
+const FIELDS = "client_id,credential_id,ct,nonce,prf_salt,v";
+const MAX_CREDENTIAL_ID = 1023; // WebAuthn credential id limit
 const INFO_LABEL = "teecustody/vault/v1";
 
 interface ShareRecord {
@@ -53,22 +55,27 @@ export class PrfShareVault implements ShareVault {
     }
 
     async get(client: ClientId): Promise<ClientShare | undefined> {
-        const record = await this.#read(client);
-        if (record === undefined) {
+        const stored = await this.#read(client);
+        if (stored === undefined) {
             return undefined;
         }
+        const record = parseRecord(stored);
         const prf = await this.#assert(record.credential_id, record.prf_salt);
         const key = await this.#deriveKey(prf, record.prf_salt, client);
-        const plain = await this.#subtle().decrypt(
-            {
-                name: "AES-GCM",
-                iv: record.nonce,
-                additionalData: aad(client, record.credential_id),
-            },
-            key,
-            record.ct,
-        );
-        return new Uint8Array(plain);
+        try {
+            const plain = await this.#subtle().decrypt(
+                {
+                    name: "AES-GCM",
+                    iv: record.nonce,
+                    additionalData: aad(client, record.credential_id),
+                },
+                key,
+                record.ct,
+            );
+            return new Uint8Array(plain);
+        } catch {
+            throw new CapabilityError("AUTHENTICATION_FAILED");
+        }
     }
 
     async set(client: ClientId, share: ClientShare): Promise<void> {
@@ -141,6 +148,9 @@ export class PrfShareVault implements ShareVault {
                 },
             }),
         );
+        if (!equalBytes(new Uint8Array(asserted.rawId), credentialId)) {
+            throw new CapabilityError("AUTHENTICATION_FAILED");
+        }
         return prfOutput(asserted.getClientExtensionResults().prf?.results?.first);
     }
 
@@ -211,11 +221,11 @@ export class PrfShareVault implements ShareVault {
         return request(req);
     }
 
-    async #read(client: ClientId): Promise<ShareRecord | undefined> {
+    async #read(client: ClientId): Promise<object | undefined> {
         const db = await this.#open();
         try {
             const store = db.transaction(STORE).objectStore(STORE);
-            return (await request(store.get(client))) as ShareRecord | undefined;
+            return (await request(store.get(client))) as object | undefined;
         } finally {
             db.close();
         }
@@ -261,4 +271,28 @@ function ceremonyError(error: unknown): CapabilityError {
         default:
             return new CapabilityError("INTERNAL");
     }
+}
+
+/** A stored record must be exactly the §8.4 shape; anything else is AUTHENTICATION_FAILED. */
+function parseRecord(stored: object): ShareRecord {
+    const r = stored as Record<string, unknown>;
+    if (
+        Object.keys(r).sort().join(",") !== FIELDS ||
+        r.v !== 1 ||
+        !isBytes(r.credential_id, 1, MAX_CREDENTIAL_ID) ||
+        !isBytes(r.prf_salt, 32, 32) ||
+        !isBytes(r.nonce, 12, 12) ||
+        !isBytes(r.ct, 48, 48)
+    ) {
+        throw new CapabilityError("AUTHENTICATION_FAILED");
+    }
+    return r as unknown as ShareRecord;
+}
+
+function isBytes(value: unknown, min: number, max: number): value is Uint8Array {
+    return value instanceof Uint8Array && value.length >= min && value.length <= max;
+}
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+    return a.length === b.length && a.every((x, i) => x === b[i]);
 }

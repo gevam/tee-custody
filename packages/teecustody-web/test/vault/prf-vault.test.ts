@@ -484,3 +484,113 @@ describe("criterion 6: USER_PRESENCE_REQUIRED with nothing written", () => {
         expect(auth.ceremonies.every((c) => c.signal?.aborted === false)).toBe(true);
     });
 });
+
+async function editRecord(
+    idb: IDBFactory,
+    client: string,
+    edit: (r: StoredRecord) => void,
+): Promise<void> {
+    const db = await request(idb.open(DB));
+    try {
+        const store = db.transaction("shares", "readwrite").objectStore("shares");
+        const record = (await request(store.get(client))) as StoredRecord;
+        edit(record);
+        await request(store.put(record));
+    } finally {
+        db.close();
+    }
+}
+
+function flip(field: string): (r: StoredRecord) => void {
+    return (r) => {
+        const value = (r[field] as Uint8Array).slice();
+        value[value.length - 1] = (value[value.length - 1] ?? 0) ^ 0x01;
+        r[field] = value;
+    };
+}
+
+describe("criterion 7: tampering gives AUTHENTICATION_FAILED", () => {
+    const tamperedAfterCeremony: [string, (r: StoredRecord) => void][] = [
+        ["a flipped ct byte", flip("ct")],
+        ["a flipped nonce byte", flip("nonce")],
+        ["a flipped prf_salt byte", flip("prf_salt")],
+    ];
+    it.each(tamperedAfterCeremony)("get fails after %s", async (_name, edit) => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        await editRecord(idb, CLIENT, edit);
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+    });
+
+    it("get fails when credential_id is swapped for another credential on the same authenticator", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        const other = "fedcba9876543210fedcba9876543210";
+        await v.set(CLIENT, SHARE.slice());
+        await v.set(other, SHARE.slice());
+        const [, otherRecord] = await records(idb);
+        await editRecord(idb, CLIENT, (r) => {
+            r.credential_id = (otherRecord as StoredRecord).credential_id;
+        });
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+    });
+
+    it("get fails when the assertion's rawId differs from the stored credential_id", async () => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        auth.behaviour.getRawId = new Uint8Array(16).fill(9);
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+    });
+
+    it("set fails, writing nothing, when the get after create answers for another credential", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        auth.behaviour.getRawId = new Uint8Array(16).fill(9);
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe(
+            "AUTHENTICATION_FAILED",
+        );
+        await expectNothingStored(idb);
+    });
+
+    const malformed: [string, (r: StoredRecord) => void][] = [
+        ["an extra field", (r) => (r.extra = 1)],
+        ["a missing field", (r) => delete r.nonce],
+        ["v = 2", (r) => (r.v = 2)],
+        ["v = '1'", (r) => (r.v = "1")],
+        ["credential_id empty", (r) => (r.credential_id = new Uint8Array(0))],
+        ["credential_id 1024 bytes", (r) => (r.credential_id = new Uint8Array(1024))],
+        ["credential_id an ArrayBuffer", (r) => (r.credential_id = new ArrayBuffer(16))],
+        ["prf_salt 31 bytes", (r) => (r.prf_salt = new Uint8Array(31))],
+        ["nonce 13 bytes", (r) => (r.nonce = new Uint8Array(13))],
+        ["ct 47 bytes", (r) => (r.ct = new Uint8Array(47))],
+        ["ct an array of numbers", (r) => (r.ct = new Array<number>(48).fill(0))],
+        ["ct a Uint16Array", (r) => (r.ct = new Uint16Array(48))],
+    ];
+    it.each(malformed)("get fails without a ceremony on a record with %s", async (_name, edit) => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        await editRecord(idb, CLIENT, edit);
+        const before = auth.ceremonies.length;
+        expect(await codeOf(v.get(CLIENT))).toBe("AUTHENTICATION_FAILED");
+        expect(auth.ceremonies).toHaveLength(before);
+    });
+
+    it("accepts a 1023-byte credential_id", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        await v.set(CLIENT, SHARE.slice());
+        const long = new Uint8Array(1023).fill(3);
+        await editRecord(idb, CLIENT, (r) => (r.credential_id = long));
+        // The record passes validation, so the vault reaches the ceremony.
+        auth.behaviour.getError = "NotAllowedError";
+        expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
+    });
+});
