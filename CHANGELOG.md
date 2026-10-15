@@ -70,3 +70,4 @@
 - T-38: bounded clock skew in attestation time checks (ADR 0013; fixes D-02)
 - QA: I7 queue message content acceptance tests (Python workload + Core client producers)
 - T-32: Playwright harness — vault, transport and channel under enforce-mode hash-only CSP (SR-13)
+- T-39: bounded native X25519 key-generation retry in the WebCrypto adapter (ADR 0011 C8; WebKit transient failure B-45); FACTS re-recorded at Playwright 1.63.0
