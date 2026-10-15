@@ -36,7 +36,7 @@ from teecustody.channel.ports import (
     SessionInfo,
 )
 from teecustody.channel.server import ProcessResult
-from teecustody.config import ChannelParams
+from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.secrets import Secret
 
 ALLOWED_LOG_FIELDS = {"client_id", "session_id", "prekey_id", "request_id"}
@@ -445,3 +445,49 @@ def test_rejected_open_answers_its_error_with_a_nil_session_and_wipes_cs(
     assert world.logger.calls == []
     assert [cs.wiped for cs in world.opener.cs_seen] == [True]
     assert SENTINEL not in repr(result) + repr(world.logger.calls) + repr(world.audit.counts)
+
+
+# ---------------------------------------------------------------- criterion 8 (SR-4)
+def test_full_replay_cache_refuses_the_open_with_limit_exceeded() -> None:
+    world = _make_world(limits=BoundaryLimits(replay_cache_max_entries=1))
+    world.established()
+    sent = world.open_session(prekey=world.entry())
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "CHANNEL_LIMIT_EXCEEDED"
+    assert dict(world.audit.counts) == {"CHANNEL_LIMIT_EXCEEDED": 1}
+    assert result.response is not None
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.session_id is None
+    assert view.body == {"ok": False, "error": "LIMIT_EXCEEDED"}
+    assert len(world.opener.requests) == 1
+    assert world.opener.closed_calls == []
+
+
+def test_full_session_table_without_an_idle_session_aborts_with_limit_exceeded() -> None:
+    world = _make_world(limits=BoundaryLimits(max_sessions=1))
+    _first, live_session_id = world.established()
+    sent = world.open_session(client_id=OTHER_CLIENT_ID)
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "CHANNEL_LIMIT_EXCEEDED"
+    assert dict(world.audit.counts) == {"CHANNEL_LIMIT_EXCEEDED": 1}
+    assert result.response is not None
+    assert result.response.client_id == OTHER_CLIENT_ID
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.session_id is None
+    assert view.body == {"ok": False, "error": "LIMIT_EXCEEDED"}
+    request = world.opener.requests[-1]
+    assert world.sessions.get(request.session_id) is None
+    assert world.sessions.get(live_session_id) is not None
+    assert world.opener.closed_calls == [
+        (
+            SessionInfo(
+                client_id=OTHER_CLIENT_ID, session_id=request.session_id, instance_id=INSTANCE_ID
+            ),
+            CloseReason.OPEN_ABORTED,
+        )
+    ]
+    assert world.table_closes == []

@@ -165,7 +165,12 @@ class ChannelServer:
         )
 
     def _decide_open(self, aad: OpenAad, opened: OpenedHpke, sealer: T2cSealer) -> _OpenDecision:
-        self._replay.record(aad.client_id, aad.request_id, aad.timestamp)
+        try:
+            self._replay.record(aad.client_id, aad.request_id, aad.timestamp)
+        except OverflowError:
+            return self._refuse(
+                AggregateOutcome.CHANNEL_LIMIT_EXCEEDED, RemoteErrorCode.LIMIT_EXCEEDED
+            )
         try:
             payload = decode_open_payload(opened.plaintext, self._limits.open_payload_decode)
         except EnvelopeError:
@@ -197,9 +202,14 @@ class ChannelServer:
         if not _principal_ok(principal, claimed):
             return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
         plaintext = encode_open_result_plaintext(result)
-        session = self._sessions.create(
-            session_id=session_id, client_id=result.client_id, sk_c2t=opened.sk_c2t, t2c=sealer
-        )
+        try:
+            session = self._sessions.create(
+                session_id=session_id, client_id=principal, sk_c2t=opened.sk_c2t, t2c=sealer
+            )
+        except OverflowError:
+            return self._abort(
+                info, AggregateOutcome.CHANNEL_LIMIT_EXCEEDED, RemoteErrorCode.LIMIT_EXCEEDED
+            )
         return _OpenDecision(ChannelOutcome.SESSION_OPENED, plaintext, session)
 
     def _abort(
