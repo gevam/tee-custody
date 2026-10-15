@@ -24,6 +24,13 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 - Later tasks: T-16 A2, T-26 A2, T-33 A2 (key buffers), T-27 A3 (gateway semgrep coverage) and T-35 (closed
   exemption).
 
+**Amended 2026-10-15 (D-064, ADR 0013 Accepted with SA conditions S1–S6).**
+- New task T-38 (Wave 4, STRONG): the bounded not-yet-valid clock skew in Core `checkTime`, plus the S1 clock-freshness
+  tests. It carries QA item QA-T-38, which adds the FR-2 acceptance rows.
+- T-38 depends only on merged code (INC-1 T-12, T-33, T-26). It shares no file with T-31 or MU-2.
+- QA-T-38 merges to `main` first, with red rows. T-38 then branches from that `main`.
+- D-02 closes when T-38 merges.
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -115,11 +122,13 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 3 | T-30 | Generate and commit `channel/suite.cbor` (v2 profile) | FAST | T-03, T-07, T-08, T-15, T-16, T-17, T-23, T-25, T-26, MU-1 | **YES** — `spec/vectors` |
 | 3 | T-35 | `teecustody-profile check-discovery` + scheduled `discovery-binding` job (§16.5, §16.6) | STRONG | MU-1, T-18, T-27, T-05 | **YES** — inert production fixture profile (Q11) |
 | 4 | T-31 | End-to-end harness, Node/Python e2e, `dev.py`; N1–N3 | STRONG | T-14, T-17, T-18, T-19, T-24, T-26, T-28, T-29, MU-1, T-35 | |
+| 4 | QA-T-38 | QA: FR-2 acceptance rows for SR-1 "Token time" (ADR 0013); `FR02.attestation-checks.test.ts` only (in T-38.md) | MID (QA) | REQUIREMENTS SR-1 | |
+| 4 | T-38 | Core `checkTime` bounded not-yet-valid skew (`CLOCK_SKEW_S` = 300, private); S1 clock-freshness tests (ADR 0013, D-064) | STRONG | INC-1 T-12, T-33, T-26 (all merged); QA-T-38 merged | |
 | 5 | T-32 | Playwright CSP harness (SR-13, V-2.2); B1–B3, favicon, exact CSP header | STRONG | T-31, T-17, T-18, T-19, T-20, T-26, V-02, MU-1 | |
 
-Counts: 39 items (37 tasks T-01..T-37, plus V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL). Wave 1 has 19:
-T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6, Wave 3 has 4, and Waves 4–5 have one each.
-The largest wave is Wave 1.
+Counts: 41 items (38 tasks T-01..T-38, the QA item QA-T-38, and V-01 and V-02), 6 waves. Wave 0 has 8 (+ TL).
+Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
+3: T-31, T-38 and QA-T-38. Wave 5 has 1. The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
 - B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
@@ -178,6 +187,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - `docs/adr/0011-…md`: V-01 W0, T-17 W1 (append-only).
   - `packages/teecustody-web/playwright.config.ts`: T-02 W0, T-32 W5.
   - `notes_gateway/dev.py`: T-01 W0 stub, T-31 W4.
+  - `tests/acceptance/FR02.attestation-checks.test.ts`: T-36 W1, QA-T-38 W4 (append only).
+  - Core `test/attestation/verify.test.ts`: T-33 W1, T-38 W4 (append one `describe` only).
+  - Core `test/attestation/checks/claims.test.ts`: T-33 W1, T-38 W4.
+- T-38 (W4) is the first INC-2 owner of Core `src/attestation/checks/claims.ts` (INC-1 T-12). It also creates
+  `test/channel/clock-freshness.test.ts`.
 - INC-1 frozen files changed:
   - Additive, D-039 A-1..A-5: `channel/identity.py` and `channel/__init__.py` (T-04); Core `attestation/types.ts`
     and `index.ts` (T-02); sim `cli.py` (T-25).
@@ -267,6 +281,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `tests/integration/contracts/channel-vectors.contract.test.ts` | T-30 (after T-15, T-16, T-17, T-26) |
 | `spec/vectors/test_channel_suite.py` (all but the CDDL-hash and README tests) | T-30 (after T-07, T-08, T-23) |
 | `tests/acceptance/**` INC-2 files (QA) | per QA mapping |
+| `tests/acceptance/FR02.attestation-checks.test.ts` "SR-1 token time (ADR 0013)" rows (QA-T-38) | T-38 |
 
 "Full suite green" in every DoD means: every test outside this table passes, and each red test fails only with
 `NotImplementedError('T-nn')` / `NOT_IMPLEMENTED: T-nn` or a missing vector file.
