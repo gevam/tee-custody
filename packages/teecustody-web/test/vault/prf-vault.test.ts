@@ -752,3 +752,32 @@ describe("criterion 9: INVALID_ARGUMENT before any ceremony or storage access", 
         expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
     });
 });
+
+describe("criterion 10: absent records and idempotent clear", () => {
+    it("get returns undefined with zero ceremonies when nothing is stored", async () => {
+        const auth = new FakeAuthenticator();
+        expect(await vault(auth, new IDBFactory()).get(CLIENT)).toBeUndefined();
+        expect(auth.ceremonies).toHaveLength(0);
+    });
+
+    it("clear removes only this client's record and succeeds twice", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb);
+        const other = "fedcba9876543210fedcba9876543210";
+        await v.set(CLIENT, SHARE.slice());
+        await v.set(other, SHARE.slice());
+        await v.clear(CLIENT);
+        await v.clear(CLIENT);
+        expect((await records(idb)).map((r) => r.client_id)).toEqual([other]);
+        const before = auth.ceremonies.length;
+        expect(await v.get(CLIENT)).toBeUndefined();
+        expect(auth.ceremonies).toHaveLength(before);
+    });
+
+    it("clear on a fresh database succeeds", async () => {
+        await expect(vault(new FakeAuthenticator(), new IDBFactory()).clear(CLIENT)).resolves.toBe(
+            undefined,
+        );
+    });
+});
