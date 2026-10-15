@@ -146,12 +146,24 @@ function fetchFetcher(): FetchFetcher {
     return new FetchFetcher({ maxBodyBytes: 65_536, timeoutMs: 10_000 });
 }
 
-function compose(h: Harness): {
-    config: ChannelClientConfig;
-    transport: FetchTransport;
-    fetcher: RecordingFetcher;
-    sink: RecordingSink;
-} {
+interface Client {
+    readonly channel: ChannelClient;
+    readonly config: ChannelClientConfig;
+    readonly transport: FetchTransport;
+    readonly fetcher: RecordingFetcher;
+    readonly sink: RecordingSink;
+}
+
+let shared: Client | undefined;
+
+// One client for the whole file: its used-pre-key set then covers every open made here, so no open
+// can pick a pre-key an earlier open consumed while the workload's bundle still lists it.
+function client(h: Harness): Client {
+    shared ??= compose(h);
+    return shared;
+}
+
+function compose(h: Harness): Client {
     const transport = new FetchTransport({
         baseUrl: h.gateway,
         maxResponseBytes: 1_048_576,
@@ -159,19 +171,15 @@ function compose(h: Harness): {
     });
     const fetcher = new RecordingFetcher(fetchFetcher());
     const sink = new RecordingSink();
-    return {
-        config: {
-            trustProfile: h.profile,
-            transport,
-            crypto: createWebCrypto(),
-            fetcher,
-            securityEvents: sink,
-            clock: systemClock,
-        },
+    const config: ChannelClientConfig = {
+        trustProfile: h.profile,
         transport,
+        crypto: createWebCrypto(),
         fetcher,
-        sink,
+        securityEvents: sink,
+        clock: systemClock,
     };
+    return { channel: new ChannelClient(config), config, transport, fetcher, sink };
 }
 
 function hex(text: string): Uint8Array {
@@ -198,8 +206,8 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 describe("FR-4 channel over the live harness", () => {
     it("opens a session, echoes a request and closes, with no security event (criterion 4)", async () => {
         const h = live();
-        const parts = compose(h);
-        const { session } = await new ChannelClient(parts.config).open(openSession(h));
+        const parts = client(h);
+        const { session } = await parts.channel.open(openSession(h));
         const input = new Map<string, CanonicalValue>([["x", 1]]);
         const echoed = await session.request("test.echo", input);
         await session.close();
@@ -211,9 +219,7 @@ describe("FR-4 channel over the live harness", () => {
     it("refuses a wrong client share with an authenticated remote error (criterion 5)", async () => {
         const h = live();
         const wrong = hex(h.fixture.cs).map((byte) => byte ^ 0xff);
-        const error = await rejection(
-            new ChannelClient(compose(h).config).open(openSession(h, wrong)),
-        );
+        const error = await rejection(client(h).channel.open(openSession(h, wrong)));
         expect(error).toBeInstanceOf(ChannelError);
         expect((error as ChannelError).code).toBe("REMOTE_ERROR");
         expect((error as ChannelError).detail).toBe("AUTHENTICATION_FAILED");
@@ -223,8 +229,8 @@ describe("FR-4 channel over the live harness", () => {
 describe("FR-5 response routing", () => {
     it("delivers responses only on the AAD route; another route gets an empty page (criterion 6)", async () => {
         const h = live();
-        const parts = compose(h);
-        const { session } = await new ChannelClient(parts.config).open(openSession(h));
+        const parts = client(h);
+        const { session } = await parts.channel.open(openSession(h));
         await session.request("test.echo", new Map<string, CanonicalValue>([["x", 2]]));
         await session.close();
         const other = h.fixture.client_id === "f".repeat(32) ? "e".repeat(32) : "f".repeat(32);
@@ -238,8 +244,8 @@ describe("FR-5 response routing", () => {
 describe("SR-1 / D-043 pinned jwks_uri over live HTTP", () => {
     it("fetches only profile.jwks_uri during ChannelClient.open (N1, criterion 8)", async () => {
         const h = live();
-        const parts = compose(h);
-        const { session } = await new ChannelClient(parts.config).open(openSession(h));
+        const parts = client(h);
+        const { session } = await parts.channel.open(openSession(h));
         await session.close();
         expect(parts.fetcher.urls.length).toBeGreaterThan(0);
         for (const url of parts.fetcher.urls) {
