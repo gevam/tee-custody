@@ -1,14 +1,18 @@
 """Pre-key store (INC-2-API §4.7; spec §4, §5.1). `PreKeyPublic` is frozen; bodies: T-22."""
 
 import math
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Final
 
 from teecustody.channel import hpke
 from teecustody.channel.codec import prekey_signing_message
 from teecustody.channel.identity import IdentityKey
 from teecustody.config import ChannelParams
 from teecustody.secrets import Secret
+
+_CONSUMED_WINDOW_S: Final = 2 * 3600  # history kept for `consumed_since` (PREKEY_BURN_HIGH)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +40,7 @@ class PreKeyStore:
         self._clock = clock
         self._keys: dict[int, tuple[PreKeyPublic, Secret]] = {}
         self._next_id = 0
+        self._taken_at: deque[float] = deque()
 
     def top_up(self) -> int:
         live = len(self.public_entries())
@@ -73,13 +78,17 @@ class PreKeyStore:
         if slot is None:
             raise KeyError("PREKEY_UNKNOWN")
         public, private = slot
-        if public.not_after <= self._clock():
+        now = self._clock()
+        if public.not_after <= now:
             private.wipe()
             raise KeyError("PREKEY_UNKNOWN")
+        self._taken_at.append(now)
+        while self._taken_at[0] < now - _CONSUMED_WINDOW_S:
+            self._taken_at.popleft()
         return private
 
     def consumed_since(self, since: float) -> int:
-        raise NotImplementedError("T-22")
+        return sum(1 for at in self._taken_at if at >= since)
 
     def destroy_all(self) -> None:
         raise NotImplementedError("T-22")

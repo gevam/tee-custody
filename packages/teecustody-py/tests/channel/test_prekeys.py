@@ -187,3 +187,59 @@ def test_c4_expired_keys_do_not_count_as_live_for_top_up() -> None:
 
     assert store.top_up() == 10
     assert [e.id for e in store.public_entries()] == list(range(10, 20))
+
+
+def test_c5_consumed_since_counts_takes_at_or_after_the_given_time() -> None:
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()
+    times = [START + offset for offset in (0.0, 1.0, 1.0, 2.5, 30.0, 59.0, 60.0)]
+    for prekey_id, at in enumerate(times):
+        clock.now = at
+        store.take(prekey_id)
+
+    assert store.consumed_since(START) == 7
+    assert store.consumed_since(START - 1) == 7
+    assert store.consumed_since(START + 1.0) == 6
+    assert store.consumed_since(START + 1.5) == 4
+    assert store.consumed_since(START + 59.0) == 2
+    assert store.consumed_since(START + 60.0) == 1
+    assert store.consumed_since(START + 60.5) == 0
+
+
+def test_c5_refused_takes_are_not_counted_as_consumed() -> None:
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()
+    store.take(0)
+    with pytest.raises(KeyError):
+        store.take(0)
+    with pytest.raises(KeyError):
+        store.take(99)
+    clock.now = store.public_entries()[0].not_after
+    with pytest.raises(KeyError):
+        store.take(1)
+
+    assert store.consumed_since(0.0) == 1
+
+
+def test_c5_consumption_history_keeps_only_the_last_two_hours() -> None:
+    clock = FakeClock()
+    params = ChannelParams(prekey_batch=2, prekey_low_water=1, prekey_ttl_s=3600)
+    store = make_store(clock=clock, params=params)
+    store.top_up()  # ids 0, 1
+    store.take(0)  # at START
+    clock.now = START + 3000
+    store.take(1)
+    clock.now = START + 3601
+    store.top_up()  # ids 2, 3, valid until after START + 7200.001
+    clock.now = START + 7200
+    store.take(2)  # the START take is exactly 2 h old: kept
+
+    assert store.consumed_since(0.0) == 3
+
+    clock.now = START + 7200.001
+    store.take(3)  # the START take is now older than 2 h: trimmed
+
+    assert store.consumed_since(0.0) == 3
+    assert store.consumed_since(START + 3000) == 3
