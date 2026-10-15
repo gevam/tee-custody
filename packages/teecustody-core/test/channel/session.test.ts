@@ -6,8 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyBundle } from "../../src/bundle/verify.js";
 import { CapabilityError, type Crypto } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
-import { ChannelError } from "../../src/channel/errors.js";
-import type { Session } from "../../src/channel/session.js";
+import { ChannelError, FrameReject } from "../../src/channel/errors.js";
+import {
+    openT2cFrame,
+    readFrameResult,
+    readOpenResult,
+    type Session,
+} from "../../src/channel/session.js";
 import type { ChannelLimits } from "../../src/channel/types.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
 import {
@@ -18,12 +23,14 @@ import {
     asMap,
     brandedBundle,
     clientConfig,
+    decodeValue,
     hex,
     instanceFixture,
     keySpy,
     map,
     zeroed,
     sealFrameResult,
+    sealOpenResult,
     type FakeSession,
     type InstanceFixture,
     type SeenFrame,
@@ -320,5 +327,231 @@ describe("criterion 10: close", () => {
         expect((await failure(session.close())).code).toBe("SEQUENCE_EXHAUSTED");
         expect(session.closed).toBe(true);
         expect(workload.frames).toHaveLength(6);
+    });
+});
+
+describe("criterion 11: decrypt-side helpers (API-TL §3)", () => {
+    const KEY = new Uint8Array(32).fill(0x11);
+    const SESSION = new Uint8Array(16).fill(0x22);
+    const REQUEST = new Uint8Array(16).fill(0x33);
+
+    function decryptSpy(): { crypto: Crypto; calls: () => number } {
+        let calls = 0;
+        const inner = workload.crypto;
+        return {
+            crypto: {
+                ...inner,
+                aes256GcmDecrypt: (key, n, aad, ct) => {
+                    calls += 1;
+                    return inner.aes256GcmDecrypt(key, n, aad, ct);
+                },
+            },
+            calls: () => calls,
+        };
+    }
+
+    function frame(seq: number, body: CanonicalValue, key = KEY, sessionId = SESSION) {
+        return sealFrameResult(workload.crypto, key, sessionId, seq, "test.echo", body);
+    }
+
+    function openResult(
+        body: CanonicalValue,
+        sessionId: Uint8Array | null = SESSION,
+        requestId = REQUEST,
+    ) {
+        return sealOpenResult(workload.crypto, KEY, sessionId, requestId, body);
+    }
+
+    const okFrame = (re: number) => map({ re, ok: true, payload: "p" });
+
+    describe("openT2cFrame", () => {
+        it("returns the aad and plaintext of a valid frame; lastSeq -1 accepts seq 0", async () => {
+            const opened = await openT2cFrame(
+                workload.crypto,
+                KEY,
+                -1,
+                await frame(0, okFrame(0)),
+                TEST_LIMITS,
+            );
+            expect(opened.aad).toEqual({ sessionId: SESSION, seq: 0, op: "test.echo" });
+            expect(decodeValue(opened.plaintext)).toEqual(okFrame(0));
+        });
+
+        it("rejects bytes that do not decode as INVALID_ENVELOPE", async () => {
+            await expect(
+                openT2cFrame(workload.crypto, KEY, -1, new Uint8Array([0xff]), TEST_LIMITS),
+            ).rejects.toEqual(new FrameReject("INVALID_ENVELOPE"));
+        });
+
+        it("rejects an open_result envelope as INVALID_ENVELOPE", async () => {
+            const body = await openResult(map({ ok: true, payload: null }));
+            await expect(openT2cFrame(workload.crypto, KEY, -1, body, TEST_LIMITS)).rejects.toEqual(
+                new FrameReject("INVALID_ENVELOPE"),
+            );
+        });
+
+        it.each([3, 4])(
+            "rejects seq 3 after lastSeq %i as SEQ_REJECTED before decrypting",
+            async (last) => {
+                const spy = decryptSpy();
+                await expect(
+                    openT2cFrame(spy.crypto, KEY, last, await frame(3, okFrame(0)), TEST_LIMITS),
+                ).rejects.toEqual(new FrameReject("SEQ_REJECTED"));
+                expect(spy.calls()).toBe(0);
+            },
+        );
+
+        it("rejects a frame under another key as AUTH_FAILED", async () => {
+            const body = await frame(1, okFrame(0), new Uint8Array(32).fill(0x99));
+            await expect(openT2cFrame(workload.crypto, KEY, 0, body, TEST_LIMITS)).rejects.toEqual(
+                new FrameReject("AUTH_FAILED"),
+            );
+        });
+    });
+
+    describe("readOpenResult", () => {
+        it("accepts ok with the session id and payload", async () => {
+            const body = await openResult(map({ ok: true, payload: "hello" }));
+            expect(await readOpenResult(workload.crypto, KEY, REQUEST, body, TEST_LIMITS)).toEqual({
+                ok: true,
+                sessionId: SESSION,
+                payload: "hello",
+            });
+        });
+
+        it.each([
+            ["AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"],
+            ["NOT_A_KNOWN_CODE", "UNKNOWN"],
+        ])("maps the error %s to %s", async (error, mapped) => {
+            const body = await openResult(map({ ok: false, error }), null);
+            expect(await readOpenResult(workload.crypto, KEY, REQUEST, body, TEST_LIMITS)).toEqual({
+                ok: false,
+                error: mapped,
+            });
+        });
+
+        it("ignores bytes that do not decode", async () => {
+            expect(
+                await readOpenResult(
+                    workload.crypto,
+                    KEY,
+                    REQUEST,
+                    new Uint8Array([1]),
+                    TEST_LIMITS,
+                ),
+            ).toBeUndefined();
+        });
+
+        it("ignores a frame_result envelope", async () => {
+            const body = await frame(1, okFrame(0));
+            expect(
+                await readOpenResult(workload.crypto, KEY, REQUEST, body, TEST_LIMITS),
+            ).toBeUndefined();
+        });
+
+        it("ignores another request id without decrypting", async () => {
+            const spy = decryptSpy();
+            const body = await openResult(
+                map({ ok: true, payload: null }),
+                SESSION,
+                new Uint8Array(16),
+            );
+            expect(
+                await readOpenResult(spy.crypto, KEY, REQUEST, body, TEST_LIMITS),
+            ).toBeUndefined();
+            expect(spy.calls()).toBe(0);
+        });
+
+        it("ignores an AEAD failure", async () => {
+            const body = await openResult(map({ ok: true, payload: null }));
+            const wrong = new Uint8Array(32).fill(0x98);
+            expect(
+                await readOpenResult(workload.crypto, wrong, REQUEST, body, TEST_LIMITS),
+            ).toBeUndefined();
+        });
+
+        it.each([
+            ["an R-3 violation", map({ ok: true, payload: null }), null],
+            ["a schema violation", map({ ok: 1 }), SESSION],
+        ])("fails INVALID_RESPONSE on an authenticated %s", async (_name, value, sessionId) => {
+            const body = await openResult(value, sessionId);
+            await expect(
+                readOpenResult(workload.crypto, KEY, REQUEST, body, TEST_LIMITS),
+            ).rejects.toEqual(new ChannelError("INVALID_RESPONSE"));
+        });
+    });
+
+    describe("readFrameResult", () => {
+        const read = (
+            body: Uint8Array,
+            re: number,
+            last: number,
+            crypto: Crypto = workload.crypto,
+        ) => readFrameResult(crypto, KEY, SESSION, re, last, body, TEST_LIMITS);
+
+        it("accepts a matching ok result", async () => {
+            expect(await read(await frame(2, okFrame(4)), 4, 1)).toEqual({
+                seq: 2,
+                op: "test.echo",
+                re: 4,
+                ok: true,
+                payload: "p",
+            });
+        });
+
+        it.each([
+            ["UNKNOWN_OPERATION", "UNKNOWN_OPERATION"],
+            ["SOMETHING_ELSE", "UNKNOWN"],
+        ])("maps the error %s to %s", async (error, mapped) => {
+            const body = await frame(2, map({ re: 4, ok: false, error }));
+            expect(await read(body, 4, 1)).toEqual({
+                seq: 2,
+                op: "test.echo",
+                re: 4,
+                ok: false,
+                error: mapped,
+            });
+        });
+
+        it("ignores bytes that do not decode", async () => {
+            expect(await read(new Uint8Array([0xa0]), 0, 0)).toBeUndefined();
+        });
+
+        it("ignores an open_result envelope", async () => {
+            expect(
+                await read(await openResult(map({ ok: true, payload: null })), 0, -1),
+            ).toBeUndefined();
+        });
+
+        it("ignores another session without decrypting", async () => {
+            const spy = decryptSpy();
+            const body = await frame(2, okFrame(0), KEY, new Uint8Array(16).fill(0x44));
+            expect(await read(body, 0, 0, spy.crypto)).toBeUndefined();
+            expect(spy.calls()).toBe(0);
+        });
+
+        it.each([
+            ["equal to lastSeq", 3, 3],
+            ["below lastSeq", 2, 3],
+            ["0 even with lastSeq -1 (D2-3)", 0, -1],
+        ])("ignores a t2c seq %s without decrypting", async (_name, seq, last) => {
+            const spy = decryptSpy();
+            expect(await read(await frame(seq, okFrame(0)), 0, last, spy.crypto)).toBeUndefined();
+            expect(spy.calls()).toBe(0);
+        });
+
+        it("ignores an AEAD failure", async () => {
+            const body = await frame(2, okFrame(0), new Uint8Array(32).fill(0x97));
+            expect(await read(body, 0, 0)).toBeUndefined();
+        });
+
+        it("ignores a result for another re", async () => {
+            expect(await read(await frame(2, okFrame(5)), 4, 0)).toBeUndefined();
+        });
+
+        it("fails INVALID_RESPONSE on an authenticated schema violation", async () => {
+            const body = await frame(2, map({ re: 0, ok: true }));
+            await expect(read(body, 0, 0)).rejects.toEqual(new ChannelError("INVALID_RESPONSE"));
+        });
     });
 });

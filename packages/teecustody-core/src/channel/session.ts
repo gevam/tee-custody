@@ -9,7 +9,7 @@ import {
 } from "../capabilities.js";
 import { encodeCanonical } from "../wire/cbor.js";
 import type { CanonicalValue } from "../wire/types.js";
-import { ChannelError, type RemoteErrorCode } from "./errors.js";
+import { ChannelError, FrameReject, type RemoteErrorCode } from "./errors.js";
 import type { ChannelLimits } from "./types.js";
 import {
     MAX_SEQ,
@@ -282,14 +282,25 @@ export interface OpenedFrame {
 
 // decode failure or kind ≠ "frame_result" → FrameReject("INVALID_ENVELOPE"); aad.seq <= lastSeq →
 // FrameReject("SEQ_REJECTED") before decrypting; AEAD failure → FrameReject("AUTH_FAILED"). lastSeq -1 = none.
-export function openT2cFrame(
+export async function openT2cFrame(
     crypto: Pick<Crypto, "aes256GcmDecrypt">,
     key: Bytes,
     lastSeq: number,
     envelope: Bytes,
     limits: Pick<ChannelLimits, "envelopeDecode" | "aadDecode">,
 ): Promise<OpenedFrame> {
-    throw new Error("NOT_IMPLEMENTED: T-26");
+    const decoded = decodeOrUndefined(envelope, limits);
+    if (decoded?.kind !== "frame_result") {
+        throw new FrameReject("INVALID_ENVELOPE");
+    }
+    if (decoded.aad.seq <= lastSeq) {
+        throw new FrameReject("SEQ_REJECTED");
+    }
+    const plaintext = await openT2c(crypto, key, decoded.aad.seq, decoded.aadBytes, decoded.ct);
+    if (plaintext === undefined) {
+        throw new FrameReject("AUTH_FAILED");
+    }
+    return { aad: decoded.aad, plaintext };
 }
 
 export type OpenResultMatch =
