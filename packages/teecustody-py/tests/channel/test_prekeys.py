@@ -142,3 +142,47 @@ def test_c3_take_one_second_before_expiry_succeeds() -> None:
     clock.now = store.public_entries()[0].not_after - 0.001
 
     assert len(store.take(0)) == 32
+
+
+def test_c4_expire_destroys_and_wipes_keys_at_or_past_not_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = capture_private_keys(monkeypatch)
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()  # ids 0..9
+    clock.now += 100
+    for prekey_id in range(8):
+        store.take(prekey_id)
+    store.top_up()  # ids 10..17, not_after 100 s later
+    clock.now = store.public_entries()[0].not_after  # ids 8, 9 expire exactly now
+
+    assert store.expire() == 2
+
+    assert [e.id for e in store.public_entries()] == list(range(10, 18))
+    assert captured[8].wiped and captured[9].wiped
+    assert not any(secret.wiped for secret in captured[10:])
+    assert store.expire() == 0
+
+
+def test_c4_public_entries_omit_expired_keys_before_expire_runs() -> None:
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()
+    clock.now = store.public_entries()[0].not_after
+
+    assert store.public_entries() == ()
+
+
+def test_c4_expired_keys_do_not_count_as_live_for_top_up() -> None:
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()
+    clock.now += 100
+    for prekey_id in range(6):
+        store.take(prekey_id)
+    store.top_up()  # 4 live: no-op
+    clock.now = store.public_entries()[0].not_after  # all 4 expire, nothing expired yet
+
+    assert store.top_up() == 10
+    assert [e.id for e in store.public_entries()] == list(range(10, 20))

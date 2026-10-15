@@ -38,7 +38,7 @@ class PreKeyStore:
         self._next_id = 0
 
     def top_up(self) -> int:
-        live = len(self._keys)
+        live = len(self.public_entries())
         if live >= self._params.prekey_low_water:
             return 0
         count = self._params.prekey_batch - live
@@ -57,10 +57,16 @@ class PreKeyStore:
         self._keys[prekey_id] = (PreKeyPublic(prekey_id, pub, not_after, sig), private)
 
     def expire(self) -> int:
-        raise NotImplementedError("T-22")
+        now = self._clock()
+        expired = [i for i, (public, _) in self._keys.items() if public.not_after <= now]
+        for prekey_id in expired:
+            _, private = self._keys.pop(prekey_id)
+            private.wipe()
+        return len(expired)
 
     def public_entries(self) -> tuple[PreKeyPublic, ...]:
-        return tuple(public for public, _ in self._keys.values())
+        now = self._clock()
+        return tuple(public for public, _ in self._keys.values() if public.not_after > now)
 
     def take(self, prekey_id: int) -> Secret:
         slot = self._keys.pop(prekey_id, None)
