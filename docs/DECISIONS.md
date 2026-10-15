@@ -1290,3 +1290,25 @@ Participants: Tech Lead (T-31 A4, D-01), QA, T-31 engineer
 **Rationale:** T-31 A4 found no T-31, client or server defect against the INC-2 contracts. The cascade, however, breaks every later open in a run, and that cannot be waved through at the acceptance gate.
 
 **Dissent:** none
+
+## D-063 — T-31 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts), Tech Lead (A4–A6)
+Participants: Code Reviewer, Security Reviewer, Tech Lead, T-31 engineer
+
+**Decision:** T-31 (inc-2/T-31-e2e, tip 661e63a) is approved to merge as part of MU-2 (D-062), together with inc-2/QA-D-01 once that branch has its own review.
+
+**Review history:**
+- Round 1 (c421bc6):
+  - Code REQUEST_CHANGES: two Mediums. The Node SIGKILL left the harness orphaned, and `test_dev` could hang without limit.
+  - Security APPROVE: two Lows. `dev.py --host` accepted any address, and the limits were not asserted.
+  - `--host` was ruled as A5 (ce39200): mirror the simulator's `--allow-non-loopback`. API-TL TL-5 updated (bf4583d).
+- Round 2 (86eb69d):
+  - Security APPROVE: a Low and an info note.
+  - Code REQUEST_CHANGES: a Medium. The round-2 `detached: true` let Ctrl-C orphan the harness and its FIXTURE_CS. This was introduced by the fix.
+  - The review limit was reached, so it went to the Tech Lead. A6 (33b7df0) approved a final round: `--stop-on-stdin-eof`, the SIGKILL fallback test, the C3 fixture, and `allow_abbrev=False`.
+- Final round (86eb69d..661e63a): Code APPROVE and Security APPROVE. Both checked SIGINT and SIGKILL of the runner by hand and found no leftover process or dir.
+- The CR Low (wall-clock elapsed time in the e2e tests) goes to BACKLOG as B-42, per A6.
+
+**Dissent:** none
