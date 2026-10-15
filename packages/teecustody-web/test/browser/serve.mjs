@@ -22,7 +22,7 @@ const HARNESS_ENTRY = join(HERE, "harness/index.ts");
 
 const CONTROL_TEMPLATE = readFileSync(join(HERE, "control/inline.html"), "utf8");
 
-// Set once by configure(): the harness bundle, its SRI value, the pages and the CSP header.
+// Set once by configure(): the harness bundle, both pages (with its SRI value) and the CSP header.
 let site;
 
 function indexHtml(sri) {
@@ -62,9 +62,8 @@ async function bundle(config) {
 
 async function configure(line) {
     const input = JSON.parse(line);
-    const profileText = readFileSync(input.profile, "utf8");
+    const profile = JSON.parse(readFileSync(input.profile, "utf8"));
     const fixture = JSON.parse(readFileSync(join(dirname(input.profile), "fixture.json"), "utf8"));
-    const profile = JSON.parse(profileText);
     const harness = await bundle({ gateway: input.gateway, profile, fixture });
     // The hash of the exact bytes served as /harness.js.
     const sri = `sha384-${createHash("sha384").update(harness).digest("base64")}`;
