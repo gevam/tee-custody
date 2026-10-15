@@ -14,6 +14,7 @@ from teecustody.channel.session import (
     SessionTable,
     T2cSealer,
     _nonce,
+    open_frame,
 )
 from teecustody.secrets import Secret
 
@@ -120,3 +121,42 @@ def test_a_frame_for_another_session_id_is_auth_failed() -> None:
     assert _rejected(session, foreign, T0 + 10) is SessionRejectCode.AUTH_FAILED
     assert session.last_activity == T0
     assert session.open_c2t(*_frame(key, 0), clock()).reveal() == b"p"
+
+
+# ---------------------------------------------------------------- criterion 6
+def _open_frame_code(key: Secret, last_seq: int, frame: tuple[FrameAad, bytes, bytes]) -> str:
+    with pytest.raises(SessionReject) as err:
+        open_frame(key, last_seq, *frame)
+    return err.value.code
+
+
+def test_open_frame_applies_the_same_seq_rules_to_a_free_standing_key() -> None:
+    raw = os.urandom(32)
+    key = Secret(raw)
+    assert open_frame(key, -1, *_frame(raw, 0, plaintext=b"zero")).reveal() == b"zero"
+    assert _open_frame_code(key, 0, _frame(raw, 0)) is SessionRejectCode.SEQ_REJECTED
+    below = (FrameAad(session_id=SESSION_ID, seq=-1, op=OP), b"", b"")
+    assert _open_frame_code(key, 0, below) is SessionRejectCode.SEQ_REJECTED
+    assert open_frame(key, 0, *_frame(raw, 5, plaintext=b"five")).reveal() == b"five"
+    assert _open_frame_code(key, 5, _frame(raw, 5)) is SessionRejectCode.SEQ_REJECTED
+
+
+def test_open_frame_checks_seq_before_decrypting() -> None:
+    raw = os.urandom(32)
+    aad, aad_bytes, _ct = _frame(raw, 2)
+    garbage = (aad, aad_bytes, b"\x00" * 32)
+    assert _open_frame_code(Secret(raw), 2, garbage) is SessionRejectCode.SEQ_REJECTED
+    assert _open_frame_code(Secret(raw), 1, garbage) is SessionRejectCode.AUTH_FAILED
+
+
+def test_open_frame_under_the_wrong_key_is_auth_failed() -> None:
+    frame = _frame(os.urandom(32), 0)
+    assert _open_frame_code(Secret(os.urandom(32)), -1, frame) is SessionRejectCode.AUTH_FAILED
+
+
+def test_open_frame_auth_failure_carries_no_library_cause() -> None:
+    with pytest.raises(SessionReject) as err:
+        open_frame(Secret(os.urandom(32)), -1, *_frame(os.urandom(32), 0))
+    assert str(err.value) == "AUTH_FAILED"
+    assert err.value.__cause__ is None
+    assert err.value.__suppress_context__
