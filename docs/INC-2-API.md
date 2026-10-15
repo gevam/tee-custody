@@ -925,8 +925,17 @@ class AuditEmitter:
 ```
 Object ids: `AGGREGATE` `<interval_start_ms>/<outcome>/<hex(rng(8))>`; `ALERT` `<hex(rng(16))>/<outcome>`.
 `ALREADY_EXISTS` on any write → `alert("AUDIT_WRITE_CONFLICT", request_id=…)` with a fresh id. `UNAVAILABLE` →
-the record stays pending and is retried on each `tick`, at most `2 × len(AggregateOutcome)` pending records;
-beyond that the oldest is dropped and `AUDIT_PENDING_DROPPED` is logged. The emitter never raises into the
+the record stays pending and is retried on each `tick`.
+
+**Pending records (D-053, T-12 A1).** Pending records are held in two separately capped classes:
+- **Class 1:** `alert()` records and `ALERT_CAP_REACHED`, up to 256. Class-2 records never evict them.
+- **Class 2:** pre-principal ALERTs and AGGREGATEs, up to 24.
+
+When a class is full, its oldest record is dropped and `AUDIT_PENDING_DROPPED_<OUTCOME>` is logged, where `<OUTCOME>`
+is the dropped record's outcome. If the clock moves backwards, the emitter ends the current interval at its nominal
+end and logs `AUDIT_CLOCK_BACKWARD`. The constructor enforces the §4.4 ranges.
+
+The emitter never raises into the
 channel (fail closed applies to the triggering operation, which already failed). Example:
 `audit.count(AggregateOutcome.OPEN_FAILED)`.
 
@@ -1070,6 +1079,9 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
   shares the proxy's peer address, so the per-source limit collapses to the global limit; the gateway README says
   so.
 - `b64url` = RFC 4648 §5 without padding. `next: null` means "omit `after` next time".
+- Gateway JSON bodies contain no escape sequences: every string value is a hex id, a cursor or `b64url`.
+  `FetchTransport` refuses any response body that contains a backslash (`0x5C`) with `INVALID_RESPONSE` (D-053, T-19
+  decision 1). A host-written gateway must emit the same unescaped JSON.
 - Every error body is exactly `{"code":"<CODE>"}`: `INVALID_ARGUMENT` (400), `UNKNOWN_INSTANCE` (404),
   `NOT_FOUND` (404), `REQUEST_TIMEOUT` (408), `RATE_LIMITED` (429), `UNAVAILABLE` (503), `INTERNAL` (500). FastAPI's default validation and error bodies are
   overridden. Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
