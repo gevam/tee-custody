@@ -1376,3 +1376,28 @@ Participants: Code Reviewer, Security Reviewer
 - D-02 closes when T-38 merges (D-064).
 
 **Dissent:** none
+
+## D-067 — QA-I7 verdict: traceability I7 closed by acceptance tests (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, QA, Architect (I7 GAP flagged)
+
+**Decision:** inc-2/QA-I7 (tip 5cd1996) is approved to merge. It adds `tests/acceptance/test_I7_queue_message_content.py` and `tests/acceptance/I7.queue-content.test.ts`. Together they show that queue messages from the real producers carry only I7-permitted content:
+- the Python workload produces the bundles and responses;
+- the Core ChannelClient produces the requests.
+The checks are an allow-list derived from `spec/wire/channel.cddl`, `prekey_signature_valid`, and sentinel searches over raw and decoded values for the client share, the payloads and the session keys.
+
+**Review history:**
+- Round 1 (6ae44de): REQUEST_CHANGES.
+  - 2 Highs: the requests came from a test-only producer, and the sentinel search never ran alone.
+  - 1 Medium: pre-key signatures were not checked.
+  - 1 Low: the drop counter was self-incremented.
+- Round 2 (5cd1996): APPROVE. Each fix was verified by mutation or stub.
+- The optional Lows go to B-44.
+
+No security review: the change is test-only and adds no production code.
+
+After the merge, the Architect updates the traceability I7 columns (D-014).
+
+**Dissent:** none
