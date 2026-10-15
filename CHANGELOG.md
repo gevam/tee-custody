@@ -55,3 +55,7 @@
 - T-19: FetchTransport against the gateway contract
 - T-14: Reference queue gateway HTTP contract
 - T-20: WebAuthn-PRF share vault
+- T-22: Pre-keys and bundle build
+- T-23: Sessions, T2cSealer and session table
+- T-26: Core ChannelClient and Session
+- T-24: In-memory queue and audit sink (simulator)
