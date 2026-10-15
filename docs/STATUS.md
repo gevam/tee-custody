@@ -1,10 +1,10 @@
 # Status — tee-custody
 
-Updated: 2026-10-15 (INC-2 Wave 1 merged; Wave 2 running) by Orchestrator
+Updated: 2026-10-15 (INC-2 Wave 2 merged; T-28 merged, T-29 in re-review) by Orchestrator
 
 ## Where we are
-Stage: INC-2 wave 2 implementation
-Last gate passed: Wave 1 merged (D-054)   Next gate: Wave 2 merges, then Waves 3–5, G5/G6/G7/G8
+Stage: INC-2 wave 3 implementation
+Last gate passed: Wave 2 merged (D-056/D-057)   Next gate: T-29 merge, then T-31/T-32/T-35, G5/G6/G7/G8
 Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 
 ## INC-1 — Attestation foundation (done)
@@ -23,18 +23,17 @@ Increments merged: `inc-1` (local tag on 957ed82, not pushed)
 
 Wave 0: complete (D-050). Wave 1: complete on main 34d1193 (D-054), incl. MU-1 (D-043 pinned jwks_uri; vectors human-approved D-052).
 
-| Wave 2 item | State |
+| Item | State |
 |---|---|
-| T-22 pre-keys + bundle build | merged dbba6ce (D-056) |
-| T-23 sessions, T2cSealer, session table | merged (D-056) |
-| T-24 in-memory queue + audit sink | merged (D-056) |
-| T-25 channel vector generator + CLI | Code + Security APPROVE (D-056); merging |
-| T-26 Core ChannelClient/Session | merged e0bef2f (D-056) |
-| T-27 SR-13 bundle scan | round 3 confirmations pending |
-| T-28 ChannelServer, T-29 RunLoop (Wave 3) | engineers running |
-| T-30 channel vectors (human-gated), T-31, T-32, T-35 | pending |
+| Wave 2 (T-22..T-27, T-25 CLI) | all merged (D-056, D-057) |
+| T-30 channel vectors | merged 085eccb (human-approved D-058, sha256 verified) |
+| T-28 ChannelServer | merged fbea1dd (D-059), with QA-acceptance-8 f94e743 |
+| T-29 RunLoop | round-2 Code + Security re-review in progress |
+| T-31 e2e harness | starts after T-29 merges |
+| T-32 Playwright CSP harness | after T-31 |
+| T-35 check-discovery + scheduled job | pending (fixture profile human-gated) |
 
-Main at 34d1193: Python 133 failed / 3999 passed (all expected red), Core 1272/1272, all lint/type/security gates green.
+Main at e465784: spec/vectors 236 passed; Python 15 failed / 11 errors / 4612 passed (all T-29 expected red); pnpm 18 FR-4 e2e reds (HARNESS_MISSING, T-31); ruff/mypy/semgrep/gitleaks clean.
 
 ## Blockers
 None.
@@ -47,10 +46,10 @@ None.
 | framework gap | `sdlc/roles/_security-constraints.md` referenced but missing | No | Add / ignore | Add when convenient |
 
 ## Decisions this increment
-INC-2: D-039..D-054 — notable: D-049 (h11 exception), D-052 (T-34 vectors approved), D-053 (Wave-1 rulings), D-054 (Wave 1 merged), D-046 (Wave-0 contract fixes), D-047 (SA approves D-043 design), D-048 (T-03 spec approved), D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri), D-045 (@hpke/* admitted, framework.yaml exception). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
+INC-2: D-039..D-059 — notable: D-058 (T-30 vectors approved), D-059 (T-28 verdicts), D-049 (h11 exception), D-052 (T-34 vectors approved), D-053 (Wave-1 rulings), D-054 (Wave 1 merged), D-046 (Wave-0 contract fixes), D-047 (SA approves D-043 design), D-048 (T-03 spec approved), D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri), D-045 (@hpke/* admitted, framework.yaml exception). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
 
 ## Debt / backlog
-DEBT.md open: DEBT-2 (maxDiscoveryBytes, INC-5), DEBT-3 (h11, INC-5). BACKLOG.md: B-01..B-32 (B-24..B-27 Required for INC-3; B-30 Required for INC-5); required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
+DEBT.md open: DEBT-2 (maxDiscoveryBytes, INC-5), DEBT-3 (h11, INC-5). BACKLOG.md: B-01..B-36 (B-24..B-27 Required for INC-3; B-30 Required for INC-5); required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
 
 ## Spend
 | Role | Tokens INC-1 (approx.) |
