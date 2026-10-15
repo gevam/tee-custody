@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from teecustody.channel import session as session_module
 from teecustody.channel.codec import (
     MAX_SEQ,
     FrameAad,
@@ -15,7 +16,6 @@ from teecustody.channel.codec import (
     encode_frame_aad,
     encode_open_result_aad,
 )
-from teecustody.channel import session as session_module
 from teecustody.channel.session import SessionReject, SessionRejectCode, T2cSealer, _nonce
 from teecustody.secrets import Secret
 
