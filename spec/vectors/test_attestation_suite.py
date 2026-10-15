@@ -14,6 +14,9 @@ from collections.abc import Callable
 from typing import Any, NamedTuple
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from teecustody.wire import encode
 
@@ -62,8 +65,7 @@ PROFILE_KEYS = frozenset(
         "profile_kind",
         "token_type",
         "issuer",
-        "discovery_url",
-        "jwks_origin",
+        "jwks_uri",
         "expected_audience",
         "token_max_age_s",
         "allowed_hwmodels",
@@ -75,6 +77,12 @@ PROFILE_KEYS = frozenset(
     }
 )
 PRODUCTION_ISSUER = "https://confidentialcomputing.googleapis.com"
+DEV_JWKS_URL = "http://127.0.0.1:8791/jwks"
+ATTACKER_JWKS_URL = "http://127.0.0.1:8791/attacker/jwks"
+GOOGLE_JWKS_URL = (
+    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/"
+    "signer@confidentialspace-sign.iam.gserviceaccount.com"
+)
 IMAGE_SIGNATURES = "submods.container.image_signatures"
 
 
@@ -150,6 +158,8 @@ CATALOG: tuple[CatalogRow, ...] = (
     ),
     CatalogRow("env_missing", "launch_config", "CLAIM_MISSING", ("submods.container.env",), False),
     CatalogRow("kid_unknown", "signature", "UNTRUSTED_SIGNER", (), False),
+    CatalogRow("jwks_other_path", "signature", "UNTRUSTED_SIGNER", (), False),
+    CatalogRow("jwks_other_path_same_kid", "signature", "UNTRUSTED_SIGNER", (), False),
 )
 CATALOG_IDS = [row.id for row in CATALOG]
 
@@ -159,13 +169,17 @@ def cases_by_id(suite: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {case["id"]: case for case in suite["cases"]}
 
 
-def _jws_payload(token: str) -> dict[str, Any]:
+def _jws_segment(token: str, index: int) -> dict[str, Any]:
     segments = token.split(".")
     assert len(segments) == 3
-    payload = segments[1]
-    decoded = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    segment = segments[index]
+    decoded = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
     assert isinstance(decoded, dict)
     return decoded
+
+
+def _jws_payload(token: str) -> dict[str, Any]:
+    return _jws_segment(token, 1)
 
 
 _ABSENT = object()
@@ -325,6 +339,7 @@ def test_profile_has_exactly_the_documented_keys(
     profile = json.loads(suite[field])
     assert type(profile) is dict
     assert set(profile) == PROFILE_KEYS
+    assert profile["profile_version"] == 2
     assert profile["profile_kind"] == kind
     assert type(profile["signer_keys"]) is list
     assert profile["signer_keys"]
@@ -335,3 +350,68 @@ def test_profile_has_exactly_the_documented_keys(
 
 def test_production_profile_names_the_confidential_space_issuer(suite: dict[str, Any]) -> None:
     assert json.loads(suite["production_profile_json"])["issuer"] == PRODUCTION_ISSUER
+
+
+def test_http_map_holds_exactly_the_three_jwks_urls(suite: dict[str, Any]) -> None:
+    assert set(suite["http"]) == {DEV_JWKS_URL, ATTACKER_JWKS_URL, GOOGLE_JWKS_URL}
+    assert not any(url.endswith("/.well-known/openid-configuration") for url in suite["http"])
+
+
+def test_development_profile_jwks_uri_is_an_http_key(suite: dict[str, Any]) -> None:
+    jwks_uri = json.loads(suite["profile_json"])["jwks_uri"]
+    assert jwks_uri == DEV_JWKS_URL
+    assert jwks_uri in suite["http"]
+
+
+# Rows 38 and 39: JWKS served from a different path. Their payloads are those of `valid`.
+
+
+def test_rows_38_39_share_valid_payload(cases_by_id: dict[str, dict[str, Any]]) -> None:
+    valid_token = cases_by_id["valid"]["token"]
+    valid_payload = _jws_payload(valid_token)
+    valid_header = _jws_segment(valid_token, 0)
+    for case_id in ("jwks_other_path", "jwks_other_path_same_kid"):
+        assert _jws_payload(cases_by_id[case_id]["token"]) == valid_payload, case_id
+    assert _jws_segment(cases_by_id["jwks_other_path_same_kid"]["token"], 0) == valid_header
+    assert _jws_segment(cases_by_id["jwks_other_path"]["token"], 0)["kid"] != valid_header["kid"]
+
+
+def _jwks(suite: dict[str, Any], url: str) -> dict[str, Any]:
+    jwks = json.loads(suite["http"][url])
+    assert isinstance(jwks, dict)
+    return jwks
+
+
+def _b64url_int(value: str) -> int:
+    return int.from_bytes(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)), "big")
+
+
+def _verifies_under(token: str, jwks: dict[str, Any]) -> bool:
+    """True iff the JWS is RS256-signed by the key of `jwks` whose `kid` matches the header."""
+    kid = _jws_segment(token, 0)["kid"]
+    keys = [key for key in jwks["keys"] if key["kid"] == kid]
+    if not keys:
+        return False
+    key = keys[0]
+    public_key = rsa.RSAPublicNumbers(_b64url_int(key["e"]), _b64url_int(key["n"])).public_key()
+    signing_input, signature = token.rsplit(".", 1)
+    signature_bytes = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+    try:
+        public_key.verify(
+            signature_bytes, signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256()
+        )
+    except InvalidSignature:
+        return False
+    return True
+
+
+def test_rows_38_39_are_signed_by_the_attacker_key_only(
+    suite: dict[str, Any], cases_by_id: dict[str, dict[str, Any]]
+) -> None:
+    dev = _jwks(suite, DEV_JWKS_URL)
+    attacker = _jwks(suite, ATTACKER_JWKS_URL)
+    assert _verifies_under(cases_by_id["valid"]["token"], dev)
+    for case_id in ("jwks_other_path", "jwks_other_path_same_kid"):
+        token = cases_by_id[case_id]["token"]
+        assert _verifies_under(token, attacker), case_id
+        assert not _verifies_under(token, dev), case_id
