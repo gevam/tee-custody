@@ -6,7 +6,14 @@ from collections.abc import Callable
 
 import pytest
 
-from teecustody.queue import PublishedBundle, QueueError, QueueErrorCode, QueueMessage
+from teecustody.queue import (
+    PublishedBundle,
+    PublishedResponse,
+    QueueError,
+    QueueErrorCode,
+    QueueMessage,
+    ResponsePage,
+)
 from teecustody_sim.backends import InMemoryQueue
 
 START = 1_800_000_000.0
@@ -186,3 +193,70 @@ def test_a_publish_from_another_thread_wakes_a_blocked_pull_early() -> None:
 
     assert [m.body for m in pulled] == [b"late"]
     assert elapsed < 2.0
+
+
+# ---------------------------------------------------------------- criterion 5: response paging
+CLIENT = "c1" * 16
+OTHER_CLIENT = "d1" * 16
+
+
+def _five_responses(queue: InMemoryQueue) -> None:
+    for index in range(5):
+        queue.publish_response(CLIENT, f"{index:032x}", bytes([index]))
+
+
+def test_responses_are_paged_in_order_with_decimal_cursors() -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+
+    first = queue.pull_responses(CLIENT, None, 2)
+    second = queue.pull_responses(CLIENT, first.next, 2)
+    third = queue.pull_responses(CLIENT, second.next, 2)
+    empty = queue.pull_responses(CLIENT, third.next, 2)
+
+    assert first == ResponsePage(
+        (PublishedResponse("0" * 32, b"\x00"), PublishedResponse(f"{1:032x}", b"\x01")), "2"
+    )
+    assert [r.body for r in second.responses] == [b"\x02", b"\x03"]
+    assert second.next == "4"
+    assert [r.body for r in third.responses] == [b"\x04"]
+    assert third.next == "5"
+    assert empty == ResponsePage((), None)
+
+
+def test_after_zero_returns_every_response() -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+
+    page = queue.pull_responses(CLIENT, "0", 10)
+
+    assert [r.body for r in page.responses] == [bytes([i]) for i in range(5)]
+    assert page.next == "5"
+
+
+@pytest.mark.parametrize("after", ["x", "-1", "6", "+1", "1.0", " 1", "01", "", "1" * 21])
+def test_malformed_or_future_cursor_is_invalid_argument(after: str) -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+
+    with pytest.raises(QueueError) as caught:
+        queue.pull_responses(CLIENT, after, 2)
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+def test_another_clients_route_returns_an_empty_page() -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+
+    assert queue.pull_responses(OTHER_CLIENT, None, 10) == ResponsePage((), None)
+
+
+def test_cursor_sequences_are_per_client() -> None:
+    queue = _queue(FakeClock())
+    _five_responses(queue)
+    queue.publish_response(OTHER_CLIENT, "ff" * 16, b"other")
+
+    page = queue.pull_responses(OTHER_CLIENT, None, 10)
+
+    assert page == ResponsePage((PublishedResponse("ff" * 16, b"other"),), "1")

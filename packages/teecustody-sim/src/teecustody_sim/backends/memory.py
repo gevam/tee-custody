@@ -4,19 +4,33 @@ Development only: never a dependency of `teecustody`. Bodies belong to T-24.
 """
 
 import os
+import re
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Final
 
 from teecustody.audit import AppendResult, AuditClass, AuditErrorCode, AuditKey, AuditRecord
 from teecustody.queue import (
     PublishedBundle,
+    PublishedResponse,
     QueueError,
     QueueErrorCode,
     QueueMessage,
     ResponsePage,
 )
+
+
+# Response cursor: the decimal per-client sequence number of the last returned response.
+_CURSOR_PATTERN: Final = re.compile(r"0|[1-9][0-9]{0,19}")  # fullmatch only (R-7)
+
+
+@dataclass(slots=True)
+class _Route:
+    last_seq: int = 0
+    responses: deque[tuple[int, PublishedResponse]] = field(default_factory=deque)
 
 
 @dataclass(slots=True)
@@ -47,6 +61,7 @@ class InMemoryQueue:
         self._cond = threading.Condition()
         self._bundles: dict[str, tuple[bytes, int]] = {}
         self._requests: dict[str, _Request] = {}
+        self._routes: dict[str, _Route] = {}
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         with self._cond:
@@ -73,7 +88,10 @@ class InMemoryQueue:
             self._requests.pop(message_id, None)
 
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            route = self._routes.setdefault(client_id, _Route())
+            route.last_seq += 1
+            route.responses.append((route.last_seq, PublishedResponse(request_id, body)))
 
     def withdraw_bundle(self, instance_id: str) -> None:
         with self._cond:
@@ -110,7 +128,20 @@ class InMemoryQueue:
             return message_id
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
-        raise NotImplementedError("T-24")
+        with self._cond:
+            route = self._routes.get(client_id, _Route())
+            if after is None:
+                floor = 0
+            elif _CURSOR_PATTERN.fullmatch(after) and int(after) <= route.last_seq:
+                floor = int(after)
+            else:
+                raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+            page = [(seq, response) for seq, response in route.responses if seq > floor][
+                :max_messages
+            ]
+            if not page:
+                return ResponsePage((), None)
+            return ResponsePage(tuple(response for _, response in page), str(page[-1][0]))
 
 
 class InMemoryAuditSink:
