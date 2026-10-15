@@ -491,3 +491,24 @@ def test_full_session_table_without_an_idle_session_aborts_with_limit_exceeded()
         )
     ]
     assert world.table_closes == []
+
+
+# ---------------------------------------------------------------- edge cases
+def test_prekey_expiring_between_the_live_check_and_take_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = _make_world()
+    sent = world.open_session()
+
+    def expired(_prekey_id: int) -> Secret:
+        raise KeyError("PREKEY_UNKNOWN")
+
+    monkeypatch.setattr(world.prekeys, "take", expired)
+    spy = OpenBaseSpy(monkeypatch)
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "PREKEY_UNKNOWN"
+    assert result.response is None
+    assert dict(world.audit.counts) == {"PREKEY_UNKNOWN": 1}
+    assert spy.calls == 0

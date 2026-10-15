@@ -204,7 +204,10 @@ class ChannelServer:
             return self._drop(AggregateOutcome.REQUEST_STALE)
         if self._replay.seen(aad.client_id, aad.request_id):
             return self._drop(AggregateOutcome.REQUEST_REPLAYED)
-        private_key = self._prekeys.take(aad.prekey_id)
+        try:
+            private_key = self._prekeys.take(aad.prekey_id)
+        except KeyError:  # expired since the live check: the store's clock moved on
+            return self._drop(AggregateOutcome.PREKEY_UNKNOWN)
         try:
             opened = open_base(
                 private_key,
