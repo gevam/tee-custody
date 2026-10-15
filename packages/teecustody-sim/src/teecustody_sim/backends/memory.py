@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from teecustody.audit import AppendResult, AuditClass, AuditErrorCode, AuditKey, AuditRecord
+from teecustody.channel.codec import CLIENT_ID_PATTERN, INSTANCE_ID_PATTERN
 from teecustody.queue import (
+    RELAY_ID_PATTERN,
     PublishedBundle,
     PublishedResponse,
     QueueError,
@@ -22,8 +24,14 @@ from teecustody.queue import (
     ResponsePage,
 )
 
+_NAMESPACE_PATTERN: Final = re.compile(r"[a-z][a-z0-9-]{0,31}")  # fullmatch only (R-7)
 # Response cursor: the decimal per-client sequence number of the last returned response.
 _CURSOR_PATTERN: Final = re.compile(r"0|[1-9][0-9]{0,19}")  # fullmatch only (R-7)
+
+
+def _check_id(pattern: re.Pattern[str], value: object) -> None:
+    if not (isinstance(value, str) and pattern.fullmatch(value)):
+        raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +69,9 @@ class InMemoryQueue:
         clock: Callable[[], float] = time.time,
         rng: Callable[[int], bytes] = os.urandom,
     ) -> None:
+        if not _NAMESPACE_PATTERN.fullmatch(namespace):
+            raise ValueError("NAMESPACE")
+        self._namespace = namespace
         self._ack_deadline_s = ack_deadline_s
         self._request_retention_s = request_retention_s
         self._response_retention_s = response_retention_s
@@ -76,6 +87,7 @@ class InMemoryQueue:
         self._responses_issued = 0
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
+        _check_id(INSTANCE_ID_PATTERN, instance_id)
         with self._cond:
             now = self._clock()
             self._purge(now)
@@ -88,6 +100,7 @@ class InMemoryQueue:
     def pull_requests(
         self, instance_id: str, max_messages: int, wait_s: float
     ) -> list[QueueMessage]:
+        _check_id(INSTANCE_ID_PATTERN, instance_id)
         deadline = time.monotonic() + wait_s
         with self._cond:
             while True:
@@ -103,11 +116,14 @@ class InMemoryQueue:
             return [request.message for request in due]
 
     def ack(self, message_id: str) -> None:
+        _check_id(RELAY_ID_PATTERN, message_id)
         with self._cond:
             self._purge(self._clock())
             self._requests.pop(message_id, None)
 
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
+        _check_id(CLIENT_ID_PATTERN, client_id)
+        _check_id(RELAY_ID_PATTERN, request_id)
         with self._cond:
             now = self._clock()
             self._purge(now)
@@ -123,6 +139,7 @@ class InMemoryQueue:
             self._response_depth += 1
 
     def withdraw_bundle(self, instance_id: str) -> None:
+        _check_id(INSTANCE_ID_PATTERN, instance_id)
         with self._cond:
             self._purge(self._clock())
             self._bundles.pop(instance_id, None)
@@ -168,6 +185,8 @@ class InMemoryQueue:
         return _Route(last_seq=self._responses_issued) if route is None else route
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
+        _check_id(INSTANCE_ID_PATTERN, instance_id)
+        _check_id(RELAY_ID_PATTERN, request_id)
         with self._cond:
             now = self._clock()
             self._purge(now)
@@ -182,6 +201,7 @@ class InMemoryQueue:
             return message_id
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
+        _check_id(CLIENT_ID_PATTERN, client_id)
         with self._cond:
             self._purge(self._clock())
             route = self._route(client_id)

@@ -384,3 +384,59 @@ def test_cursor_of_a_route_without_responses_is_bounded_by_every_sequence_issued
     with pytest.raises(QueueError) as caught:
         queue.pull_responses(OTHER_CLIENT, "2", 10)
     assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+# ---------------------------------------------------------------- criterion 7: identifiers (R-7)
+GOOD = "ab" * 16
+BAD_IDS = ["AB" * 16, "ab" * 15 + "a", "ab" * 16 + "a", "ab" * 16 + "\n", "", "ab" * 15 + "g0"]
+BAD_ID_NAMES = ["uppercase", "31-chars", "33-chars", "trailing-newline", "empty", "non-hex"]
+
+ID_CALLS: dict[str, Callable[[InMemoryQueue, str], object]] = {
+    "publish_bundle.instance_id": lambda q, v: q.publish_bundle(v, b"b", int(START) + 60),
+    "pull_requests.instance_id": lambda q, v: q.pull_requests(v, 1, 0.0),
+    "ack.message_id": lambda q, v: q.ack(v),
+    "publish_response.client_id": lambda q, v: q.publish_response(v, GOOD, b"r"),
+    "publish_response.request_id": lambda q, v: q.publish_response(GOOD, v, b"r"),
+    "withdraw_bundle.instance_id": lambda q, v: q.withdraw_bundle(v),
+    "publish_request.instance_id": lambda q, v: q.publish_request(v, GOOD, b"r"),
+    "publish_request.request_id": lambda q, v: q.publish_request(GOOD, v, b"r"),
+    "pull_responses.client_id": lambda q, v: q.pull_responses(v, None, 1),
+}
+
+
+@pytest.mark.parametrize("bad", BAD_IDS, ids=BAD_ID_NAMES)
+@pytest.mark.parametrize("call", list(ID_CALLS))
+def test_every_id_argument_is_full_matched(call: str, bad: str) -> None:
+    queue = _queue(FakeClock())
+    queue.publish_bundle(GOOD, b"live", int(START) + 600)
+
+    with pytest.raises(QueueError) as caught:
+        ID_CALLS[call](queue, bad)
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+    assert queue.list_bundles(10) == [PublishedBundle(GOOD, b"live")]
+    assert queue.pull_requests(GOOD, 10, 0.0) == []
+    assert queue.pull_responses(GOOD, None, 10) == ResponsePage((), None)
+
+
+@pytest.mark.parametrize("call", list(ID_CALLS))
+def test_a_non_string_id_is_invalid_argument(call: str) -> None:
+    queue = _queue(FakeClock())
+
+    with pytest.raises(QueueError) as caught:
+        ID_CALLS[call](queue, b"ab" * 16)  # type: ignore[arg-type]
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("namespace", ["sim", "a", "dev-1", "a" + "b" * 31])
+def test_valid_namespaces_are_accepted(namespace: str) -> None:
+    InMemoryQueue(namespace=namespace)
+
+
+@pytest.mark.parametrize(
+    "namespace", ["", "Sim", "1sim", "-sim", "sim_1", "a" + "b" * 32, "sim\n", " sim"]
+)
+def test_invalid_namespace_is_refused_at_construction(namespace: str) -> None:
+    with pytest.raises(ValueError, match=r"^NAMESPACE$"):
+        InMemoryQueue(namespace=namespace)
