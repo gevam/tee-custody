@@ -87,8 +87,8 @@ def test_FR05_gateway_answers_404_for_an_unknown_instance_with_the_stable_body()
 
 @pytest.mark.parametrize(
     "bad",
-    [IID.upper(), IID[:-1], IID + "a", IID + "%0A", "g" * 32],
-    ids=["uppercase", "31-chars", "33-chars", "newline", "non-hex"],
+    [IID.upper(), IID[:-1], IID + "a", "g" * 32],
+    ids=["uppercase", "31-chars", "33-chars", "non-hex"],
 )
 def test_FR05_malformed_route_ids_are_rejected_before_any_queue_call(bad: str) -> None:
     # Given a gateway and a spy queue
@@ -100,6 +100,29 @@ def test_FR05_malformed_route_ids_are_rejected_before_any_queue_call(bad: str) -
     # Then both are 400 INVALID_ARGUMENT and the queue was never called
     for resp in (post, get):
         assert resp.status_code == 400 and resp.json() == {"code": "INVALID_ARGUMENT"}
+    assert relay.calls == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/bundles%0A",
+        "/bundles%00",
+        f"/requests/{IID}%0A",
+        f"/responses/{HEX}%0D",
+        "/bundles%7F",
+    ],
+)
+def test_FR05_control_characters_in_the_path_are_404_before_routing(path: str) -> None:
+    # Given a gateway and a spy queue (T-14 A1: control characters are refused before routing)
+    relay = SpyRelay()
+    client = _client(relay)
+    # When a decoded path carries a control character
+    resp = (
+        client.post(path, content=b"x", headers=OCTET) if "/requests/" in path else client.get(path)
+    )
+    # Then 404 NOT_FOUND and no queue call
+    assert resp.status_code == 404 and resp.json() == {"code": "NOT_FOUND"}
     assert relay.calls == []
 
 
