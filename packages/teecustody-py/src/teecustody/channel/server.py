@@ -26,7 +26,6 @@ from teecustody.channel.hpke import HpkeError, OpenedHpke, open_base
 from teecustody.channel.ports import (
     CloseReason,
     FrameHandler,
-    OpenAccepted,
     OpenRejected,
     OpenRequest,
     RemoteErrorCode,
@@ -175,16 +174,22 @@ class ChannelServer:
             )
         session_id = self._rng(16)
         claimed = aad.client_id if isinstance(payload, OpenSessionPayload) else None
-        result = self._opener.open(
-            OpenRequest(
-                claimed_client_id=claimed,
-                request_id=aad.request_id,
-                instance_id=self._instance_id,
-                session_id=session_id,
-                payload=payload,
-            )
+        request = OpenRequest(
+            claimed_client_id=claimed,
+            request_id=aad.request_id,
+            instance_id=self._instance_id,
+            session_id=session_id,
+            payload=payload,
         )
-        result = cast(OpenAccepted, result)
+        try:
+            result = self._opener.open(request)
+        except Exception:  # noqa: BLE001 - a port failure is BACKEND_UNAVAILABLE, text discarded (SR-11)
+            result = OpenRejected(RemoteErrorCode.BACKEND_UNAVAILABLE)
+        finally:
+            if isinstance(payload, OpenSessionPayload):
+                payload.cs.wipe()
+        if isinstance(result, OpenRejected):
+            return self._refuse(AggregateOutcome.OPEN_REJECTED, result.error)
         principal = result.client_id
         info = SessionInfo(
             client_id=principal, session_id=session_id, instance_id=self._instance_id

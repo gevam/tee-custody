@@ -21,6 +21,7 @@ from support_server import (
     open_session_plaintext,
     read_open_result,
     reenvelope,
+    reject,
     seal_open,
 )
 from support_server import make_world as _make_world
@@ -31,6 +32,7 @@ from teecustody.channel.ports import (
     OpenAccepted,
     OpenRequest,
     OpenResult,
+    RemoteErrorCode,
     SessionInfo,
 )
 from teecustody.channel.server import ProcessResult
@@ -404,3 +406,42 @@ def test_refused_principal_creates_no_session_and_aborts_the_open(
     assert view.session_id is None
     assert view.body == {"ok": False, "error": "INTERNAL"}
     assert world.logger.calls == []
+
+
+# ---------------------------------------------------------------- criterion 7 (SR-11)
+SENTINEL = "SENTINEL-OPENER-TEXT-5a5a"
+
+
+def _raise_sentinel(_request: OpenRequest) -> OpenResult:
+    raise RuntimeError(SENTINEL)
+
+
+@pytest.mark.parametrize(
+    ("script", "error"),
+    [
+        (reject(RemoteErrorCode.AUTHENTICATION_FAILED), "AUTHENTICATION_FAILED"),
+        (reject(RemoteErrorCode.UNKNOWN_CLIENT), "UNKNOWN_CLIENT"),
+        (_raise_sentinel, "BACKEND_UNAVAILABLE"),
+    ],
+    ids=["auth-failed", "unknown-client", "opener-raises"],
+)
+def test_rejected_open_answers_its_error_with_a_nil_session_and_wipes_cs(
+    script: Callable[[OpenRequest], OpenResult], error: str
+) -> None:
+    world = _make_world()
+    world.opener.script = script
+    sent = world.open_session()
+
+    result = world.process(sent.body)
+
+    assert str(result.outcome) == "OPEN_REJECTED"
+    assert dict(world.audit.counts) == {"OPEN_REJECTED": 1}
+    assert result.response is not None
+    assert result.response.client_id == CLIENT_ID
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.session_id is None
+    assert view.body == {"ok": False, "error": error}
+    assert world.opener.closed_calls == []
+    assert world.logger.calls == []
+    assert [cs.wiped for cs in world.opener.cs_seen] == [True]
+    assert SENTINEL not in repr(result) + repr(world.logger.calls) + repr(world.audit.counts)
