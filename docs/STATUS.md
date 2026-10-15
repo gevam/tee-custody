@@ -32,10 +32,10 @@ None.
 | framework gap | `sdlc/roles/_security-constraints.md` referenced but missing | No | Add / ignore | Add when convenient |
 
 ## Decisions this increment
-INC-2: D-039..D-067 — notable: D-061 (T-35 fixture human-approved), D-062 (MU-2), D-064 (ADR 0013, D-02), D-058 (T-30 vectors approved), D-049 (h11 exception), D-052 (T-34 vectors approved), D-053 (Wave-1 rulings), D-054 (Wave 1 merged), D-046 (Wave-0 contract fixes), D-047 (SA approves D-043 design), D-048 (T-03 spec approved), D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri), D-045 (@hpke/* admitted, framework.yaml exception). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
+INC-2: D-039..D-080 — notable: D-077..D-080 (gates G5–G8), D-064 (ADR 0013), D-069 (ADR 0011 C8), D-071/D-074 (gateway defects), D-061 (T-35 fixture human-approved), D-062 (MU-2), D-064 (ADR 0013, D-02), D-058 (T-30 vectors approved), D-049 (h11 exception), D-052 (T-34 vectors approved), D-053 (Wave-1 rulings), D-054 (Wave 1 merged), D-046 (Wave-0 contract fixes), D-047 (SA approves D-043 design), D-048 (T-03 spec approved), D-041 (CDDL approved), D-043 (§6.1 constraint-deviation: pinned jwks_uri), D-045 (@hpke/* admitted, framework.yaml exception). INC-1: D-014..D-037 — notable: D-016 (§6.8 constraint-deviation), D-019 (SR-9 scope), D-020/D-026/D-030 (spec approvals), D-022 (signer-key dedup at generation), D-023 (8 engineers), D-025 (T-20), D-027 (mistaken revert reverted), D-031 (fix all Lows), D-034..D-037 (gates).
 
 ## Debt / backlog
-DEBT.md open: DEBT-2 (maxDiscoveryBytes, INC-5), DEBT-3 (h11, INC-5). BACKLOG.md: B-01..B-44 (B-41 pre-key collision Required INC-3) (B-24..B-27 Required for INC-3; B-30 Required for INC-5); required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
+DEBT.md open: DEBT-2 (maxDiscoveryBytes, INC-5), DEBT-3 (h11, INC-5). BACKLOG.md: B-01..B-52 (B-24..B-27 Required for INC-3; B-30 Required for INC-5); required for INC-2 contracts: B-06 (Fetcher URL + adapter controls), B-08 (refresh backoff), B-13 (runtime VerifiedAttestation brand); B-05 for INC-5.
 
 ## Spend
 | Role | Tokens INC-1 (approx.) |
