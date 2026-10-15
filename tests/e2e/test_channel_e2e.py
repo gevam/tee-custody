@@ -187,3 +187,12 @@ def test_harness_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
     assert (config.host, config.port) == ("127.0.0.1", 0)
     assert len(calls) == 1
     assert "forwarded_allow_ips" not in calls[0]
+
+
+def test_harness_gateway_limits_are_the_defaults_except_cors_origins() -> None:
+    from notes_gateway import GatewayLimits
+
+    from tests.e2e import channel_harness
+
+    origins = ("http://127.0.0.1:1",)
+    assert channel_harness.gateway_limits(origins) == GatewayLimits(cors_origins=origins)

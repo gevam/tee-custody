@@ -72,6 +72,11 @@ def server_config(app: fastapi.FastAPI) -> uvicorn.Config:
     )
 
 
+def gateway_limits(cors_origins: tuple[str, ...]) -> GatewayLimits:
+    """Production limits (A4, SR-4): every `GatewayLimits` default except `cors_origins`."""
+    return GatewayLimits(cors_origins=cors_origins)
+
+
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="channel_harness")
     parser.add_argument("--cors-origin", action="append", default=[])
@@ -152,7 +157,7 @@ class _Harness:
             token_type=TOKEN_TYPE,
         )
         self._spawn(lambda: loop.run(self.stop))
-        app = create_app(queue, limits=GatewayLimits(cors_origins=self.cors_origins))
+        app = create_app(queue, limits=gateway_limits(self.cors_origins))
         self.server = server = uvicorn.Server(server_config(app))
         self._spawn(server.run)
 
