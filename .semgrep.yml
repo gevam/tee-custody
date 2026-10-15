@@ -390,6 +390,15 @@ rules:
       include: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
     pattern-regex: (?m)^[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
 
+  # A4 (T-27; T-05 Security Review round 2): no escape can hide a banned specifier from the rules above.
+  - id: tc-ts-no-escaped-specifier
+    message: Module specifiers are plain literals; escapes hide banned packages (ADR 0011 C3a.2, SR-14).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/packages/teecustody-core/src/**", "/packages/teecustody-web/src/**"]
+    pattern-regex: (?:\bfrom|\bimport\s*\(?|\brequire\s*\()(?:\s|/\*(?:[^*]|\*(?!/))*\*/|//[^\n]*)*(["'`])[^"'`\n]*\\
+
   - id: tc-py-no-hpke-seams
     message: >-
       No HPKE test seam in production: no injected sender ephemeral key, PSK, PSK id or sender/auth
