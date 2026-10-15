@@ -1401,3 +1401,25 @@ No security review: the change is test-only and adds no production code.
 After the merge, the Architect updates the traceability I7 columns (D-014).
 
 **Dissent:** none
+
+## D-068 — T-32 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts)
+Participants: Code Reviewer, Security Reviewer
+
+**Decision:** T-32 (inc-2/T-32-csp-harness, tip 3231f75; Playwright CSP harness, SR-13) is approved to merge.
+
+**Review history:**
+- Round 1 (f59c7c6):
+  - Security APPROVE, 3 Lows: DNS-rebinding Host check, C4 violations, console errors.
+  - Code REQUEST_CHANGES, 1 High (Firefox favicon check vacuous) and 2 Lows.
+- Round 2 (3231f75): Code APPROVE and Security APPROVE.
+  - The CR retracted its round-1 High as a reviewer error: its mutant had edited a comment, not the CSP line. The engineer's added same-test control stands.
+- Optional Lows: B-46.
+
+**Known WebKit flakes, not T-32 defects:**
+- X25519 `generateKey` fails about 0.35% of the time (B-45, Architect, before the G6 sign-off).
+- `time` NOT_YET_VALID, because the branch predates T-38. It is resolved on main after the merge.
+
+**Dissent:** none
