@@ -299,6 +299,22 @@ describe("criterion 4: no verified bundle, no usable pre-key", () => {
 });
 
 describe("fetchVerifiedBundles bounds and transport failures", () => {
+    it("passes the profile, the event sink and its capabilities and limits to verifyBundle", async () => {
+        const config = clientConfig(workload, clock);
+        const client = new ChannelClient(config);
+        await client.fetchVerifiedBundles();
+        const [published, profile, events, deps] = vi.mocked(verifyBundle).mock.calls[0] ?? [];
+        expect(published?.instanceId).toBe(fx.instanceId);
+        expect(profile).toBe(config.trustProfile);
+        expect(events).toBe(config.securityEvents);
+        expect(deps?.crypto).toBe(config.crypto);
+        expect(deps?.fetcher).toBe(config.fetcher);
+        expect(deps?.verifierLimits).toEqual(TEST_LIMITS.verifier);
+        expect(deps?.bundleLimits).toEqual(TEST_LIMITS.bundle);
+        clock.t += 1234;
+        expect(deps?.now()).toBe(clock.now());
+    });
+
     it("verifies at most maxBundles published bundles and ignores the rest", async () => {
         const fixtures: InstanceFixture[] = [];
         for (let i = 0; i < 4; i += 1) {
@@ -534,6 +550,19 @@ describe("response routing: one poll loop per route, cursor kept per client rout
         expect(workload.polls.filter((p) => p.route === CLIENT).length).toBeGreaterThan(0);
     });
 
+    it("closing one session releases only its own pending requests", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const a = await client.open(openSession());
+        const b = await client.open(openSession());
+        workload.onFrame = (frame) =>
+            frame.op === "test.slow" ? { kind: "silent" } : { kind: "ok", payload: null };
+        const pendingA = a.session.request("test.slow", null).catch((e: unknown) => e);
+        const pendingB = b.session.request("test.slow", null).catch((e: unknown) => e);
+        await a.session.close();
+        expect(((await pendingA) as ChannelError).code).toBe("SESSION_CLOSED");
+        expect(((await pendingB) as ChannelError).code).toBe("TIMEOUT");
+    });
+
     it("serves two sessions of the same client from one route", async () => {
         const client = new ChannelClient(clientConfig(workload, clock));
         const a = await client.open(openSession());
@@ -616,6 +645,11 @@ describe("criterion 12: Crypto-port failures fail closed as CRYPTO_UNAVAILABLE",
         [
             "randomBytes returning short output",
             (inner) => ({ randomBytes: (n) => inner.randomBytes(n).slice(0, n - 1) }),
+            "INVALID_RESPONSE",
+        ],
+        [
+            "randomBytes(16) returning 15 bytes",
+            (inner) => ({ randomBytes: (n) => inner.randomBytes(n).slice(0, n === 16 ? 15 : n) }),
             "INVALID_RESPONSE",
         ],
         [
