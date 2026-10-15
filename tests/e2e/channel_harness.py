@@ -1,6 +1,6 @@
 """End-to-end channel harness (INC-2-API §9.4; API-TL TL-8; FR-4, FR-5, NFR-2, SR-11).
 
-    uv run python tests/e2e/channel_harness.py [--cors-origin ORIGIN]...
+    uv run python tests/e2e/channel_harness.py [--cors-origin ORIGIN]... [--stop-on-stdin-eof]
 
 One process on loopback: the simulator (issuer and launcher socket), the workload `RunLoop` in a
 thread over an `InMemoryQueue`, and the reference gateway under uvicorn. The workload has no
@@ -8,7 +8,8 @@ listener; only the gateway and the simulator bind sockets (D-003). Once the firs
 listed, it prints exactly one stdout line `gateway=<origin> issuer=<origin> profile=<path>`. The
 profile's directory also holds `fixture.json` (mode 0600): a per-run client share for tests only,
 never committed and never printed. SIGTERM or SIGINT stops everything, removes the temporary
-directory and exits 0.
+directory and exits 0. With `--stop-on-stdin-eof`, EOF on stdin (the spawner died or closed the
+pipe) stops it the same way: exit 0 after the ready line, 1 before it.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ def gateway_limits(cors_origins: tuple[str, ...]) -> GatewayLimits:
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="channel_harness")
     parser.add_argument("--cors-origin", action="append", default=[])
+    parser.add_argument("--stop-on-stdin-eof", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -213,6 +215,16 @@ class _Harness:
             self.simulator.stop()
 
 
+def _watch_stdin(shutdown: threading.Event) -> None:
+    """Sets `shutdown` at EOF on fd 0: the spawning process died or closed the pipe (T-31 A6)."""
+    try:
+        while os.read(0, 4096):
+            pass
+    except OSError:
+        pass
+    shutdown.set()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     options = _parse(argv)
     if str(REPO_ROOT) not in sys.path:
@@ -223,6 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         signum: signal.signal(signum, harness.request_shutdown)
         for signum in (signal.SIGTERM, signal.SIGINT)
     }
+    if options.stop_on_stdin_eof:
+        threading.Thread(target=_watch_stdin, args=(harness.shutdown,), daemon=True).start()
     try:
         code = harness.run()
     finally:

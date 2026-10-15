@@ -7,6 +7,7 @@ kills it on teardown, so a hung harness fails the test instead of hanging the su
 from __future__ import annotations
 
 import base64
+import contextlib
 import inspect
 import json
 import os
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -298,3 +300,89 @@ def test_ready_line_is_written_only_after_the_first_bundle_is_listed(
     assert held == [False]  # nothing was written while the first bundle was held back
     assert listed_at_write == [True]
     assert READY_LINE.fullmatch(stdout.text.rstrip("\n"))
+
+
+RUNNER = (
+    "import subprocess, sys, time; "
+    "p = subprocess.Popen([sys.executable, sys.argv[1], '--stop-on-stdin-eof'], "
+    "stdin=subprocess.PIPE, start_new_session=True); "
+    "print(f'pid={p.pid}', flush=True); time.sleep(120)"
+)
+
+
+def _exited(pid: int) -> bool:
+    """The process is gone or a zombie (its parent, the runner, never reaps it)."""
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return True
+    return stat_line.rsplit(")", 1)[1].split()[0] == "Z"
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_stop_on_stdin_eof_cleans_up_when_the_parent_is_killed() -> None:
+    runner = subprocess.Popen(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", RUNNER, str(HARNESS)],
+        cwd=REPO_ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines: queue.Queue[str] = queue.Queue()
+    collected: list[str] = []
+
+    def read(stream: Any) -> None:
+        for text in stream:
+            collected.append(text)
+            lines.put(text.rstrip("\n"))
+
+    readers = [
+        threading.Thread(target=read, args=(runner.stdout,), daemon=True),
+        threading.Thread(target=read, args=(runner.stderr,), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    harness_pid: int | None = None
+    temp_dir: Path | None = None
+    try:
+        first = lines.get(timeout=READY_TIMEOUT_S)
+        assert first.startswith("pid=")
+        harness_pid = int(first.removeprefix("pid="))
+        deadline = time.monotonic() + READY_TIMEOUT_S
+        line = ""
+        while not READY_LINE.fullmatch(line):
+            assert time.monotonic() < deadline, "harness printed no ready line within 30 s"
+            assert not _exited(harness_pid), f"harness exited before ready: {collected[-1:]}"
+            with contextlib.suppress(queue.Empty):
+                line = lines.get(timeout=0.1)
+        temp_dir = Path(line.rsplit("profile=", 1)[1]).parent
+        cs_hex = json.loads((temp_dir / "fixture.json").read_text(encoding="utf-8"))["cs"]
+        os.kill(runner.pid, signal.SIGKILL)
+        runner.wait(STOP_TIMEOUT_S)
+        deadline = time.monotonic() + STOP_TIMEOUT_S
+        while _group_alive(harness_pid) or temp_dir.exists():
+            assert time.monotonic() < deadline, "harness still running 10 s after its parent died"
+            time.sleep(0.05)
+        for reader in readers:
+            reader.join(STOP_TIMEOUT_S)
+        assert cs_hex not in "".join(collected)
+    finally:
+        if harness_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(harness_pid, signal.SIGKILL)
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait(STOP_TIMEOUT_S)
+        if temp_dir is not None and temp_dir.name.startswith("tc-e2e-"):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        for pipe in (runner.stdout, runner.stderr):
+            if pipe is not None:
+                pipe.close()
