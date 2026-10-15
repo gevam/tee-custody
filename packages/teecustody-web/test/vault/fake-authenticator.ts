@@ -65,6 +65,8 @@ export class FakeAuthenticator {
         return Promise.resolve(true);
     };
     hintCalls = 0;
+    /** Credential ids minted by `create`, in order. */
+    readonly createdIds: Uint8Array[] = [];
     readonly #known = new Set<string>();
 
     readonly credentials = {
@@ -92,6 +94,7 @@ export class FakeAuthenticator {
         }
         const id = crypto.getRandomValues(new Uint8Array(16));
         this.#known.add(hex(id));
+        this.createdIds.push(id.slice());
         const prf: Record<string, unknown> = { enabled: this.behaviour.prfEnabled };
         const first = evalFirst(publicKey.extensions);
         if (this.behaviour.prfEnabled && this.behaviour.resultsOnCreate && first !== undefined) {
