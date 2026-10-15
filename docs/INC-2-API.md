@@ -1313,17 +1313,43 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
   - The deadline never runs while the connection is idle or the gateway is waiting for a request. It applies to
     every write, including the parse-failure constant, 408 and 429. `GET /responses` is a short poll (it answers at
     once, possibly with an empty page), so no server-side wait counts against it.
-  - Sizing. A gateway response is one JSON body written at once, and the writer resumes only on a full drain. So
-    `write_timeout_s` is in effect the time a client has to receive the part of one response that the kernel
-    buffers cannot hold. Typical responses are small: a page of a few frames, or 16 bundles of about 30 KB each
-    (`prekey_batch` 100) is about 0.65 MB as base64url. `FetchTransport` refuses any body over `maxResponseBytes`
-    (default 1 MiB). At the 30 s default, 1 MiB needs about 35 KB/s (about 0.3 Mbit/s), below a slow-3G link, and
-    `FetchTransport`'s own `timeoutMs` is normally the tighter bound. The decode limits allow larger worst-case
-    bodies (16 × 64 KiB bundles, or 32 × 64 KiB frames, are 1.4–2.8 MB as base64url). A host that configures limits
-    that admit such bodies raises `maxResponseBytes` and `write_timeout_s` together. A slow reader holds at most
+  - Sizing (amended for D-07). A gateway response is one JSON body written at once, and the writer resumes only on
+    a full drain. So `write_timeout_s` is in effect the time a client has to receive the part of one response that
+    the kernel buffers cannot hold. The deadline is sized by what the gateway writes, not by the client's
+    `maxResponseBytes`. At the default limits the largest body the gateway writes is the maximal `GET /responses`
+    page, 1,406,937 bytes ("Maximal response sizes" below). At the 30 s default that needs about 47 KB/s (about
+    0.38 Mbit/s), less whatever the kernel send buffer absorbs. That is below a slow-3G link. Typical responses are
+    far smaller: a page of a few frames, or 16 bundles of about 30 KB each (`prekey_batch` 100), which is about
+    0.65 MB as base64url. `FetchTransport`'s own `timeoutMs` (§8.3) is normally the tighter bound. A host that
+    raises `max_page` or `max_bundles` re-derives the maximal page with the formulas below. It then raises
+    `write_timeout_s`, so that the maximal page divided by `write_timeout_s` stays within the slowest link it
+    supports, and raises the client's `maxResponseBytes` to cover the new maximal page. A slow reader holds at most
     `per_source_max_in_flight` slots for at most `write_timeout_s` per response.
   - Validation: a finite `int`/`float` in 1.0..60.0, with `bool` refused. Anything else →
     `ValueError("INVALID_LIMITS")`.
+- **Maximal response sizes (D-07; FR-5, SR-4).** Gateway JSON bodies are compact (no whitespace) and escape-free,
+  so a body's size is an exact function of the limits. The largest protocol-valid response envelope is the
+  CDDL-maximal `frame_result`: `ct` of 32,784 bytes and a 64-character `op`, 32,926 bytes in total (D-07 step 1),
+  which is 43,902 characters as base64url. An `open_result` envelope is smaller. The largest bundle a client
+  decodes is 65,536 bytes, which is 87,382 characters.
+  - `GET /responses` body ≤ 153 + 43,962 × `max_page` bytes. Each item is
+    `{"request_id":"<32hex>","body":"<b64url>"}` plus a separating comma, and `next` is at most a 128-character
+    cursor (`CURSOR_PATTERN`). At the default `max_page` 32 that is **1,406,937 bytes**, or 1,406,811 bytes with
+    `next: null`.
+  - `GET /bundles` body ≤ 13 + 87,445 × `max_bundles` bytes. At the default `max_bundles` 16 that is
+    **1,399,133 bytes**.
+  - Interoperability rule: a client's response-size limit must be at least the larger of the two maxima for the
+    gateway it talks to. Otherwise a client with a full page pending gets `INVALID_RESPONSE` on every poll and its
+    cursor never advances. `FetchTransport`'s default `maxResponseBytes` is 2,097,152 (§8.3). That covers the
+    default limits with about 49% headroom, and it covers any `max_page` ≤ 47 together with any `max_bundles` ≤ 23.
+    A host that raises either limit beyond those values passes a `maxResponseBytes` at least as large as the
+    re-derived maximum. A host-written gateway documents its own maximal page in the same way.
+  - A larger body is never protocol-valid. It can only come from a faulty or hostile relay. `FetchTransport`
+    refuses it with `INVALID_RESPONSE` and cancels the stream. That refusal is the client's SR-4 memory bound. A
+    relay is untrusted and can deny service anyway, so the refusal costs no confidentiality or integrity.
+  - The gateway does not trim pages by size. `RelayQueue.pull_responses` has no per-item cursor, so a trimmed page
+    would lose responses. Bounding pages by size would therefore change the §4.11 port, and this rule makes that
+    unnecessary.
 - **Transfer-Encoding (T-40 A4.5; D-06; RFC 9112 §6.1, §6.3; SR-3, SR-4).** The gateway contract never uses a
   transfer coding: `POST /requests/{instance}` requires `Content-Length`, and `GET` and the CORS preflight have no
   body. Any request carrying a `Transfer-Encoding` header, with or without `Content-Length`, is answered
@@ -1683,7 +1709,7 @@ Example: `new FetchFetcher({ maxBodyBytes: 65536, timeoutMs: 10000 }).get(profil
 ```ts
 export interface FetchTransportOptions {
     readonly baseUrl: string;             // https origin (+ optional path prefix); http only on loopback hosts
-    readonly maxResponseBytes: number;    // default 1048576
+    readonly maxResponseBytes?: number;   // default 2097152 (D-07: ≥ the §6 maximal page at default limits)
     readonly timeoutMs: number;
     readonly fetch?: FetchFn;
 }
@@ -1694,13 +1720,30 @@ export class FetchTransport implements Transport {
     getResponses(client: ClientId, after?: ResponseCursor): Promise<ResponsePage>;
 }
 ```
+**`maxResponseBytes` (amended for D-07).** The option is optional. When it is omitted or `undefined`, the limit is
+2,097,152 bytes. That value is at least both §6 "Maximal response sizes" at the gateway's default limits
+(1,406,937 B for `GET /responses`, 1,399,133 B for `GET /bundles`), so a host using both defaults can always collect
+a full page. A value that is given must still be a positive safe integer; anything else, including `null`, is
+`TypeError("INVALID_CONFIG")` as before. A host whose gateway allows larger pages passes a larger value (§6
+interoperability rule). A smaller value is allowed, but its owner must make sure it covers its gateway's maximal page.
+The default is not exported as a constant: the number is the contract.
+- SR-4 (client side). The limit bounds what a faulty or hostile relay can make the client buffer. A body over the
+  limit is refused while streaming. If `Content-Length` declares more than the limit, the request is refused before
+  any body is read, and the stream is cancelled. Memory is allocated in proportion to the bytes actually received;
+  nothing is pre-allocated to the limit. The peak per in-flight call is therefore a small multiple of 2 MiB (chunks,
+  one contiguous copy, the decoded text and the parsed page). This is acceptable for a browser client polling one
+  route at a time. Doubling the cap from the earlier documented 1 MiB adds no new kind of exposure.
+- `timeoutMs` stays required, and it covers the whole exchange including the body. A host that expects maximal
+  pages on slow links sizes it accordingly: at 10,000 ms a 1,406,937-byte page needs about 1.1 Mbit/s. A timeout is
+  `UNAVAILABLE` (retryable), so unlike an oversize refusal it does not stall the cursor permanently.
 Same fetch options as §8.2 (`redirect: "manual"`, `credentials: "omit"`, no-store); `postRequest` sends
 `Content-Type: application/octet-stream`. Arguments not matching the §6 patterns → `INVALID_ARGUMENT` before any
 request. Status mapping: 200/202 with a body that is strict JSON of exactly the §6 shape (unknown keys rejected;
 base64url strict via `base64UrlDecode`; ids/cursor re-validated) → success, else `INVALID_RESPONSE`;
 400 → `INVALID_ARGUMENT`; 404 → `NOT_FOUND`; 408 (gateway body deadline, §6), 429, 503 → `UNAVAILABLE`; redirect or oversize body →
 `INVALID_RESPONSE`; network/timeout → `UNAVAILABLE`; anything else → `INTERNAL`. `next: null` → `undefined`.
-Example: `const page = await transport.getResponses(clientId, cursor);`.
+Example: `const transport = new FetchTransport({ baseUrl: "https://gw.example", timeoutMs: 30_000 });`
+`const page = await transport.getResponses(clientId, cursor);`.
 
 ### 8.4 PrfShareVault (FR-6; spec §10.1; ShareVault contract in ARCHITECTURE)
 
