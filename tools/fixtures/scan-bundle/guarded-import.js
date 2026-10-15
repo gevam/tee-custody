@@ -1,3 +1,1 @@
-try {
-    await import("fs");
-} catch {}
+try { await import("fs") } catch {}

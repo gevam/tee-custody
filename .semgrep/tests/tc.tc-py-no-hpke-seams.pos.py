@@ -48,3 +48,6 @@ decap = getattr(_SUITE.kem, "decap")
 y = _SUITE.kem.deserialize_private_key
 # ruleid: tc-py-no-hpke-seams
 key = _SUITE.kem.deserialize_private_key(_SUITE.kem.decap(enc, skr, pks))
+# A7: only the exact method name is allowed; the regex is anchored at both ends.
+# ruleid: tc-py-no-hpke-seams
+key = _SUITE.kem.deserialize_private_key_raw(x)

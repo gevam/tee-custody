@@ -274,6 +274,13 @@ describe("criterion 7 (C7a.2): a try-guarded Node import", () => {
         });
     });
 
+    it("guarded-import.js is exactly the one-line C7a.2 form", () => {
+        assert.equal(
+            readFileSync(join(FIXTURES, "guarded-import.js"), "utf8"),
+            'try { await import("fs") } catch {}\n',
+        );
+    });
+
     it("builds with exactly the §9.2 options and no logOverride", () => {
         const options = buildOptions("/x/src/index.ts", { a: "/x/a.ts" });
         assert.deepEqual(options, {
