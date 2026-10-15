@@ -215,6 +215,24 @@ describe("checkTime not-yet-valid skew (ADR 0013)", () => {
             expect(timeAt(claims, NOW_MS, short)).not.toThrow();
         });
     });
+
+    it("criterion 4: exp has no leeway: exp = now passes 1 ms earlier and rejects EXPIRED at now", () => {
+        const claims = { exp: NOW_S, iat: NOW_S - 60 };
+        expect(timeAt(claims, NOW_MS - 1)).not.toThrow();
+        expectRejected(timeAt(claims, NOW_MS), "time", "EXPIRED");
+    });
+
+    it.each<[string, JsonObject, AttestationErrorCode]>([
+        ["exp before nbf", { exp: NOW_S, iat: NOW_S, nbf: NOW_S + 301 }, "EXPIRED"],
+        ["past iat before nbf", { exp: E, iat: NOW_S - 3601, nbf: NOW_S + 301 }, "EXPIRED"],
+        [
+            "future iat before the nbf parse",
+            { exp: E, iat: NOW_S + 301, nbf: "x" },
+            "NOT_YET_VALID",
+        ],
+    ])("criterion 5: checks %s", (_label, claims, code) => {
+        expectRejected(timeAt(claims, NOW_MS), "time", code);
+    });
 });
 
 const IDENTITY_NONCE = Uint8Array.from({ length: 32 }, (_, i) => (0xa0 + i * 7) % 256);
