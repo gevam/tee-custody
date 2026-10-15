@@ -1133,3 +1133,30 @@ Participants: Code Reviewers, Security Reviewers, Software Engineers
 - Retro: reviewer-recommended fixes need the same hostile-input tests.
 
 **Dissent:** none
+
+## D-054 — INC-2 Wave 1 merged, including MU-1 (D-043) (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Release Engineer, Code and Security Reviewers
+
+**Decision:** All 18 Wave 1 items are on main at 34d1193: T-07, T-08, T-09, T-10, T-11, T-12, T-13, T-14, T-15, T-16, T-17, T-18, T-19, T-20 and T-37. MU-1 was merged as a unit after a combined green run on inc-2/MU-1-integration: T-33 (8e06da8), T-21 (6645a9a), T-34 (10e37c2, human-approved in D-052) and T-36 (7d337f8). QA-4..7 were merged along with them. Every task had Code and Security APPROVE. T-03 and T-18 got pin-only and clamp-only rounds, verified by the Orchestrator.
+
+**Evidence on main 34d1193:**
+- Python: 133 failed, 3999 passed, 24 errors. Every failure is an expected red for unmerged tasks (T-22..T-32, T-35) or the missing channel/suite.cbor.
+- Core TS: 1272 of 1272 pass. The tests package has 52 failures, all expected red. Web has no failures.
+- spec/vectors attestation: 94 green.
+- Clean: ruff, mypy --strict, semgrep, pnpm lint/typecheck/audit, dependency_policy (`--today 2026-10-25` exits 0, so h11 is handled), and gitleaks (HEAD).
+- DEBT-2 is dated.
+
+**Notable review outcomes (for the retro):**
+- **T-02:** mutable branded-bundle key bytes, Medium. Fixed with copy-on-read.
+- **T-33:** a round-1 fix introduced a High (a numeric nonce became all zero bytes). The Code Review caught it; the Security Review had dismissed it.
+- **T-12:** an anonymous flood during an outage could evict authenticated alerts (High per Code Review). Fixed with two pending classes and a single pending ALERT_CAP_REACHED.
+- **T-14:** slow-body DoS and a `/bundles%0A` route bypass. Fixed under the §6 amendment.
+- **T-20:** the vault no longer derives from create-time PRF output (Architect, option b), which removes a path to permanent `cs` loss.
+- **T-21:** one reviewer-error round outside the round limit, approved by the Tech Lead.
+- **T-10:** a reviewer conflict, resolved by revert (B-31).
+- **Gitleaks:** false positives handled with single `.gitleaksignore` fingerprints; history was not rewritten.
+
+**Dissent:** none
