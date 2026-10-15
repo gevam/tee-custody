@@ -5,6 +5,7 @@ Every test that starts a server has a bounded wait and stops it on teardown.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ from typing import Any
 import pytest
 import uvicorn
 
-from notes_gateway import dev
+from notes_gateway import GatewayLimits, create_app, dev
 
 READY_TIMEOUT_S = 30.0
 STOP_TIMEOUT_S = 10.0
@@ -141,11 +142,21 @@ def _terminate_when_serving(record: _Recorder, seen: list[tuple[int, Any]]) -> t
 
 @pytest.mark.usefixtures("sigterm_guard")
 def test_main_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
-    recorder: _Recorder, capsys: pytest.CaptureFixture[str]
+    recorder: _Recorder, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    limits: list[GatewayLimits] = []
+
+    def recording_create_app(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(create_app).bind(*args, **kwargs)
+        bound.apply_defaults()
+        limits.append(bound.arguments["limits"])
+        return create_app(*args, **kwargs)
+
+    monkeypatch.setattr(dev, "create_app", recording_create_app)
     seen: list[tuple[int, Any]] = []
     helper = _terminate_when_serving(recorder, seen)
     assert dev.main(["--port", "0"]) == 0
+    assert limits == [GatewayLimits()]
     helper.join(STOP_TIMEOUT_S)
     assert seen == [(200, {"bundles": []})]
     [config] = recorder.configs
