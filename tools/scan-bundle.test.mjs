@@ -409,6 +409,9 @@ describe("criterion 15 (A7, C3a.1): @hpke inputs sit under the pinned .pnpm pref
         "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/common/esm/src/consts.js",
         "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/core/esm/mod.js",
         "src/node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/mod.js",
+        // Round 2 (SR): a pinned-store path planted in a directory above the checkout.
+        "../node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/mod.js",
+        "../../node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/consts.js",
         "vendor/@hpke+core@1.9.0/mod.js",
         "packages/x/@hpke/core.js",
     ]) {
@@ -561,13 +564,6 @@ describe("edge cases: the metafile checks", () => {
         ]);
     });
 
-    it("accepts the pinned .pnpm prefixes after any number of ../", () => {
-        const metafile = meta("meta-clean");
-        const moved = JSON.parse(
-            JSON.stringify(metafile).replaceAll("node_modules/.pnpm/", "../../node_modules/.pnpm/"),
-        );
-        assert.deepEqual(checkMetafile(moved, ENTRY), { code: 0, lines: [] });
-    });
     it("exits 2 when C7a.1 and C3a.1 both fail, printing both", () => {
         const metafile = meta("meta-curve-bytes");
         Object.values(metafile.outputs)[0].imports = [];
