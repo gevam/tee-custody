@@ -102,6 +102,7 @@ describe("checkTime (§6.4)", () => {
         ["iat exactly max age in the future", { ...FRESH, iat: NOW_S + MAX_AGE_S }],
         ["nbf equal to now", { ...FRESH, nbf: NOW_S }],
         ["nbf in the past", { ...FRESH, nbf: NOW_S - 10 }],
+        ["nbf one second ahead (within skew)", { ...FRESH, nbf: NOW_S + 1 }],
     ])("passes with %s", (_label, claims) => {
         expect(time(claims)).not.toThrow();
     });
@@ -115,7 +116,6 @@ describe("checkTime (§6.4)", () => {
             { ...FRESH, iat: NOW_S + MAX_AGE_S + 1 },
             "NOT_YET_VALID",
         ],
-        ["nbf one second ahead (no skew)", { ...FRESH, nbf: NOW_S + 1 }, "NOT_YET_VALID"],
         ["absent exp", { iat: NOW_S }, "CLAIM_MISSING"],
         ["absent iat", { exp: NOW_S + 1 }, "CLAIM_MISSING"],
     ])("rejects %s", (_label, claims, code) => {
@@ -170,7 +170,25 @@ describe("checkTime (§6.4)", () => {
     );
 
     it("checks iat before nbf", () => {
-        expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 1 }), "time", "CLAIM_MISMATCH");
+        expectRejected(time({ ...FRESH, iat: true, nbf: NOW_S + 301 }), "time", "CLAIM_MISMATCH");
+    });
+});
+
+// ADR 0013: a bounded 300 s skew on the not-yet-valid side only, pinned at ±1 ms.
+const SKEW_S = 300;
+const E = NOW_S + 3600;
+
+const timeAt =
+    (claims: JsonObject, nowMs: number, profile: TrustProfile = PROFILE) =>
+    (): void => {
+        checkTime(token(claims), profile, nowMs);
+    };
+
+describe("checkTime not-yet-valid skew (ADR 0013)", () => {
+    it("criterion 1: nbf = now + 300 s passes at now and rejects NOT_YET_VALID 1 ms earlier", () => {
+        const claims = { exp: E, iat: NOW_S, nbf: NOW_S + SKEW_S };
+        expect(timeAt(claims, NOW_MS)).not.toThrow();
+        expectRejected(timeAt(claims, NOW_MS - 1), "time", "NOT_YET_VALID");
     });
 });
 
@@ -376,7 +394,7 @@ describe("own properties only", () => {
     });
 
     it("checkTime ignores an inherited nbf", () => {
-        expect(time(inheriting({ nbf: NOW_S + 60 }, FRESH))).not.toThrow();
+        expect(time(inheriting({ nbf: NOW_S + 301 }, FRESH))).not.toThrow();
     });
 
     it("checkNonce treats an inherited eat_nonce as CLAIM_MISSING", () => {

@@ -15,6 +15,9 @@ const SUPPORT_ATTRIBUTES_PATH = ["submods", "confidential_space", "support_attri
 const REQUIRED_SUPPORT_ATTRIBUTE = "STABLE";
 // FACTS F-15 / D-017: fixed in code; EXPERIMENTAL and undocumented values are rejected.
 const ALLOWED_SUPPORT_ATTRIBUTES: ReadonlySet<string> = new Set(["LATEST", "STABLE", "USABLE"]);
+// ADR 0013: not-yet-valid tolerance; equals the spec §14 REQUEST_SKEW default and MUST stay < 600 (vectors).
+const CLOCK_SKEW_S = 300;
+const CLOCK_SKEW_MS = CLOCK_SKEW_S * 1000;
 
 // §6.3
 export function checkAudience(t: ParsedToken, p: TrustProfile): void {
@@ -46,7 +49,7 @@ export function checkTime(t: ParsedToken, p: TrustProfile, nowMs: number): void 
         throw new AttestationError("NOT_YET_VALID", "time");
     }
     const nbf = numericDate(t, "nbf");
-    if (nbf !== undefined && nbf * 1000 > nowMs) {
+    if (nbf !== undefined && !(nbf * 1000 - nowMs <= CLOCK_SKEW_MS)) {
         throw new AttestationError("NOT_YET_VALID", "time");
     }
 }
