@@ -1233,3 +1233,21 @@ Participants: Code Reviewer, Security Reviewer, Tech Lead
 - The Security Review's replay-cache `now` Low is deferred to INC-3 under B-31 by Tech Lead ruling. It is low exploitability: it needs `cs`, two live pre-keys and the skew edge.
 
 **Dissent:** none
+
+## D-060 — T-29 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts), Tech Lead (A2 ruling)
+Participants: Code Reviewer, Security Reviewer, Tech Lead, Architect
+
+**Decision:** T-29 RunLoop (inc-2/T-29-run-loop, tip 892397f) is approved to merge.
+
+**Review history:**
+- Round 2 (20a6c6f): Security APPROVE (Lows SL1, SL2); Code REQUEST_CHANGES (Medium CM1: a pull blocking across `expires_at` was still processed; Low CL1).
+- The round limit was reached, so it went to the Tech Lead. A2 (d2c3f29) approved a final round fixing CM1, SL1, SL2 and CL1, with criteria 16–19. The Architect aligned INC-2-API §4.13 (415a2e8).
+- Final round, delta 20a6c6f..892397f: Code APPROVE and Security APPROVE.
+  - Criteria 16–19 were each confirmed to fail when their fix is reverted.
+  - The Security Reviewer's 40-case advancing-clock probe processed nothing after expiry.
+- The CR Low, a double clock read in `_refresh`, goes to BACKLOG as B-37 under A2. The SR info note (do not chain SDK exceptions into `QueueError`) was added to B-33.
+
+**Dissent:** none
