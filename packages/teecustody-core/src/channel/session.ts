@@ -205,6 +205,10 @@ export class Session {
     // Seals once, posts once, and waits for the matching result. Never re-seals, never retries (R-5).
     async #exchange(op: string, payloadBytes: Bytes): Promise<CanonicalValue> {
         const { seq, envelope } = await this.#sealNext(op, payloadBytes);
+        // close() may have completed while this frame was being sealed: never post after close.
+        if (!this.#live) {
+            throw new ChannelError("SESSION_CLOSED");
+        }
         const match = await this.#link.exchange(
             this.instanceId,
             envelope,

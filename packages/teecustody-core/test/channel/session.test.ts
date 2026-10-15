@@ -394,6 +394,62 @@ describe("review R1: decrypt-port failures other than AUTHENTICATION_FAILED fail
     });
 });
 
+describe("review R2: no post after close, and a failed post leaves no waiter", () => {
+    async function settle(): Promise<void> {
+        for (let i = 0; i < 50; i += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    }
+
+    it("a request still encrypting when close() completes fails SESSION_CLOSED without posting or waiting", async () => {
+        const inner = workload.crypto;
+        let hold: Promise<void> | undefined;
+        let release: () => void = () => undefined;
+        let entered: () => void = () => undefined;
+        const encrypting = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const session = await connect(TEST_LIMITS, {
+            ...inner,
+            aes256GcmEncrypt: async (key, n, aad, pt) => {
+                const gate = hold;
+                hold = undefined;
+                if (gate !== undefined) {
+                    entered();
+                    await gate;
+                }
+                return inner.aes256GcmEncrypt(key, n, aad, pt);
+            },
+        });
+        hold = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const pending = session.request("test.echo", echo(0)).catch((e: unknown) => e);
+        await encrypting;
+        await session.close();
+        await settle();
+        const posts = workload.posts.length;
+        const polls = workload.polls.length;
+        release();
+        expect(((await pending) as ChannelError).code).toBe("SESSION_CLOSED");
+        await settle();
+        expect(workload.posts).toHaveLength(posts);
+        expect(workload.polls).toHaveLength(polls);
+        expect(workload.frames.map((f) => f.op)).toEqual(["close"]);
+    });
+
+    it("a failed post withdraws its waiter: polling stops", async () => {
+        const session = await connect();
+        workload.postFailure = () => new CapabilityError("UNAVAILABLE");
+        const started = clock.now();
+        expect((await failure(session.request("test.echo", echo(0)))).code).toBe("TRANSPORT");
+        const polls = workload.polls.length;
+        await settle();
+        expect(workload.polls.length - polls).toBeLessThanOrEqual(1);
+        expect(clock.now() - started).toBeLessThan(TEST_LIMITS.responseTimeoutMs);
+    });
+});
+
 describe("criterion 10: close", () => {
     async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
         const spy = keySpy(workload.crypto);
