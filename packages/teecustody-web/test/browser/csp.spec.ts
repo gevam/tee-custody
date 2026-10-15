@@ -1,6 +1,8 @@
 // T-32: vault, transport and channel in real browsers under the enforce-mode, hash-only CSP (INC-2-API §9.3
 // rev 3 and its 2026-10-12 addendum, §16.7, §16.9 B1–B3, §8.4; SR-13, SR-1, FR-4, FR-5, FR-6, V-2.2). The
 // served page and the live end-to-end harness come from global-setup.ts; only origins reach this file.
+import { createHash } from "node:crypto";
+
 import { expect, test, type Page } from "@playwright/test";
 
 const STEPS = [
@@ -194,4 +196,68 @@ test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the share
     const result = await runHarness(page);
     expect(result.steps.vault).toBe(NO_PRF_VAULT);
     expect(await sharesCount(page)).toBe(0);
+});
+
+// INC-2-API §9.3 rev 3 with the 2026-10-12 addendum (img-src 'self') and §16.7 (connect-src).
+function expectedCsp(harnessSri: string): string {
+    return (
+        `default-src 'none'; script-src '${harnessSri}'; ` +
+        `connect-src ${env("TC_GATEWAY_ORIGIN")} ${env("TC_JWKS_ORIGIN")}; img-src 'self'; ` +
+        "style-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+    );
+}
+
+interface PageShape {
+    readonly scripts: readonly {
+        readonly src: string | null;
+        readonly integrity: string | null;
+        readonly crossorigin: string | null;
+        readonly text: string;
+    }[];
+    readonly handlers: number;
+    readonly icons: number;
+}
+
+test("C5 index.html has one SRI script, nothing inline, no icon link, and the exact enforce-mode CSP", async ({
+    page,
+}) => {
+    const origin = env("TC_SERVE_ORIGIN");
+    const harness = Buffer.from(await (await fetch(`${origin}/harness.js`)).arrayBuffer());
+    const sri = `sha384-${createHash("sha384").update(harness).digest("base64")}`;
+    const response = await fetch(`${origin}/`);
+    const html = await response.text();
+    expect(response.headers.get("content-security-policy")).toBe(expectedCsp(sri));
+    expect(response.headers.get("content-security-policy-report-only")).toBeNull();
+    const control = await fetch(`${origin}/control/inline.html`);
+    expect(control.headers.get("content-security-policy")).toBe(expectedCsp(sri));
+
+    const scriptSrc = (response.headers.get("content-security-policy") ?? "")
+        .split(";")
+        .map((directive) => directive.trim())
+        .find((directive) => directive.startsWith("script-src "));
+    for (const keyword of ["'self'", "'unsafe-inline'", "'unsafe-eval'", "'strict-dynamic'"]) {
+        expect(scriptSrc?.split(" ")).not.toContain(keyword);
+    }
+
+    await page.goto("about:blank");
+    const shape: PageShape = await page.evaluate((text) => {
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const all = Array.from(doc.querySelectorAll("*"));
+        return {
+            scripts: Array.from(doc.querySelectorAll("script")).map((script) => ({
+                src: script.getAttribute("src"),
+                integrity: script.getAttribute("integrity"),
+                crossorigin: script.getAttribute("crossorigin"),
+                text: script.textContent,
+            })),
+            handlers: all.filter((el) => el.getAttributeNames().some((n) => n.startsWith("on")))
+                .length,
+            icons: doc.querySelectorAll("link[rel~='icon' i]").length,
+        };
+    }, html);
+    expect(shape).toEqual({
+        scripts: [{ src: "/harness.js", integrity: sri, crossorigin: "anonymous", text: "" }],
+        handlers: 0,
+        icons: 0,
+    });
 });

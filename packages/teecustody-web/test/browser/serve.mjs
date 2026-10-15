@@ -33,6 +33,16 @@ function indexHtml(sri) {
     );
 }
 
+// INC-2-API §9.3 rev 3, enforce mode. <jwks origin> is new URL(profile.jwks_uri).origin (§16.7), never a
+// discovery origin. img-src 'self' is the 2026-10-12 favicon ruling; nothing else may load.
+function policy(sri, gatewayOrigin, jwksOrigin) {
+    return (
+        `default-src 'none'; script-src '${sri}'; connect-src ${gatewayOrigin} ${jwksOrigin}; ` +
+        "img-src 'self'; style-src 'none'; base-uri 'none'; form-action 'none'; " +
+        "frame-ancestors 'none'; object-src 'none'"
+    );
+}
+
 async function bundle(config) {
     const result = await build({
         entryPoints: [HARNESS_ENTRY],
@@ -54,18 +64,15 @@ async function configure(line) {
     const input = JSON.parse(line);
     const profileText = readFileSync(input.profile, "utf8");
     const fixture = JSON.parse(readFileSync(join(dirname(input.profile), "fixture.json"), "utf8"));
-    const harness = await bundle({
-        gateway: input.gateway,
-        profile: JSON.parse(profileText),
-        fixture,
-    });
+    const profile = JSON.parse(profileText);
+    const harness = await bundle({ gateway: input.gateway, profile, fixture });
     // The hash of the exact bytes served as /harness.js.
     const sri = `sha384-${createHash("sha384").update(harness).digest("base64")}`;
     site = {
         harness,
         index: indexHtml(sri),
         control: CONTROL_TEMPLATE.replace("{{HARNESS_SRI}}", sri),
-        csp: `script-src '${sri}'`,
+        csp: policy(sri, input.gateway, new URL(profile.jwks_uri).origin),
     };
 }
 
