@@ -10,6 +10,7 @@ from teecustody.audit import (
     AuditKey,
     AuditRecord,
 )
+from teecustody.queue import QueueErrorCode
 from teecustody_sim.backends import InMemoryAuditSink
 
 TS = 1_800_000_000_000
@@ -142,5 +143,15 @@ def test_fail_next_with_a_non_count_is_refused(bad: object) -> None:
 
     with pytest.raises(ValueError, match=r"^FAIL_NEXT$"):
         sink.fail_next(bad)  # type: ignore[arg-type]
+
+    assert sink.append(EVENT_KEY, AuditRecord(outcome="X", ts=TS)) is AppendResult.CREATED
+
+
+@pytest.mark.parametrize("bad", ["UNAVAILABLE", None, 1, QueueErrorCode.UNAVAILABLE], ids=repr)
+def test_fail_next_with_a_code_that_is_not_an_audit_error_code_is_refused(bad: object) -> None:
+    sink = InMemoryAuditSink()
+
+    with pytest.raises(ValueError, match=r"^FAIL_NEXT$"):
+        sink.fail_next(1, bad)  # type: ignore[arg-type]
 
     assert sink.append(EVENT_KEY, AuditRecord(outcome="X", ts=TS)) is AppendResult.CREATED

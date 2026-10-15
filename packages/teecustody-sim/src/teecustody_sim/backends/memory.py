@@ -283,7 +283,7 @@ class InMemoryAuditSink:
             ]
 
     def fail_next(self, n: int, code: AuditErrorCode = AuditErrorCode.UNAVAILABLE) -> None:
-        if type(n) is not int or n < 0:
+        if type(n) is not int or n < 0 or not isinstance(code, AuditErrorCode):
             raise ValueError("FAIL_NEXT")
         with self._lock:
             self._fail_remaining = n
