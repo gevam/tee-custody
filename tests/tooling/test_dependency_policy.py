@@ -739,7 +739,7 @@ CI_COMMANDS = [
     "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict"
     " packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src"
     " && pnpm -r lint && pnpm -r typecheck"
-    " && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off",
+    " && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off --disable-nosem",
     "uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway"
     " --cov-report=term-missing packages/teecustody-py packages/teecustody-sim"
     " examples/notes-app/gateway && pnpm -r coverage",

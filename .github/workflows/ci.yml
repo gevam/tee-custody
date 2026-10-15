@@ -67,7 +67,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: lint_command
         # Includes semgrep, the bypass-resistant layer behind ruff and ESLint (D-028, D-038).
-        run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off
+        run: uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off --disable-nosem
       - name: semgrep ignore-list probe
         # .semgrepignore must not hide src/**/{tests,test,vendor,build}; the probe copies are staged
         # in this CI workspace only (semgrep scans tracked files) and never committed.
