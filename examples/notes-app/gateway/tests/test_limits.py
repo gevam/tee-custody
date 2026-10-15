@@ -192,6 +192,8 @@ async def _drive(
     headers: list[tuple[bytes, bytes]] | None = None,
     body: list[bytes] | None = None,
     gap_s: float = 0.0,
+    raw_path: bytes | None = None,
+    query_string: bytes = b"",
 ) -> Exchange:
     """One raw ASGI exchange. With `body`, each chunk arrives `gap_s` after the previous one
     and the client then stalls without ever finishing the body."""
@@ -217,8 +219,8 @@ async def _drive(
         "method": method,
         "scheme": "http",
         "path": path,
-        "raw_path": path.encode(),
-        "query_string": b"",
+        "raw_path": path.encode() if raw_path is None else raw_path,
+        "query_string": query_string,
         "root_path": "",
         "headers": headers or [],
         "client": client,
@@ -723,3 +725,176 @@ def test_create_app_accepts_boundary_server_hardening_limits(fields: dict[str, o
     app = create_app(CountingRelay(), limits=GatewayLimits(**fields))  # type: ignore[arg-type]
 
     assert TestClient(app).get("/bundles").status_code == 200
+
+
+# ------------------------------------------------- T-40 criteria 15 and 16: header limits (A2)
+INVALID_ARGUMENT = b'{"code":"INVALID_ARGUMENT"}'
+PEER = ("192.0.2.1", 40000)
+
+
+def _padded(total: int, fixed: int) -> list[tuple[bytes, bytes]]:
+    """One `x-pad` header that brings the counted header block to exactly `total` bytes, given
+    `fixed` bytes of raw_path and query_string."""
+    return [(b"x-pad", b"a" * (total - fixed - len(b"x-pad")))]
+
+
+def _numbered(count: int) -> list[tuple[bytes, bytes]]:
+    return [(f"x-{i}".encode(), b"v") for i in range(count)]
+
+
+def _logged(caplog: pytest.LogCaptureFixture, scenario: typing.Callable[[], Exchange]) -> Exchange:
+    caplog.set_level(logging.INFO, logger="teecustody")
+    logging.getLogger("teecustody").addHandler(caplog.handler)
+    try:
+        return scenario()
+    finally:
+        logging.getLogger("teecustody").removeHandler(caplog.handler)
+
+
+def _assert_refused_invalid(result: Exchange, relay: CountingRelay, app: ASGIApp) -> None:
+    assert (result.status, result.body) == (400, INVALID_ARGUMENT)
+    assert result.headers["content-type"] == "application/json"
+    assert result.headers["cache-control"] == "no-store"
+    assert result.headers["x-content-type-options"] == "nosniff"
+    assert relay.calls == 0
+    guard = _guard_of(app)
+    assert (guard._in_flight, guard._in_flight_by_source) == (0, {})
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "query_string"),
+    [(b"/bundles", b""), (b"/%62undles", b""), (b"/bundles", b"q=" + b"z" * 100)],
+    ids=["path", "raw_path_counted", "query_string_counted"],
+)
+def test_a_header_block_of_exactly_max_header_bytes_is_served(
+    raw_path: bytes, query_string: bytes
+) -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, max_header_bytes=2048)
+    headers = _padded(2048, len(raw_path) + len(query_string))
+
+    result = asyncio.run(
+        _drive(app, "/bundles", PEER, headers=headers, raw_path=raw_path, query_string=query_string)
+    )
+
+    assert result.status == 200
+    assert relay.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "query_string"),
+    [(b"/bundles", b""), (b"/%62undles", b""), (b"/bundles", b"q=" + b"z" * 100)],
+    ids=["path", "raw_path_counted", "query_string_counted"],
+)
+def test_one_byte_over_max_header_bytes_is_400_invalid_argument_with_no_queue_call(
+    raw_path: bytes, query_string: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, max_header_bytes=2048)
+    headers = _padded(2049, len(raw_path) + len(query_string))
+
+    result = _logged(
+        caplog,
+        lambda: asyncio.run(
+            _drive(
+                app,
+                "/bundles",
+                PEER,
+                headers=headers,
+                raw_path=raw_path,
+                query_string=query_string,
+            )
+        ),
+    )
+
+    _assert_refused_invalid(result, relay, app)
+    assert [r.getMessage() for r in caplog.records] == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+def test_the_default_max_header_bytes_is_8192() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock)
+
+    async def scenario() -> tuple[Exchange, Exchange]:
+        at = await _drive(app, "/bundles", PEER, headers=_padded(8192, len(b"/bundles")))
+        over = await _drive(app, "/bundles", PEER, headers=_padded(8193, len(b"/bundles")))
+        return at, over
+
+    at, over = asyncio.run(scenario())
+
+    assert (at.status, over.status) == (200, 400)
+
+
+@pytest.mark.parametrize(
+    ("limit", "count", "status"), [(16, 16, 200), (16, 17, 400), (64, 64, 200), (64, 65, 400)]
+)
+def test_max_header_count_headers_are_served_and_one_more_is_400(
+    limit: int, count: int, status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, max_header_count=limit)
+
+    result = _logged(
+        caplog, lambda: asyncio.run(_drive(app, "/bundles", PEER, headers=_numbered(count)))
+    )
+
+    if status == 200:
+        assert (result.status, relay.calls) == (200, 1)
+    else:
+        _assert_refused_invalid(result, relay, app)
+        assert [r.getMessage() for r in caplog.records] == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+def test_the_default_max_header_count_is_64() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock)
+
+    async def scenario() -> tuple[Exchange, Exchange]:
+        at = await _drive(app, "/bundles", PEER, headers=_numbered(64))
+        over = await _drive(app, "/bundles", PEER, headers=_numbered(65))
+        return at, over
+
+    at, over = asyncio.run(scenario())
+
+    assert (at.status, over.status) == (200, 400)
+
+
+def test_a_cors_preflight_over_the_header_limit_is_400() -> None:
+    relay, clock = CountingRelay(), Clock()
+    origin = "https://app.example"
+    app = _app(relay, clock, cors_origins=(origin,), max_header_count=16)
+    headers = [
+        (b"origin", origin.encode()),
+        (b"access-control-request-method", b"POST"),
+        *_numbered(15),
+    ]
+
+    result = asyncio.run(_drive(app, "/bundles", PEER, method="OPTIONS", headers=headers))
+
+    _assert_refused_invalid(result, relay, app)
+    assert result.headers["access-control-allow-origin"] == origin
+
+
+def test_a_rate_limited_request_over_the_header_limit_is_429_not_400() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, per_source_rate=0.001, per_source_burst=1, max_header_count=16)
+
+    async def scenario() -> tuple[Exchange, Exchange]:
+        first = await _drive(app, "/bundles", PEER)
+        over = await _drive(app, "/bundles", PEER, headers=_numbered(17))
+        return first, over
+
+    first, over = asyncio.run(scenario())
+
+    assert (first.status, over.status, over.body) == (200, 429, RATE_LIMITED)
+
+
+def test_an_over_limit_request_with_a_control_character_path_is_400_not_404() -> None:
+    relay, clock = CountingRelay(), Clock()
+    app = _app(relay, clock, max_header_count=16)
+
+    result = asyncio.run(
+        _drive(app, "/bundles\n", PEER, headers=_numbered(17), raw_path=b"/bundles%0A")
+    )
+
+    _assert_refused_invalid(result, relay, app)

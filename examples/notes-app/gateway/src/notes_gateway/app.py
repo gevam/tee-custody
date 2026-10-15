@@ -267,7 +267,8 @@ class _Limiter:
 
 
 class _Guard:
-    """Outer ASGI layer: response headers, concurrency, rate limits and CORS preflight."""
+    """Outer ASGI layer: response headers, concurrency, rate limits, header limits and CORS
+    preflight."""
 
     def __init__(self, app: ASGIApp, *, limits: GatewayLimits, clock: Callable[[], float]) -> None:
         self._app = app
@@ -277,6 +278,8 @@ class _Guard:
         self._in_flight_by_source: dict[str, int] = {}  # no zero entries; <= max_concurrency keys
         self._limiter = _Limiter(limits, clock)
         self._cors_origins = frozenset(limits.cors_origins)
+        self._max_header_bytes = limits.max_header_bytes
+        self._max_header_count = limits.max_header_count
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -315,6 +318,9 @@ class _Guard:
         if retry is not None:
             await _rate_limited(scope, retry)(scope, receive, send)
             return
+        if not self._headers_within_limits(scope):
+            await _refuse(scope, 400, "INVALID_ARGUMENT")(scope, receive, send)
+            return
         if _CONTROL_CHARACTER_PATTERN.search(scope["path"]):
             await _refuse(scope, 404, "NOT_FOUND")(scope, receive, send)
             return
@@ -324,6 +330,13 @@ class _Guard:
             await _PREFLIGHT(scope, receive, send)
             return
         await self._app(scope, receive, send)
+
+    def _headers_within_limits(self, scope: Scope) -> bool:
+        """§6 header limits, measured on the parsed scope so segmentation cannot change them."""
+        headers: list[tuple[bytes, bytes]] = scope["headers"]
+        size = len(scope["raw_path"]) + len(scope["query_string"])
+        size += sum(len(name) + len(value) for name, value in headers)
+        return size <= self._max_header_bytes and len(headers) <= self._max_header_count
 
     def _release(self, source: str) -> None:
         remaining = self._in_flight_by_source[source] - 1
