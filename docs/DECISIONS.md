@@ -1356,3 +1356,23 @@ Participants: Code Reviewer, QA
 - During the merge runs, a FR-4 failure whose diagnostics show `time/NOT_YET_VALID` is D-02, environmental (WSL2 clock steps, D-064). It does not stop the merge; rerun once. Any other FR-4 failure stops the merge.
 
 **Dissent:** none
+
+## D-066 — T-38 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts)
+Participants: Code Reviewer, Security Reviewer
+
+**Decision:** T-38 (inc-2/T-38-clock-skew, tip f9ad599; ADR 0013 bounded clock skew) is approved to merge.
+- Code APPROVE: no findings. 19 mutants run. One equivalent mutant survived: removing the negation on the `nbf` comparison changes nothing, because a NaN clock is already rejected at `exp`.
+- Security APPROVE: no findings.
+  - `exp` has no leeway: tokens expired by 1 ms, 1 s, 299 s and 301 s are all rejected.
+  - Future `iat` is bounded by `min(maxAge, 300)`.
+  - `nbf` +300 s passes; +300.001 s is rejected.
+  - Non-finite values fail closed.
+  - Nothing reads the profile or environment for the skew (I13).
+  - All three S1 stale-`now` mutants are caught.
+- SA conditions S1–S5 are met. S6 (traceability §6.4 Location) is the Architect's task after the merge.
+- D-02 closes when T-38 merges (D-064).
+
+**Dissent:** none
