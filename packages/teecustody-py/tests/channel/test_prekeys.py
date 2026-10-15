@@ -302,3 +302,52 @@ def test_c7_destroy_all_wipes_every_held_private_key(monkeypatch: pytest.MonkeyP
     assert store.expire() == 0
     with pytest.raises(KeyError):
         store.take(1)
+
+
+@pytest.mark.parametrize(
+    "instance_id",
+    [
+        INSTANCE_ID.upper(),
+        INSTANCE_ID + "\n",
+        INSTANCE_ID[:-1],
+        INSTANCE_ID + "0",
+        "g" * 32,
+        "",
+    ],
+)
+def test_c9_malformed_instance_id_is_refused(instance_id: str) -> None:
+    with pytest.raises(ValueError, match=r"\AINSTANCE_ID_RANGE\Z") as excinfo:
+        PreKeyStore(
+            instance_id=instance_id,
+            identity=IdentityKey.generate(),
+            image_digest=IMAGE_DIGEST,
+            params=ChannelParams(),
+            clock=FakeClock(),
+        )
+
+    assert excinfo.value.args == ("INSTANCE_ID_RANGE",)
+
+
+@pytest.mark.parametrize(
+    "image_digest",
+    [
+        IMAGE_DIGEST.upper(),
+        IMAGE_DIGEST + "\n",
+        IMAGE_DIGEST[:-1],
+        IMAGE_DIGEST + "0",
+        "sha512:" + "ab" * 32,
+        "ab" * 32,
+        "",
+    ],
+)
+def test_c9_malformed_image_digest_is_refused(image_digest: str) -> None:
+    with pytest.raises(ValueError, match=r"\AIMAGE_DIGEST_RANGE\Z") as excinfo:
+        PreKeyStore(
+            instance_id=INSTANCE_ID,
+            identity=IdentityKey.generate(),
+            image_digest=image_digest,
+            params=ChannelParams(),
+            clock=FakeClock(),
+        )
+
+    assert excinfo.value.args == ("IMAGE_DIGEST_RANGE",)

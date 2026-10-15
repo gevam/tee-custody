@@ -6,8 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
+from teecustody.attest.claims import IMAGE_DIGEST_PATTERN
 from teecustody.channel import hpke
-from teecustody.channel.codec import prekey_signing_message
+from teecustody.channel.codec import INSTANCE_ID_PATTERN, prekey_signing_message
 from teecustody.channel.identity import IdentityKey
 from teecustody.config import ChannelParams
 from teecustody.secrets import Secret
@@ -34,6 +35,10 @@ class PreKeyStore:
         params: ChannelParams,
         clock: Callable[[], float],
     ) -> None:
+        if not INSTANCE_ID_PATTERN.fullmatch(instance_id):
+            raise ValueError("INSTANCE_ID_RANGE")
+        if not IMAGE_DIGEST_PATTERN.fullmatch(image_digest):
+            raise ValueError("IMAGE_DIGEST_RANGE")
         self._instance_id = instance_id
         self._identity = identity
         self._image_digest = image_digest
