@@ -38,7 +38,10 @@ class PreKeyStore:
         self._next_id = 0
 
     def top_up(self) -> int:
-        count = self._params.prekey_batch
+        live = len(self._keys)
+        if live >= self._params.prekey_low_water:
+            return 0
+        count = self._params.prekey_batch - live
         for _ in range(count):
             self._generate()
         return count
@@ -60,7 +63,8 @@ class PreKeyStore:
         return tuple(public for public, _ in self._keys.values())
 
     def take(self, prekey_id: int) -> Secret:
-        raise NotImplementedError("T-22")
+        _, private = self._keys.pop(prekey_id)
+        return private
 
     def consumed_since(self, since: float) -> int:
         raise NotImplementedError("T-22")

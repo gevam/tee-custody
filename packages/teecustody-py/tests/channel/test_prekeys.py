@@ -52,3 +52,19 @@ def test_c1_top_up_on_an_empty_store_generates_a_signed_batch() -> None:
         assert len(e.pub) == 32
         message = prekey_signing_message(INSTANCE_ID, e.id, e.pub, e.not_after, IMAGE_DIGEST)
         public.verify(e.sig, message)
+
+
+def test_c2_top_up_is_a_no_op_at_or_above_low_water_and_refills_below_it() -> None:
+    store = make_store()
+    store.top_up()
+    for prekey_id in range(7):  # 3 live == low_water
+        store.take(prekey_id)
+
+    assert store.top_up() == 0
+    assert len(store.public_entries()) == 3
+
+    store.take(7)  # 2 live < low_water
+
+    assert store.top_up() == 8
+    entries = store.public_entries()
+    assert [e.id for e in entries] == [8, 9, *range(10, 18)]
