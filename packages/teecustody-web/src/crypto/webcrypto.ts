@@ -227,16 +227,22 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         async setupHpkeSender(recipientPublicKey, info): Promise<HpkeSenderContext> {
             requireKeyLength(recipientPublicKey);
             const hpke = await hpkeSuite();
+            let publicKey: CryptoKey;
+            try {
+                publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
+            } catch {
+                throw new CapabilityError("INVALID_ARGUMENT");
+            }
             let context: SenderContext;
             try {
-                const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
+                // ADR 0011 C8 (R2): only the library's own ephemeral key generation is retried.
                 context = await boundedKeygen(
                     () =>
                         hpke.createSenderContext({
                             recipientPublicKey: publicKey,
                             info: info.slice(),
                         }),
-                    () => true,
+                    (error) => error instanceof NotSupportedError,
                 );
             } catch (error: unknown) {
                 throw new CapabilityError(

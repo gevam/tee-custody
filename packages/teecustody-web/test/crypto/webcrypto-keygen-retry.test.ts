@@ -2,7 +2,15 @@
 // INC-2-API §8.1). Faults are injected on the global subtle that @hpke/core uses (C3a.3).
 import { generateKeyPairSync } from "node:crypto";
 
-import { CipherSuite } from "@hpke/core";
+import {
+    CipherSuite,
+    DeserializeError,
+    DhkemX25519HkdfSha256,
+    EncapError,
+    InvalidParamError,
+    SerializeError,
+    ValidationError,
+} from "@hpke/core";
 import { CapabilityError, type Bytes } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -49,6 +57,15 @@ const enc = new TextEncoder();
 const INFO = enc.encode("tee-chan-v1 info");
 const AAD = enc.encode("open aad");
 const PT = enc.encode("open_session payload");
+
+/** RFC 7748 §5 / cr.yp.to low-order u-coordinates (as in webcrypto.test.ts). */
+const LOW_ORDER_ENC = [
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+    "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+].map((hex) => new Uint8Array(Buffer.from(hex, "hex")));
 
 /** A recipient key pair from node:crypto, so building it never touches the spied global subtle. */
 function x25519(): { sk: Bytes; pk: Bytes } {
@@ -215,5 +232,52 @@ describe("failed probe not cached (criterion 4, R1)", () => {
         await crypto.setupHpkeSender(pk, INFO);
         await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
         expect(h.probeCalls() - cached).toBe(0);
+    });
+});
+
+describe("no retry on other sender errors (criterion 5, R2.4)", () => {
+    it("rejects each low-order recipient key with INVALID_ARGUMENT after 1 sender key generation", async () => {
+        const h = harness();
+        const crypto = createWebCrypto();
+        for (const lowOrder of LOW_ORDER_ENC) {
+            const before = h.senderCalls();
+            const error = await rejection(crypto.setupHpkeSender(lowOrder, INFO));
+            expect(codeOf(error)).toBe("INVALID_ARGUMENT");
+            expect((error as CapabilityError).cause).toBeUndefined();
+            expect(h.senderCalls() - before).toBe(1);
+        }
+    });
+
+    it.each([
+        ["EncapError", () => new EncapError(`${SENTINEL} encap`)],
+        ["ValidationError", () => new ValidationError(`${SENTINEL} validation`)],
+        ["InvalidParamError", () => new InvalidParamError(`${SENTINEL} param`)],
+        ["SerializeError", () => new SerializeError(`${SENTINEL} serialize`)],
+        ["Error", () => new Error(`${SENTINEL} plain`)],
+    ] as const)("calls createSenderContext once when it rejects %s", async (_name, failure) => {
+        const { pk } = x25519();
+        harness();
+        const createSender = vi
+            .spyOn(CipherSuite.prototype, "createSenderContext")
+            .mockRejectedValueOnce(failure());
+        const crypto = createWebCrypto();
+        const error = await rejection(crypto.setupHpkeSender(pk, INFO));
+        expect(codeOf(error)).toBe("INVALID_ARGUMENT");
+        expect((error as CapabilityError).cause).toBeUndefined();
+        expect(createSender).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a deserializePublicKey failure with INVALID_ARGUMENT before any sender context", async () => {
+        const { pk } = x25519();
+        harness();
+        vi.spyOn(DhkemX25519HkdfSha256.prototype, "deserializePublicKey").mockRejectedValueOnce(
+            new DeserializeError(`${SENTINEL} deserialize`),
+        );
+        const createSender = vi.spyOn(CipherSuite.prototype, "createSenderContext");
+        const crypto = createWebCrypto();
+        const error = await rejection(crypto.setupHpkeSender(pk, INFO));
+        expect(codeOf(error)).toBe("INVALID_ARGUMENT");
+        expect((error as CapabilityError).cause).toBeUndefined();
+        expect(createSender).not.toHaveBeenCalled();
     });
 });
