@@ -66,11 +66,9 @@ class PreKeyStore:
 
     def expire(self) -> int:
         now = self._clock()
-        expired = [i for i, (public, _) in self._keys.items() if public.not_after <= now]
-        for prekey_id in expired:
-            _, private = self._keys.pop(prekey_id)
-            private.wipe()
-        return len(expired)
+        return self._destroy(
+            [i for i, (public, _) in self._keys.items() if public.not_after <= now]
+        )
 
     def public_entries(self) -> tuple[PreKeyPublic, ...]:
         now = self._clock()
@@ -94,4 +92,10 @@ class PreKeyStore:
         return sum(1 for at in self._taken_at if at >= since)
 
     def destroy_all(self) -> None:
-        raise NotImplementedError("T-22")
+        self._destroy(list(self._keys))
+
+    def _destroy(self, prekey_ids: list[int]) -> int:
+        for prekey_id in prekey_ids:
+            _, private = self._keys.pop(prekey_id)
+            private.wipe()
+        return len(prekey_ids)

@@ -283,3 +283,22 @@ def test_c6_exhaustion_mid_batch_keeps_the_keys_already_generated() -> None:
         store.top_up()
 
     assert [e.id for e in store.public_entries()] == [2**32 - 3, 2**32 - 2, 2**32 - 1]
+
+
+def test_c7_destroy_all_wipes_every_held_private_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = capture_private_keys(monkeypatch)
+    clock = FakeClock()
+    store = make_store(clock=clock)
+    store.top_up()
+    taken = store.take(0)
+    clock.now = store.public_entries()[0].not_after  # held but expired keys are wiped too
+
+    store.destroy_all()
+
+    assert all(secret.wiped for secret in captured[1:])
+    assert not taken.wiped  # handed out: owned and wiped by the caller
+    clock.now = START
+    assert store.public_entries() == ()
+    assert store.expire() == 0
+    with pytest.raises(KeyError):
+        store.take(1)
