@@ -318,4 +318,5 @@ def test_teecustody_runtime_requirements_are_exact_pinned_crypto_and_cbor_only()
     assert sorted(importlib.metadata.requires("teecustody") or []) == [
         "cbor2==6.1.4",
         "cryptography==50.0.2",
+        "pyhpke==0.6.5",
     ]

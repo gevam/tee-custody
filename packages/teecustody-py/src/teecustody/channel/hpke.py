@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from pyhpke import AEADId, CipherSuite, KDFId, KEMId
+
 from teecustody.secrets import Secret
 
 KEM_ID: Final = 0x0020
@@ -16,6 +19,11 @@ AEAD_ID: Final = 0x0002
 EXPORT_C2T: Final = b"c2t"
 EXPORT_T2C: Final = b"t2c"
 EXPORT_LENGTH: Final = 32
+
+_PRIVATE_KEY_LENGTH: Final = 32
+_SUITE: Final = CipherSuite.new(
+    KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM
+)
 
 
 class HpkeErrorCode(StrEnum):
@@ -34,7 +42,9 @@ class HpkeError(Exception):
 
 
 def generate_keypair() -> tuple[Secret, bytes]:
-    raise NotImplementedError("T-08")
+    """Fresh X25519 key pair as (raw private key, raw public key)."""
+    key = X25519PrivateKey.generate()
+    return Secret(key.private_bytes_raw()), key.public_key().public_bytes_raw()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -45,4 +55,26 @@ class OpenedHpke:
 
 
 def open_base(private_key: Secret, enc: bytes, info: bytes, aad: bytes, ct: bytes) -> OpenedHpke:
-    raise NotImplementedError("T-08")
+    """Base-mode receiver: Open once, then export both session keys from the same context.
+
+    Every library failure becomes `HpkeError(OPEN_FAILED)` with no cause and no context: a
+    low-order `enc` surfaces as `cryptography`'s ValueError, not pyhpke's OpenError (D-045).
+    """
+    if len(private_key) != _PRIVATE_KEY_LENGTH:  # a wiped Secret has length 0
+        raise HpkeError(HpkeErrorCode.INVALID_KEY) from None
+    built: list[Secret] = []
+    try:
+        recipient_key = _SUITE.kem.deserialize_private_key(private_key.reveal())
+        context = _SUITE.create_recipient_context(enc, recipient_key, info)
+        built.append(Secret(context.open(ct, aad=aad)))
+        for label in (EXPORT_C2T, EXPORT_T2C):
+            built.append(Secret(context.export(label, EXPORT_LENGTH)))
+    except Exception:  # noqa: BLE001 - fail closed on anything the HPKE library raises
+        for secret in built:
+            secret.wipe()
+        built.clear()
+    if not built:
+        # Raised outside the handler so neither __cause__ nor __context__ carries the library error.
+        raise HpkeError(HpkeErrorCode.OPEN_FAILED) from None
+    plaintext, sk_c2t, sk_t2c = built
+    return OpenedHpke(plaintext=plaintext, sk_c2t=sk_c2t, sk_t2c=sk_t2c)
