@@ -940,3 +940,85 @@ def test_a_stop_code_survives_a_failing_shutdown(monkeypatch: pytest.MonkeyPatch
         world.loop.tick()
 
     assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
+
+
+# ---------------------------------------------------------------- criterion 12 (A1): expiry first
+def test_c12_failing_refreshes_then_expiry_stop_before_any_processing_at_or_after_exp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)  # refresh_margin 300 s; retry 30 s .. 300 s
+    exp = world.launcher.issued[0].expires_at
+    world.launcher.fail = True
+    attempts: list[float] = []
+    processed_at: list[float] = []
+    original = world.launcher.get_attestation_token
+
+    def timed(audience: str, token_type: str, nonce: bytes) -> AttestationToken:
+        attempts.append(world.clock.now)
+        return original(audience, token_type, nonce)
+
+    monkeypatch.setattr(world.launcher, "get_attestation_token", timed)
+    bundles_before: list[int] = []
+
+    def tick_every_second_with_a_request() -> None:
+        t = float(exp - PARAMS.refresh_margin_s)
+        world.server.on_process = lambda _body: processed_at.append(world.clock.now)
+        while t < exp + 400:
+            world.clock.now = t
+            answered(world, int(t) % 10**6, f"req-{t}".encode())
+            bundles_before.append(len(world.queue.bundles))
+            world.loop.tick()
+            t += 1
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        tick_every_second_with_a_request()
+
+    assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
+    assert world.clock.now == exp
+    assert len(world.queue.bundles) == bundles_before[-1]  # no republish at expiry
+    assert max(processed_at) < exp
+    assert attempts[-1] == exp - 1.0  # the last retry is capped to land before expiry
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+
+
+def test_c12_a_long_backoff_is_capped_one_second_before_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits = BoundaryLimits(
+        pull_wait_s=0.01, attestation_retry_min_s=300, attestation_retry_max_s=3600
+    )
+    world = World(monkeypatch, limits=limits)
+    exp = world.launcher.issued[0].expires_at
+    world.launcher.fail = True
+    world.clock.now = exp - 100.0  # due; uncapped next attempt would be exp + 200
+    world.loop.tick()
+    calls = len(world.launcher.calls)
+
+    world.clock.now = exp - 1.5
+    world.loop.tick()
+    assert len(world.launcher.calls) == calls
+    world.clock.now = exp - 1.0
+    world.loop.tick()
+    assert len(world.launcher.calls) == calls + 1
+
+
+def test_c3_expiry_during_the_refresh_call_shuts_down_then_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    exp = world.launcher.issued[0].expires_at
+    world.clock.now = exp - 0.5
+    original = world.launcher.get_attestation_token
+
+    def slow_failure(audience: str, token_type: str, nonce: bytes) -> AttestationToken:
+        world.clock.now = exp + 1.0  # the lifecycle sees the token expire during the call
+        world.launcher.fail = True
+        return original(audience, token_type, nonce)
+
+    monkeypatch.setattr(world.launcher, "get_attestation_token", slow_failure)
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
+    assert len(world.queue.named("withdraw_bundle")) == 1

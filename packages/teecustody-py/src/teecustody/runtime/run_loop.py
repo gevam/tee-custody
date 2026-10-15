@@ -229,8 +229,11 @@ class RunLoop:
         return self._live
 
     def _refresh(self, live: _Live) -> RefreshOutcome | None:
-        """(1) B-08: the launcher is never asked before `next_refresh_attempt_at`."""
+        """(1) Expiry first (A1), then B-08: never ask before `next_refresh_attempt_at`."""
         now = self._clock()
+        expires_at = live.lifecycle.current().expires_at
+        if now >= expires_at:
+            self._stop(StopCode.ATTESTATION_EXPIRED)
         if now < self._next_refresh_attempt_at:
             return None
         try:
@@ -239,7 +242,8 @@ class RunLoop:
             self._stop(StopCode.ATTESTATION_EXPIRED)
         if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
             self._refresh_failures += 1
-            self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
+            retry_at = now + self._backoff(self._refresh_failures)
+            self._next_refresh_attempt_at = max(now, min(retry_at, expires_at - 1.0))  # A1 cap
         elif outcome is RefreshOutcome.REFRESHED:
             self._refresh_failures = 0
             if not self._same_digest(live):
