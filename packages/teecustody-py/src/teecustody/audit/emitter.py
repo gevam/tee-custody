@@ -67,7 +67,8 @@ class AuditEmitter:
         self._counts: dict[str, int] = {}
         self._alerted: set[tuple[str, str]] = set()
         self._cap_reached = False
-        self._pending: deque[tuple[AuditKey, AuditRecord]] = deque()
+        self._protected: deque[tuple[AuditKey, AuditRecord]] = deque()
+        self._sheddable: deque[tuple[AuditKey, AuditRecord]] = deque()
 
     def _now_ms(self) -> int:
         return int(self._clock() * 1000)
@@ -105,17 +106,21 @@ class AuditEmitter:
             epoch=epoch,
             recovery_id=recovery_id,
         )
-        self._write(self._alert_key(outcome), record)
+        self._write(self._alert_key(outcome), record, protected=False)
 
     def _alert_key(self, outcome: str) -> AuditKey:
         return AuditKey(AuditClass.ALERT, f"{self._rng(16).hex()}/{outcome}")
 
-    def _write(self, key: AuditKey, record: AuditRecord) -> None:
+    def _write(self, key: AuditKey, record: AuditRecord, *, protected: bool) -> None:
+        """Protected records (`alert()`) never share a bound with anonymous-driven ones (SR-12)."""
         if self._attempt(key, record):
             return
-        self._pending.append((key, record))
-        if len(self._pending) > _PENDING_MAX:
-            _, dropped = self._pending.popleft()
+        if protected:
+            self._protected.append((key, record))
+            return
+        self._sheddable.append((key, record))
+        if len(self._sheddable) > _PENDING_MAX:
+            _, dropped = self._sheddable.popleft()
             self._logger.warning(_drop_log(dropped.outcome))
 
     def _attempt(self, key: AuditKey, record: AuditRecord) -> bool:
@@ -135,11 +140,12 @@ class AuditEmitter:
         return True
 
     def _retry_pending(self) -> None:
-        while self._pending:
-            key, record = self._pending.popleft()
-            if not self._attempt(key, record):
-                self._pending.appendleft((key, record))
-                return
+        for pending in (self._protected, self._sheddable):
+            while pending:
+                key, record = pending.popleft()
+                if not self._attempt(key, record):
+                    pending.appendleft((key, record))
+                    return
 
     def alert(
         self,
@@ -158,6 +164,7 @@ class AuditEmitter:
                 interval_start=start,
                 interval_end=end,
             ),
+            protected=True,
         )
 
     def tick(self) -> None:
@@ -180,7 +187,7 @@ class AuditEmitter:
             record = AuditRecord(
                 outcome=outcome, ts=now, interval_start=self._start, interval_end=end, count=n
             )
-            self._write(key, record)
+            self._write(key, record, protected=False)
         self._counts = {}
         self._alerted = set()
         self._cap_reached = False

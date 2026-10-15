@@ -412,3 +412,35 @@ def test_drop_log_falls_back_when_the_named_outcome_is_not_a_valid_code(
     for i in range(PENDING_MAX + 1):
         emitter.pre_principal_alert(outcome, subject_client_id=_subject(i))
     assert logger.lines == [("warning", log, {})]
+
+
+class OutageSink(FakeSink):
+    """UNAVAILABLE for every append while `down`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.down = True
+
+    def append(self, key: AuditKey, record: AuditRecord) -> AppendResult:
+        if self.down:
+            self.attempts += 1
+            raise AuditError(AuditErrorCode.UNAVAILABLE)
+        return super().append(key, record)
+
+
+def test_an_anonymous_flood_during_an_outage_never_evicts_an_authenticated_alert() -> None:
+    sink = OutageSink()
+    emitter, _, clock, logger = _make(sink)
+    span = (START_MS - INTERVAL_MS, START_MS)
+    emitter.alert("PREKEY_BURN_HIGH", interval=span)
+    for i in range(101):
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(i))
+    sink.down = False
+    clock.now += INTERVAL_S
+    emitter.tick()
+    alerts = [r for _, r in sink.of(AuditClass.ALERT)]
+    assert alerts[0].outcome == "PREKEY_BURN_HIGH"
+    assert (alerts[0].interval_start, alerts[0].interval_end) == span
+    assert [r.outcome for r in alerts[1:]] == ["ALERT_CAP_REACHED"] + ["KCV_MISMATCH"] * PENDING_MAX
+    assert [r.subject_client_id for r in alerts[2:]] == [_subject(i) for i in range(76, 100)]
+    assert logger.lines == [("warning", "AUDIT_PENDING_DROPPED_KCV_MISMATCH", {})] * 76
