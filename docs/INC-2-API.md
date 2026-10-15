@@ -1238,8 +1238,8 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
 - **No direct h11 dependency (D-049).** `server.py` subclasses `uvicorn.protocols.http.h11_impl.H11Protocol` and
   never imports `h11`. h11 stays admitted only as uvicorn's dependency. The only name `server.py` imports from
   `uvicorn.protocols.http.h11_impl` is `H11Protocol`. The subclass relies on these uvicorn 0.54.0 internals and no
-  others (amended T-40 A4.2/A4.4): `connections`, `cycle` (`response_started`, `response_complete`, `more_body`),
-  `loop`, `transport`, `flow` (`write_paused`), `send_400_response`, `on_response_complete`, `pause_writing` and
+  others (amended T-40 A4.2/A4.4): `connections`, `cycle` (`response_started`), `conn` (`our_state`, compared by
+  identity with its value at connection start), `loop`, `transport`, `flow` (`write_paused`), `send_400_response`, `on_response_complete`, `pause_writing` and
   `resume_writing`. Any uvicorn version change re-runs the T-40 tests, at the same trigger as D-049's lock-change
   re-check.
 - **Shared validation.** `notes_gateway.app.validate_limits(limits: GatewayLimits) -> None` is package-internal (not
@@ -1262,9 +1262,10 @@ def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimit
   No request was parsed, so the response carries no CORS headers. The body obeys the no-escapes rule above. If a
   response is already in progress on the connection (started and not complete), no bytes are written; the
   connection is only closed, so a response is never interleaved with another. Likewise (T-40 A4.1), if the current
-  request's response is complete but its body is still arriving (`more_body`), no bytes are written and the
-  connection is only closed: every request gets at most one response. The constant is written only when there is
-  no cycle, the response has not started, or the response is complete and the request body has ended.
+  request's response is complete but its body is still arriving (h11 has not started the next request), no bytes are
+  written and the connection is only closed: every request gets at most one response. The constant is written only
+  when no response has begun for the request being parsed: there is no cycle, the current response has not started,
+  or the previous exchange has ended and a new request is being parsed.
 - Logs (outcome only, no fields): `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, `GATEWAY_WRITE_TIMEOUT`
   (T-40 A4.4), and `GATEWAY_INVALID_ARGUMENT` for a parse failure. (A Transfer-Encoding refusal is an app-level
   `400` and is logged by the app's ordinary per-request line, like any other `400`.) None carries the input, the path or the peer address. uvicorn's own
