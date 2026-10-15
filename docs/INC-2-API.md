@@ -22,6 +22,7 @@ Revision 3 addendum (2026-10-15, T-14 reviews):
 - §6: IPv6 sources are keyed by /64.
 - §6: paths with control characters → 404 before routing.
 - §6: uvicorn runs with `proxy_headers=False`, `server_header=False` and `access_log=False`.
+- §9.2 (2026-10-15, T-27 review): the bundle-scan patterns are widened (ten ids) and the scan is documented as a tripwire behind the CSP.
 - §8.4 (2026-10-15, T-20 reviews): the wrapping key always comes from a `get` (create results are ignored), and ceremonies are aborted via `AbortSignal`.
 - §8.3: FetchTransport maps 408 → `UNAVAILABLE`.
 - §14: the `%0A` path expectation is now 404.
@@ -1625,6 +1626,37 @@ legalComments: "none"`), so bundled dependencies (`@hpke/core` and its dependenc
 `/\beval\s*\(/`, `/\bnew\s+Function\b/`, `/(?<![.\w$])Function\s*\(/`, `/\bimport\s*\(\s*(?!["'`])/`, and
 `/\bset(?:Timeout|Interval)\s*\(\s*["'`]/`. Output: one line per hit, `<pattern-id>\t<entry>\t<byte offset>`, no
 source text. Exit codes: 0 clean, 1 hits, 2 usage/build error. Both packages' `lint` scripts call it.
+
+**Widened patterns (2026-10-15; T-27 Security Review, Low).** The scan is a **tripwire**. The runtime control is
+the enforce-mode CSP (§9.3, T-32), and our own source is also covered by ESLint and semgrep. The tripwire still
+catches the common indirect forms. Two existing patterns are replaced and six are added; each id below is the
+`<pattern-id>` in the output:
+
+| id | Regex (JS, no flags) | Catches |
+|---|---|---|
+| `eval-call` | `/\beval\s*\(/` | unchanged |
+| `eval-indirect` | `/\(\s*0\s*,\s*eval\s*\)/` | `(0,eval)(…)` |
+| `new-function` | `/\bnew\s+Function\b/` | unchanged |
+| `function-call` | `/(?<![.\w$])Function\s*\(/` | unchanged |
+| `function-global` | `/\b(?:globalThis\|window\|self\|global)\s*\.\s*Function\b/` | `globalThis.Function(…)` |
+| `function-indexed` | `/\[\s*["'`](?:Function\|constructor\|eval)["'`]\s*\]/` | `x["constructor"]`, `globalThis["eval"]` |
+| `reflect-construct` | `/\bReflect\s*\.\s*construct\s*\(\s*Function\b/` | `Reflect.construct(Function,…)` |
+| `constructor-call` | `/(?<!\bnew\s+[\w$.]*)\.constructor\s*\(/` | `f.constructor("…")`; `new this.constructor(…)` is not matched |
+| `import-computed` | `/\bimport\s*\(\s*(?!"[^"\\\n${}]*"\s*\)\|'[^'\\\n]*'\s*\))/` | any `import(` whose sole argument is not one plain quoted literal: `` import(`${x}`) ``, `import(""+x)`, `import(x)` |
+| `timer-string` | `/\bset(?:Timeout\|Interval)\s*\(\s*["'`]/` | unchanged |
+
+(Inside the table, `\|` stands for the regex alternation `|`.)
+
+- The single literal `import("crypto")` that ADR 0011 C7a admits passes `import-computed`.
+- **Verification (T-27).** The real `@teecustody/core` and `@teecustody/web` bundles on main must pass all ten
+  patterns. If a widened pattern hits code in a bundled third-party dependency, report it as a CONTRACT_ISSUE to the
+  Architect. Do not add an allow-list or relax the pattern (the §9.2 rule stays).
+- **Tests.** One positive fixture per id (each form listed above) and the clean fixture.
+  - Negative fixtures:
+    - `new this.constructor(a)`;
+    - `import("crypto")`;
+    - `prf: { eval: { first: s } }` (the word `eval` as a property name).
+
 D-045 extends the scan, under ADR 0011 C7a and C3a (T-27 owns the exact rules):
 - The esbuild metafile may contain exactly one `external` import, the `@hpke/common` `import("crypto")` site. Any other external import, or that entry going unused, exits 2.
 - A bundle-input manifest proves that no vendored `@hpke/common` curve code contributes bytes.
