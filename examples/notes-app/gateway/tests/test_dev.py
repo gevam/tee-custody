@@ -285,3 +285,23 @@ def test_main_with_the_flag_warns_on_every_start(
         assert record["level"] == "WARNING"
         assert record["logger"] == "teecustody.gateway"
         assert record["outcome"] == "SIM_NON_LOOPBACK_BIND"
+
+
+@pytest.mark.parametrize(
+    ("argv", "rejected"),
+    [
+        (["--host", "192.0.2.1", "--port", "0", "--allow"], "--allow"),
+        (["--ho", "127.0.0.1"], "--ho"),
+        (["--allow-non", "--port", "0"], "--allow-non"),
+    ],
+)
+def test_main_rejects_abbreviated_options(
+    argv: list[str], rejected: str, no_bind: _Recorder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        dev.main(argv)
+    assert stopped.value.code == 2
+    captured = capsys.readouterr()
+    assert f"unrecognized arguments: {rejected}" in captured.err
+    assert captured.out == ""
+    assert no_bind.configs == []

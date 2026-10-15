@@ -26,7 +26,7 @@ _STOP_TIMEOUT_S = 5.0
 
 
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m notes_gateway.dev")
+    parser = argparse.ArgumentParser(prog="python -m notes_gateway.dev", allow_abbrev=False)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--allow-non-loopback", action="store_true")
