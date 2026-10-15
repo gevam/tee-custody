@@ -202,3 +202,87 @@ describe("criterion 2: only the documented ciphertext record is stored", () => {
         expect(Array.from(plain)).toEqual(Array.from(SHARE));
     });
 });
+
+function bytes(source: BufferSource | undefined): Uint8Array {
+    expect(source).toBeDefined();
+    const s = source as BufferSource;
+    return s instanceof ArrayBuffer
+        ? new Uint8Array(s.slice(0))
+        : new Uint8Array(s.buffer.slice(s.byteOffset, s.byteOffset + s.byteLength));
+}
+
+describe("criterion 3: ceremony options", () => {
+    it("creates a discoverable, user-verified passkey with a random 16-byte user.id and PRF requested", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        const idb = new IDBFactory();
+        await vault(auth, idb).set(CLIENT, SHARE.slice());
+        await vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice());
+        const [first, second] = auth.creates.map((c) => c.publicKey);
+        const ids = [first, second].map((pk) => bytes(pk?.user.id));
+        for (const id of ids) {
+            expect(id.length).toBe(16);
+            expect(Buffer.from(id).equals(Buffer.from(CLIENT, "hex"))).toBe(false);
+            expect(Buffer.from(id).toString("hex")).not.toBe(CLIENT);
+            expect(Buffer.from(CLIENT, "ascii").includes(Buffer.from(id))).toBe(false);
+        }
+        expect(Buffer.from(ids[0] as Uint8Array).equals(Buffer.from(ids[1] as Uint8Array))).toBe(
+            false,
+        );
+        expect(first?.rp).toEqual({ id: "app.example", name: "Example" });
+        expect(first?.user.name).toBe(`user-${CLIENT}`);
+        expect(first?.user.displayName).toBe("User");
+        expect(first?.pubKeyCredParams).toEqual([
+            { type: "public-key", alg: -8 },
+            { type: "public-key", alg: -7 },
+        ]);
+        expect(first?.authenticatorSelection).toEqual({
+            residentKey: "required",
+            userVerification: "required",
+        });
+        expect(bytes(first?.challenge).length).toBe(32);
+        expect(first?.timeout).toBe(60_000);
+        expect(first?.extensions).toHaveProperty("prf");
+
+        const [record] = await records(idb);
+        const get = auth.gets[0]?.publicKey;
+        expect(get?.userVerification).toBe("required");
+        expect(get?.rpId).toBe("app.example");
+        expect(get?.timeout).toBe(60_000);
+        expect(bytes(get?.challenge).length).toBe(32);
+        expect(get?.allowCredentials).toHaveLength(1);
+        expect(get?.allowCredentials?.[0]?.type).toBe("public-key");
+        expect(Array.from(bytes(get?.allowCredentials?.[0]?.id))).toEqual(
+            Array.from((record as StoredRecord).credential_id as Uint8Array),
+        );
+        expect(Array.from(bytes(get?.extensions?.prf?.eval?.first))).toEqual(
+            Array.from((record as StoredRecord).prf_salt as Uint8Array),
+        );
+    });
+
+    it("passes timeoutMs to both ceremonies", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        await vault(auth, new IDBFactory(), { timeoutMs: 1234 }).set(CLIENT, SHARE.slice());
+        expect(auth.ceremonies.map((c) => c.publicKey.timeout)).toEqual([1234, 1234]);
+    });
+
+    it("draws every random value from the injected getRandomValues", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        const idb = new IDBFactory();
+        const lengths: number[] = [];
+        const getRandomValues = (a: Uint8Array): Uint8Array => {
+            lengths.push(a.length);
+            return a.fill(0x5a);
+        };
+        await vault(auth, idb, { getRandomValues }).set(CLIENT, SHARE.slice());
+        expect(lengths.sort((x, y) => x - y)).toEqual([12, 16, 32, 32, 32]);
+        const [record] = (await records(idb)) as { prf_salt: Uint8Array; nonce: Uint8Array }[];
+        expect(Array.from(record?.prf_salt ?? [])).toEqual(new Array<number>(32).fill(0x5a));
+        expect(Array.from(record?.nonce ?? [])).toEqual(new Array<number>(12).fill(0x5a));
+        expect(Array.from(bytes(auth.creates[0]?.publicKey.user.id))).toEqual(
+            new Array<number>(16).fill(0x5a),
+        );
+    });
+});

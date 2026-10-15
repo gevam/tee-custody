@@ -80,6 +80,7 @@ export class PrfShareVault implements ShareVault {
                     { type: "public-key", alg: -7 },
                 ],
                 authenticatorSelection: { residentKey: "required", userVerification: "required" },
+                timeout: this.#timeoutMs(),
                 extensions: { prf: { eval: { first: salt } } },
             },
         })) as PublicKeyCredential;
@@ -120,6 +121,7 @@ export class PrfShareVault implements ShareVault {
                 rpId: this.#options.rp.id,
                 allowCredentials: [{ type: "public-key", id: credentialId }],
                 userVerification: "required",
+                timeout: this.#timeoutMs(),
                 extensions: { prf: { eval: { first: salt } } },
             },
         })) as PublicKeyCredential;
@@ -148,7 +150,12 @@ export class PrfShareVault implements ShareVault {
     }
 
     #random(length: number): Uint8Array {
-        return globalThis.crypto.getRandomValues(new Uint8Array(length));
+        const fill = this.#options.getRandomValues ?? ((a) => globalThis.crypto.getRandomValues(a));
+        return fill(new Uint8Array(length));
+    }
+
+    #timeoutMs(): number {
+        return this.#options.timeoutMs ?? 60_000;
     }
 
     async #open(): Promise<IDBDatabase> {
