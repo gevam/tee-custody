@@ -1112,6 +1112,9 @@ class GatewayLimits:
     # callers and the default GatewayLimits() keep working unchanged.
     per_source_max_in_flight: int = 8      # 1..max_concurrency; concurrent requests per source key
     body_read_timeout_s: float = 10.0      # 1.0..60.0, finite; total deadline to receive the whole request body
+    # Additive, 2026-10-15 (T-40; QA D-03, D-04; SR-4, T-07). Appended after body_read_timeout_s; kw_only.
+    header_read_timeout_s: float = 10.0    # 1.0..60.0, finite; total deadline for one request's header block
+    max_connections: int = 512             # >= max_concurrency; open connections per process, any state
 def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
                rng: Callable[[int], bytes] = os.urandom,
                clock: Callable[[], float] = time.monotonic) -> fastapi.FastAPI: ...
@@ -1183,7 +1186,8 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
   raw `%7F` all give 404 with zero queue calls.
 - **Server configuration.** Every place in this repository that runs the gateway under uvicorn passes
   `proxy_headers=False`, `server_header=False` and `access_log=False`, and never sets `forwarded_allow_ips`. That
-  covers `notes_gateway/dev.py` and `tests/e2e/channel_harness.py`.
+  covers `notes_gateway/dev.py` and `tests/e2e/channel_harness.py`. (The list of settings is superseded by
+  `uvicorn_config` in "Server hardening" below; the rule and its test still hold.)
   - With uvicorn's defaults, a loopback peer could spoof `X-Forwarded-For` and pick its own source key.
   - The gateway README states this as a deployment requirement: behind a trusted proxy the per-source limit
     collapses to the global limit, and that is accepted.
@@ -1197,6 +1201,58 @@ def create_app(queue: RelayQueue, *, limits: GatewayLimits = GatewayLimits(),
 - The body is never decoded, logged or echoed. Logs: one line per request, outcome code and HTTP status only;
   uvicorn access logging is disabled.
 - `QueueError` mapping: `INVALID_ARGUMENT`→400, `NOT_FOUND`→404 `UNKNOWN_INSTANCE`, `UNAVAILABLE`→503, other→500.
+
+**Server hardening (2026-10-15; T-40; QA D-03, D-04; SR-3, SR-4, SR-11, T-07, FR-5).** ASGI middleware cannot
+bound header time or shape parser-rejection bodies: uvicorn's h11 protocol runs those paths before the app. The
+gateway therefore ships its own uvicorn protocol subclass. `GatewayLimits` gains `header_read_timeout_s` and
+`max_connections` (code block above).
+```python
+# notes_gateway/server.py (not re-exported from notes_gateway; __all__ stays ["GatewayLimits", "create_app"])
+def uvicorn_config(app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimits(),
+                   host: str, port: int) -> uvicorn.Config: ...
+# Errors: ValueError("INVALID_LIMITS") for invalid limits (same rules as create_app). Nothing else is raised.
+# Example:
+#   limits = GatewayLimits(header_read_timeout_s=5.0)
+#   uvicorn.Server(uvicorn_config(create_app(queue, limits=limits), limits=limits,
+#                                 host="127.0.0.1", port=0)).run()
+```
+- `uvicorn_config` validates `limits` as `create_app` does. It returns a `uvicorn.Config` with:
+  - `http` set to the gateway's h11 protocol class (a subclass of uvicorn's `H11Protocol`; never `"auto"` or
+    httptools);
+  - `ws="none"` (the gateway has no WebSocket route; an installed WebSocket library must not open an upgrade path);
+  - `proxy_headers=False`, `server_header=False`, `access_log=False`;
+  - `h11_max_incomplete_event_size=16384`, `timeout_keep_alive=5`, `log_level="warning"`.
+
+  It never sets `forwarded_allow_ips` or `limit_concurrency`. Pass it the same `limits` given to `create_app`.
+  Every place in this repository that runs the gateway uses it (`dev.py`, `tests/e2e/channel_harness.py`). This
+  replaces the "Server configuration" bullet's list of settings; its test still holds.
+- **No direct h11 dependency (D-049).** `server.py` subclasses `uvicorn.protocols.http.h11_impl.H11Protocol` and
+  never imports `h11`. h11 stays admitted only as uvicorn's dependency. The subclass relies on uvicorn 0.54.0
+  internals (`connections`, `cycle`, `loop`, `send_400_response`, `on_response_complete`), so any uvicorn version
+  change re-runs the T-40 tests, at the same trigger as D-049's lock-change re-check.
+- **Header-read deadline.** The complete header block of each request must arrive within `header_read_timeout_s`.
+  The clock starts when the connection is accepted and, on a kept-alive connection, when the previous response
+  completes. It is a total deadline, not reset by data. On expiry the connection is closed and no bytes are written.
+  Once the headers are complete, only the body deadline and the route apply.
+- **Connection cap.** An accepted connection that would exceed `max_connections` open connections is closed at once,
+  and no bytes are written. Other connections are unaffected. The cap is global, not per source: one source can hold
+  up to `max_connections` connections for `header_read_timeout_s` each. That is accepted for the reference gateway;
+  a production deployment puts per-client connection limits in its fronting proxy, and the README's "Deployment
+  requirement" says so.
+- **Parse failures.** A request the HTTP parser rejects is answered with exactly these bytes, and the connection is
+  then closed. Examples are a header block over 16384 bytes, a malformed header, a missing `Host` and non-HTTP bytes.
+
+  `HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 27\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\nconnection: close\r\n\r\n{"code":"INVALID_ARGUMENT"}`
+
+  No request was parsed, so the response carries no CORS headers. The body obeys the no-escapes rule above. If a
+  response is already in progress on the connection (started and not complete), no bytes are written; the
+  connection is only closed, so a response is never interleaved with another.
+- Logs (outcome only, no fields): `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, and
+  `GATEWAY_INVALID_ARGUMENT` for a parse failure. None carries the input, the path or the peer address. uvicorn's own
+  constant `uvicorn.error` warning for a parse failure remains; it carries neither.
+- Validation: `header_read_timeout_s` must be a finite `int`/`float` in 1.0..60.0, with `bool` refused.
+  `max_connections` must be an `int` ≥ `max_concurrency`, with `bool` refused. Anything else →
+  `ValueError("INVALID_LIMITS")`.
 
 Dev entry point: `python -m notes_gateway.dev --host 127.0.0.1 --port 0` wires an `InMemoryQueue` (imports
 `teecustody_sim` lazily inside `dev` only). Example: `TestClient(create_app(InMemoryQueue())).get("/bundles")`.
