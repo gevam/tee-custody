@@ -22,7 +22,39 @@ interface HarnessResult {
     readonly steps: Readonly<Record<string, string>>;
 }
 
+type Expectation = string | readonly string[];
+
 const RESULT_TIMEOUT_MS = 60_000;
+const NO_PRF_VAULT = "UNSUPPORTED";
+
+// FACTS.md "Support matrix" (V-02) and INC-2-API §9.3 rev 3: Ed25519, X25519 and hash SRI are supported in
+// all three browsers, so every non-vault step is ok. No browser here yields PRF: WebKit has no
+// navigator.credentials (UNSUPPORTED); Firefox has no virtual authenticator, so its ceremony either fails
+// closed (UNSUPPORTED) or waits for a real one until timeoutMs (USER_PRESENCE_REQUIRED).
+const MATRIX: Readonly<Record<"firefox" | "webkit", Readonly<Record<Step, Expectation>>>> = {
+    firefox: {
+        crypto: "ok",
+        fetcher: "ok",
+        attestation: "ok",
+        transport: "ok",
+        channel: "ok",
+        vault: [NO_PRF_VAULT, "USER_PRESENCE_REQUIRED"],
+        discovery_cors: "blocked",
+        attacker: "rejected",
+        pin_canonical: "ok",
+    },
+    webkit: {
+        crypto: "ok",
+        fetcher: "ok",
+        attestation: "ok",
+        transport: "ok",
+        channel: "ok",
+        vault: NO_PRF_VAULT,
+        discovery_cors: "blocked",
+        attacker: "rejected",
+        pin_canonical: "ok",
+    },
+};
 
 function env(name: string): string {
     const value = process.env[name];
@@ -58,6 +90,41 @@ async function runHarness(page: Page): Promise<HarnessResult> {
     return (await handle.jsonValue()) as HarnessResult;
 }
 
+// Records in the vault's IndexedDB `shares` store; a database or store that does not exist counts as empty.
+async function sharesCount(page: Page): Promise<number> {
+    return page.evaluate(async () => {
+        const names = (await indexedDB.databases()).map((db) => db.name);
+        if (!names.includes("teecustody-vault")) {
+            return 0;
+        }
+        const db = await new Promise<IDBDatabase>((resolveDb, reject) => {
+            const open = indexedDB.open("teecustody-vault");
+            open.onsuccess = () => {
+                resolveDb(open.result);
+            };
+            open.onerror = () => {
+                reject(new Error("IDB_OPEN"));
+            };
+        });
+        try {
+            if (!db.objectStoreNames.contains("shares")) {
+                return 0;
+            }
+            const count = db.transaction("shares", "readonly").objectStore("shares").count();
+            return await new Promise<number>((resolveCount, reject) => {
+                count.onsuccess = () => {
+                    resolveCount(count.result);
+                };
+                count.onerror = () => {
+                    reject(new Error("IDB_COUNT"));
+                };
+            });
+        } finally {
+            db.close();
+        }
+    });
+}
+
 test.describe.configure({ timeout: 120_000 });
 
 test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero violations", async ({
@@ -80,5 +147,21 @@ test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero v
     };
     expect(result.steps).toEqual(expected);
     expect(Object.keys(result.steps)).toEqual([...STEPS]);
+    expect(result.violations).toBe(0);
+});
+
+test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, store empty, zero violations", async ({
+    page,
+    browserName,
+}) => {
+    test.skip(browserName === "chromium", "Chromium is covered by C1 and C4");
+    const expected = MATRIX[browserName as "firefox" | "webkit"];
+    const result = await runHarness(page);
+    expect(Object.keys(result.steps)).toEqual([...STEPS]);
+    for (const name of STEPS) {
+        const allowed = expected[name];
+        expect([allowed].flat(), name).toContain(result.steps[name]);
+    }
+    expect(await sharesCount(page)).toBe(0);
     expect(result.violations).toBe(0);
 });

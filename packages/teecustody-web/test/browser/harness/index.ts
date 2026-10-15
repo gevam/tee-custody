@@ -91,6 +91,9 @@ const FETCH_INIT: RequestInit = {
     referrerPolicy: "no-referrer",
 };
 const HTTP_TIMEOUT_MS = 10_000;
+// §9.3: Firefox has no virtual authenticator, so its ceremony waits for a real one until this bound
+// (USER_PRESENCE_REQUIRED). Ceremonies in the other browsers settle at once or fail closed.
+const VAULT_TIMEOUT_MS = 3000;
 
 function hex(text: string): Uint8Array<ArrayBuffer> {
     const out = new Uint8Array(text.length / 2);
@@ -220,6 +223,7 @@ async function main(): Promise<void> {
         const vault = new PrfShareVault({
             rp: { id: location.hostname, name: "teecustody csp harness" },
             user: () => ({ name: "csp-harness", displayName: "csp harness" }),
+            timeoutMs: VAULT_TIMEOUT_MS,
         });
         const share = hex(fixture.cs);
         await vault.set(fixture.client_id, share);
