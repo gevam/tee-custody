@@ -7,6 +7,7 @@
 // stdin: one JSON line {"gateway": "<origin>", "profile": "<path to profile.json>"}; fixture.json is read
 // from the profile's directory. The client share it holds is placed only in the in-memory harness bundle.
 // EOF on stdin (the spawner exited or closed the pipe), SIGTERM or SIGINT stops the server.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -19,11 +20,18 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CORE_ENTRY = resolve(HERE, "../../../teecustody-core/src/index.ts");
 const HARNESS_ENTRY = join(HERE, "harness/index.ts");
 
-const INDEX_HTML =
-    '<!doctype html>\n<html><head><meta charset="utf-8"><title>tc csp harness</title>' +
-    '<script src="/harness.js"></script></head><body></body></html>\n';
+const CONTROL_TEMPLATE = readFileSync(join(HERE, "control/inline.html"), "utf8");
 
-let harness;
+// Set once by configure(): the harness bundle, its SRI value, the pages and the CSP header.
+let site;
+
+function indexHtml(sri) {
+    return (
+        '<!doctype html>\n<html><head><meta charset="utf-8"><title>tc csp harness</title>' +
+        `<script src="/harness.js" integrity="${sri}" crossorigin="anonymous"></script>` +
+        "</head><body></body></html>\n"
+    );
+}
 
 async function bundle(config) {
     const result = await build({
@@ -46,22 +54,47 @@ async function configure(line) {
     const input = JSON.parse(line);
     const profileText = readFileSync(input.profile, "utf8");
     const fixture = JSON.parse(readFileSync(join(dirname(input.profile), "fixture.json"), "utf8"));
-    harness = await bundle({ gateway: input.gateway, profile: JSON.parse(profileText), fixture });
+    const harness = await bundle({
+        gateway: input.gateway,
+        profile: JSON.parse(profileText),
+        fixture,
+    });
+    // The hash of the exact bytes served as /harness.js.
+    const sri = `sha384-${createHash("sha384").update(harness).digest("base64")}`;
+    site = {
+        harness,
+        index: indexHtml(sri),
+        control: CONTROL_TEMPLATE.replace("{{HARNESS_SRI}}", sri),
+        csp: `script-src '${sri}'`,
+    };
 }
 
-function send(res, status, type, body) {
-    res.writeHead(status, type === undefined ? {} : { "Content-Type": type });
+function send(res, status, headers, body) {
+    res.writeHead(status, { "Content-Length": String(body.length), ...headers });
     res.end(body);
+}
+
+function page(res, html) {
+    send(
+        res,
+        200,
+        { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": site.csp },
+        Buffer.from(html),
+    );
 }
 
 const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
-    if (req.method === "GET" && (path === "/" || path === "/index.html")) {
-        send(res, 200, "text/html; charset=utf-8", INDEX_HTML);
-    } else if (req.method === "GET" && path === "/harness.js" && harness !== undefined) {
-        send(res, 200, "text/javascript; charset=utf-8", harness);
+    if (req.method !== "GET" || site === undefined) {
+        send(res, 404, {}, Buffer.alloc(0));
+    } else if (path === "/" || path === "/index.html") {
+        page(res, site.index);
+    } else if (path === "/control/inline.html") {
+        page(res, site.control);
+    } else if (path === "/harness.js") {
+        send(res, 200, { "Content-Type": "text/javascript; charset=utf-8" }, site.harness);
     } else {
-        send(res, 404, undefined, undefined);
+        send(res, 404, {}, Buffer.alloc(0));
     }
 });
 

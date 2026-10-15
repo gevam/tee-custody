@@ -25,6 +25,7 @@ interface HarnessResult {
 type Expectation = string | readonly string[];
 
 const RESULT_TIMEOUT_MS = 60_000;
+const CONTROL_TIMEOUT_MS = 10_000;
 const NO_PRF_VAULT = "UNSUPPORTED";
 
 // FACTS.md "Support matrix" (V-02) and INC-2-API §9.3 rev 3: Ed25519, X25519 and hash SRI are supported in
@@ -164,4 +165,22 @@ test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, s
     }
     expect(await sharesCount(page)).toBe(0);
     expect(result.violations).toBe(0);
+});
+
+test("C3 the positive-control page with one inline script reports at least one violation", async ({
+    page,
+}) => {
+    await page.goto(`${env("TC_SERVE_ORIGIN")}/control/inline.html`);
+    const handle = await page.waitForFunction(
+        () => {
+            const result = (window as { __result?: HarnessResult }).__result;
+            return result !== undefined && result.violations >= 1 ? result.violations : undefined;
+        },
+        undefined,
+        { timeout: CONTROL_TIMEOUT_MS },
+    );
+    expect(await handle.jsonValue()).toBeGreaterThanOrEqual(1);
+    expect(
+        await page.evaluate(() => (window as { __inlineRan?: true }).__inlineRan),
+    ).toBeUndefined();
 });

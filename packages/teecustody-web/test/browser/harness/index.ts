@@ -270,6 +270,13 @@ async function main(): Promise<void> {
     });
 }
 
-void main().finally(() => {
+function expose(): void {
     (window as { __result?: HarnessResult }).__result = result;
-});
+}
+
+// The positive-control page (control/inline.html) only counts violations; it runs no step.
+if (location.pathname.startsWith("/control/")) {
+    expose();
+} else {
+    void main().finally(expose);
+}
