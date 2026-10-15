@@ -47,7 +47,7 @@ def _nonce(seq: int) -> bytes:
 
 def open_frame(key: Secret, last_seq: int, aad: FrameAad, aad_bytes: bytes, ct: bytes) -> Secret:
     """Decrypts one c2t frame whose seq is above `last_seq` (-1: nothing accepted yet)."""
-    if aad.seq <= last_seq:
+    if aad.seq <= last_seq or not 0 <= aad.seq <= MAX_SEQ:
         raise SessionReject(SessionRejectCode.SEQ_REJECTED)
     try:
         plaintext = AESGCM(key.reveal()).decrypt(_nonce(aad.seq), ct, aad_bytes)

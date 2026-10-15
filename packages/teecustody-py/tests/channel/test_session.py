@@ -6,6 +6,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from teecustody.channel.codec import (
+    MAX_SEQ,
     FrameAad,
     OpenResultAad,
     encode_frame_aad,
@@ -233,3 +234,22 @@ def test_a_closed_session_can_neither_open_nor_seal() -> None:
     with pytest.raises(SecretError) as sealed:
         session.seal_t2c(OP, b"late")
     assert sealed.value.code is SecretErrorCode.WIPED
+
+
+# ---------------------------------------------------------------- criterion 14 (A1)
+@pytest.mark.parametrize("seq", [MAX_SEQ + 1, -1, 2**64])
+def test_an_out_of_range_seq_is_seq_rejected_by_the_session(seq: int) -> None:
+    session, key, clock = _session()
+    aad, aad_bytes, ct = _frame(key, 0)
+    hand_built = (FrameAad(session_id=SESSION_ID, seq=seq, op=OP), aad_bytes, ct)
+    assert _rejected(session, hand_built, T0 + 5) is SessionRejectCode.SEQ_REJECTED
+    assert session.last_activity == T0
+    assert session.open_c2t(aad, aad_bytes, ct, clock()).reveal() == b"p"
+
+
+@pytest.mark.parametrize(("seq", "last_seq"), [(MAX_SEQ + 1, -1), (-1, -2), (2**64, MAX_SEQ)])
+def test_an_out_of_range_seq_is_seq_rejected_by_open_frame(seq: int, last_seq: int) -> None:
+    raw = os.urandom(32)
+    _aad, aad_bytes, ct = _frame(raw, 0)
+    hand_built = (FrameAad(session_id=SESSION_ID, seq=seq, op=OP), aad_bytes, ct)
+    assert _open_frame_code(Secret(raw), last_seq, hand_built) is SessionRejectCode.SEQ_REJECTED
