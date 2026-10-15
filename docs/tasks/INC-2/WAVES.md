@@ -64,6 +64,21 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 - Scan of `test/channel/**`: no other assertion on the post or arrival order of concurrent requests.
 - T-41 depends only on T-26 (merged) and shares no file with any open task. Ordering itself stays B-26 (Architect).
 
+**Amended 2026-10-15 (D-07 Medium; Architect ruling (i), INC-2-API §6 "Maximal response sizes" and §8.3, 4010972).**
+- New task T-42 (Wave 6, STRONG): `FetchTransport.maxResponseBytes` becomes optional. Omitted or `undefined` means
+  2,097,152, which covers the maximal default pages: 1,406,937 B for `GET /responses` and 1,399,133 B for
+  `GET /bundles`.
+- T-42 also drops the explicit 1 MiB at two call sites:
+  - T-31's `tests/e2e/channel.e2e.test.ts:226`;
+  - T-32's browser `harness/index.ts:144`.
+- The explicit 1 MiB stays, valid, at two other sites:
+  - the Tech Lead contract test `web-adapters.contract.test.ts:91`;
+  - QA's `e2e-support.ts:369`, which the QA Engineer may change later; not blocking.
+- T-40 A5 now covers only the gateway README sentences and the page-size guard tests, including a non-null `next`.
+  `fetch-transport.ts` has moved to T-42.
+- T-42 depends only on merged code (T-19) and the committed §8.3 text, and shares no file with T-40, T-40's QA item
+  or T-41. D-07 closes when T-42 and T-40 A5 merge.
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -162,11 +177,12 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 6 | T-39 | Bounded X25519 keygen retry (ADR 0011 C8, `X25519_KEYGEN_ATTEMPTS` = 3, private); failed probe not cached; FACTS re-recorded at Playwright 1.63.0 (B-45, D-069) | STRONG | T-17, T-27, T-32 (all merged); QA-T-39 merged; SA C8 sign-off (done) | |
 | 6 | QA-T-40 | QA: D-03 row un-xfailed (red), D-03 idle row, D-04 parse-failure rows; on `inc-2/QA-exec` before it merges (in T-40.md) | MID (QA) | QA-exec | |
 | 6 | T-40 | Gateway server hardening: `header_read_timeout_s`, `max_connections`, JSON parse-failure 400 via `notes_gateway.server.uvicorn_config` (D-03, D-04) | STRONG | T-14, T-31 (merged); QA-exec + QA-T-40 merged; Architect §6 "Server hardening" text committed | Architect (§6) |
+| 6 | T-42 | `FetchTransport` `maxResponseBytes?` default 2,097,152 (D-07; §8.3 4010972); e2e + browser harness omit the explicit 1 MiB | STRONG | T-19 (merged); §8.3 text (committed) | |
 | 6 | T-41 | Core `session.test.ts` criterion-7 maxInFlight test: order-free seq assertions + forced-reorder test (flake `[1,0,2]`; B-26 evidence); A1: encrypt-count + distinct-nonce assertions on six refuse paths incl. criterion 10 (SR-14) | MID | T-26 (merged) | |
 
-Counts: 46 items (41 tasks T-01..T-41, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
+Counts: 47 items (42 tasks T-01..T-42, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
 Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
-3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 5: QA-T-39, then T-39 (both merged), QA-T-40, then T-40, and T-41. The largest wave is Wave 1.
+3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 6: QA-T-39, then T-39 (both merged), QA-T-40, then T-40, T-41 and T-42. The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
 - B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
@@ -237,8 +253,10 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - `tests/acceptance/SR14.webcrypto-hpke.test.ts`: QA (after W0), QA-T-39 W6 (append one `describe` only).
 - Core `test/channel/session.test.ts`: T-26 W2, T-41 W6 (criterion-7 `describe` only).
 - T-40 (W6) creates `notes_gateway/server.py` and gateway `tests/test_server.py`. It shares no file with T-39 or QA-T-39.
-  A5 (D-07) adds web `src/transport/fetch-transport.ts`, comment line only: T-19 W1, T-40 W6. No other open task
-  owns it.
+- Web `src/transport/fetch-transport.ts`, `test/transport/fetch-transport.test.ts`, `test/api-surface.test.ts`
+  (`FetchTransportOptions` pin only): T-19/T-02 W1/W0, T-42 W6.
+- `tests/e2e/channel.e2e.test.ts` (line 226 only): T-31 W4, T-42 W6.
+- Web `test/browser/harness/index.ts` (line 144 only): T-32 W5, T-42 W6.
 - T-39 (W6) also creates `packages/teecustody-web/test/crypto/webcrypto-keygen-retry.test.ts`. It runs T-32's
   `csp.spec.ts` with `--repeat-each=20` and edits no T-32 file.
 - T-38 (W4) is the first INC-2 owner of Core `src/attestation/checks/claims.ts` (INC-1 T-12). It also creates
