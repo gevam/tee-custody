@@ -23,3 +23,20 @@ Collected by the Orchestrator during INC-2 (2026-10-11..15). These are raw obser
 - Retro: packages/teecustody-web/test-results/ (Playwright .last-run.json) is not gitignored and gets left untracked after browser runs. Add it to .gitignore (owner: T-32 follow-up / B-46).
 - Retro: the T-40 contract inputs (a 20 KB header, 3000 headers) were never checked against h11's behaviour on complete requests. The TL prototype tested other inputs. The CR caught it via QA's verbatim rows. Lesson: contract test inputs must be validated in the prototype.
 - Retro: the T-40 engineer rewrote its unpushed branch history with cherry-picks to drop a gitleaks-flagged RFC 6455 sample key. The tree is unchanged, and reviewers check that the TDD order survived. Recommend: an engineer contract rule. Run gitleaks before each commit, and never rewrite history without reporting it.
+
+## Earlier INC-2 observations (Waves 0–2, from the Orchestrator's running log)
+- Wrong-kind test gap in both T-07 and T-15: tests asserted rejection but not the specific error kind.
+- Scratchpad collisions: engineers and reviewers repeatedly shared the scratchpad root. Fixed by mandating a per-agent `mktemp -d`.
+- The T-04 engineer ran `git checkout` in a shared tree, which is forbidden. The Release Engineer rules were tightened: no stash, reset, `checkout -- .`, clean or `add -A`.
+- Commit 4eaa77a carried a Haiku attribution trailer instead of the configured one.
+- QA defects were found by engineers rather than by QA.
+- Recurring `Buffer.slice` aliasing: views shared memory with caller buffers. This led to copy-on-read keys (§7.1/§7.2).
+- T-19 `baseUrl` mismatch between the contract and the gateway paths.
+- The harness's 20 concurrent subagent cap forced queueing of reviews.
+- T-33 High (a numeric nonce became zero bytes) was introduced by a round-1 fix. The pattern repeated in T-26, T-31 and T-29 (fix-introduced regressions).
+- T-21 reviewer error: a round-1 Low asked to drop a defects check. The Tech Lead approved a final round to restore it. T-32 had a second reviewer error: a mutant edited a comment, not the CSP.
+- Engineers added error codes outside frozen contracts (the D-053 precedent: a Tech Lead amendment is required).
+- T-21 deleted tests in a fix round.
+- Merges were dispatched before verdicts were recorded in DECISIONS. The Release Engineer now refuses without a record.
+- QA-7 missed a contract test.
+- T-30 created a scratch dir outside the scratchpad (/home/geva/code/tmp/T-30-*). It is still present, pending human OK to delete.
