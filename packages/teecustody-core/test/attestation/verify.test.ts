@@ -961,3 +961,56 @@ describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33
         expect(result.issuer).toBe(ISSUER);
     });
 });
+
+// T-38 / ADR 0013 S1: `now` is read during verification, after the JWKS fetch, and never cached across calls. No
+// case relies on nbf: the default token's nbf is in the past.
+describe("verifyAttestation: now is read fresh at the time check (T-38 S1)", () => {
+    interface MutableClock {
+        t: number;
+    }
+
+    function clockedDeps(clock: MutableClock, advanceOnFetchTo?: number): VerifierDeps {
+        const { deps } = harness();
+        return {
+            ...deps,
+            fetcher: {
+                get(url: string): Promise<FetchResponse> {
+                    if (advanceOnFetchTo !== undefined) {
+                        clock.t = advanceOnFetchTo;
+                    }
+                    return deps.fetcher.get(url);
+                },
+            },
+            now: () => clock.t,
+        };
+    }
+
+    const verify = (token: string, deps: VerifierDeps): ReturnType<typeof verifyAttestation> =>
+        verifyAttestation(
+            token,
+            PROFILE,
+            { identityNonce: IDENTITY_NONCE },
+            new MemorySink(),
+            deps,
+        );
+
+    it("criterion 10: a clock that reaches exp during the JWKS fetch rejects time/EXPIRED", async () => {
+        const token = await mint();
+        const err = await verifyWith(token, { deps: clockedDeps({ t: NOW_MS }, EXP * 1000) });
+        expect([err.check, err.code]).toEqual(["time", "EXPIRED"]);
+        const control = await verify(token, clockedDeps({ t: NOW_MS }));
+        expect(control.expiresAtMs).toBe(EXP * 1000);
+    });
+
+    it("criterion 11: one deps object and one token follow the clock on every call", async () => {
+        const token = await mint();
+        const clock: MutableClock = { t: NOW_MS };
+        const deps = clockedDeps(clock);
+        expect((await verify(token, deps)).expiresAtMs).toBe(EXP * 1000);
+        clock.t = EXP * 1000;
+        const err = await verifyWith(token, { deps });
+        expect([err.check, err.code]).toEqual(["time", "EXPIRED"]);
+        clock.t = NOW_MS;
+        expect((await verify(token, deps)).expiresAtMs).toBe(EXP * 1000);
+    });
+});
