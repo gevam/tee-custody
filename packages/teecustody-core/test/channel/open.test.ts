@@ -20,11 +20,11 @@ import {
     type InstanceFixture,
 } from "./support.js";
 
-const testBranded = new WeakSet<object>();
+const testBranded = new WeakSet();
 
 vi.mock("../../src/bundle/verify.js", () => ({ verifyBundle: vi.fn() }));
 vi.mock("../../src/bundle/types.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../../src/bundle/types.js")>();
+    const actual = await importOriginal<typeof bundleTypes>();
     return {
         ...actual,
         isVerifiedBundle: (v: unknown) =>

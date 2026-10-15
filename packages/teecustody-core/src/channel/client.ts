@@ -123,7 +123,7 @@ class Router implements SessionLink {
                 owner,
                 deadline: this.#clock.now() + this.#limits.responseTimeoutMs,
                 match,
-                resolve: resolve as (value: unknown) => void,
+                resolve,
                 reject,
             };
             const waiters = this.#routes.get(route);

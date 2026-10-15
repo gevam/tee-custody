@@ -66,7 +66,7 @@ function wipe(payload: OpenPayload, pt: Bytes): void {
 
 // R-4: an enrolled session's client id is the `client_id` of the open-result payload map, never the route.
 function enrolledClientId(payload: CanonicalValue): ClientId {
-    const clientId = payload instanceof Map ? payload.get("client_id") : undefined;
+    const clientId: unknown = payload instanceof Map ? payload.get("client_id") : undefined;
     if (typeof clientId !== "string" || !HEX32_PATTERN.test(clientId)) {
         throw new ChannelError("INVALID_RESPONSE");
     }

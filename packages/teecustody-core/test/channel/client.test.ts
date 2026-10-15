@@ -586,7 +586,13 @@ describe("criterion 12: Crypto-port failures fail closed as CRYPTO_UNAVAILABLE",
     ): Crypto["setupHpkeSender"] {
         return async (pub, info) => {
             const ctx = await inner.setupHpkeSender(pub, info);
-            return { ...ctx, ...change(ctx), destroy: () => ctx.destroy() };
+            return {
+                ...ctx,
+                ...change(ctx),
+                destroy: () => {
+                    ctx.destroy();
+                },
+            };
         };
     }
 
@@ -773,7 +779,7 @@ describe("constructor validation (TypeError INVALID_CONFIG)", () => {
     it.each(["bundle", "verifier", "envelopeDecode", "aadDecode", "payloadDecode"])(
         "refuses limits whose %s group is missing",
         (group) => {
-            const limits = { ...TEST_LIMITS, [group]: undefined } as unknown as ChannelLimits;
+            const limits = { ...TEST_LIMITS, [group]: undefined };
             expect(() => new ChannelClient(clientConfig(workload, clock, { limits }))).toThrow(
                 new TypeError("INVALID_CONFIG"),
             );

@@ -45,8 +45,8 @@ function functionsOf(namespace: Record<string, unknown>): [string, Callable][] {
             continue;
         }
         for (const key of Object.getOwnPropertyNames(proto)) {
-            const descriptor = Object.getOwnPropertyDescriptor(proto, key);
-            for (const member of [descriptor?.value, descriptor?.get, descriptor?.set]) {
+            const descriptor = Object.getOwnPropertyDescriptor(proto, key) ?? {};
+            for (const member of Object.values(descriptor) as unknown[]) {
                 if (typeof member === "function" && key !== "constructor") {
                     out.push([`${name}.${key}`, member as Callable]);
                 }
@@ -74,10 +74,12 @@ describe("criterion 9: no sealing seam takes a seq or a nonce", () => {
             return seq + a + nonce.length + rest.length;
         }
         expect(parameterNames(sample as Callable)).toEqual(["seq", "a", "nonce", "rest"]);
-        expect(parameterNames(session.Session.prototype.request as Callable)).toEqual([
-            "op",
-            "payload",
-        ]);
+        expect(
+            parameterNames(
+                Object.getOwnPropertyDescriptor(session.Session.prototype, "request")
+                    ?.value as Callable,
+            ),
+        ).toEqual(["op", "payload"]);
     });
 
     it.each(MODULES)("%s: no function has a parameter named seq or nonce", (_file, namespace) => {

@@ -176,9 +176,7 @@ describe("criterion 7: Session.request", () => {
         expect((await failure(session.request("test.echo", new Uint8Array(63)))).code).toBe(
             "INVALID_ARGUMENT",
         );
-        expect(
-            (await failure(session.request("test.echo", 1.5 as unknown as CanonicalValue))).code,
-        ).toBe("INVALID_ARGUMENT");
+        expect((await failure(session.request("test.echo", 1.5))).code).toBe("INVALID_ARGUMENT");
         await session.request("test.echo", new Uint8Array(62)); // exactly 64 bytes
         expect(workload.frames.map((f) => f.seq)).toEqual([0]);
     });
