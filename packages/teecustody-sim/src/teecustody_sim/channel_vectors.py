@@ -14,6 +14,7 @@ from typing import Final
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.codec import (
@@ -52,27 +53,10 @@ _KEY_BYTES: Final = 32
 _HEX_DIGITS: Final = "0123456789abcdef"
 _HPKE: Final = CipherSuite.new(KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM)
 _OPEN_PREKEY_ID: Final = 0
-_FRAME_NAMES: Final = (
-    "valid",
-    "seq_equal_last",
-    "seq_below_last",
-    "seq_above_max",
-    "aad_op_modified",
-    "aad_session_modified",
-    "wrong_key",
-    "ct_bitflip",
-)
-_RESULT_IDS: Final = (
-    "open_ok",
-    "open_rejected",
-    "open_ok_nil_session",
-    "open_error_with_session",
-    "open_other_request_id",
-    "open_ct_bitflip",
-    "frame_ok",
-    "frame_re_mismatch",
-    "frame_seq_not_above_last",
-)
+_FRAME_OP: Final = "test.echo"  # the test-double operation (WAVES.md "Channel ops")
+_FIRST_SEQ: Final = {"c2t": 0, "t2c": 1}  # D2-3: t2c seq 0 belongs to the open_result
+_FRAME_KINDS: Final = {"c2t": "frame", "t2c": "frame_result"}
+_NOT_APPLICABLE: Final = -1  # `last_seq` (and `re`) of an open_result case
 _LAYOUT_FIELDS: Final = {
     "prekey_preimage": ("instance_id", "prekey_id", "pub", "not_after", "image_digest"),
     "hpke_info": ("ik_pub", "prekey_id"),
@@ -317,13 +301,15 @@ def _seal(pub: bytes, info: bytes, aad: bytes, plaintext: bytes) -> _Sealed:
     )
 
 
-def _open_aad(workload: _Workload, client_id: str, timestamp: int) -> dict[str, CanonicalValue]:
+def _open_aad(
+    workload: _Workload, client_id: str, timestamp: int, request_id: bytes | None = None
+) -> dict[str, CanonicalValue]:
     return {
         "proto": PROTO,
         "client_id": client_id,
         "instance_id": workload.instance_id,
         "prekey_id": _OPEN_PREKEY_ID,
-        "request_id": os.urandom(_ID_BYTES),
+        "request_id": request_id or os.urandom(_ID_BYTES),
         "timestamp": timestamp,
     }
 
@@ -354,8 +340,9 @@ def _open_case(
     }
 
 
-def _open_cases(workload: _Workload) -> tuple[list[CanonicalValue], _Sealed]:
-    """The open cases, and the valid `open_session` seal whose exports key the frame cases."""
+def _open_cases(workload: _Workload) -> tuple[list[CanonicalValue], _Sealed, bytes]:
+    """The open cases, the valid `open_session` seal whose exports key the frame and result
+    cases, and its protocol `request_id`, which the open_result cases answer."""
     pub = workload.prekeys[_OPEN_PREKEY_ID].public_key().public_bytes_raw()
     info = hpke_info(workload.ik_pub, _OPEN_PREKEY_ID)
     client_id = _hex_id()
@@ -367,7 +354,8 @@ def _open_cases(workload: _Workload) -> tuple[list[CanonicalValue], _Sealed]:
             "epoch": 0,
         }
     )
-    session_aad = _open_aad(workload, client_id, workload.now)
+    request_id = os.urandom(_ID_BYTES)
+    session_aad = _open_aad(workload, client_id, workload.now, request_id)
     session = _seal(pub, info, encode(session_aad), open_session)
     enroll_aad = encode(_open_aad(workload, _hex_id(), workload.now))
     enroll = _seal(pub, info, enroll_aad, encode({"op": "enroll"}))
@@ -377,39 +365,231 @@ def _open_cases(workload: _Workload) -> tuple[list[CanonicalValue], _Sealed]:
         pub, hpke_info(workload.ik_pub, _OPEN_PREKEY_ID + 1), session.aad, open_session
     )
     over_max = _seal(pub, info, encode(_open_aad(workload, client_id, _OVER_MAX)), open_session)
-    return [
-        _open_case(workload, "valid_open_session", _envelope_of(session), session, "none"),
-        _open_case(workload, "valid_enroll", _envelope_of(enroll), enroll, "none"),
-        _open_case(
-            workload,
-            "aad_modified",
-            _open_envelope(modified_aad, session.enc, session.ct),
-            None,
-            "OPEN_FAILED",
-        ),
-        _open_case(workload, "info_other_prekey", _envelope_of(other_info), None, "OPEN_FAILED"),
-        _open_case(
-            workload,
-            "ct_truncated",
-            _open_envelope(session.aad, session.enc, session.ct[:-1]),
-            None,
-            "OPEN_FAILED",
-        ),
-        _open_case(
-            workload,
-            "enc_wrong_length",
-            _open_envelope(session.aad, session.enc[:-1], session.ct),
-            None,
-            "INVALID_ENVELOPE",
-        ),
-        _open_case(
-            workload, "timestamp_over_max", _envelope_of(over_max), None, "INVALID_ENVELOPE"
-        ),
-    ], session
+    return (
+        [
+            _open_case(workload, "valid_open_session", _envelope_of(session), session, "none"),
+            _open_case(workload, "valid_enroll", _envelope_of(enroll), enroll, "none"),
+            _open_case(
+                workload,
+                "aad_modified",
+                _open_envelope(modified_aad, session.enc, session.ct),
+                None,
+                "OPEN_FAILED",
+            ),
+            _open_case(
+                workload, "info_other_prekey", _envelope_of(other_info), None, "OPEN_FAILED"
+            ),
+            _open_case(
+                workload,
+                "ct_truncated",
+                _open_envelope(session.aad, session.enc, session.ct[:-1]),
+                None,
+                "OPEN_FAILED",
+            ),
+            _open_case(
+                workload,
+                "enc_wrong_length",
+                _open_envelope(session.aad, session.enc[:-1], session.ct),
+                None,
+                "INVALID_ENVELOPE",
+            ),
+            _open_case(
+                workload, "timestamp_over_max", _envelope_of(over_max), None, "INVALID_ENVELOPE"
+            ),
+        ],
+        session,
+        request_id,
+    )
 
 
 def _envelope_of(sealed: _Sealed) -> bytes:
     return _open_envelope(sealed.aad, sealed.enc, sealed.ct)
+
+
+def _session_nonce(seq: int) -> bytes:
+    """spec/wire/README.md session AEAD nonce, built here (independent of channel/session.py)."""
+    return b"\x00" * 4 + seq.to_bytes(8, "big")
+
+
+def _aead(key: bytes, seq: int, aad: bytes, plaintext: bytes) -> bytes:
+    return AESGCM(key).encrypt(_session_nonce(seq), plaintext, aad)
+
+
+def _next_letter_op(op: str) -> str:
+    """A different `op-name`: the final lowercase letter becomes the next one (`z` -> `a`)."""
+    return op[:-1] + chr((ord(op[-1]) - ord("a") + 1) % 26 + ord("a"))
+
+
+def _frame_aad(session_id: bytes, seq: int, op: str = _FRAME_OP) -> bytes:
+    return encode({"session_id": session_id, "seq": seq, "op": op})
+
+
+def _envelope(kind: str, aad: bytes, ct: bytes) -> bytes:
+    return encode({"kind": kind, "aad": aad, "ct": ct})
+
+
+def _frame_case(
+    direction: str,
+    name: str,
+    key: bytes,
+    last_seq: int,
+    envelope: bytes,
+    plaintext: bytes | None = None,
+    error_code: str = "none",
+) -> CanonicalValue:
+    return {
+        "id": f"{direction}_{name}",
+        "direction": direction,
+        "key": key,
+        "last_seq": last_seq,
+        "envelope": envelope,
+        "expect": "accept" if plaintext is not None else "reject",
+        "plaintext": plaintext,
+        "error_code": error_code,
+    }
+
+
+def _frame_cases(direction: str, key: bytes, session_id: bytes) -> list[CanonicalValue]:
+    """Every mutation starts from the direction's valid frame and changes one named thing."""
+    seq = _FIRST_SEQ[direction]
+    kind = _FRAME_KINDS[direction]
+    plaintext = (
+        encode({"id": "note-1", "body": "hello"})
+        if direction == "c2t"
+        else encode({"re": 0, "ok": True, "payload": {"body": "hello"}})
+    )
+    aad = _frame_aad(session_id, seq)
+    ct = _aead(key, seq, aad, plaintext)
+    valid = _envelope(kind, aad, ct)
+    over_max_aad = _frame_aad(session_id, _OVER_MAX)
+    other_op = _frame_aad(session_id, seq, _next_letter_op(_FRAME_OP))
+    other_session = _frame_aad(_flip_first_bit(session_id), seq)
+    wrong_key = _aead(os.urandom(_KEY_BYTES), seq, aad, plaintext)
+    last = seq - 1
+    auth = "AUTH_FAILED"
+    return [
+        _frame_case(direction, "valid", key, last, valid, plaintext),
+        _frame_case(direction, "seq_equal_last", key, seq, valid, error_code="SEQ_REJECTED"),
+        _frame_case(direction, "seq_below_last", key, seq + 1, valid, error_code="SEQ_REJECTED"),
+        _frame_case(
+            direction,
+            "seq_above_max",
+            key,
+            last,
+            _envelope(kind, over_max_aad, _aead(key, _OVER_MAX, over_max_aad, plaintext)),
+            error_code="INVALID_ENVELOPE",
+        ),
+        _frame_case(
+            direction, "aad_op_modified", key, last, _envelope(kind, other_op, ct), error_code=auth
+        ),
+        _frame_case(
+            direction,
+            "aad_session_modified",
+            key,
+            last,
+            _envelope(kind, other_session, ct),
+            error_code=auth,
+        ),
+        _frame_case(
+            direction, "wrong_key", key, last, _envelope(kind, aad, wrong_key), error_code=auth
+        ),
+        _frame_case(
+            direction,
+            "ct_bitflip",
+            key,
+            last,
+            _envelope(kind, aad, _flip_first_bit(ct)),
+            error_code=auth,
+        ),
+    ]
+
+
+def _result_case(
+    case_id: str,
+    key: bytes,
+    envelope: bytes,
+    expect: str,
+    plaintext: bytes | None,
+    routing: dict[str, CanonicalValue],
+) -> CanonicalValue:
+    return {
+        "id": case_id,
+        "key": key,
+        "request_id": None,
+        "session_id": None,
+        "re": _NOT_APPLICABLE,
+        "last_seq": _NOT_APPLICABLE,
+        **routing,
+        "envelope": envelope,
+        "expect": expect,
+        "plaintext": plaintext,
+        "error_code": "INVALID_RESPONSE" if expect == "reject" else "none",
+    }
+
+
+def _open_result_parts(
+    key: bytes, session_id: bytes | None, request_id: bytes, plaintext: bytes
+) -> tuple[bytes, bytes]:
+    aad = encode({"session_id": session_id, "request_id": request_id, "seq": 0})
+    return aad, _aead(key, 0, aad, plaintext)
+
+
+def _open_result(
+    key: bytes, session_id: bytes | None, request_id: bytes, plaintext: bytes
+) -> bytes:
+    return _envelope("open_result", *_open_result_parts(key, session_id, request_id, plaintext))
+
+
+def _result_cases(key: bytes, request_id: bytes, session_id: bytes) -> list[CanonicalValue]:
+    """open_result and frame_result envelopes as the client polling for them sees them."""
+    ok = encode({"ok": True, "payload": None})
+    error = encode({"ok": False, "error": "AUTHENTICATION_FAILED"})
+    ok_aad, ok_ct = _open_result_parts(key, session_id, request_id, ok)
+    open_ok = _envelope("open_result", ok_aad, ok_ct)
+    other_request = _open_result(key, session_id, os.urandom(_ID_BYTES), ok)
+    flipped_ok = _envelope("open_result", ok_aad, _flip_first_bit(ok_ct))
+    seq, re = _FIRST_SEQ["t2c"], 0
+    frame_aad = _frame_aad(session_id, seq)
+    frame_ok_pt = encode({"re": re, "ok": True, "payload": {"body": "hello"}})
+    frame_ok = _envelope("frame_result", frame_aad, _aead(key, seq, frame_aad, frame_ok_pt))
+    other_re_pt = encode({"re": re + 1, "ok": True, "payload": {"body": "hello"}})
+    other_re = _envelope("frame_result", frame_aad, _aead(key, seq, frame_aad, other_re_pt))
+    opened: dict[str, CanonicalValue] = {"request_id": request_id}
+    framed: dict[str, CanonicalValue] = {"session_id": session_id, "re": re, "last_seq": seq - 1}
+    return [
+        _result_case("open_ok", key, open_ok, "accept", ok, opened),
+        _result_case(
+            "open_rejected",
+            key,
+            _open_result(key, None, request_id, error),
+            "accept",
+            error,
+            opened,
+        ),
+        _result_case(
+            "open_ok_nil_session",
+            key,
+            _open_result(key, None, request_id, ok),
+            "reject",
+            ok,
+            opened,
+        ),
+        _result_case(
+            "open_error_with_session",
+            key,
+            _open_result(key, session_id, request_id, error),
+            "reject",
+            error,
+            opened,
+        ),
+        _result_case("open_other_request_id", key, other_request, "ignore", None, opened),
+        _result_case("open_ct_bitflip", key, flipped_ok, "ignore", None, opened),
+        _result_case("frame_ok", key, frame_ok, "accept", frame_ok_pt, framed),
+        _result_case("frame_re_mismatch", key, other_re, "ignore", None, framed),
+        _result_case(
+            "frame_seq_not_above_last", key, frame_ok, "ignore", None, {**framed, "last_seq": seq}
+        ),
+    ]
 
 
 def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
@@ -433,7 +613,8 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     dbgstat_token = minter.mint(
         _AUDIENCE, [nonce], now, parse_alteration("alter", "dbgstat=enabled")
     )
-    opens, _ = _open_cases(workload)
+    opens, session, request_id = _open_cases(workload)
+    session_id = os.urandom(_ID_BYTES)
     suite: dict[str, CanonicalValue] = {
         "suite": "teecustody-channel-vectors",
         "suite_version": 1,
@@ -445,11 +626,10 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
         "bundles": _bundle_cases(workload, dbgstat_token),
         "opens": opens,
         "frames": [
-            {"id": f"{direction}_{name}", "direction": direction}
-            for direction in ("c2t", "t2c")
-            for name in _FRAME_NAMES
+            *_frame_cases("c2t", session.sk_c2t, session_id),
+            *_frame_cases("t2c", session.sk_t2c, session_id),
         ],
-        "results": [{"id": case_id} for case_id in _RESULT_IDS],
+        "results": _result_cases(session.sk_t2c, request_id, session_id),
         "layouts": [
             {"id": case_id, "kind": kind}
             for kind, fields in _LAYOUT_FIELDS.items()

@@ -20,6 +20,7 @@ import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.codec import EnvelopeError, decode_bundle
@@ -482,3 +483,216 @@ def test_reject_opens_change_only_their_named_field(suite: dict[str, Any]) -> No
         "prekey_id": cases["info_other_prekey"]["prekey_id"] + 1,
     }
     assert _hpke_open(info_case, other) is not None  # sealed with prekey_id + 1 in info
+
+
+# --- frames and results (criterion 5) --------------------------------------------------------
+
+FRAME_KEYS = {"id", "direction", "key", "last_seq", "envelope", "expect", "plaintext", "error_code"}
+FRAME_OUTCOMES = {
+    "valid": "none",
+    "seq_equal_last": "SEQ_REJECTED",
+    "seq_below_last": "SEQ_REJECTED",
+    "seq_above_max": "INVALID_ENVELOPE",
+    "aad_op_modified": "AUTH_FAILED",
+    "aad_session_modified": "AUTH_FAILED",
+    "wrong_key": "AUTH_FAILED",
+    "ct_bitflip": "AUTH_FAILED",
+}
+FRAME_KINDS = {"c2t": "frame", "t2c": "frame_result"}
+RESULT_KEYS = {
+    "id",
+    "key",
+    "request_id",
+    "session_id",
+    "re",
+    "last_seq",
+    "envelope",
+    "expect",
+    "plaintext",
+    "error_code",
+}
+RESULT_OUTCOMES = {
+    "open_ok": ("accept", "none"),
+    "open_rejected": ("accept", "none"),
+    "open_ok_nil_session": ("reject", "INVALID_RESPONSE"),
+    "open_error_with_session": ("reject", "INVALID_RESPONSE"),
+    "open_other_request_id": ("ignore", "none"),
+    "open_ct_bitflip": ("ignore", "none"),
+    "frame_ok": ("accept", "none"),
+    "frame_re_mismatch": ("ignore", "none"),
+    "frame_seq_not_above_last": ("ignore", "none"),
+}
+ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+PAYLOAD_LIMITS = DecodeLimits(max_bytes=32_768, max_depth=16, max_items=4_096)
+
+
+def _nonce(seq: int) -> bytes:
+    """spec/wire/README.md: session AEAD nonce = 0x00000000 || u64be(seq)."""
+    return b"\x00" * 4 + seq.to_bytes(8, "big")
+
+
+def _decrypt(key: bytes, seq: int, ct: bytes, aad: bytes) -> bytes | None:
+    try:
+        return AESGCM(key).decrypt(_nonce(seq), ct, aad)
+    except Exception:  # noqa: BLE001 - InvalidTag and any other AEAD failure
+        return None
+
+
+def _frame_aad(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """channel.cddl `frame-aad`, checked by the test itself; None if the schema fails."""
+    aad = _map(envelope["aad"])
+    valid = (
+        set(aad) == {"session_id", "seq", "op"}
+        and type(aad["session_id"]) is bytes
+        and len(aad["session_id"]) == 16
+        and _is_uint(aad["seq"], MAX_UNIX_S)
+        and OP_NAME.fullmatch(aad["op"]) is not None
+    )
+    return aad if valid else None
+
+
+def _frame_outcome(case: dict[str, Any]) -> tuple[str, bytes | None]:
+    envelope = _map(case["envelope"])
+    assert set(envelope) == {"kind", "aad", "ct"}, case["id"]
+    assert envelope["kind"] == FRAME_KINDS[case["direction"]], case["id"]
+    aad = _frame_aad(envelope)
+    if aad is None or not 16 <= len(envelope["ct"]) <= 32784:
+        return "INVALID_ENVELOPE", None
+    if aad["seq"] <= case["last_seq"]:
+        return "SEQ_REJECTED", None
+    plaintext = _decrypt(case["key"], aad["seq"], envelope["ct"], envelope["aad"])
+    return ("AUTH_FAILED", None) if plaintext is None else ("none", plaintext)
+
+
+def _open_result_body_is_valid(body: object, session_id: bytes | None) -> bool:
+    """channel.cddl `open-result` plus the R-3 cross-field rule."""
+    if not isinstance(body, dict):
+        return False
+    if body.get("ok") is True:
+        return set(body) == {"ok", "payload"} and session_id is not None
+    return (
+        body.get("ok") is False
+        and set(body) == {"ok", "error"}
+        and ERROR_CODE.fullmatch(body["error"]) is not None
+        and session_id is None
+    )
+
+
+def _result_outcome(case: dict[str, Any]) -> tuple[str, str, bytes | None]:
+    """(expect, error_code, plaintext) as a client polling for this response sees it."""
+    envelope = _map(case["envelope"])
+    aad = _map(envelope["aad"])
+    if envelope["kind"] == "open_result":
+        assert aad["seq"] == 0, case["id"]
+        routed = aad["request_id"] == case["request_id"]
+    else:
+        assert envelope["kind"] == "frame_result", case["id"]
+        routed = aad["session_id"] == case["session_id"] and aad["seq"] > case["last_seq"]
+    plaintext = _decrypt(case["key"], aad["seq"], envelope["ct"], envelope["aad"])
+    if not routed or plaintext is None:
+        return "ignore", "none", None
+    body = decode(plaintext, PAYLOAD_LIMITS)
+    if envelope["kind"] == "open_result":
+        if not _open_result_body_is_valid(body, aad["session_id"]):
+            return "reject", "INVALID_RESPONSE", plaintext
+        return "accept", "none", plaintext
+    assert isinstance(body, dict), case["id"]
+    if body["re"] != case["re"]:
+        return "ignore", "none", None
+    return "accept", "none", plaintext
+
+
+def test_frame_cases_are_consistent_and_match_the_outcome_table(suite: dict[str, Any]) -> None:
+    for case in suite["frames"]:
+        assert set(case) == FRAME_KEYS, case["id"]
+        name = case["id"].removeprefix(f"{case['direction']}_")
+        assert case["error_code"] == FRAME_OUTCOMES[name], case["id"]
+        accepted = case["expect"] == "accept"
+        assert accepted == (case["error_code"] == "none"), case["id"]
+        assert (case["plaintext"] is not None) == accepted, case["id"]
+
+
+def test_own_aes_gcm_agrees_with_every_frame_case(suite: dict[str, Any]) -> None:
+    for case in suite["frames"]:
+        assert _frame_outcome(case) == (case["error_code"], case["plaintext"]), case["id"]
+
+
+def test_frame_keys_are_the_valid_open_session_exports(suite: dict[str, Any]) -> None:
+    opened = _by_id(suite, "opens")["valid_open_session"]
+    for case in suite["frames"]:
+        assert case["key"] == opened[f"sk_{case['direction']}"], case["id"]
+
+
+def test_frame_mutations_keep_everything_but_their_named_field(suite: dict[str, Any]) -> None:
+    frames = _by_id(suite, "frames")
+    for direction in ("c2t", "t2c"):
+        valid = frames[f"{direction}_valid"]
+        envelope, aad = _map(valid["envelope"]), _map(_map(valid["envelope"])["aad"])
+        for name in ("seq_equal_last", "seq_below_last"):
+            assert frames[f"{direction}_{name}"]["envelope"] == valid["envelope"]
+        assert frames[f"{direction}_seq_equal_last"]["last_seq"] == aad["seq"]
+        assert frames[f"{direction}_seq_below_last"]["last_seq"] > aad["seq"]
+        over_max = _map(_map(frames[f"{direction}_seq_above_max"]["envelope"])["aad"])
+        assert over_max == {**aad, "seq": OVER_MAX}
+        for name, field in (("aad_op_modified", "op"), ("aad_session_modified", "session_id")):
+            mutated = _map(frames[f"{direction}_{name}"]["envelope"])
+            assert mutated["ct"] == envelope["ct"], name
+            mutated_aad = _map(mutated["aad"])
+            assert mutated_aad[field] != aad[field], name
+            assert {**mutated_aad, field: aad[field]} == aad, name
+        flipped = _map(frames[f"{direction}_ct_bitflip"]["envelope"])["ct"]
+        assert bin(int.from_bytes(flipped) ^ int.from_bytes(envelope["ct"])).count("1") == 1
+        wrong_key = _map(frames[f"{direction}_wrong_key"]["envelope"])
+        assert wrong_key["aad"] == envelope["aad"]
+        for case_id in (f"{direction}_{name}" for name in FRAME_NAMES):
+            assert frames[case_id]["key"] == valid["key"], case_id
+
+
+def test_result_cases_are_consistent_and_match_the_outcome_table(suite: dict[str, Any]) -> None:
+    for case in suite["results"]:
+        assert set(case) == RESULT_KEYS, case["id"]
+        assert (case["expect"], case["error_code"]) == RESULT_OUTCOMES[case["id"]], case["id"]
+        is_open = case["id"].startswith("open_")
+        assert (case["request_id"] is not None) == is_open, case["id"]
+        assert (case["session_id"] is not None) == (not is_open), case["id"]
+        if is_open:
+            assert case["last_seq"] == -1, case["id"]
+        assert (case["plaintext"] is None) == (case["expect"] == "ignore"), case["id"]
+
+
+def test_own_aes_gcm_agrees_with_every_result_case(suite: dict[str, Any]) -> None:
+    for case in suite["results"]:
+        expected = (case["expect"], case["error_code"], case["plaintext"])
+        assert _result_outcome(case) == expected, case["id"]
+
+
+def test_ignored_results_are_ignored_for_their_named_reason_only(suite: dict[str, Any]) -> None:
+    results = _by_id(suite, "results")
+    open_ok, frame_ok = results["open_ok"], results["frame_ok"]
+    other = _map(_map(results["open_other_request_id"]["envelope"])["aad"])
+    assert other["request_id"] != open_ok["request_id"]
+    assert (
+        _result_outcome({**results["open_other_request_id"], "request_id": other["request_id"]})[0]
+        == "accept"
+    )
+    assert (
+        _result_outcome({**results["open_ct_bitflip"], "envelope": open_ok["envelope"]})[0]
+        == "accept"
+    )
+    re_mismatch = results["frame_re_mismatch"]
+    body = decode(_decrypt_envelope(re_mismatch), PAYLOAD_LIMITS)
+    assert isinstance(body, dict)
+    assert body["re"] != re_mismatch["re"]
+    assert _result_outcome({**re_mismatch, "re": body["re"]})[0] == "accept"
+    not_above = results["frame_seq_not_above_last"]
+    assert not_above["envelope"] == frame_ok["envelope"]
+    assert _result_outcome({**not_above, "last_seq": frame_ok["last_seq"]})[0] == "accept"
+    for case in suite["results"]:
+        assert case["key"] == _by_id(suite, "opens")["valid_open_session"]["sk_t2c"], case["id"]
+
+
+def _decrypt_envelope(case: dict[str, Any]) -> bytes:
+    envelope = _map(case["envelope"])
+    plaintext = _decrypt(case["key"], _map(envelope["aad"])["seq"], envelope["ct"], envelope["aad"])
+    assert plaintext is not None
+    return plaintext
