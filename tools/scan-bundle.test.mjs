@@ -220,6 +220,7 @@ describe("criterion 7 (C7a.2): a try-guarded Node import", () => {
             write: false,
             metafile: true,
             logLevel: "silent",
+            absWorkingDir: REPO,
             alias: { a: "/x/a.ts" },
         });
         assert.ok(!("logOverride" in options));
@@ -319,5 +320,18 @@ describe("criterion 9 (C3a.1): the bundle-input manifest", () => {
         );
         assert.deepEqual(HPKE_INPUT_ALLOWLIST, expected);
         assert.equal(Object.keys(HPKE_INPUT_ALLOWLIST).length, 29);
+    });
+});
+
+describe("criterion 10 (§16.5 D4): no trust-profile input in the bundle", () => {
+    it("meta-profile-input exits 1 with profile-input", () => {
+        assert.deepEqual(checkMetafile(meta("meta-profile-input"), ENTRY), {
+            code: 1,
+            lines: [`profile-input\t${ENTRY}\tpackages/teecustody-web/src/profile/build.ts`],
+        });
+    });
+
+    it("records metafile paths relative to the repository whatever the working directory", () => {
+        assert.equal(buildOptions("/x/src/index.ts", {}).absWorkingDir, REPO);
     });
 });

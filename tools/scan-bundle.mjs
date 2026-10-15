@@ -1,9 +1,12 @@
 // SR-13 bundle scan (T-27).
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import * as esbuild from "esbuild";
+
+// Metafile paths are relative to the repository, whatever directory the scan runs from.
+const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 
 export const PATTERNS = [
     ["eval", /\beval\s*\(/g],
@@ -97,6 +100,8 @@ export const HPKE_INPUT_ALLOWLIST = {
 
 const CURVE_INPUTS = "node_modules/@hpke/common/esm/src/curve/";
 
+const PROFILE_INPUTS = "packages/teecustody-web/src/profile/";
+
 const isAllowedCrypto = (imported) =>
     imported.path === HPKE_CRYPTO_EXTERNALS.output.path &&
     imported.kind === HPKE_CRYPTO_EXTERNALS.output.kind;
@@ -143,6 +148,11 @@ function checkManifest(metafile, entry) {
             }
         }
     }
+    for (const input of Object.keys(metafile.inputs)) {
+        if (input.startsWith(PROFILE_INPUTS)) {
+            lines.push(`profile-input\t${entry}\t${input}`);
+        }
+    }
     return lines;
 }
 
@@ -186,6 +196,7 @@ export function buildOptions(entryPath, alias) {
         write: false,
         metafile: true,
         logLevel: "silent",
+        absWorkingDir: REPO,
         alias,
     };
 }
