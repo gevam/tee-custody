@@ -760,6 +760,17 @@ class SessionTable:
   - no sealing method takes a key. Keys enter only through `T2cSealer.__init__` and `SessionTable.create`, which
     take ownership.
 
+**Edge rules (T-23 A1, T-28 A1; 2026-10-15).**
+- `SessionTable.create` raises `ValueError("SESSION_ID_IN_USE")` if `session_id` is already live. This check runs
+  first, before the table takes ownership of any key or sealer, and it changes nothing.
+  - T-28 maps it as follows: `opener.closed(info, OPEN_ABORTED)`; respond `INTERNAL` with a nil `session_id`; seal
+    that response exactly once with the still-fresh `T2cSealer` (nonce 0).
+- `open_frame` with an `aad.seq` outside [0, `MAX_SEQ`] → `SessionReject(SEQ_REJECTED)`. There is no new code.
+- An authenticated c2t frame whose plaintext is empty → `AUTH_FAILED`. Session state does not change: no `seq`
+  advance and no activity refresh. It is counted as `FRAME_AUTH_FAILED`, and no response is sent.
+- These rules assume the single-threaded `RunLoop` (§4.13). `SessionTable` and `T2cSealer` are not safe for
+  concurrent use from several threads.
+
 **Idle and eviction (R-8; D2-19; T-25).**
 - *Idle time* is `now − last_activity`. `last_activity` is set at creation and on each **authenticated** c2t frame,
   never on an unauthenticated or rejected one.
