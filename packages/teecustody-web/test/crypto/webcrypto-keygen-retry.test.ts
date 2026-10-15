@@ -3,7 +3,7 @@
 import { generateKeyPairSync } from "node:crypto";
 
 import { CipherSuite } from "@hpke/core";
-import type { Bytes } from "@teecustody/core";
+import { CapabilityError, type Bytes } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createWebCrypto } from "../../src/crypto/webcrypto.js";
@@ -120,6 +120,19 @@ function harness(fails: (call: number) => boolean = () => false): Harness {
     };
 }
 
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+        () => "resolved",
+        (error: unknown) => error,
+    );
+}
+
+function codeOf(error: unknown): string {
+    return error instanceof CapabilityError
+        ? error.code
+        : `not a CapabilityError: ${String(error)}`;
+}
+
 afterEach(() => {
     vi.restoreAllMocks();
     hpkeConstructed.mockClear();
@@ -141,5 +154,24 @@ describe("sender transient failure (criterion 1, C8.1, C5)", () => {
         const ct = await sender.seal(AAD, PT);
         const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
         expect(Array.from(await receiver.open(AAD, ct))).toEqual(Array.from(PT));
+    });
+});
+
+describe("sender permanent failure (criterion 2, C8.1)", () => {
+    it("fails closed with UNSUPPORTED and no cause after exactly 3 sender attempts", async () => {
+        const { pk } = x25519();
+        const h = harness((call) => call > 1);
+        const createSender = vi.spyOn(CipherSuite.prototype, "createSenderContext");
+        const crypto = createWebCrypto();
+        const error = await rejection(crypto.setupHpkeSender(pk, INFO));
+        expect(codeOf(error)).toBe("UNSUPPORTED");
+        expect((error as CapabilityError).cause).toBeUndefined();
+        expect(h.probeCalls()).toBe(1);
+        expect(h.senderCalls()).toBe(3);
+        expect(createSender).toHaveBeenCalledTimes(3);
+        for (const result of createSender.mock.results) {
+            expect(result.type).toBe("return");
+            await expect(result.value).rejects.toThrow();
+        }
     });
 });

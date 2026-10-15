@@ -1,7 +1,13 @@
 // WebCrypto Crypto adapter (INC-2-API §8.1; spec §10.2; ADR 0009 rule 5, ADR 0011).
 // No other file in the packages uses @hpke/* (SR-14); the names taken from @hpke/core are exactly the
 // ADR 0011 C3a.2 list.
-import { Aes256Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
+import {
+    Aes256Gcm,
+    CipherSuite,
+    DhkemX25519HkdfSha256,
+    HkdfSha256,
+    NotSupportedError,
+} from "@hpke/core";
 import {
     CapabilityError,
     type Bytes,
@@ -225,8 +231,10 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
                         }),
                     () => true,
                 );
-            } catch {
-                throw new CapabilityError("INVALID_ARGUMENT");
+            } catch (error: unknown) {
+                throw new CapabilityError(
+                    error instanceof NotSupportedError ? "UNSUPPORTED" : "INVALID_ARGUMENT",
+                );
             }
             const handle = new ContextHandle(context);
             return {
