@@ -17,7 +17,7 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -120,6 +120,22 @@ CLASSIFIER_LICENCES = {
     "License :: OSI Approved :: The Unlicense (Unlicense)": "Unlicense",
 }
 STALE_MONTHS = 18
+
+
+@dataclass(frozen=True)
+class AgeException:
+    """A human-decided admission of one exact version past the age rule, on one path only."""
+
+    version: str
+    member: str  # the workspace member whose runtime closure may contain the package
+    via: str  # the package through which every path from a shipped root must pass
+    decision: str
+
+
+# D-049 (human, 2026-10-13); DEBT-3, expires INC-5. Re-checked at every lock change.
+AGE_EXCEPTIONS: Final = {
+    "h11": AgeException(version="0.16.0", member="notes-gateway", via="uvicorn", decision="D-049"),
+}
 
 
 @dataclass(frozen=True)
@@ -236,6 +252,8 @@ class Repo:
     npm_manifest_paths: tuple[str, ...]  # repository-relative, aligned with npm_manifests
     workspace: frozenset[str]
     lock_errors: frozenset[Violation]
+    uv_members: frozenset[str]  # uv workspace members, from uv.lock
+    python_declared: dict[str, frozenset[str]]  # pyproject name -> its shipped dependencies
 
 
 def normalise_python(name: str) -> str:
@@ -517,10 +535,13 @@ def load_repo(root: Path) -> Repo:
     uv = _parse_uv_lock(root / UV_LOCK) if (root / UV_LOCK).is_file() else LockData()
     pnpm = _parse_pnpm_lock(root / PNPM_LOCK) if (root / PNPM_LOCK).is_file() else LockData()
     workspace = uv.members | {str(m["name"]) for m in npm_manifests if "name" in m}
+    python_declared: dict[str, frozenset[str]] = {}
     for path in pyprojects:
         name = _read_toml(path).get("project", {}).get("name")
         if name:
             workspace.add(normalise_python(name))
+            shipped = frozenset(d.name for d in _python_direct([path]) if d.shipped)
+            python_declared[normalise_python(name)] = shipped
     errors = uv.errors | pnpm.errors
     for ecosystem, lock_name, path in (
         (PYPI, UV_LOCK, root / UV_LOCK),
@@ -543,6 +564,8 @@ def load_repo(root: Path) -> Repo:
         npm_manifest_paths=tuple(path.relative_to(root).as_posix() for path in manifests),
         workspace=frozenset(workspace),
         lock_errors=frozenset(errors),
+        uv_members=frozenset(uv.members),
+        python_declared=python_declared,
     )
 
 
@@ -835,6 +858,40 @@ def _licence_targets(repo: Repo) -> dict[Node, str]:
     return {node: v for node, v in targets.items() if node[1] not in repo.workspace}
 
 
+def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
+    """True only on the exact path a human decision admits (AGE_EXCEPTIONS); age, never licence."""
+    exception = AGE_EXCEPTIONS.get(name)
+    if exception is None or ecosystem != PYPI:
+        return False
+    graph = repo.uv_runtime_graph
+    versions = {p.version for p in repo.locked if (p.ecosystem, p.name) == (ecosystem, name)}
+    members = set(repo.uv_members)
+    shipped = members | {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
+    libraries = {LIBRARY_PACKAGE, SIM_PACKAGE}
+    libraries |= {dep for lib in libraries for dep in repo.python_declared.get(lib, frozenset())}
+    unlocked = {
+        dep
+        for project, deps in repo.python_declared.items()
+        if project not in repo.uv_members
+        for dep in deps
+    }
+    return (
+        versions == {exception.version}
+        and exception.member in repo.uv_members
+        and not unlocked & {exception.via, exception.member}
+        and name in _closure(graph, [exception.member])
+        and name not in libraries | _closure(graph, libraries)
+        and name not in _reachable_avoiding(graph, shipped, exception.via)
+        and exception.via not in _reachable_avoiding(graph, members, exception.member)
+    )
+
+
+def _reachable_avoiding(graph: dict[str, set[str]], roots: set[str], avoided: str) -> set[str]:
+    """``roots`` and every node reachable from them in ``graph``; ``avoided`` is never expanded."""
+    expandable = {node: edges for node, edges in graph.items() if node != avoided}
+    return roots | _closure(expandable, roots)
+
+
 def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterable[Violation]:
     """Licence for every package (D-019: dev tooling included); age for shipped packages only."""
     cutoff = _months_before(today, STALE_MONTHS)
@@ -846,7 +903,7 @@ def check_registry(repo: Repo, fetch_json: FetchJson, today: dt.date) -> Iterabl
             yield "licence", name
     for ecosystem, name in sorted(repo.runtime):
         released = _released(ecosystem, name, fetch_json)
-        if released is None or released < cutoff:
+        if (released is None or released < cutoff) and not _age_exempt(repo, ecosystem, name):
             yield "stale", name
 
 
