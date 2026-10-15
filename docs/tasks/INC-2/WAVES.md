@@ -169,6 +169,8 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - sim `cli.py`, `tests/test_cli.py`: T-21 W1, T-25 W2.
   - Core `attestation/types.ts`, `test/api-surface.test.ts`: T-02 W0, T-33 W1.
   - `spec/vectors/README.md`: T-03 W0, T-34 W1.
+  - `notes_gateway/limits.py`, gateway `tests/test_api_surface.py`: T-01 W0, T-14 W1 (A1, additive fields).
+  - `.gitleaksignore`: T-19 W1 (A2, one fingerprint).
   - `tools/dependency_policy.py`, `tests/tooling/test_dependency_policy.py`: T-05 W0, T-37 W1.
   - Core `src/bundle/types.ts`: T-02 W0 (final), T-16 W1 (A3: the one-line `new Uint8Array(bytes)` copy only).
   - `tests/integration/contracts/test_sim_cli_contract.py`: TL W0, T-21 W1.
@@ -201,8 +203,9 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
 | `CloseReason` (7), `ChannelOutcome` (4), `SessionRejectCode` (4), `EnvelopeErrorCode`, `HpkeErrorCode`, `SecretErrorCode`, `ConfigErrorCode`, `QueueErrorCode`, `AuditClass`, `AuditErrorCode`, `AppendResult`, `StopCode` | T-04 | none |
 | `ChannelErrorCode` (11), `BundleErrorCode` (6), `FrameRejectCode` (3) | T-02 | none |
 | ALERT outcome strings | — | `PREKEY_BURN_HIGH` (T-29), `ALERT_CAP_REACHED`, `AUDIT_WRITE_CONFLICT` (T-12) |
-| Log outcome strings | — | `SESSION_OPENED` (T-28); `SESSION_CLOSED`, `SESSION_EVICTED` (T-29, TL-2); `RESPONSE_PUBLISH_FAILED`, `QUEUE_PULL_FAILED`, `BUNDLE_PUBLISHED` (T-29); `AUDIT_PENDING_DROPPED`, `AUDIT_WRITE_FAILED` (T-12); `GATEWAY_<CODE>` (T-14) |
-| Gateway error bodies (§6: 5 codes + `NOT_FOUND`, `METHOD_NOT_ALLOWED`) | T-14 | none |
+| Log outcome strings | — | `SESSION_OPENED` (T-28); `SESSION_CLOSED`, `SESSION_EVICTED` (T-29, TL-2); `RESPONSE_PUBLISH_FAILED`, `QUEUE_PULL_FAILED`, `BUNDLE_PUBLISHED` (T-29); `AUDIT_PENDING_DROPPED`, `AUDIT_PENDING_DROPPED_<OUTCOME>`, `AUDIT_WRITE_FAILED`, `AUDIT_CLOCK_BACKWARD` (T-12, A1); `GATEWAY_<CODE>` (T-14) |
+| Gateway error bodies (§6: 5 codes + `NOT_FOUND`, `METHOD_NOT_ALLOWED`) | T-14 | `REQUEST_TIMEOUT` (T-14 A1, §6 2026-10-15) |
+| `GatewayLimits` fields (10, T-01) | T-01 | `per_source_max_in_flight`, `body_read_timeout_s` (T-14 A1, appended, kw_only) |
 | Channel vector named cases (§3.2) | T-03 (README list), T-25 (generator) | none outside T-25 |
 | Semgrep rule ids (§9.5) | T-05 | `tc-core-no-oidc-discovery` (T-33); `tc-ts-hpke-common-banned`, `tc-ts-hpke-core-names` (T-27, C3a.2); `tc-no-tls-override-cli` (T-35). No others |
 | `TrustProfile` v2 (13 keys), `VerifierLimits.maxDiscoveryBytes?` (A-6) | T-33 (W1) | none |

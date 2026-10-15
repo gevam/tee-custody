@@ -1098,3 +1098,38 @@ Participants: Orchestrator, Code Reviewer, Security Reviewer, Tech Lead
 Code Review APPROVE (round 2), Security Review APPROVE (round 2). It merges only with MU-1 (T-33, T-21, T-36), from one combined green run.
 
 **Dissent:** none
+
+## D-053 — Wave-1 review rulings: T-10, T-12, T-14, T-19, T-21, T-31, T-33 (INC-2, 2026-10-15)
+
+Type: contract-amendment
+Chair / decider: Tech Lead (§6); Architect (INC-2-API 9ab6975); Orchestrator (routing)
+Participants: Code Reviewers, Security Reviewers, Software Engineers
+
+**Decisions:**
+- **T-10.** Revert 67c9bef (`TIMESTAMP_RANGE`). The Code Reviewer's objection stands: it adds an error to a frozen interface with no T-28 mapping, and T-28's skew check already bounds timestamps. Deferred as B-31.
+- **T-12 A1.** Pending audit records are split into two classes:
+  - `alert()` records and ALERT_CAP_REACHED: up to 256, never evicted by pre-principal ALERTs or AGGREGATEs;
+  - pre-principal ALERTs and AGGREGATEs: up to 24.
+
+  Other changes:
+  - The drop log becomes `AUDIT_PENDING_DROPPED_<OUTCOME>`.
+  - A backward clock jump ends the interval at its nominal end and logs AUDIT_CLOCK_BACKWARD.
+  - The constructor enforces the §4.4 ranges.
+
+  This fixes the Security Reviewer's Medium (T-20/SR-12: an anonymous flood during an outage evicted authenticated alerts).
+- **T-14 A1 and T-31 A3.** These implement the INC-2-API §6/§9 amendment (9ab6975):
+  - per-source in-flight cap; body-read deadline with 408;
+  - IPv6 rate buckets keyed by /64;
+  - control character in the path → 404;
+  - uvicorn runs with `proxy_headers`, `server_header` and `access_log` set to False;
+  - the T-14 Code Review Mediums: `/bundles%0A`, and slot release on cancel.
+- **T-19 A2.** 408 maps to UNAVAILABLE. `referrerPolicy` is asserted. For the gitleaks false positive (a base64 test sentinel, fingerprint `be3e5bec…:fetch-transport.test.ts:generic-api-key:639`), T-19 creates `.gitleaksignore` holding that single fingerprint and renames the constant. History is not rewritten.
+- **T-21 A2.** One final round outside the round limit, because a reviewer error caused the extra round. Approved.
+- **T-33.** A round-1 Low fix (`new Uint8Array(x)`) introduced a High: a numeric nonce became all zeros. It was caught by the Code Reviewer and fixed in 0a50b77; both reviewers approve.
+
+**Follow-ups:**
+- Architect: align the INC-2-API §4.12 pending text, and add "no escapes / backslash refused" to the §6 gateway JSON contract.
+- B-31, B-32 (Security Architect, INC-3).
+- Retro: reviewer-recommended fixes need the same hostile-input tests.
+
+**Dissent:** none
