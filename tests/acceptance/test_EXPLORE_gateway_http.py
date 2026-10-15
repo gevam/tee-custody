@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -63,6 +64,9 @@ class Live:
         out = ""
         assert self.proc.stdout is not None
         while time.monotonic() < deadline:
+            # select bounds every read: readline() alone could block past the deadline
+            if not select.select([self.proc.stdout], [], [], 1.0)[0]:
+                continue
             line = self.proc.stdout.readline()
             if not line:
                 break
@@ -564,10 +568,7 @@ def test_live_open_with_wrong_share_gets_only_an_authenticated_refusal(live: Liv
     assert got
     opened = read_open_result(got[0], sent.t2c)
     assert not opened.ok and opened.session_id is None
-    assert (
-        str(opened.error) in {"OPEN_REFUSED", "SHARE_REJECTED", "AUTH_FAILED", "UNAUTHENTICATED"}
-        or opened.error
-    )
+    assert opened.error == "AUTHENTICATION_FAILED"
 
 
 def test_open_replayed_verbatim_live_gets_no_second_response(live: Live) -> None:
@@ -690,23 +691,32 @@ def test_D03_idle_connection_sending_nothing_is_closed_within_a_bounded_time(liv
 
 JSON_400 = b'{"code":"INVALID_ARGUMENT"}'
 _HEAD = b"GET /bundles HTTP/1.1\r\nHost: x\r\n"
+_CLOSE = b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+# T-40 amendment A2, Q3 inputs (a)-(f); (g) is a green guard below.
 D04_INPUTS = {
-    "20000-byte header value": _HEAD + b"X-Big: " + b"a" * 20000 + b"\r\n\r\n",
-    "3000 headers": _HEAD + b"X-n: v\r\n" * 3000 + b"\r\n",
-    "header named Bad Header": _HEAD + b"Bad Header: v\r\n\r\n",
-    "missing Host": b"GET /bundles HTTP/1.1\r\n\r\n",
-    "TLS ClientHello prefix": bytes.fromhex("16030100c4010000c00303") + bytes(40),
+    "a: 20000-byte header value": _CLOSE + b"X-Big: " + b"a" * 20000 + b"\r\n\r\n",
+    "b: 3000 headers": _CLOSE + b"".join(b"X-%d: v\r\n" % n for n in range(3000)) + b"\r\n",
+    "c: header named Bad Header": _HEAD + b"Bad Header: v\r\n\r\n",
+    "d: TLS ClientHello prefix": bytes.fromhex("16030100c4010000c00303") + bytes(40),
+    "e: missing Host": b"GET /bundles HTTP/1.1\r\n\r\n",
+    "f: incomplete 20000-byte value, no line end": _HEAD + b"X-Big: " + b"a" * 20000,
 }
 
 
 @pytest.mark.parametrize("name", list(D04_INPUTS))
 def test_D04_parse_failures_get_the_json_400(live: Live, name: str) -> None:
     """T-40 Q3: the HTTP parser's rejection carries the documented JSON body (read to EOF)."""
-    r = raw_request(live, D04_INPUTS[name], timeout=15)
+    r = raw_request(live, D04_INPUTS[name], timeout=5)
     assert r.status == 400, name
     assert r.body == JSON_400, (name, r.body[:60])
     assert r.h("cache-control") == "no-store"
     assert r.h("x-content-type-options") == "nosniff"
+
+
+def test_D04_guard_g_a_4000_byte_header_is_still_served(live: Live) -> None:
+    """T-40 A2 (g): under the limits, a large-ish header block is served (green guard)."""
+    r = raw_request(live, _CLOSE + b"X-Pad: " + b"a" * 4000 + b"\r\n\r\n", timeout=5)
+    assert r.status == 200
 
 
 # ---------------------------------------------------------------- slowloris / caps (destructive: last)

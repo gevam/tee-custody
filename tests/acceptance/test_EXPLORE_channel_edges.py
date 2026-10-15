@@ -109,9 +109,10 @@ def test_truncated_open_ciphertext_and_enc_are_dropped() -> None:
         e[key] = e[key][:cut]
         r = world.server.process(cbor(e))
         assert r.response is None
-    # the pre-key must still be usable after failed (non-authentic) attempts? record outcome
+        assert str(r.outcome) == "REQUEST_INVALID"  # schema failure, before the pre-key is touched
+    # so the pre-key is not burned: the genuine open still succeeds
     r = world.server.process(sent.body)
-    assert str(r.outcome) in {"SESSION_OPENED", "PREKEY_UNKNOWN", "OPEN_FAILED"}
+    assert str(r.outcome) == "SESSION_OPENED"
 
 
 def test_open_with_unknown_prekey_id_and_wrong_instance() -> None:

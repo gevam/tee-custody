@@ -251,7 +251,7 @@ Section 4 items (browser criteria): item 1 and 2 (CSP, steps) pass in Chromium a
 ## 7. Exploratory testing
 
 New files (all under `tests/acceptance/`, public interfaces only, synthetic values): `test_EXPLORE_channel_edges.py` (38),
-`test_EXPLORE_gateway_http.py` (66 green plus 7 QA-T-40 rows red until T-40), `test_EXPLORE_gateway_keying.py` (30), `test_EXPLORE_queue.py` (32),
+`test_EXPLORE_gateway_http.py` (66 green plus 8 QA-T-40 rows red until T-40), `test_EXPLORE_gateway_keying.py` (30), `test_EXPLORE_queue.py` (32),
 `EXPLORE.client-bundle-time.test.ts` (4), `EXPLORE.vault-ceremony.test.ts` (6). Live tests spawn
 `tests/e2e/channel_harness.py --stop-on-stdin-eof` in their own process group and read the per-run fixture only from its temp dir.
 No `tc-e2e-*` directory or process remained after any run.
@@ -313,3 +313,9 @@ All are red until T-40 and the rest of the file is green (66 pass):
 `test_D03_partial_header_connection_is_closed_within_a_bounded_time`, `test_D03_idle_connection_sending_nothing_is_closed_within_a_bounded_time`,
 and `test_D04_parse_failures_get_the_json_400[20000-byte header value | 3000 headers | header named Bad Header | missing Host | TLS ClientHello prefix]`
 (exact `{"code":"INVALID_ARGUMENT"}` 400 with `cache-control: no-store` and `x-content-type-options: nosniff`). D-03 and D-04 fix contract: T-40.
+
+Update after the review of c08e112 and T-40 amendment A2: the D-04 rows are now exactly A2's Q3 inputs (a)-(f), each `test_D04_parse_failures_get_the_json_400[...]`,
+red until T-40 for the stated reasons (today (a) and (b) get 200; (c)-(f) get the `text/plain` body); `test_D04_guard_g_a_4000_byte_header_is_still_served` is a
+green guard. With the two D-03 rows, 8 tests are red and all other EXPLORE tests are green (two runs). Review fixes: the harness start-up read is bounded with `select`;
+four tests that accepted any outcome now assert the single observed, contracted outcome (the vault concurrent-set test is deterministic with its double); the
+client-bundle-time margins are 5 s inside and outside the 300 s leeway so D-02 WSL clock steps cannot flip a case (one flake was seen at a 1 s margin).

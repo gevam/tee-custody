@@ -37,10 +37,9 @@ def test_unknown_instance_is_not_found_and_message_types_are_checked() -> None:
         q.publish_request("00" * 16, RID, b"x")
     assert str(e.value.code) == "NOT_FOUND"
     for body in ("str", None, 5, bytearray(b"x")):
-        try:
+        with pytest.raises(QueueError) as err:
             q.publish_request(IID, RID, body)  # type: ignore[arg-type]
-        except QueueError:
-            pass
+        assert str(err.value.code) == "INVALID_ARGUMENT"
 
 
 @pytest.mark.parametrize("after", ["", "a" * 129, "a b", "a\n", "../x", "%", "é"])

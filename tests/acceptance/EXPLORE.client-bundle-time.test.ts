@@ -1,6 +1,8 @@
 // QA exploratory (INC-2 phase 2): ADR 0013 / spec 6.4 time boundaries through the FULL client path
 // (web adapters -> gateway -> live workload bundle -> ChannelClient.open), not just checkTime.
 // The client clock is fixed to a chosen offset from the claims of a live bundle's token.
+// Margins are 5 s inside/outside 300 s (not 1 s) so WSL clock steps of ~2 s (D-02) cannot flip a case;
+// the exact +-1 ms boundary is covered by the checkTime tests.
 // Pass = the client got as far as posting an open; fail = NO_VERIFIED_BUNDLE and nothing posted.
 import {
     ChannelClient,
@@ -86,13 +88,13 @@ async function attempt(h: Harness, atMs: number): Promise<{ posted: number; code
 }
 
 describe("ADR 0013 boundaries through the full client path", () => {
-    it("nbf leeway: -299 s passes verification, -301 s is rejected before anything is posted", async () => {
+    it("nbf leeway: -295 s passes verification, -305 s is rejected before anything is posted", async () => {
         const h = await harness.get();
         const c = await liveClaims(h);
         const nbf = (c.nbf ?? c.iat) * 1000;
-        const tooEarly = await attempt(h, nbf - 301_000);
+        const tooEarly = await attempt(h, nbf - 305_000);
         expect(tooEarly).toEqual({ posted: 0, code: "NO_VERIFIED_BUNDLE" });
-        const okEarly = await attempt(h, nbf - 299_000);
+        const okEarly = await attempt(h, nbf - 295_000);
         expect(okEarly.code).not.toBe("NO_VERIFIED_BUNDLE");
         expect(okEarly.posted).toBeGreaterThan(0);
     });
@@ -102,7 +104,7 @@ describe("ADR 0013 boundaries through the full client path", () => {
         const c = await liveClaims(h);
         const iat = c.iat * 1000;
         // nbf (if present) is the tighter bound only when nbf >= iat; check the iat side explicitly
-        expect((await attempt(h, iat - 301_000)).code).toBe("NO_VERIFIED_BUNDLE");
+        expect((await attempt(h, iat - 305_000)).code).toBe("NO_VERIFIED_BUNDLE");
     });
 
     it("exp has no leeway: exp-1 ms verifies, exp and exp+1 s do not", async () => {
