@@ -2,12 +2,19 @@
 // nothing here is exported from index.ts.
 import { selectPreKey } from "../bundle/select.js";
 import type { VerifiedBundle } from "../bundle/types.js";
-import type { Bytes, Crypto, InstanceId } from "../capabilities.js";
-import { utf8Encode } from "../encoding.js";
+import type { Bytes, ClientId, Crypto, InstanceId } from "../capabilities.js";
+import { hexEncode, utf8Encode } from "../encoding.js";
 import { ChannelError } from "./errors.js";
 import { createSession, readOpenResult, type SessionLink } from "./session.js";
 import type { ChannelLimits, Clock, OpenOutcome, OpenPayload } from "./types.js";
-import { encodeOpenAad, encodeOpenPlaintext, encodeOpenRequest, hpkeInfo } from "./wire.js";
+import type { CanonicalValue } from "../wire/types.js";
+import {
+    HEX32_PATTERN,
+    encodeOpenAad,
+    encodeOpenPlaintext,
+    encodeOpenRequest,
+    hpkeInfo,
+} from "./wire.js";
 
 export interface OpenDeps {
     readonly crypto: Crypto;
@@ -37,6 +44,15 @@ function wipe(payload: OpenPayload, pt: Bytes): void {
     }
 }
 
+// R-4: an enrolled session's client id is the `client_id` of the open-result payload map, never the route.
+function enrolledClientId(payload: CanonicalValue): ClientId {
+    const clientId = payload instanceof Map ? payload.get("client_id") : undefined;
+    if (typeof clientId !== "string" || !HEX32_PATTERN.test(clientId)) {
+        throw new ChannelError("INVALID_RESPONSE");
+    }
+    return clientId;
+}
+
 async function seal(
     crypto: Crypto,
     pub: Bytes,
@@ -57,7 +73,7 @@ async function seal(
 
 async function establish(
     deps: OpenDeps,
-    payload: Extract<OpenPayload, { op: "open_session" }>,
+    payload: OpenPayload,
     pt: Bytes,
 ): Promise<OpenOutcome> {
     const { crypto, clock, limits, link } = deps;
@@ -75,7 +91,9 @@ async function establish(
     const pub = prekey.publicKey;
     const ikPub = bundle.identityPublicKey;
     const requestId = crypto.randomBytes(ID_BYTES);
-    const route = payload.clientId;
+    // R-4: for enroll, a fresh CSPRNG reply route for this call only, never stored or reused.
+    const route =
+        payload.op === "enroll" ? hexEncode(crypto.randomBytes(ID_BYTES)) : payload.clientId;
     const aadBytes = encodeOpenAad({
         clientId: route,
         instanceId,
@@ -96,7 +114,7 @@ async function establish(
     const session = createSession({
         sessionId: match.sessionId,
         instanceId,
-        clientId: route,
+        clientId: payload.op === "enroll" ? enrolledClientId(match.payload) : route,
         keyC2t,
         keyT2c,
         crypto,
@@ -111,7 +129,7 @@ export async function openChannel(
     payload: OpenPayload,
     given: VerifiedBundle | undefined,
 ): Promise<OpenOutcome> {
-    if (payload.op === "enroll" || given !== undefined) {
+    if (given !== undefined) {
         throw new ChannelError("INVALID_ARGUMENT");
     }
     const pt = encodeOpenPlaintext(payload);

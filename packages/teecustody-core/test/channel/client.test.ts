@@ -8,6 +8,10 @@ import { ChannelError } from "../../src/channel/errors.js";
 import {
     CLIENT,
     FakeClock,
+    ROUTE_PATTERN,
+    asMap,
+    hex,
+    map,
     FakeWorkload,
     brandedBundle,
     clientConfig,
@@ -117,5 +121,56 @@ describe("criterion 1: open_session", () => {
         expect(sealed).toHaveLength(1);
         expect(sealed[0]?.length).toBeGreaterThan(32);
         expect(sealed[0]?.every((b) => b === 0)).toBe(true);
+    });
+});
+
+describe("criterion 2: enroll reply route (R-4)", () => {
+    const ENROLLED = "e5".repeat(16);
+
+    it("uses a fresh randomBytes(16) route per enrol and takes the client id from the result", async () => {
+        const drawn: string[] = [];
+        const crypto = workload.crypto;
+        workload.onOpen = () => ({ kind: "ok", payload: map({ client_id: ENROLLED }) });
+        const client = new ChannelClient(
+            clientConfig(workload, clock, {
+                crypto: {
+                    ...crypto,
+                    randomBytes: (length) => {
+                        const out = crypto.randomBytes(length);
+                        if (length === 16) {
+                            drawn.push(hex(out));
+                        }
+                        return out;
+                    },
+                },
+            }),
+        );
+        const first = await client.open({ op: "enroll" });
+        const second = await client.open({ op: "enroll" });
+
+        const routes = workload.opens.map((o) => o.aad.get("client_id") as string);
+        expect(routes).toHaveLength(2);
+        expect(routes[0]).not.toBe(routes[1]);
+        for (const route of routes) {
+            expect(route).toMatch(ROUTE_PATTERN);
+            expect(drawn).toContain(route);
+        }
+        expect(workload.opens.map((o) => o.plaintext.get("op"))).toEqual(["enroll", "enroll"]);
+        expect(first.session.clientId).toBe(ENROLLED);
+        expect(second.session.clientId).toBe(ENROLLED);
+        expect(asMap(first.payload).get("client_id")).toBe(ENROLLED);
+    });
+
+    it.each([
+        ["no client_id", map({ other: 1 })],
+        ["an upper-case client_id", map({ client_id: "E5".repeat(16) })],
+        ["a short client_id", map({ client_id: "e5".repeat(15) })],
+        ["a byte-string client_id", map({ client_id: new Uint8Array(16) })],
+        ["a non-map payload", "e5".repeat(16)],
+        ["a null payload", null],
+    ])("refuses an enrol result with %s (INVALID_RESPONSE)", async (_name, payload) => {
+        workload.onOpen = () => ({ kind: "ok", payload });
+        const client = new ChannelClient(clientConfig(workload, clock));
+        expect((await failure(client.open({ op: "enroll" }))).code).toBe("INVALID_RESPONSE");
     });
 });
