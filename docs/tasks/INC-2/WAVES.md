@@ -190,6 +190,11 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
     - sim tests: T-21, T-25;
     - contract files: TL, T-21, T-33, T-34;
     - INC-1 acceptance files: T-36.
+- **Standing rule (2026-10-15, T-27 A8).** `semgrep --test` ignores `paths:`. A task that adds or widens a semgrep
+  rule therefore owns annotation-only edits to every `.semgrep/tests/*` fixture in its wave: it may add
+  `ok:`/`ruleid:` comment lines, or append its rule id to an existing annotation (`# ruleid: a, b`). It changes no
+  code line and removes no annotation. List the touched fixtures in the Task Report. Code edits to another rule's
+  fixture are still a CONTRACT_ISSUE.
 - `spec/wire/**` and `spec/vectors/**` belong to T-03, T-30 and T-34 only. Every diff goes to the human before merge.
 - **Merge unit MU-1** (TL-11): T-21, T-33, T-34 and T-36 merge consecutively on one green combined run. No other
   merge lands between them.
