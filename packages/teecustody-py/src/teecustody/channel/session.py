@@ -52,6 +52,8 @@ def open_frame(key: Secret, last_seq: int, aad: FrameAad, aad_bytes: bytes, ct: 
         plaintext = AESGCM(key.reveal()).decrypt(_nonce(aad.seq), ct, aad_bytes)
     except InvalidTag:
         raise SessionReject(SessionRejectCode.AUTH_FAILED) from None
+    if not plaintext:  # a frame always carries CBOR; a Secret cannot be empty
+        raise SessionReject(SessionRejectCode.AUTH_FAILED)
     return Secret(plaintext)
 
 
@@ -108,6 +110,9 @@ class Session:
     _sk_c2t: Secret
     _t2c: T2cSealer
     _last_c2t_seq: int
+
+    def __init__(self) -> None:
+        raise TypeError("SESSION_CONSTRUCTOR")
 
     def open_c2t(self, aad: FrameAad, aad_bytes: bytes, ct: bytes, now: float) -> Secret:
         if aad.session_id != self.session_id:

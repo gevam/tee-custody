@@ -21,7 +21,7 @@ from teecustody.channel.session import (
     _nonce,
     open_frame,
 )
-from teecustody.secrets import Secret
+from teecustody.secrets import Secret, SecretError, SecretErrorCode
 
 INSTANCE_ID = "fedcba9876543210" * 2
 CLIENT_ID = "0123456789abcdef" * 2
@@ -206,3 +206,30 @@ def test_session_seals_t2c_frames_with_seqs_from_one() -> None:
         assert aad == FrameAad(session_id=SESSION_ID, seq=seq, op=OP)
         assert aad_bytes == encode_frame_aad(aad)
         assert AESGCM(key).decrypt(_nonce(seq), ct, aad_bytes) == b"answer"
+
+
+# ---------------------------------------------------------------- edges
+def test_an_authenticated_empty_frame_is_refused_and_changes_nothing() -> None:
+    session, key, clock = _session()
+    assert (
+        _rejected(session, _frame(key, 0, plaintext=b""), T0 + 5) is SessionRejectCode.AUTH_FAILED
+    )
+    assert session.last_activity == T0
+    assert session.open_c2t(*_frame(key, 0), clock()).reveal() == b"p"
+
+
+def test_sessions_are_constructed_only_by_the_table() -> None:
+    with pytest.raises(TypeError, match=r"^SESSION_CONSTRUCTOR$"):
+        Session()
+
+
+def test_a_closed_session_can_neither_open_nor_seal() -> None:
+    session, _key, table = _sealing_session()
+    session.seal_open_result(b"r" * 16, b"accepted")
+    table.close(SESSION_ID, CloseReason.CLIENT_CLOSE)
+    with pytest.raises(SecretError) as opened:
+        session.open_c2t(*_frame(os.urandom(32), 0), T0)
+    assert opened.value.code is SecretErrorCode.WIPED
+    with pytest.raises(SecretError) as sealed:
+        session.seal_t2c(OP, b"late")
+    assert sealed.value.code is SecretErrorCode.WIPED
