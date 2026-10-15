@@ -73,3 +73,5 @@
 - T-39: bounded native X25519 key-generation retry in the WebCrypto adapter (ADR 0011 C8; WebKit transient failure B-45); FACTS re-recorded at Playwright 1.63.0
 - QA: INC-2 Phase 2 execution and exploratory tests; D-03/D-04 filed (fixed by T-40)
 - T-41: Core session tests assert allocated seqs order-free and no sealing on refused requests (SR-14)
+- T-40: reference gateway server hardening — header-read deadline, connection cap, header size/count limits, write/drain deadline, Transfer-Encoding rejected, JSON 400 for parse failures (D-03..D-06)
+- T-42: FetchTransport maxResponseBytes optional, default 2 MiB, fits the gateway's maximal page (D-07)
