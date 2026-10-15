@@ -361,3 +361,36 @@ def test_the_header_deadline_is_total_and_not_reset_by_trickled_bytes(
     closed_at = _trickle(sock, PARTIAL_HEADERS + b"a" * 64, start, 0.25, 3.0)
 
     assert 0.9 <= closed_at <= 3.0
+
+
+# ------------------------------------------------------------- criterion 5: complete headers
+REQUEST_TIMEOUT = b'{"code":"REQUEST_TIMEOUT"}'
+
+
+def test_once_headers_are_complete_only_the_body_deadline_applies(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(header_read_timeout_s=1.0, body_read_timeout_s=3.0)
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(
+        f"POST /requests/{INSTANCE} HTTP/1.1\r\nHost: x\r\n"
+        "Content-Type: application/octet-stream\r\nContent-Length: 10\r\n\r\nx".encode()
+    )
+
+    status, body = read_response(sock, 6.0)
+    answered_at = time.perf_counter() - start
+
+    assert (status, body) == (408, REQUEST_TIMEOUT)
+    assert 2.5 <= answered_at <= 5.0
+    assert live.relay.calls == 0
+
+
+def test_a_route_slower_than_the_header_deadline_still_answers(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(Relay(delay_s=2.0), header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    assert read_response(sock, 6.0) == (200, b'{"bundles":[]}')

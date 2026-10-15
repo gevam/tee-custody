@@ -5,6 +5,7 @@ import asyncio
 import fastapi
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol as _H11Protocol
+from uvicorn.protocols.http.h11_impl import RequestResponseCycle as _RequestResponseCycle
 
 from notes_gateway.app import _validate
 from notes_gateway.limits import GatewayLimits as _GatewayLimits
@@ -22,11 +23,13 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
     class _GatewayProtocol(_H11Protocol):
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
             super().connection_made(transport)
-            self.loop.call_later(header_read_timeout_s, self._expire)
+            self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
 
-        def _expire(self) -> None:
-            self.transport.close()
-            _LOG.info("GATEWAY_HEADER_TIMEOUT")
+        def _expire(self, cycle: _RequestResponseCycle | None) -> None:
+            """Close if no request has been parsed since arming (a new request is a new cycle)."""
+            if self.cycle is cycle:
+                self.transport.close()
+                _LOG.info("GATEWAY_HEADER_TIMEOUT")
 
     return _GatewayProtocol
 
