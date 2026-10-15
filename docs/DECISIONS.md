@@ -1272,3 +1272,21 @@ Participants: Code Reviewer, Security Reviewer, Tech Lead, Architect, human
 **Human approval:** the human approved `packages/teecustody-web/test/fixtures/binding-check-production-profile.json` with sha256 `58805f3d603626093bfdc38b70885b1b61ce116a64d1bd71a1dd8934abbca983`, on the condition that it merges only if the round-2 reviews approve and the file is unchanged. Its values are inert: zero digest, signer key_id and args/env hashes, and a `.invalid` audience. It also carries Google's public issuer and jwks_uri, as pinned by D-043.
 
 **Dissent:** none
+
+## D-062 — MU-2: T-31 merges with the D-01 QA fix; NO_VERIFIED_BUNDLE cascade gates G6 (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Tech Lead (T-31 A4, D-01), QA, T-31 engineer
+
+**Decision:**
+1. Merge unit MU-2 is `inc-2/T-31-e2e` plus `inc-2/QA-D-01`.
+   - QA-D-01 branches from the T-31 tip 814b91f, because the e2e tests need the harness.
+   - Each branch gets its own reviews. They merge back to back: T-31 first, then QA-D-01.
+   - Neither merges alone, because T-31 alone leaves the tests package red, and QA-D-01 cannot run without the harness.
+2. The unexplained `NO_VERIFIED_BUNDLE` cascade (D-01, "Related observation"; 3 of about 30 runs) is an open item at G6. QA's D-01 diagnostics must either capture codes, in which case D-02 is filed against the owning component, or show no occurrence over at least 30 instrumented runs. Each G6 report must state which happened.
+3. Ordering (B-26) and cross-client pre-key collision (B-41, new, Required for INC-3) go to the Architect for INC-3.
+
+**Rationale:** T-31 A4 found no T-31, client or server defect against the INC-2 contracts. The cascade, however, breaks every later open in a run, and that cannot be waved through at the acceptance gate.
+
+**Dissent:** none
