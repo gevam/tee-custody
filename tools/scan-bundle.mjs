@@ -50,21 +50,25 @@ function parseCommandLine(argv, cwd) {
     return { entries: values.entry, alias };
 }
 
+export function buildOptions(entryPath, alias) {
+    return {
+        entryPoints: [entryPath],
+        bundle: true,
+        format: "esm",
+        platform: "browser",
+        minify: false,
+        legalComments: "none",
+        write: false,
+        metafile: true,
+        logLevel: "silent",
+        alias,
+    };
+}
+
 async function scanEntry(entry, alias, io) {
     let result;
     try {
-        result = await esbuild.build({
-            entryPoints: [resolve(io.cwd, entry)],
-            bundle: true,
-            format: "esm",
-            platform: "browser",
-            minify: false,
-            legalComments: "none",
-            write: false,
-            metafile: true,
-            logLevel: "silent",
-            alias,
-        });
+        result = await esbuild.build(buildOptions(resolve(io.cwd, entry), alias));
     } catch (error) {
         io.stderr(`build-error\t${entry}\t${error.errors.length}\n`);
         return 2;

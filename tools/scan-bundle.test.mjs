@@ -2,13 +2,15 @@
 // Runs with Node's test runner from the core package's `lint` script.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { main } from "./scan-bundle.mjs";
+import * as esbuild from "esbuild";
+
+import { buildOptions, main } from "./scan-bundle.mjs";
 
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
@@ -65,7 +67,10 @@ describe("criterion 2: each violating fixture", () => {
 
 describe("criterion 3: the guards in the patterns", () => {
     it("passes x.Function(1) and evaluate(1)", async () => {
-        const entry = fixture("guards.js", "export const f = (x) => [x.Function(1), evaluate(1)];\n");
+        const entry = fixture(
+            "guards.js",
+            "export const f = (x) => [x.Function(1), evaluate(1)];\n",
+        );
         assert.deepEqual(await run(["--entry", entry]), { code: 0, stdout: "", stderr: "" });
     });
 
@@ -86,7 +91,10 @@ describe("criterion 4: usage and build errors exit 2", () => {
     const USAGE = /^usage: node tools\/scan-bundle\.mjs --entry <path> /;
     for (const [name, args] of [
         ["no arguments", []],
-        ["a missing --entry", ["--alias", "@teecustody/core=packages/teecustody-core/src/index.ts"]],
+        [
+            "a missing --entry",
+            ["--alias", "@teecustody/core=packages/teecustody-core/src/index.ts"],
+        ],
         ["an --entry without a value", ["--entry"]],
         ["an unknown flag", ["--entry", "x.js", "--minify"]],
         ["a positional argument", ["x.js"]],
@@ -135,5 +143,53 @@ describe("criterion 5: a Node built-in in the browser bundle", () => {
             stdout: "",
             stderr: `build-error\t${entry}\t1\n`,
         });
+    });
+});
+
+describe("criterion 6: the real packages", () => {
+    const CORE = join(REPO, "packages", "teecustody-core");
+    const WEB = join(REPO, "packages", "teecustody-web");
+    const CORE_SCAN = ["--entry", "src/index.ts"];
+    const WEB_SCAN = [
+        "--entry",
+        "src/index.ts",
+        "--alias",
+        "@teecustody/core=../teecustody-core/src/index.ts",
+    ];
+    const lintScript = (dir) =>
+        JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).scripts.lint;
+
+    it("both lint scripts run the scan, and Core's also runs these tests", () => {
+        assert.equal(
+            lintScript(CORE),
+            `eslint . && prettier --check . && node ../../tools/scan-bundle.mjs ${CORE_SCAN.join(" ")}` +
+                " && node --test ../../tools/scan-bundle.test.mjs",
+        );
+        assert.equal(
+            lintScript(WEB),
+            `eslint . && prettier --check . && node ../../tools/scan-bundle.mjs ${WEB_SCAN.join(" ")}`,
+        );
+    });
+
+    it("scans @teecustody/core clean from its package directory", async () => {
+        assert.deepEqual(await run(CORE_SCAN, CORE), { code: 0, stdout: "", stderr: "" });
+    });
+
+    it("scans @teecustody/web clean, with @hpke/core bundled", async () => {
+        assert.deepEqual(await run(WEB_SCAN, WEB), { code: 0, stdout: "", stderr: "" });
+    });
+
+    it("bundles @hpke/core into Web with exactly the one C7a.1 output external", async () => {
+        const alias = { "@teecustody/core": join(CORE, "src", "index.ts") };
+        const { metafile } = await esbuild.build(buildOptions(join(WEB, "src", "index.ts"), alias));
+        assert.ok(
+            Object.keys(metafile.inputs).some((input) =>
+                input.includes("node_modules/@hpke/core/"),
+            ),
+        );
+        const externals = Object.values(metafile.outputs).flatMap((output) =>
+            output.imports.filter((entry) => entry.external),
+        );
+        assert.deepEqual(externals, [{ path: "crypto", kind: "dynamic-import", external: true }]);
     });
 });
