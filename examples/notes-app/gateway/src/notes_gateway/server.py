@@ -55,10 +55,16 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
             super().on_response_complete()
 
         def send_400_response(self, msg: str) -> None:
-            """The §6 parse-failure answer in place of uvicorn's text/plain body. Nothing is
-            written into a response already in progress; the connection is only closed."""
+            """The §6 parse-failure answer in place of uvicorn's text/plain body. It is written only
+            when no response has started, or after a complete response to a complete request;
+            otherwise (a response in progress, or one already sent while the body still arrives)
+            nothing is written and the connection is only closed."""
             cycle = self.cycle
-            if cycle is None or not cycle.response_started or cycle.response_complete:
+            if (
+                cycle is None
+                or not cycle.response_started
+                or (cycle.response_complete and not cycle.more_body)
+            ):
                 self.transport.write(_PARSE_FAILURE_400)
             self.transport.close()
             _LOG.info("GATEWAY_INVALID_ARGUMENT")

@@ -6,6 +6,7 @@ sockets. Every wait is bounded, every socket is closed and every server is stopp
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import socket
 import threading
@@ -662,9 +663,15 @@ def test_response_completion_rearms_for_the_completed_cycle_before_uvicorn_runs(
     ("cycle", "written"),
     [
         (None, [PARSE_FAILURE_400]),
-        (SimpleNamespace(response_started=True, response_complete=False), []),
-        (SimpleNamespace(response_started=False, response_complete=False), [PARSE_FAILURE_400]),
-        (SimpleNamespace(response_started=True, response_complete=True), [PARSE_FAILURE_400]),
+        (SimpleNamespace(response_started=True, response_complete=False, more_body=False), []),
+        (
+            SimpleNamespace(response_started=False, response_complete=False, more_body=False),
+            [PARSE_FAILURE_400],
+        ),
+        (
+            SimpleNamespace(response_started=True, response_complete=True, more_body=False),
+            [PARSE_FAILURE_400],
+        ),
     ],
     ids=["no cycle", "started, not complete", "not started", "started and complete"],
 )
@@ -821,3 +828,77 @@ def test_readme_documents_uvicorn_config_parse_failures_and_the_connection_cap()
     assert "per-client connection limits in its fronting proxy" in readme
     for outcome in ("GATEWAY_HEADER_TIMEOUT", "GATEWAY_CONNECTION_LIMIT"):
         assert outcome in readme
+
+
+# --------------------------------------------------------- criterion 18: no unsolicited 400 (A4.1)
+@pytest.mark.parametrize(
+    ("started", "complete", "more_body", "written"),
+    [
+        (True, True, True, []),
+        (True, True, False, [PARSE_FAILURE_400]),
+        (False, False, True, [PARSE_FAILURE_400]),
+    ],
+    ids=["complete, body still arriving", "complete, body done", "not started, body arriving"],
+)
+def test_send_400_response_writes_only_when_no_response_is_owed_or_sent_early(
+    started: bool, complete: bool, more_body: bool, written: list[bytes], records: Records
+) -> None:
+    protocol, _loop, transport, _ = _protocol()
+    protocol.cycle = SimpleNamespace(
+        response_started=started, response_complete=complete, more_body=more_body
+    )
+
+    protocol.send_400_response("Invalid HTTP request received.")
+
+    assert transport.written == written
+    assert transport.closes == 1
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+def _read_one_response(sock: socket.socket, bound_s: float = IO_BOUND_S) -> bytes:
+    """The raw bytes of one response with a Content-Length body."""
+    deadline = time.perf_counter() + bound_s
+    data = bytearray()
+    while True:
+        head, sep, rest = bytes(data).partition(b"\r\n\r\n")
+        if sep:
+            length = int(_parse(head + sep)[1][b"content-length"])
+            if len(rest) >= length:
+                return bytes(data)
+        remaining = deadline - time.perf_counter()
+        assert remaining > 0, "response incomplete"
+        sock.settimeout(remaining)
+        chunk = sock.recv(65536)
+        assert chunk, "connection closed mid-response"
+        data += chunk
+
+
+CHUNKED_BODY_STILL_ARRIVING = {
+    "GET /bundles": b"GET /bundles HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    b"5\r\nhello\r\n",
+    "POST /requests": f"POST /requests/{INSTANCE} HTTP/1.1\r\nHost: x\r\n".encode()
+    + b"Content-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+    + b"5\r\nhello\r\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("payload", "queue_calls"),
+    list(zip(CHUNKED_BODY_STILL_ARRIVING.values(), (1, 0), strict=True)),
+    ids=CHUNKED_BODY_STILL_ARRIVING.keys(),
+)
+def test_a_parse_failure_after_a_complete_response_writes_no_second_response(
+    payload: bytes, queue_calls: int, gateway: Callable[..., LiveGateway]
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(payload)
+    first = _read_one_response(sock)
+    start = time.perf_counter()
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+        sock.sendall(b"zz\r\n")
+
+    rest, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert (first + rest).count(b"HTTP/1.1 ") == 1
+    assert live.relay.calls == queue_calls
