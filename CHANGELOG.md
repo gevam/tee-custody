@@ -59,3 +59,4 @@
 - T-23: Sessions, T2cSealer and session table
 - T-26: Core ChannelClient and Session
 - T-24: In-memory queue and audit sink (simulator)
+- T-25: Channel vector generator and vectors CLI
