@@ -1443,3 +1443,27 @@ Participants: T-32 engineer (finding), Architect, Security Architect
 **Rationale:** WebKit X25519 keygen fails in about 0.35% of calls. Host-level retries would cost another WebAuthn ceremony, and a cached probe failure would break HPKE for the page lifetime.
 
 **Dissent:** none
+
+## D-070 — T-39 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts)
+Participants: Code Reviewer, Security Reviewer, Security Architect
+
+**Decision:** T-39 is approved to merge.
+- Branch inc-2/T-39-x25519-retry, tip a710988.
+- Scope: the ADR 0011 C8 bounded X25519 keygen retry, and FACTS re-recorded at Playwright 1.63.0.
+
+**Review history:**
+- **Round 1 (c0a4a63):**
+  - Security APPROVE: no Medium or above; 2 weak-test Lows. The manifest drift, 48,911 → 48,927 B, was bisected to esbuild renames at the T-18 and T-20 merges and is cosmetic. The Security Architect restated C8.3 (f80075e); D-051 holds, and the human is informed with no re-approval needed.
+  - Code REQUEST_CHANGES: a Medium (the `suite === pending` guard was observable but untested) and a Low.
+- **Round 2 (a710988, test-only):** Code APPROVE and Security APPROVE. Every mutant was caught.
+
+**Criterion 0:** WebKit 26.6 failed 70 of 20,000 calls (engineer) and 86 of 20,000 (reviewer). The longest run was at most 2, and every failure was an `OperationError`, so no C8.2 stop. After the fix: 0 failures in 20,000.
+
+**Outcomes:**
+- B-45 closes when T-39 merges.
+- QA-T-39 rows Q1–Q4 go green.
+
+**Dissent:** none
