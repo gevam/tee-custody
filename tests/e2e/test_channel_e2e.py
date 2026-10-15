@@ -7,6 +7,7 @@ kills it on teardown, so a hung harness fails the test instead of hanging the su
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import os
 import queue
@@ -18,8 +19,9 @@ import subprocess
 import sys
 import threading
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import uvicorn
@@ -196,3 +198,71 @@ def test_harness_gateway_limits_are_the_defaults_except_cors_origins() -> None:
 
     origins = ("http://127.0.0.1:1",)
     assert channel_harness.gateway_limits(origins) == GatewayLimits(cors_origins=origins)
+
+
+class _ReadyStdout:
+    """`sys.stdout` for an in-process harness run; `on_write` runs at the moment of the write."""
+
+    def __init__(self, on_write: Callable[[], None] = lambda: None) -> None:
+        self.text = ""
+        self.ready = threading.Event()
+        self._on_write = on_write
+
+    def write(self, text: str) -> int:
+        self._on_write()
+        self.text += text
+        self.ready.set()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _run_harness_in_process(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], stdout: _ReadyStdout
+) -> int:
+    """`channel_harness.main` in this (main) thread. A watcher sends SIGTERM once the ready line
+    is written or after 30 s, whichever comes first, so a broken harness fails, never hangs. A
+    harmless SIGTERM handler stays installed around the run: a late SIGTERM cannot kill pytest."""
+    from tests.e2e import channel_harness
+
+    def watch() -> None:
+        try:
+            stdout.ready.wait(READY_TIMEOUT_S)
+        finally:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    previous = signal.signal(signal.SIGTERM, lambda signum, frame: None)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        return channel_harness.main(argv)
+    finally:
+        stdout.ready.set()  # the watcher fires now, while the harmless handler is installed
+        watcher.join(STOP_TIMEOUT_S)
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_harness_passes_gateway_limits_to_create_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    from notes_gateway import GatewayLimits, create_app
+
+    from tests.e2e import channel_harness
+
+    limits: list[GatewayLimits] = []
+
+    def recording_create_app(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(create_app).bind(*args, **kwargs)
+        bound.apply_defaults()
+        limits.append(bound.arguments["limits"])
+        return create_app(*args, **kwargs)
+
+    monkeypatch.setattr(channel_harness, "create_app", recording_create_app)
+    origin = "http://127.0.0.1:1"
+    stdout = _ReadyStdout()
+    assert _run_harness_in_process(monkeypatch, ["--cors-origin", origin], stdout) == 0
+    assert READY_LINE.fullmatch(stdout.text.rstrip("\n"))
+    assert limits == [GatewayLimits(cors_origins=(origin,))]
