@@ -16,6 +16,7 @@ from support_server import (
     MINTED_ID,
     OTHER_CLIENT_ID,
     OTHER_INSTANCE_ID,
+    FakeClock,
     World,
     cbor,
     open_session_plaintext,
@@ -512,3 +513,12 @@ def test_prekey_expiring_between_the_live_check_and_take_is_unknown(
     assert result.response is None
     assert dict(world.audit.counts) == {"PREKEY_UNKNOWN": 1}
     assert spy.calls == 0
+
+
+def test_timestamp_exactly_at_the_skew_is_accepted() -> None:
+    world = _make_world(clock=FakeClock(1_900_000_000.0))
+    skew = world.params.request_skew_s
+    now = int(world.clock())
+    for timestamp in (now - skew, now + skew):
+        sent = world.open_session(prekey=world.entry(), timestamp=timestamp)
+        assert str(world.process(sent.body).outcome) == "SESSION_OPENED"
