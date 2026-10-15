@@ -76,10 +76,14 @@ def test_suite_is_written_under_channel_and_has_exactly_the_cddl_keys(
     assert suite["verify_at_ms"] == NOW * 1000
 
 
-def test_now_defaults_to_the_current_time(tmp_path: Path) -> None:
-    before = int(time.time())
-    generated = _load(generate_channel_suite(tmp_path))["generated_at"]
-    assert before <= generated <= int(time.time())
+def test_now_defaults_to_the_current_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pinned clock: the wall clock may step backwards between two reads (seen under WSL2).
+    monkeypatch.setattr(time, "time", lambda: 1_800_000_000.9)
+    generated = _load(generate_channel_suite(tmp_path))
+    assert (generated["generated_at"], generated["verify_at_ms"]) == (
+        1_800_000_000,
+        1_800_000_000_000,
+    )
 
 
 # INC-2-API §3.2 "Required named cases" and spec/vectors/README.md, transcribed (not imported).
