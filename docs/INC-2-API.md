@@ -1554,7 +1554,7 @@ ct: Uint8Array(48) }`.
 delete the record (idempotent); the passkey itself cannot be deleted by the page and is left in place.
 
 **Errors (`CapabilityError`).** Invalid `client` or share length → `INVALID_ARGUMENT`. `PublicKeyCredential` absent,
-`prf.enabled !== true`, PRF results missing, or WebAuthn `SecurityError`/`NotSupportedError` → `UNSUPPORTED`
+`prf.enabled !== true` at create, `get` PRF results missing or not 32 bytes, or WebAuthn `SecurityError`/`NotSupportedError` → `UNSUPPORTED`
 (nothing written). `NotAllowedError`/`AbortError` → `USER_PRESENCE_REQUIRED`. IndexedDB unavailable or a
 transaction error → `UNAVAILABLE`. Malformed record, credential mismatch or tag failure → `AUTHENTICATION_FAILED`.
 Any other → `INTERNAL`. No path falls back to weaker storage, and `cs` never reaches `localStorage`, cookies, URLs,
@@ -1569,7 +1569,7 @@ PRF output.
   or any other capability hint.
 - PRF support is established only by the ceremony results above:
   - `prf.enabled === true` at `create`;
-  - a 32-byte `prf.results.first` from `create` or `get`.
+  - a 32-byte `prf.results.first` from the `get` (create-time results are never used; option (b)).
 
   Anything else → `UNSUPPORTED` with nothing written. A ceremony that waits until `timeoutMs` → `AbortError` /
   `NotAllowedError` → `USER_PRESENCE_REQUIRED`, also with nothing written.
@@ -1579,7 +1579,8 @@ PRF output.
 Tests (T-20):
 - (a) A credentials double whose `getClientCapabilities` returns `{"extension:prf": true}` and whose `create` returns
   `prf.enabled: false` → `UNSUPPORTED`, store empty.
-- (b) The same with `prf.enabled: true` but no `results` from `create` or `get` → `UNSUPPORTED`, store empty.
+- (b) The same with `prf.enabled: true` at `create` but no `prf.results` from the `get` → `UNSUPPORTED`, store
+  empty. This holds even when `create` itself returned results.
 - (c) `results.first` of length ≠ 32 → `UNSUPPORTED`.
 - (e) First `set` (option (b)): a credentials double whose `create` also returns `prf.results.first = A` and whose
   `get` returns `B` leads to a record that decrypts only under the key derived from `B`. The double sees exactly one
