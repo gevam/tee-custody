@@ -26,7 +26,7 @@ from teecustody.channel.session import SessionTable
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.obs.logger import get_logger
 from teecustody.obs.types import AllowListedLogger
-from teecustody.queue.ports import WorkloadQueue
+from teecustody.queue.ports import QueueError, QueueMessage, WorkloadQueue
 
 _DEFAULT_PARAMS = ChannelParams()
 _DEFAULT_LIMITS = BoundaryLimits()
@@ -190,7 +190,27 @@ class RunLoop:
     def tick(self) -> TickReport:
         live = self._require_live()
         refresh = self._refresh(live)
-        return TickReport(refresh=refresh, bundle_published=False, processed=0)
+        processed = 0
+        for message in self._queue.pull_requests(
+            self._instance_id, self._limits.pull_max_messages, self._limits.pull_wait_s
+        ):
+            self._handle(live, message)
+            processed += 1
+        return TickReport(refresh=refresh, bundle_published=False, processed=processed)
+
+    def _handle(self, live: _Live, message: QueueMessage) -> None:
+        """(4) process, respond, ack. Sealed once; a retry re-sends the same bytes (R-5)."""
+        response = live.server.process(message.body).response
+        if response is not None:
+            for _ in range(2):
+                try:
+                    self._queue.publish_response(
+                        response.client_id, message.request_id, response.body
+                    )
+                    break
+                except QueueError:
+                    self._logger.warning("RESPONSE_PUBLISH_FAILED")
+        self._queue.ack(message.message_id)
 
     def _require_live(self) -> _Live:
         if self._live is None:

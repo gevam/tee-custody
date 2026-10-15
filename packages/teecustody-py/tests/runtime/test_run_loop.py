@@ -26,9 +26,9 @@ from teecustody.channel.ports import (
     RemoteErrorCode,
     SessionInfo,
 )
-from teecustody.channel.server import ProcessResult
+from teecustody.channel.server import OutboundResponse, ProcessResult
 from teecustody.config import BoundaryLimits, ChannelParams
-from teecustody.queue.ports import QueueMessage
+from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage
 from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
 from teecustody.wire import CanonicalValue, DecodeLimits
 
@@ -307,3 +307,80 @@ def test_c4_a_refreshed_token_with_the_same_digest_keeps_running(
 
     assert world.loop.tick().refresh is RefreshOutcome.REFRESHED
     assert world.queue.named("withdraw_bundle") == []
+
+
+# ---------------------------------------------------------------- criterion 5: process and respond
+def message(n: int, body: bytes) -> QueueMessage:
+    return QueueMessage(
+        message_id=f"{n:032x}", request_id=f"{n + 100:032x}", body=body, published_at=START
+    )
+
+
+def answered(world: World, n: int, body: bytes) -> bytes:
+    """Queue message n; the fake server answers it with a fresh response body object."""
+    response = bytes(f"sealed-{n}", "ascii")
+    world.server.script[body] = ProcessResult("FRAME_ACCEPTED", OutboundResponse(CLIENT, response))
+    world.queue.inbox.append(message(n, body))
+    return response
+
+
+def test_c5_each_pulled_message_is_processed_answered_to_its_route_and_acked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    first = answered(world, 1, b"req-1")
+    world.queue.inbox.append(message(2, b"garbage"))  # no response
+    world.queue.calls.clear()
+
+    report = world.loop.tick()
+
+    assert report.processed == 2
+    assert world.server.bodies == [b"req-1", b"garbage"]
+    pull = (
+        "pull",
+        world.loop.instance_id,
+        world.limits.pull_max_messages,
+        world.limits.pull_wait_s,
+    )
+    assert [c for c in world.queue.calls if c[0] != "publish_bundle"] == [
+        pull,
+        ("publish_response", CLIENT, f"{101:032x}", first),
+        ("ack", f"{1:032x}"),
+        ("ack", f"{2:032x}"),
+    ]
+
+
+def test_c5_a_failed_publish_is_retried_once_with_the_identical_bytes_object_then_acked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    body = answered(world, 1, b"req-1")
+    world.queue.publish_errors = [QueueError(QueueErrorCode.UNAVAILABLE)]
+
+    world.loop.tick()
+
+    attempts = world.queue.named("publish_response")
+    assert len(attempts) == 2
+    assert attempts[0][3] is body
+    assert attempts[1][3] is body
+    assert world.queue.calls[-1] == ("ack", f"{1:032x}")
+    assert world.server.bodies == [b"req-1"]  # never processed (or sealed) again
+
+
+def test_c5_publish_failing_twice_is_logged_and_the_message_still_acked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    answered(world, 1, b"req-1")
+    world.queue.publish_errors = [
+        QueueError(QueueErrorCode.UNAVAILABLE),
+        QueueError(QueueErrorCode.INTERNAL),
+    ]
+
+    world.loop.tick()
+
+    assert len(world.queue.named("publish_response")) == 2
+    assert world.queue.calls[-1] == ("ack", f"{1:032x}")
+    failures = [line for line in world.logger.lines if line[1] == "RESPONSE_PUBLISH_FAILED"]
+    assert failures
+    assert all(fields == {} for _, _, fields in failures)
