@@ -43,3 +43,21 @@ def test_a_frame_result_before_the_open_result_is_refused_as_used() -> None:
     assert err.value.code is SessionRejectCode.USED
     aad_bytes, ct = sealer.seal_open_result(OPEN_AAD, b"opened")
     assert AESGCM(key).decrypt(_nonce(0), ct, aad_bytes) == b"opened"
+
+
+# ---------------------------------------------------------------- criterion 2
+def test_an_exception_inside_the_open_result_seal_burns_nonce_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealer, _key = _sealer()
+
+    def explode(self: AESGCM, nonce: bytes, data: bytes, associated_data: bytes | None) -> bytes:
+        raise RuntimeError("injected")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AESGCM, "encrypt", explode)
+        with pytest.raises(RuntimeError, match="injected"):
+            sealer.seal_open_result(OPEN_AAD, b"opened")
+    with pytest.raises(SessionReject) as err:
+        sealer.seal_open_result(OPEN_AAD, b"opened")
+    assert err.value.code is SessionRejectCode.USED
