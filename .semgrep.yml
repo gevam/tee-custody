@@ -374,6 +374,8 @@ rules:
       - pattern-regex: \bimport\s*\(\s*["'`]@hpke/core["'`]
       # A7 (SR Low 7): no comment inside an @hpke/core import, so a `}` cannot hide a name.
       - pattern-regex: \bimport\b[^;]*?(?:/\*|//)[^;]*?\bfrom\s*["'`]@hpke/core["'`]
+      # Round 2 (SR): nor between `from` and the specifier, for import and re-export statements.
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:import|export)\b[^;]*?\bfrom\s*(?:/\*|//)[^;]*?["'`]@hpke/core["'`]
 
   # A3 (T-27; SR Low #2): the gateway is an untrusted relay of opaque bytes.
   - id: tc-py-gateway-banned-import

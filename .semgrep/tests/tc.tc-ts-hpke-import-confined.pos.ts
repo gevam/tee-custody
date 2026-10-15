@@ -16,15 +16,15 @@ export async function load(): Promise<unknown> {
     return import("@hpke/core");
 }
 // A3: comments between the keyword and the specifier do not hide the import.
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-core-names
 import { DhkemP256HkdfSha256 } from /* x */ "@hpke/core";
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-core-names
 import { HkdfSha256 } from /* a */ /* b */ "@hpke/core";
 export async function loadCommented(): Promise<unknown> {
     // ruleid: tc-ts-hpke-import-confined, tc-ts-no-dynamic-import
     return import(/* c */ "@hpke/core");
 }
-// ruleid: tc-ts-hpke-import-confined
+// ruleid: tc-ts-hpke-import-confined, tc-ts-hpke-core-names
 export { Aes128Gcm } from // line comment
     "@hpke/core";
 // ruleid: tc-ts-hpke-import-confined, tc-ts-no-dynamic-import

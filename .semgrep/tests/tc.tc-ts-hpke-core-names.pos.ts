@@ -25,6 +25,15 @@ import {
     Aes256Gcm, // }
     DhkemP384HkdfSha384,
 } from "@hpke/core"; // nosemgrep: tc-ts-hpke-import-confined
+// Round 2 (SR): a comment between `from` and the specifier is inside the statement too.
+export const separator2 = 0;
+// ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined
+import { DhkemP521HkdfSha512 } from /* x */ "@hpke/core";
+// ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined
+import { DhkemP256HkdfSha256 as P256b } from // c
+    "@hpke/core";
+// ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined
+export { HkdfSha384 } from /* y */ "@hpke/core";
 export async function load(): Promise<unknown[]> {
     return [
         // ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined, tc-ts-no-dynamic-import
