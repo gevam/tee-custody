@@ -25,12 +25,26 @@ from teecustody.queue import (
 )
 
 _NAMESPACE_PATTERN: Final = re.compile(r"[a-z][a-z0-9-]{0,31}")  # fullmatch only (R-7)
+_MIN_COUNT: Final = 1  # max_messages / max_bundles per call
+_MAX_COUNT: Final = 1000
+_MAX_WAIT_S: Final = 30.0
 # Response cursor: the decimal per-client sequence number of the last returned response.
 _CURSOR_PATTERN: Final = re.compile(r"0|[1-9][0-9]{0,19}")  # fullmatch only (R-7)
 
 
 def _check_id(pattern: re.Pattern[str], value: object) -> None:
     if not (isinstance(value, str) and pattern.fullmatch(value)):
+        raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+
+
+def _check_count(value: object) -> None:
+    if not (type(value) is int and _MIN_COUNT <= value <= _MAX_COUNT):
+        raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+
+
+def _check_wait(value: object) -> None:
+    in_range = isinstance(value, int | float) and 0 <= value <= _MAX_WAIT_S
+    if isinstance(value, bool) or not in_range:
         raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
 
 
@@ -88,6 +102,8 @@ class InMemoryQueue:
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         _check_id(INSTANCE_ID_PATTERN, instance_id)
+        if type(expires_at) is not int:
+            raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
         with self._cond:
             now = self._clock()
             self._purge(now)
@@ -101,6 +117,8 @@ class InMemoryQueue:
         self, instance_id: str, max_messages: int, wait_s: float
     ) -> list[QueueMessage]:
         _check_id(INSTANCE_ID_PATTERN, instance_id)
+        _check_count(max_messages)
+        _check_wait(wait_s)
         deadline = time.monotonic() + wait_s
         with self._cond:
             while True:
@@ -145,6 +163,7 @@ class InMemoryQueue:
             self._bundles.pop(instance_id, None)
 
     def list_bundles(self, max_bundles: int) -> list[PublishedBundle]:
+        _check_count(max_bundles)
         with self._cond:
             self._purge(self._clock())
             live = sorted(self._bundles.items())[:max_bundles]
@@ -202,6 +221,7 @@ class InMemoryQueue:
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
         _check_id(CLIENT_ID_PATTERN, client_id)
+        _check_count(max_messages)
         with self._cond:
             self._purge(self._clock())
             route = self._route(client_id)

@@ -440,3 +440,59 @@ def test_valid_namespaces_are_accepted(namespace: str) -> None:
 def test_invalid_namespace_is_refused_at_construction(namespace: str) -> None:
     with pytest.raises(ValueError, match=r"^NAMESPACE$"):
         InMemoryQueue(namespace=namespace)
+
+
+# ---------------------------------------------------------------- limits (R-7)
+BAD_COUNTS: list[object] = [0, 1001, -1, True, 1.0, "1", None]
+LIMIT_CALLS: dict[str, Callable[[InMemoryQueue, object], object]] = {
+    "pull_requests.max_messages": lambda q, v: q.pull_requests(GOOD, v, 0.0),  # type: ignore[arg-type]
+    "pull_responses.max_messages": lambda q, v: q.pull_responses(GOOD, None, v),  # type: ignore[arg-type]
+    "list_bundles.max_bundles": lambda q, v: q.list_bundles(v),  # type: ignore[arg-type]
+}
+
+
+@pytest.mark.parametrize("bad", BAD_COUNTS, ids=repr)
+@pytest.mark.parametrize("call", list(LIMIT_CALLS))
+def test_counts_outside_one_to_a_thousand_are_invalid_argument(call: str, bad: object) -> None:
+    queue = _queue(FakeClock())
+
+    with pytest.raises(QueueError) as caught:
+        LIMIT_CALLS[call](queue, bad)
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("good", [1, 1000])
+@pytest.mark.parametrize("call", list(LIMIT_CALLS))
+def test_counts_at_the_bounds_are_accepted(call: str, good: int) -> None:
+    LIMIT_CALLS[call](_queue(FakeClock()), good)
+
+
+@pytest.mark.parametrize("bad", [-0.001, 30.001, float("nan"), float("inf"), True, "1", None])
+def test_wait_outside_zero_to_thirty_seconds_is_invalid_argument(bad: object) -> None:
+    queue = _queue(FakeClock())
+
+    with pytest.raises(QueueError) as caught:
+        queue.pull_requests(GOOD, 1, bad)  # type: ignore[arg-type]
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+def test_wait_of_zero_and_integer_seconds_are_accepted() -> None:
+    queue = _queue(FakeClock())
+    queue.publish_bundle(GOOD, b"b", int(START) + 600)
+    queue.publish_request(GOOD, "01" * 16, b"r")
+
+    assert queue.pull_requests(GOOD, 1, 0) != []
+    clock_free = InMemoryQueue()
+    assert clock_free.pull_requests(GOOD, 1, 0.0) == []
+
+
+@pytest.mark.parametrize("bad", [True, float(START + 60), "1900000000", None])
+def test_non_integer_bundle_expiry_is_invalid_argument(bad: object) -> None:
+    queue = _queue(FakeClock())
+
+    with pytest.raises(QueueError) as caught:
+        queue.publish_bundle(GOOD, b"b", bad)  # type: ignore[arg-type]
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
