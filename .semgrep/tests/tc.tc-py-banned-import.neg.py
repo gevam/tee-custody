@@ -5,6 +5,7 @@ import xmlrpc.client
 from http import HTTPStatus
 from multiprocessing import Pool
 
+# ruleid: tc-py-gateway-banned-import
 from teecustody.wire import cbor
 
 STATUS = HTTPStatus.OK

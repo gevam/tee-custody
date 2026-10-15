@@ -28,3 +28,20 @@ def handler() -> None:
 x = 1; from teecustody_sim import m
 # ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
 y = 2;import cbor2
+# A7 gateway ruling: from teecustody, only teecustody.queue (with submodules) and teecustody.obs.
+# ruleid: tc-py-gateway-banned-import
+from teecustody.wire import cbor
+# ruleid: tc-py-gateway-banned-import
+from teecustody import queue
+# ruleid: tc-py-gateway-banned-import
+import teecustody
+# ruleid: tc-py-gateway-banned-import
+import teecustody.wire
+# ruleid: tc-py-gateway-banned-import
+from teecustody.channel.codec import decode
+# ruleid: tc-py-gateway-banned-import
+from teecustody.queueish import x
+# ruleid: tc-py-gateway-banned-import
+import os, teecustody.channel
+# ruleid: tc-py-gateway-banned-import
+z = 3; from teecustody.wire import cbor

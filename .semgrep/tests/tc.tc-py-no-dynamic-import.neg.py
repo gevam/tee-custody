@@ -1,6 +1,7 @@
 # Negative fixture: static imports, and local functions that merely share an importer's name.
 import json
 
+# ruleid: tc-py-gateway-banned-import
 from teecustody.wire import cbor
 
 

@@ -386,6 +386,8 @@ rules:
     pattern-either:
       - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
       - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+      # A7 gateway ruling: from teecustody, only teecustody.queue (with submodules) and teecustody.obs.
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+teecustody(?![\w.])|from[ \t]+teecustody\.(?!(?:queue|obs)(?![\w]))|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody(?![\w])(?!\.(?:queue|obs)(?![\w])))
   - id: tc-py-gateway-dev-banned-import
     message: dev.py may import the simulator lazily, but never cbor2 (SR-3).
     severity: ERROR
