@@ -1,7 +1,13 @@
 // WebCrypto Crypto adapter (INC-2-API §8.1; spec §10.2; ADR 0009 rule 5, ADR 0011).
 // No other file in the packages uses @hpke/* (SR-14); the names taken from @hpke/core are exactly the
 // ADR 0011 C3a.2 list.
-import { Aes256Gcm, CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/core";
+import {
+    Aes256Gcm,
+    CipherSuite,
+    DhkemX25519HkdfSha256,
+    HkdfSha256,
+    NotSupportedError,
+} from "@hpke/core";
 import {
     CapabilityError,
     type Bytes,
@@ -26,6 +32,8 @@ const GCM_NONCE_BYTES = 12;
 const X25519_KEY_BYTES = 32;
 const MAX_EXPORT_LABEL_BYTES = 64;
 const MAX_EXPORT_BYTES = 64;
+/** ADR 0011 C8 (B-45): total attempts per X25519 key generation; WebKit's generateKey fails transiently. */
+const X25519_KEYGEN_ATTEMPTS = 3;
 
 function gcmParams(nonce: Uint8Array, aad: Uint8Array): AesGcmParams {
     return { name: "AES-GCM", iv: nonce.slice(), additionalData: aad.slice() };
@@ -43,6 +51,22 @@ function platformCrypto(): PlatformCrypto | undefined {
 
 function isNotSupported(error: unknown): boolean {
     return error instanceof DOMException && error.name === "NotSupportedError";
+}
+
+/** Runs `attempt` up to X25519_KEYGEN_ATTEMPTS times; rethrows at once if `retryable(error)` is false. */
+async function boundedKeygen<T>(
+    attempt: () => Promise<T>,
+    retryable: (error: unknown) => boolean,
+): Promise<T> {
+    for (let remaining = X25519_KEYGEN_ATTEMPTS; ; remaining -= 1) {
+        try {
+            return await attempt();
+        } catch (error: unknown) {
+            if (remaining <= 1 || !retryable(error)) {
+                throw error;
+            }
+        }
+    }
 }
 
 type SenderContext = Awaited<ReturnType<CipherSuite["createSenderContext"]>>;
@@ -102,10 +126,13 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
 
     let suite: Promise<CipherSuite | undefined> | undefined;
 
-    /** ADR 0011 C3a.3: one X25519 probe per adapter, on the global subtle that @hpke/* uses. */
+    /** ADR 0011 C3a.3, C8: the X25519 probe, on the global subtle that @hpke/* uses. */
     async function probeSuite(globalSubtle: SubtleCrypto): Promise<CipherSuite | undefined> {
         try {
-            await globalSubtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+            await boundedKeygen(
+                () => globalSubtle.generateKey({ name: "X25519" }, false, ["deriveBits"]),
+                () => true,
+            );
         } catch {
             return undefined;
         }
@@ -122,9 +149,13 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         if (globalSubtle === undefined) {
             throw new CapabilityError("UNSUPPORTED");
         }
-        suite ??= probeSuite(globalSubtle);
-        const ready = await suite;
+        const pending = (suite ??= probeSuite(globalSubtle));
+        const ready = await pending;
         if (ready === undefined) {
+            // ADR 0011 C8: a failed probe is not cached; a concurrent caller's newer probe is kept.
+            if (suite === pending) {
+                suite = undefined;
+            }
             throw new CapabilityError("UNSUPPORTED");
         }
         return ready;
@@ -196,15 +227,27 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         async setupHpkeSender(recipientPublicKey, info): Promise<HpkeSenderContext> {
             requireKeyLength(recipientPublicKey);
             const hpke = await hpkeSuite();
-            let context: SenderContext;
+            let publicKey: CryptoKey;
             try {
-                const publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
-                context = await hpke.createSenderContext({
-                    recipientPublicKey: publicKey,
-                    info: info.slice(),
-                });
+                publicKey = await hpke.kem.deserializePublicKey(recipientPublicKey.slice());
             } catch {
                 throw new CapabilityError("INVALID_ARGUMENT");
+            }
+            let context: SenderContext;
+            try {
+                // ADR 0011 C8 (R2): only the library's own ephemeral key generation is retried.
+                context = await boundedKeygen(
+                    () =>
+                        hpke.createSenderContext({
+                            recipientPublicKey: publicKey,
+                            info: info.slice(),
+                        }),
+                    (error) => error instanceof NotSupportedError,
+                );
+            } catch (error: unknown) {
+                throw new CapabilityError(
+                    error instanceof NotSupportedError ? "UNSUPPORTED" : "INVALID_ARGUMENT",
+                );
             }
             const handle = new ContextHandle(context);
             return {
