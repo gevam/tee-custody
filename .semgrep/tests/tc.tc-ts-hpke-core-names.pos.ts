@@ -14,6 +14,19 @@ export { Aes256Gcm } from "@hpke/core";
 import type { SenderContext, RecipientContext } from "@hpke/core";
 // ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined
 import { type AeadInterface, HkdfSha256 } from "@hpke/core";
+// A7: a comment inside the braces can hide a name behind a `}`. The confinement annotation sits
+// before `from`, because the comment pattern reads from the keyword in any annotation onwards.
+// ruleid: tc-ts-hpke-core-names
+import { CipherSuite /* } */, DhkemP256HkdfSha256 as P256 }
+    // ruleid: tc-ts-hpke-import-confined
+    from "@hpke/core";
+// ruleid: tc-ts-hpke-core-names
+import {
+    Aes256Gcm, // }
+    DhkemP384HkdfSha384,
+}
+    // ruleid: tc-ts-hpke-import-confined
+    from "@hpke/core";
 export async function load(): Promise<unknown[]> {
     return [
         // ruleid: tc-ts-hpke-core-names, tc-ts-hpke-import-confined, tc-ts-no-dynamic-import
@@ -24,5 +37,6 @@ export async function load(): Promise<unknown[]> {
         await import(`@hpke/core`),
     ];
 }
+export const hidden: unknown[] = [P256, DhkemP384HkdfSha384];
 export const used: unknown[] = [DhkemP256HkdfSha256, Suite, hpke, hpkeDefault, HkdfSha256];
 export type Contexts = SenderContext | RecipientContext | AeadInterface;
