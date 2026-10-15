@@ -102,13 +102,25 @@ def test_every_method_of_the_session_classes_is_checked_including_private_ones()
                 assert f"{cls.__qualname__}.{name}" in checked
 
 
+def _is_key_type(hint: object) -> bool:
+    if isinstance(hint, type) and issubclass(hint, KEY_TYPES):
+        return True
+    return any(_is_key_type(arg) for arg in typing.get_args(hint))
+
+
 def _takes_a_key(function: Callable[..., object]) -> bool:
     hints = typing.get_type_hints(function)
-    return any(
-        isinstance(hint, type) and issubclass(hint, KEY_TYPES)
-        for name, hint in hints.items()
-        if name != "return"
-    )
+    return any(_is_key_type(hint) for name, hint in hints.items() if name != "return")
+
+
+def test_a_key_hidden_in_a_union_or_container_is_still_a_key() -> None:
+    def optional(key: Secret | None) -> None: ...
+    def nested(keys: list[tuple[int, T2cSealer]]) -> None: ...
+    def plain(data: bytes, count: int | None) -> Secret: ...
+
+    assert _takes_a_key(optional)
+    assert _takes_a_key(nested)
+    assert not _takes_a_key(plain)
 
 
 def test_only_the_sealer_constructor_table_create_and_open_frame_take_a_key() -> None:
