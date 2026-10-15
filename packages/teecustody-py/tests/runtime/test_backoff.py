@@ -24,8 +24,8 @@ from teecustody.channel.ports import (
 )
 from teecustody.channel.server import ProcessResult
 from teecustody.config import BoundaryLimits, ChannelParams
-from teecustody.queue.ports import QueueMessage
-from teecustody.runtime import RunLoop, run_loop
+from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage
+from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
 from teecustody.wire import CanonicalValue
 
 RETRY_MIN, RETRY_MAX = 30, 300
@@ -67,6 +67,7 @@ class Queue:
     def __init__(self) -> None:
         self.pulls = 0
         self.pull_errors: list[Exception] = []
+        self.withdrawn = 0
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         del instance_id, bundle, expires_at
@@ -87,6 +88,7 @@ class Queue:
 
     def withdraw_bundle(self, instance_id: str) -> None:
         del instance_id
+        self.withdrawn += 1
 
 
 class Sink:
@@ -199,3 +201,69 @@ def test_c2_a_refresh_that_is_not_due_calls_no_launcher(monkeypatch: pytest.Monk
 
     assert report.refresh is RefreshOutcome.NOT_DUE
     assert world.launcher.calls == 1
+
+
+# ---------------------------------------------------------------- criterion 6: pull backoff
+def unavailable(n: int) -> list[Exception]:
+    return [QueueError(QueueErrorCode.UNAVAILABLE) for _ in range(n)]
+
+
+def pull_until_failures_exhausted(world: World, expected_pulls: int) -> None:
+    """Tick through the pull backoff after one failed pull: never early, once at each delay."""
+    base = world.queue.pulls - 1
+    for failures in range(1, expected_pulls):
+        assert world.queue.pulls == base + failures
+        delay = min(RETRY_MAX, RETRY_MIN * 2 ** (failures - 1))
+        world.clock.now += delay - 1
+        world.tick(20)
+        assert world.queue.pulls == base + failures, failures
+        world.clock.now += 1
+        world.loop.tick()
+
+
+def test_c6_ten_consecutive_unavailable_pulls_shut_down_and_stop(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    world = World(monkeypatch)
+    world.queue.pull_errors = unavailable(10)
+    world.loop.tick()
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        pull_until_failures_exhausted(world, 10)
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
+    assert world.queue.pulls == 10
+    assert world.queue.withdrawn == 1
+    pull_logs = [r for r in caplog.records if r.getMessage() == "QUEUE_PULL_FAILED"]
+    assert len(pull_logs) == 10
+
+
+def test_c6_fewer_than_ten_failures_recover_and_reset_the_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.queue.pull_errors = unavailable(9)
+    world.loop.tick()
+    pull_until_failures_exhausted(world, 10)  # the 10th pull succeeds
+    assert world.queue.pulls == 10
+
+    world.queue.pull_errors = unavailable(9)
+    world.loop.tick()
+    pull_until_failures_exhausted(world, 10)
+
+    assert world.queue.pulls == 20
+    assert world.queue.withdrawn == 0
+
+
+def test_c6_pull_backoff_does_not_delay_the_attestation_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.queue.pull_errors = unavailable(1)
+    world.loop.tick()
+    world.clock.now += 2  # refresh due; pull still backing off
+
+    report = world.loop.tick()
+
+    assert report.refresh is RefreshOutcome.REFRESHED
+    assert world.queue.pulls == 1

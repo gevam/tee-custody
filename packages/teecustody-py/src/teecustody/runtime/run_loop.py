@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import NoReturn
+from typing import Final, NoReturn
 
 from teecustody.attest.claims import own_image_digest
 from teecustody.attest.lifecycle import AttestationLifecycle, RefreshOutcome
@@ -26,10 +26,11 @@ from teecustody.channel.session import SessionTable
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.obs.logger import get_logger
 from teecustody.obs.types import AllowListedLogger
-from teecustody.queue.ports import QueueError, QueueMessage, WorkloadQueue
+from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage, WorkloadQueue
 
 _DEFAULT_PARAMS = ChannelParams()
 _DEFAULT_LIMITS = BoundaryLimits()
+_MAX_PULL_FAILURES: Final = 10  # consecutive UNAVAILABLE pulls before QUEUE_UNAVAILABLE
 
 
 class StopCode(StrEnum):
@@ -105,6 +106,8 @@ class RunLoop:
         self._live: _Live | None = None
         self._refresh_failures = 0
         self._next_refresh_attempt_at = float("-inf")
+        self._pull_failures = 0
+        self._next_pull_at = float("-inf")
 
     @property
     def instance_id(self) -> str:
@@ -191,12 +194,31 @@ class RunLoop:
         live = self._require_live()
         refresh = self._refresh(live)
         processed = 0
-        for message in self._queue.pull_requests(
-            self._instance_id, self._limits.pull_max_messages, self._limits.pull_wait_s
-        ):
+        for message in self._pull():
             self._handle(live, message)
             processed += 1
         return TickReport(refresh=refresh, bundle_published=False, processed=processed)
+
+    def _pull(self) -> list[QueueMessage]:
+        """(4) pull; UNAVAILABLE backs off like B-08 on its own counter, and 10 in a row stop."""
+        now = self._clock()
+        if now < self._next_pull_at:
+            return []
+        try:
+            messages = self._queue.pull_requests(
+                self._instance_id, self._limits.pull_max_messages, self._limits.pull_wait_s
+            )
+        except QueueError as err:
+            if err.code is not QueueErrorCode.UNAVAILABLE:
+                raise
+            self._logger.warning("QUEUE_PULL_FAILED")
+            self._pull_failures += 1
+            if self._pull_failures >= _MAX_PULL_FAILURES:
+                self._stop(StopCode.QUEUE_UNAVAILABLE)
+            self._next_pull_at = now + self._backoff(self._pull_failures)
+            return []
+        self._pull_failures = 0
+        return messages
 
     def _handle(self, live: _Live, message: QueueMessage) -> None:
         """(4) process, respond, ack. Sealed once; a retry re-sends the same bytes (R-5)."""
