@@ -139,31 +139,39 @@ def test_no_key_nonce_pair_is_ever_reused_and_the_counter_never_decreases(
     steps: list[tuple[bool, bool]],
 ) -> None:
     _SpyAesGcm.calls = []
+    # (seq, plaintext, bytes the run loop re-published after a failed publish)
+    retried: list[tuple[int, bytes, tuple[bytes, bytes]]] = []
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(session_module, "AESGCM", _SpyAesGcm)
-        sealer, _key = _opened_sealer()
-        sent: list[bytes] = []
+        sealer, key = _opened_sealer()
         counter = sealer._next_seq
         for index, (encrypt_fails, publish_fails) in enumerate(steps):
+            seq, plaintext = sealer._next_seq, index.to_bytes(2, "big")
             _SpyAesGcm.fail_next = encrypt_fails
             try:
-                aad_bytes, ct = sealer.seal_frame_result(OP, SESSION_ID, index.to_bytes(2, "big"))
+                stored = sealer.seal_frame_result(OP, SESSION_ID, plaintext)
             except RuntimeError:
                 assert encrypt_fails
             else:
                 assert not encrypt_fails
-                first = aad_bytes + ct
-                sent.append(first)
+                assert stored[0] == encode_frame_aad(
+                    FrameAad(session_id=SESSION_ID, seq=seq, op=OP)
+                )
                 if publish_fails:
-                    # The run loop re-publishes the stored bytes; it never asks for a new seal.
                     calls_before = len(_SpyAesGcm.calls)
-                    sent.append(first)
+                    # The run loop re-publishes the stored bytes; it never asks for a new seal.
+                    resent = stored
                     assert len(_SpyAesGcm.calls) == calls_before
-                    assert sent[-1] == sent[-2]
+                    retried.append((seq, plaintext, resent))
             assert sealer._next_seq > counter
             counter = sealer._next_seq
     assert len(_SpyAesGcm.calls) == SEALS_PER_EXAMPLE + 1
     assert len(set(_SpyAesGcm.calls)) == len(_SpyAesGcm.calls)
+    # After every later seal, each re-sent message still authenticates under the nonce of the seq
+    # it was first sealed with, and that nonce was used exactly once.
+    for seq, plaintext, (aad_bytes, ct) in retried:
+        assert AESGCM(key).decrypt(_nonce(seq), ct, aad_bytes) == plaintext
+        assert _SpyAesGcm.calls.count((key, _nonce(seq))) == 1
 
 
 # ---------------------------------------------------------------- criterion 7
