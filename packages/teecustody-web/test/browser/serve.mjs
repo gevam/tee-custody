@@ -98,6 +98,10 @@ const server = createServer((req, res) => {
         page(res, site.index);
     } else if (path === "/control/inline.html") {
         page(res, site.control);
+    } else if (path === "/favicon.ico") {
+        // 2026-10-12 ruling: Firefox requests it automatically; same-origin under img-src 'self', no body.
+        res.writeHead(204);
+        res.end();
     } else if (path === "/harness.js") {
         send(res, 200, { "Content-Type": "text/javascript; charset=utf-8" }, site.harness);
     } else {

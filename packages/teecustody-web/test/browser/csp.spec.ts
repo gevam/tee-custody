@@ -28,6 +28,9 @@ type Expectation = string | readonly string[];
 
 const RESULT_TIMEOUT_MS = 60_000;
 const CONTROL_TIMEOUT_MS = 10_000;
+const REPUBLISH_WINDOW_MS = 6_000;
+const BUNDLE_POLL_MS = 250;
+const FAVICON_WINDOW_MS = 2_000;
 const NO_PRF_VAULT = "UNSUPPORTED";
 
 // FACTS.md "Support matrix" (V-02) and INC-2-API §9.3 rev 3: Ed25519, X25519 and hash SRI are supported in
@@ -83,6 +86,28 @@ async function addAuthenticator(page: Page, hasPrf: boolean): Promise<void> {
     });
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((done) => setTimeout(done, ms));
+}
+
+async function listedBundles(): Promise<string> {
+    return (await fetch(`${env("TC_GATEWAY_ORIGIN")}/bundles`)).text();
+}
+
+// Every page is a fresh ChannelClient with an empty used-pre-key set, while the workload republishes its
+// bundle at most once per bundle_republish_min_interval_s (5 s default). A later page could otherwise
+// pick the pre-key an earlier page consumed, whose request the workload drops (PREKEY_UNKNOWN). Any
+// publication after the run reflects that consumption, so wait for one, bounded by the interval plus 1 s.
+async function awaitRepublish(listed: string): Promise<void> {
+    const started = performance.now();
+    while (performance.now() - started < REPUBLISH_WINDOW_MS) {
+        if ((await listedBundles()) !== listed) {
+            return;
+        }
+        await sleep(BUNDLE_POLL_MS);
+    }
+}
+
 async function runHarness(page: Page): Promise<HarnessResult> {
     await page.goto(`${env("TC_SERVE_ORIGIN")}/`);
     const handle = await page.waitForFunction(
@@ -90,7 +115,9 @@ async function runHarness(page: Page): Promise<HarnessResult> {
         undefined,
         { timeout: RESULT_TIMEOUT_MS },
     );
-    return (await handle.jsonValue()) as HarnessResult;
+    const result = (await handle.jsonValue()) as HarnessResult;
+    await awaitRepublish(await listedBundles());
+    return result;
 }
 
 // Records in the vault's IndexedDB `shares` store; a database or store that does not exist counts as empty.
@@ -260,4 +287,22 @@ test("C5 index.html has one SRI script, nothing inline, no icon link, and the ex
         handlers: 0,
         icons: 0,
     });
+});
+
+test("C6 GET /favicon.ico is 204 with an empty body", async () => {
+    const response = await fetch(`${env("TC_SERVE_ORIGIN")}/favicon.ico`);
+    expect(response.status).toBe(204);
+    expect((await response.arrayBuffer()).byteLength).toBe(0);
+});
+
+test("C6 Firefox loading index.html records no img-src violation for its automatic favicon request", async ({
+    page,
+    browserName,
+}) => {
+    test.skip(browserName !== "firefox", "only Firefox requests /favicon.ico (FACTS V-2.2 note)");
+    await runHarness(page);
+    // The listener keeps counting after the run; read the live count once the favicon window has passed.
+    await sleep(FAVICON_WINDOW_MS);
+    const live = await page.evaluate(() => (window as { __result?: HarnessResult }).__result);
+    expect(live?.violations).toBe(0);
 });
