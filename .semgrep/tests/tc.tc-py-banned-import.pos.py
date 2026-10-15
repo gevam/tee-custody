@@ -1,9 +1,9 @@
 # Positive fixture: banned modules in every import form (SR-3, NFR-2, NFR-6).
-# ruleid: tc-py-banned-import, tc-py-banned-import-sim
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
 import cbor2
-# ruleid: tc-py-banned-import, tc-py-banned-import-sim
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
 import cbor2 as c
-# ruleid: tc-py-banned-import, tc-py-banned-import-sim
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
 from cbor2 import loads
 # ruleid: tc-py-banned-import, tc-py-banned-import-wire
 import http.server
@@ -35,7 +35,7 @@ from multiprocessing import connection
 from multiprocessing.managers import BaseManager
 # ruleid: tc-py-banned-import, tc-py-banned-import-wire
 import os, socketserver as ss
-# ruleid: tc-py-banned-import, tc-py-banned-import-wire, tc-no-sim-import-in-library
+# ruleid: tc-py-banned-import, tc-py-banned-import-wire, tc-no-sim-import-in-library, tc-py-gateway-banned-import
 import teecustody_sim.constants
-# ruleid: tc-py-banned-import, tc-py-banned-import-wire, tc-no-sim-import-in-library
+# ruleid: tc-py-banned-import, tc-py-banned-import-wire, tc-no-sim-import-in-library, tc-py-gateway-banned-import
 from teecustody_sim.constants import SIM_ISSUER

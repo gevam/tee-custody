@@ -139,6 +139,11 @@ jobs:
               ("tc-py-no-hpke-seams", "py", PY_TESTS, False),
               ("tc-py-identity-sign-confined", "py", PY_TESTS, False),
               ("tc-py-no-kdf-composition", "py", PY_TESTS, False),
+              # T-27 A3: gateway import bans; the gateway src joins the suppression and dynamic-import bans.
+              ("tc-py-gateway-banned-import", "py", GATEWAY_SRC, True),
+              ("tc-py-no-lint-suppression", "py", GATEWAY_SRC, True),
+              ("tc-py-no-dynamic-import", "py", GATEWAY_SRC, True),
+              ("tc-py-gateway-banned-import", "py", "examples/notes-app/gateway/tests/_semgrep_probe", False),
           ]
           staged = {}
           for rule, ext, directory, _ in CASES:

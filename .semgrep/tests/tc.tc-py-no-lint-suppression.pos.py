@@ -7,7 +7,7 @@
 # flake8: noqa
 # ruleid: tc-py-no-lint-suppression
 # ruff: disable[TID251]
-# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-no-lint-suppression
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-no-lint-suppression, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
 import cbor2  # noqa: TID251
 # ruleid: tc-py-no-lint-suppression
 VALUE = cbor2  # noqa

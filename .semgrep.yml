@@ -97,7 +97,10 @@ rules:
     severity: ERROR
     languages: [python]
     paths:
-      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+      include:
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-sim/src/**"
+        - "/examples/notes-app/gateway/src/**"
     pattern-either:
       - pattern: importlib.import_module(...)
       - pattern: importlib.__import__(...)
@@ -200,7 +203,10 @@ rules:
     severity: ERROR
     languages: [python]
     paths:
-      include: ["/packages/teecustody-py/src/**", "/packages/teecustody-sim/src/**"]
+      include:
+        - "/packages/teecustody-py/src/**"
+        - "/packages/teecustody-sim/src/**"
+        - "/examples/notes-app/gateway/src/**"
     pattern-either:
       - pattern-regex: (?i)#\s*noqa\b(?!\s*:)
       - pattern-regex: (?i)#\s*noqa\s*:[^#\n]*\bTID
@@ -364,6 +370,25 @@ rules:
       - pattern-regex: \bimport\s+(?:type\s+)?(?:\*|[A-Za-z_$][\w$]*)[^;'"`]*?from\s*["'`]@hpke/core["'`]
       - pattern-regex: \bexport\b[^;]*?\bfrom\s*["'`]@hpke/core["'`]
       - pattern-regex: \bimport\s*\(\s*["'`]@hpke/core["'`]
+
+  # A3 (T-27; SR Low #2): the gateway is an untrusted relay of opaque bytes.
+  - id: tc-py-gateway-banned-import
+    message: The gateway relays opaque bytes (no cbor2) and imports the simulator only in dev.py (SR-3, NFR-6).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/examples/notes-app/gateway/src/**"]
+      exclude: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
+    pattern-either:
+      - pattern-regex: (?m)^[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
+      - pattern-regex: (?m)^[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+  - id: tc-py-gateway-dev-banned-import
+    message: dev.py may import the simulator lazily, but never cbor2 (SR-3).
+    severity: ERROR
+    languages: [regex]
+    paths:
+      include: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
+    pattern-regex: (?m)^[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
 
   - id: tc-py-no-hpke-seams
     message: >-
