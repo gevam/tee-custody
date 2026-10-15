@@ -27,6 +27,7 @@ from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.codec import EnvelopeError, decode_bundle
 from teecustody.wire import PROTO, DecodeLimits, WireError, WireErrorCode, decode
+from teecustody_sim import channel_vectors
 from teecustody_sim.channel_vectors import generate_channel_suite
 
 NOW = 1_900_000_000
@@ -866,3 +867,55 @@ def test_valid_bundle_token_verifies_against_the_served_jwks_and_profile(
     assert claims["aud"] == profile["expected_audience"]
     assert claims["iat"] == suite["generated_at"]
     assert claims["submods"]["container"]["image_digest"] in profile["allowed_digests"]
+
+
+# --- schema-valid aad mutations (criterion 10; T-03 security Low) ----------------------------
+
+
+def test_aad_modified_is_schema_valid_and_fails_hpke_open(suite: dict[str, Any]) -> None:
+    opens = _by_id(suite, "opens")
+    case, valid = opens["aad_modified"], opens["valid_open_session"]
+    envelope, valid_envelope = _map(case["envelope"]), _map(valid["envelope"])
+    assert _open_request_is_valid(envelope)
+    assert (envelope["enc"], envelope["ct"]) == (valid_envelope["enc"], valid_envelope["ct"])
+    aad, valid_aad = _map(envelope["aad"]), _map(valid_envelope["aad"])
+    changed = [
+        i
+        for i, (a, b) in enumerate(zip(aad["client_id"], valid_aad["client_id"], strict=True))
+        if a != b
+    ]
+    assert len(changed) == 1
+    assert {**aad, "client_id": valid_aad["client_id"]} == valid_aad
+    assert _hpke_open(case, envelope) is None
+    assert _open_outcome(case)[0] == case["error_code"] == "OPEN_FAILED"
+
+
+@pytest.mark.parametrize("direction", ["c2t", "t2c"])
+def test_aad_op_modified_is_schema_valid_and_fails_the_aead(
+    suite: dict[str, Any], direction: str
+) -> None:
+    frames = _by_id(suite, "frames")
+    case, valid = frames[f"{direction}_aad_op_modified"], frames[f"{direction}_valid"]
+    envelope = _map(case["envelope"])
+    aad = _frame_aad(envelope)
+    assert aad is not None  # schema-valid: the AEAD, not the schema, rejects it
+    assert aad["op"] == "test.echp"
+    assert aad["op"] != _map(_map(valid["envelope"])["aad"])["op"]
+    assert aad["seq"] > case["last_seq"]
+    assert _decrypt(case["key"], aad["seq"], envelope["ct"], envelope["aad"]) is None
+    assert _frame_outcome(case)[0] == case["error_code"] == "AUTH_FAILED"
+
+
+@pytest.mark.parametrize(
+    ("op", "mutated"),
+    [("test.echo", "test.echp"), ("a.z", "a.a"), ("op1", "opa"), ("op_", "opa"), ("x.", "xa")],
+)
+def test_op_mutation_follows_the_contract_rule(op: str, mutated: str) -> None:
+    result = channel_vectors._other_op(op)
+    assert result == mutated
+    assert OP_NAME.fullmatch(result) is not None
+
+
+@pytest.mark.parametrize(("text", "mutated"), [("0abc", "1abc"), ("9f", "af"), ("f0", "00")])
+def test_client_id_mutation_changes_one_hex_digit(text: str, mutated: str) -> None:
+    assert channel_vectors._other_hex_digit(text) == mutated

@@ -8,6 +8,7 @@ keys only (spec/vectors/README.md).
 import hashlib
 import json
 import os
+import string
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -421,9 +422,13 @@ def _aead(key: bytes, seq: int, aad: bytes, plaintext: bytes) -> bytes:
     return AESGCM(key).encrypt(_session_nonce(seq), plaintext, aad)
 
 
-def _next_letter_op(op: str) -> str:
-    """A different `op-name`: the final lowercase letter becomes the next one (`z` -> `a`)."""
-    return op[:-1] + chr((ord(op[-1]) - ord("a") + 1) % 26 + ord("a"))
+def _other_op(op: str) -> str:
+    """A different `op-name` (T-03 Low): a final lowercase letter becomes the next one (`z` ->
+    `a`); any other final character becomes `a`."""
+    last = op[-1]
+    if last in string.ascii_lowercase:
+        return op[:-1] + chr((ord(last) - ord("a") + 1) % 26 + ord("a"))
+    return op[:-1] + "a"
 
 
 def _frame_aad(session_id: bytes, seq: int, op: str = _FRAME_OP) -> bytes:
@@ -468,7 +473,7 @@ def _frame_cases(direction: str, key: bytes, session_id: bytes) -> list[Canonica
     ct = _aead(key, seq, aad, plaintext)
     valid = _envelope(kind, aad, ct)
     over_max_aad = _frame_aad(session_id, _OVER_MAX)
-    other_op = _frame_aad(session_id, seq, _next_letter_op(_FRAME_OP))
+    other_op = _frame_aad(session_id, seq, _other_op(_FRAME_OP))
     other_session = _frame_aad(_flip_first_bit(session_id), seq)
     wrong_key = _aead(os.urandom(_KEY_BYTES), seq, aad, plaintext)
     last = seq - 1
