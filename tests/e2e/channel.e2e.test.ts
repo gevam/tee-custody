@@ -223,7 +223,6 @@ function client(h: Harness): Client {
 function compose(h: Harness): Client {
     const transport = new FetchTransport({
         baseUrl: h.gateway,
-        maxResponseBytes: 1_048_576,
         timeoutMs: 10_000,
     });
     const fetcher = new RecordingFetcher(fetchFetcher());
