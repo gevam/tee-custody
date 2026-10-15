@@ -22,6 +22,7 @@ Revision 3 addendum (2026-10-15, T-14 reviews):
 - §6: IPv6 sources are keyed by /64.
 - §6: paths with control characters → 404 before routing.
 - §6: uvicorn runs with `proxy_headers=False`, `server_header=False` and `access_log=False`.
+- §8.4 (2026-10-15, T-20 reviews): the wrapping key always comes from a `get` (create results are ignored), and ceremonies are aborted via `AbortSignal`.
 - §8.3: FetchTransport maps 408 → `UNAVAILABLE`.
 - §14: the `%0A` path expectation is now 404.
 
@@ -1531,12 +1532,23 @@ ct: Uint8Array(48) }`.
 **non-extractable**, usages encrypt/decrypt. Encryption: AES-256-GCM, random 12-byte nonce, aad =
 `encodeCanonical(Map{"v":1,"client_id":…,"credential_id":…})`.
 
-**Ceremonies.** `userVerification: "required"`, `timeout = timeoutMs`. `set`: validate (`client` 32 hex, share 32
-bytes) before any ceremony; if no record, `credentials.create` a discoverable passkey with WebAuthn
-`user.id` = 16 fresh random bytes (never `client_id`; security note (d)) and `extensions: { prf: {} }`
-and require `getClientExtensionResults().prf.enabled === true`; obtain the PRF output from the create results if
-present, otherwise from one `credentials.get` with `allowCredentials: [credential_id]` and `prf.eval.first`. If a
-record exists, reuse its credential with a fresh `prf_salt` and nonce. Write the record in one transaction. Copy
+**Ceremonies.**
+- Every ceremony uses `userVerification: "required"` and `timeout = timeoutMs`. It also passes `signal`, from an
+  `AbortController` aborted at `timeoutMs`, because Firefox ignores `timeout`. An abort → `AbortError` →
+  `USER_PRESENCE_REQUIRED`, and nothing is written.
+- `set` validates its inputs (`client` is 32 hex, the share is 32 bytes) before any ceremony.
+- `set` with **no record**, under the ruling of 2026-10-15 (T-20 review; spec §10.1; option (b)):
+  1. `credentials.create` a discoverable passkey. Its WebAuthn `user.id` is 16 fresh random bytes, never
+     `client_id` (security note (d)). It requests `extensions: { prf: {} }`, which enables PRF without evaluating it.
+  2. Require `getClientExtensionResults().prf.enabled === true`.
+  3. **Ignore any PRF results returned at create.**
+  4. Obtain the PRF output from exactly one `credentials.get` with `allowCredentials: [credential_id]` and
+     `prf.eval.first = prf_salt`.
+
+  The wrapping key therefore always comes from a `get`, the same operation every later read uses. No cross-ceremony
+  equality assumption is needed. That assumption is unproven (V-02 recorded lengths only), and if it were wrong `cs`
+  would be lost with no recovery until INC-4. The cost is a second user gesture on the first `set` only.
+- `set` with **an existing record** reuses its credential with a fresh `prf_salt` and nonce (one `get`). Write the record in one transaction. Copy
 `share` internally, zero the copy after encryption; never retain the caller's buffer. `get`: no record →
 `undefined` with no ceremony; otherwise `credentials.get` and decrypt; return a fresh 32-byte buffer. `clear`:
 delete the record (idempotent); the passkey itself cannot be deleted by the page and is left in place.
@@ -1569,6 +1581,11 @@ Tests (T-20):
   `prf.enabled: false` → `UNSUPPORTED`, store empty.
 - (b) The same with `prf.enabled: true` but no `results` from `create` or `get` → `UNSUPPORTED`, store empty.
 - (c) `results.first` of length ≠ 32 → `UNSUPPORTED`.
+- (e) First `set` (option (b)): a credentials double whose `create` also returns `prf.results.first = A` and whose
+  `get` returns `B` leads to a record that decrypts only under the key derived from `B`. The double sees exactly one
+  `create` and then one `get`, with `prf.eval.first` equal to the stored `prf_salt`.
+- (f) A ceremony that never settles is aborted through `signal` at `timeoutMs` → `USER_PRESENCE_REQUIRED`, store
+  empty.
 - (d) The source of `src/vault/**` contains no `getClientCapabilities` or `isUserVerifyingPlatformAuthenticatorAvailable`
   (text check in the T-20 unit tests).
 
