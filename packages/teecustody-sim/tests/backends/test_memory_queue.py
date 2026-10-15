@@ -1,5 +1,7 @@
 """T-24: the simulator's in-memory queue (INC-2-API §4.11, §5.1; spec §9, §15.2 item 5; SR-3, SR-4)."""
 
+import threading
+import time
 from collections.abc import Callable
 
 import pytest
@@ -157,3 +159,30 @@ def test_pull_returns_oldest_first_up_to_max_messages_for_the_named_instance_onl
     assert [m.body for m in first] == [b"a1", b"a2"]
     assert [m.body for m in rest] == [b"a3"]
     assert [m.body for m in queue.pull_requests(IID_B, 10, 0.0)] == [b"b1"]
+
+
+# ---------------------------------------------------------------- criterion 4: blocking pull
+def test_pull_on_an_empty_topic_blocks_for_wait_s_then_returns_empty() -> None:
+    queue = InMemoryQueue()
+
+    started = time.monotonic()
+    pulled = queue.pull_requests(IID_A, 10, 0.2)
+    elapsed = time.monotonic() - started
+
+    assert pulled == []
+    assert 0.2 <= elapsed < 1.0
+
+
+def test_a_publish_from_another_thread_wakes_a_blocked_pull_early() -> None:
+    queue = InMemoryQueue()
+    queue.publish_bundle(IID_A, b"a", int(time.time()) + 600)
+    publisher = threading.Timer(0.05, queue.publish_request, (IID_A, "01" * 16, b"late"))
+
+    started = time.monotonic()
+    publisher.start()
+    pulled = queue.pull_requests(IID_A, 10, 5.0)
+    elapsed = time.monotonic() - started
+    publisher.join()
+
+    assert [m.body for m in pulled] == [b"late"]
+    assert elapsed < 2.0

@@ -55,13 +55,15 @@ class InMemoryQueue:
     def pull_requests(
         self, instance_id: str, max_messages: int, wait_s: float
     ) -> list[QueueMessage]:
+        deadline = time.monotonic() + wait_s
         with self._cond:
-            now = self._clock()
-            due = [
-                request
-                for request in self._requests.values()
-                if request.instance_id == instance_id and request.visible_at <= now
-            ][:max_messages]
+            while True:
+                now = self._clock()
+                due = self._visible(instance_id, now)[:max_messages]
+                remaining = deadline - time.monotonic()
+                if due or remaining <= 0:
+                    break
+                self._cond.wait(remaining)
             for request in due:
                 request.visible_at = now + self._ack_deadline_s
             return [request.message for request in due]
@@ -83,6 +85,13 @@ class InMemoryQueue:
             live = sorted(self._bundles.items())[:max_bundles]
             return [PublishedBundle(instance_id, bundle) for instance_id, (bundle, _) in live]
 
+    def _visible(self, instance_id: str, now: float) -> list[_Request]:
+        return [
+            request
+            for request in self._requests.values()
+            if request.instance_id == instance_id and request.visible_at <= now
+        ]
+
     def _purge(self, now: float) -> None:
         expired = [iid for iid, (_, expires_at) in self._bundles.items() if expires_at <= now]
         for instance_id in expired:
@@ -97,6 +106,7 @@ class InMemoryQueue:
             message_id = self._rng(16).hex()
             message = QueueMessage(message_id, request_id, body, now)
             self._requests[message_id] = _Request(instance_id, message)
+            self._cond.notify_all()
             return message_id
 
     def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
