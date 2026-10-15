@@ -74,9 +74,13 @@ function env(name: string): string {
     return value;
 }
 
-// The virtual authenticator of FACTS V-2.5 (Chromium CDP only).
-async function addAuthenticator(page: Page, hasPrf: boolean): Promise<void> {
+// The virtual authenticator of FACTS V-2.5 (Chromium CDP only). The returned list records every ceremony
+// it completes, in order: "create" (credentials.create) or "get" (credentials.get).
+async function addAuthenticator(page: Page, hasPrf: boolean): Promise<readonly string[]> {
+    const ceremonies: string[] = [];
     const cdp = await page.context().newCDPSession(page);
+    cdp.on("WebAuthn.credentialAdded", () => ceremonies.push("create"));
+    cdp.on("WebAuthn.credentialAsserted", () => ceremonies.push("get"));
     await cdp.send("WebAuthn.enable");
     await cdp.send("WebAuthn.addVirtualAuthenticator", {
         options: {
@@ -88,6 +92,7 @@ async function addAuthenticator(page: Page, hasPrf: boolean): Promise<void> {
             hasPrf,
         },
     });
+    return ceremonies;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -195,7 +200,7 @@ test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero v
     browserName,
 }) => {
     test.skip(browserName !== "chromium", "CDP virtual authenticator: Chromium only (FACTS V-2.5)");
-    await addAuthenticator(page, true);
+    const ceremonies = await addAuthenticator(page, true);
     const result = await runHarness(page);
     const expected: Record<Step, string> = {
         crypto: "ok",
@@ -211,6 +216,8 @@ test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero v
     expect(result.steps).toEqual(expected);
     expect(Object.keys(result.steps)).toEqual([...STEPS]);
     expect(result.violations).toBe(0);
+    // A2 / INC-2-API §8.4 option (b): the first vault.set is one create then one get; vault.get is one get.
+    expect(ceremonies).toEqual(["create", "get", "get"]);
 });
 
 test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, store empty, zero violations", async ({
@@ -252,9 +259,11 @@ test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the share
     browserName,
 }) => {
     test.skip(browserName !== "chromium", "CDP virtual authenticator: Chromium only (FACTS V-2.5)");
-    await addAuthenticator(page, false);
+    const ceremonies = await addAuthenticator(page, false);
     const result = await runHarness(page);
     expect(result.steps.vault).toBe(NO_PRF_VAULT);
+    // §8.4: prf.enabled !== true at create fails closed before any get.
+    expect(ceremonies).toEqual(["create"]);
     expect(await sharesCount(page)).toBe(0);
     expect(result.violations).toBe(0);
 });
