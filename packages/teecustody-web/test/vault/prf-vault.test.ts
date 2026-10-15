@@ -308,3 +308,112 @@ describe("criterion 4: PRF output from create or from get", () => {
         expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
     });
 });
+
+async function expectNothingStored(idb: IDBFactory): Promise<void> {
+    expect(await records(idb)).toHaveLength(0);
+}
+
+describe("criterion 5: UNSUPPORTED with nothing written", () => {
+    it("fails when no credentials container is given and navigator has none", async () => {
+        const idb = new IDBFactory();
+        vi.stubGlobal("navigator", {});
+        expect(await codeOf(vault(undefined, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        await expectNothingStored(idb);
+    });
+
+    it("fails when navigator itself is absent", async () => {
+        const idb = new IDBFactory();
+        vi.stubGlobal("navigator", undefined);
+        expect(await codeOf(vault(undefined, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        await expectNothingStored(idb);
+    });
+
+    it("uses navigator.credentials by default", async () => {
+        const auth = new FakeAuthenticator();
+        vi.stubGlobal("navigator", { credentials: auth.credentials });
+        const v = vault(undefined, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+        expect(auth.creates).toHaveLength(1);
+    });
+
+    const prfShapes: [string, unknown][] = [
+        ["prf.enabled false", { enabled: false }],
+        ["prf.enabled missing", {}],
+        ["prf.enabled truthy but not true", { enabled: "true" }],
+        ["prf extension result absent", undefined],
+        ["prf extension result null", null],
+    ];
+    it.each(prfShapes)("fails at create when %s", async (_name, prf) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.createPrf = prf;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        expect(auth.gets).toHaveLength(0);
+        await expectNothingStored(idb);
+    });
+
+    const resultShapes: [string, unknown][] = [
+        ["results missing", {}],
+        ["results null", { results: null }],
+        ["results.first missing", { results: {} }],
+        ["results.first 31 bytes", { results: { first: new ArrayBuffer(31) } }],
+        ["results.first 33 bytes", { results: { first: new ArrayBuffer(33) } }],
+        ["results.first a string", { results: { first: "x".repeat(32) } }],
+        ["results.first a plain array", { results: { first: new Array<number>(32).fill(1) } }],
+    ];
+    it.each(resultShapes)("fails when the get after create has %s", async (_name, prf) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultsOnCreate = false;
+        auth.behaviour.getPrf = prf;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        await expectNothingStored(idb);
+    });
+
+    it.each([31, 33, 0])("fails when create returns a %i-byte PRF output, without a get", async (n) => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.createPrf = { enabled: true, results: { first: new ArrayBuffer(n) } };
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        expect(auth.gets).toHaveLength(0);
+        await expectNothingStored(idb);
+    });
+
+    it("fails when the authenticator's PRF output is 31 bytes", async () => {
+        const auth = new FakeAuthenticator();
+        auth.behaviour.resultLength = 31;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        await expectNothingStored(idb);
+    });
+
+    it.each(["SecurityError", "NotSupportedError"])(
+        "maps %s from create or get to UNSUPPORTED",
+        async (name) => {
+            const onCreate = new FakeAuthenticator();
+            onCreate.behaviour.createError = name;
+            const idb = new IDBFactory();
+            expect(await codeOf(vault(onCreate, idb).set(CLIENT, SHARE.slice()))).toBe(
+                "UNSUPPORTED",
+            );
+            await expectNothingStored(idb);
+
+            const onGet = new FakeAuthenticator();
+            onGet.behaviour.resultsOnCreate = false;
+            onGet.behaviour.getError = name;
+            expect(await codeOf(vault(onGet, idb).set(CLIENT, SHARE.slice()))).toBe(
+                "UNSUPPORTED",
+            );
+            await expectNothingStored(idb);
+        },
+    );
+
+    it("fails get with UNSUPPORTED when a stored credential no longer yields PRF output", async () => {
+        const auth = new FakeAuthenticator();
+        const v = vault(auth, new IDBFactory());
+        await v.set(CLIENT, SHARE.slice());
+        auth.behaviour.resultsOnGet = false;
+        expect(await codeOf(v.get(CLIENT))).toBe("UNSUPPORTED");
+    });
+});

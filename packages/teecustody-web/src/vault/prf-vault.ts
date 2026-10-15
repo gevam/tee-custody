@@ -1,5 +1,6 @@
 // PrfShareVault: cs under a WebAuthn-PRF-derived key in IndexedDB (INC-2-API §8.4; FR-6; spec §10.1).
 import {
+    CapabilityError,
     encodeCanonical,
     type ClientId,
     type ClientShare,
@@ -69,8 +70,8 @@ export class PrfShareVault implements ShareVault {
     async set(client: ClientId, share: ClientShare): Promise<void> {
         const copy = new Uint8Array(share);
         const salt = this.#random(32);
-        const credentials = this.#options.credentials as CredentialsContainer;
-        const created = (await credentials.create({
+        const credentials = this.#credentials();
+        const created = await ceremony(() => credentials.create({
             publicKey: {
                 rp: this.#options.rp,
                 user: { id: this.#random(16), ...this.#options.user(client) },
@@ -83,12 +84,15 @@ export class PrfShareVault implements ShareVault {
                 timeout: this.#timeoutMs(),
                 extensions: { prf: { eval: { first: salt } } },
             },
-        })) as PublicKeyCredential;
+        }));
         const credentialId = new Uint8Array(created.rawId);
-        const first = created.getClientExtensionResults().prf?.results?.first as
-            | ArrayBuffer
-            | undefined;
-        const prf = first ?? (await this.#assert(credentialId, salt));
+        const outputs = created.getClientExtensionResults().prf;
+        if (outputs?.enabled !== true) {
+            throw new CapabilityError("UNSUPPORTED");
+        }
+        const first = outputs.results?.first;
+        const prf =
+            first === undefined ? await this.#assert(credentialId, salt) : prfOutput(first);
         const key = await this.#deriveKey(prf, salt, client);
         const nonce = this.#random(12);
         const ct = new Uint8Array(
@@ -114,8 +118,8 @@ export class PrfShareVault implements ShareVault {
     }
 
     async #assert(credentialId: Uint8Array, salt: Uint8Array): Promise<ArrayBuffer> {
-        const credentials = this.#options.credentials as CredentialsContainer;
-        const asserted = (await credentials.get({
+        const credentials = this.#credentials();
+        const asserted = await ceremony(() => credentials.get({
             publicKey: {
                 challenge: this.#random(32),
                 rpId: this.#options.rp.id,
@@ -124,8 +128,19 @@ export class PrfShareVault implements ShareVault {
                 timeout: this.#timeoutMs(),
                 extensions: { prf: { eval: { first: salt } } },
             },
-        })) as PublicKeyCredential;
-        return asserted.getClientExtensionResults().prf?.results?.first as ArrayBuffer;
+        }));
+        return prfOutput(asserted.getClientExtensionResults().prf?.results?.first);
+    }
+
+    #credentials(): CredentialsContainer {
+        const container =
+            this.#options.credentials ??
+            (globalThis as { navigator?: { credentials?: CredentialsContainer } }).navigator
+                ?.credentials;
+        if (container === undefined) {
+            throw new CapabilityError("UNSUPPORTED");
+        }
+        return container;
     }
 
     async #deriveKey(prf: ArrayBuffer, salt: Uint8Array, client: ClientId): Promise<CryptoKey> {
@@ -195,4 +210,31 @@ function aad(client: ClientId, credentialId: Uint8Array): Uint8Array {
             ["credential_id", credentialId],
         ]),
     );
+}
+
+/** PRF support is established only by a 32-byte `results.first` (INC-2-API §8.4). */
+function prfOutput(first: unknown): ArrayBuffer {
+    if (!(first instanceof ArrayBuffer) || first.byteLength !== 32) {
+        throw new CapabilityError("UNSUPPORTED");
+    }
+    return first;
+}
+
+async function ceremony(run: () => Promise<Credential | null>): Promise<PublicKeyCredential> {
+    try {
+        return (await run()) as PublicKeyCredential;
+    } catch (error) {
+        throw ceremonyError(error);
+    }
+}
+
+function ceremonyError(error: unknown): CapabilityError {
+    const name = error instanceof Error ? error.name : "";
+    switch (name) {
+        case "SecurityError":
+        case "NotSupportedError":
+            return new CapabilityError("UNSUPPORTED");
+        default:
+            return new CapabilityError("INTERNAL");
+    }
 }
