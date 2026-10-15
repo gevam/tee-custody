@@ -59,7 +59,10 @@ def open_frame(key: Secret, last_seq: int, aad: FrameAad, aad_bytes: bytes, ct: 
 
 
 class T2cSealer:
-    """Sole owner of sk_t2c and the t2c counter (D2-16, R-5); created by ChannelServer on Open."""
+    """Sole owner of sk_t2c and the t2c counter (D2-16, R-5); created by ChannelServer on Open.
+
+    Not thread-safe; used only from the single RunLoop thread (INC-2-API §4.13). No lock (A1).
+    """
 
     def __init__(self, sk_t2c: Secret) -> None:
         self._key = sk_t2c
@@ -101,7 +104,10 @@ class T2cSealer:
 
 
 class Session:
-    """Constructed only by SessionTable."""
+    """Constructed only by SessionTable.
+
+    Not thread-safe; used only from the single RunLoop thread (INC-2-API §4.13). No lock (A1).
+    """
 
     session_id: bytes
     client_id: str
@@ -136,6 +142,11 @@ class Session:
 
 
 class SessionTable:
+    """Bounded table of live sessions with R-8 idle eviction (D2-19).
+
+    Not thread-safe; used only from the single RunLoop thread (INC-2-API §4.13). No lock (A1).
+    """
+
     def __init__(
         self,
         *,

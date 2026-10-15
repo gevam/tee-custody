@@ -210,13 +210,15 @@ def test_session_seals_t2c_frames_with_seqs_from_one() -> None:
 
 
 # ---------------------------------------------------------------- edges
-def test_an_authenticated_empty_frame_is_refused_and_changes_nothing() -> None:
+def test_an_authenticated_empty_frame_is_auth_failed_and_changes_nothing() -> None:
+    # criterion 15 (A1)
     session, key, clock = _session()
-    assert (
-        _rejected(session, _frame(key, 0, plaintext=b""), T0 + 5) is SessionRejectCode.AUTH_FAILED
-    )
-    assert session.last_activity == T0
-    assert session.open_c2t(*_frame(key, 0), clock()).reveal() == b"p"
+    session.open_c2t(*_frame(key, 2), T0 + 1)
+    empty = _frame(key, 3, plaintext=b"")
+    assert _rejected(session, empty, T0 + 5) is SessionRejectCode.AUTH_FAILED
+    assert session._last_c2t_seq == 2
+    assert session.last_activity == T0 + 1
+    assert session.open_c2t(*_frame(key, 3), clock()).reveal() == b"p"
 
 
 def test_sessions_are_constructed_only_by_the_table() -> None:
@@ -253,3 +255,10 @@ def test_an_out_of_range_seq_is_seq_rejected_by_open_frame(seq: int, last_seq: i
     _aad, aad_bytes, ct = _frame(raw, 0)
     hand_built = (FrameAad(session_id=SESSION_ID, seq=seq, op=OP), aad_bytes, ct)
     assert _open_frame_code(Secret(raw), last_seq, hand_built) is SessionRejectCode.SEQ_REJECTED
+
+
+# ---------------------------------------------------------------- A1 concurrency note
+@pytest.mark.parametrize("cls", [T2cSealer, Session, SessionTable])
+def test_the_single_thread_assumption_is_documented(cls: type) -> None:
+    doc = " ".join((cls.__doc__ or "").split()).lower()
+    assert "not thread-safe; used only from the single runloop thread (inc-2-api §4.13)" in doc
