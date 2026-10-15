@@ -143,15 +143,19 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         });
     }
 
-    /** ADR 0011 C7a.3: no @hpke/* call unless `globalThis.crypto.subtle` exists right now. */
+    /** ADR 0011 C7a.3: no @hpke/* call unless `globalThis.crypto.subtle` exists right now. C8: only success is cached. */
     async function hpkeSuite(): Promise<CipherSuite> {
         const globalSubtle = platformCrypto()?.subtle;
         if (globalSubtle === undefined) {
             throw new CapabilityError("UNSUPPORTED");
         }
-        suite ??= probeSuite(globalSubtle);
-        const ready = await suite;
+        const pending = (suite ??= probeSuite(globalSubtle));
+        const ready = await pending;
         if (ready === undefined) {
+            // ADR 0011 C8: a failed probe is not cached; a concurrent caller's newer probe is kept.
+            if (suite === pending) {
+                suite = undefined;
+            }
             throw new CapabilityError("UNSUPPORTED");
         }
         return ready;

@@ -190,3 +190,30 @@ describe("probe transient failure (criterion 3, R1)", () => {
         );
     });
 });
+
+describe("failed probe not cached (criterion 4, R1)", () => {
+    it("probes 3 times per HPKE call while X25519 fails, then recovers and caches success", async () => {
+        const { sk, pk } = x25519();
+        const h = harness(() => true);
+        const crypto = createWebCrypto();
+        for (const call of [
+            () => crypto.setupHpkeSender(pk, INFO),
+            () => crypto.setupHpkeReceiver(sk, pk, INFO),
+            () => crypto.setupHpkeSender(pk, INFO),
+        ]) {
+            const before = h.probeCalls();
+            expect(codeOf(await rejection(call()))).toBe("UNSUPPORTED");
+            expect(h.probeCalls() - before).toBe(3);
+        }
+        expect(h.senderCalls()).toBe(0);
+        h.setFault(() => false);
+        const recovered = h.probeCalls();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+        expect(h.probeCalls() - recovered).toBe(1);
+        const cached = h.probeCalls();
+        await crypto.setupHpkeSender(pk, INFO);
+        await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        expect(h.probeCalls() - cached).toBe(0);
+    });
+});
