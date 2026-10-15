@@ -40,3 +40,4 @@ Collected by the Orchestrator during INC-2 (2026-10-11..15). These are raw obser
 - Merges were dispatched before verdicts were recorded in DECISIONS. The Release Engineer now refuses without a record.
 - QA-7 missed a contract test.
 - T-30 created a scratch dir outside the scratchpad (/home/geva/code/tmp/T-30-*). It is still present, pending human OK to delete.
+- Orchestrator error: the STATUS rewrite at eb82a49 replaced the INC-1 summary table, because a script matched the first '| Item | State |'. Restored at 5d53679. Lesson: rewrite STATUS sections by heading anchors, and diff before committing.
