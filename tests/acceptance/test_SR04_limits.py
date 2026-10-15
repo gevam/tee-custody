@@ -245,7 +245,7 @@ def test_SR04_the_channel_answers_limit_exceeded_when_the_session_table_is_full(
     assert not refused.ok and refused.session_id is None and refused.error == "LIMIT_EXCEEDED"
     assert opened.session_id is not None and world.sessions.get(opened.session_id) is not None
     request = world.opener.requests[-1]  # type: ignore[attr-defined]
-    assert (request.session_id, CloseReason.OPEN_ABORTED) in world.closes
+    assert (request.session_id, CloseReason.OPEN_ABORTED) in world.opener.closed_calls  # type: ignore[attr-defined]
     assert world.flush_aggregates() == {"CHANNEL_LIMIT_EXCEEDED": 1}
 
 

@@ -392,7 +392,7 @@ def test_SR14_a_principal_that_differs_from_the_claim_creates_no_session() -> No
     # And no session exists, and the opener was told the open was aborted
     request = world.opener.requests[0]  # type: ignore[attr-defined]
     assert world.sessions.get(request.session_id) is None
-    assert (request.session_id, CloseReason.OPEN_ABORTED) in world.closes
+    assert (request.session_id, CloseReason.OPEN_ABORTED) in world.opener.closed_calls  # type: ignore[attr-defined]
     # And the audit counts it as a rejected open
     assert world.flush_aggregates() == {"OPEN_REJECTED": 1}
 
