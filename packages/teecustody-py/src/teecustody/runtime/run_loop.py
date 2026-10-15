@@ -102,6 +102,8 @@ class RunLoop:
         self._logger = logger if logger is not None else get_logger("runtime")
         self._instance_id = rng(16).hex()
         self._live: _Live | None = None
+        self._refresh_failures = 0
+        self._next_refresh_attempt_at = float("-inf")
 
     @property
     def instance_id(self) -> str:
@@ -185,7 +187,32 @@ class RunLoop:
         raise NotImplementedError("T-29")
 
     def tick(self) -> TickReport:
-        raise NotImplementedError("T-29")
+        live = self._require_live()
+        refresh = self._refresh(live)
+        return TickReport(refresh=refresh, bundle_published=False, processed=0)
+
+    def _require_live(self) -> _Live:
+        if self._live is None:
+            raise RuntimeError("NOT_STARTED")
+        return self._live
+
+    def _refresh(self, live: _Live) -> RefreshOutcome | None:
+        """(1) B-08: the launcher is never asked before `next_refresh_attempt_at`."""
+        now = self._clock()
+        if now < self._next_refresh_attempt_at:
+            return None
+        outcome = live.lifecycle.refresh_if_due()
+        if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
+            self._refresh_failures += 1
+            self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
+        elif outcome is RefreshOutcome.REFRESHED:
+            self._refresh_failures = 0
+        return outcome
+
+    def _backoff(self, failures: int) -> int:
+        """`min(retry_max, retry_min × 2^(n−1))` for the n-th consecutive failure (B-08)."""
+        retry_min = self._limits.attestation_retry_min_s
+        return min(self._limits.attestation_retry_max_s, retry_min * 2 ** (failures - 1))
 
     def run(self, stop: threading.Event) -> None:
         raise NotImplementedError("T-29")
