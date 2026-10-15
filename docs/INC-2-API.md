@@ -2262,12 +2262,14 @@ Steps, in order:
    - Production profile: `discoveryUrl === GOOGLE_DISCOVERY_URL`.
    - Development profile: `discoveryUrl` has no `?` and no `#`; `new URL(d).href === d`; it has no userinfo; its protocol is `http:` or `https:`; its hostname is a loopback host; its pathname is `/.well-known/openid-configuration`; and its origin equals `new URL(profile.jwks_uri).origin`.
 2. **Fetch discovery** with `fetcher.get(discoveryUrl)`.
-   - The call rejects, or `status !== 200` → `DISCOVERY_UNAVAILABLE`.
+   - The call rejects with `CapabilityError("INVALID_RESPONSE")` (a Fetcher-level size or framing rejection, §8.2 step 5) → `DISCOVERY_INVALID`. The test is `instanceof CapabilityError` (a value import from `@teecustody/core`) and `code === "INVALID_RESPONSE"`. A plain object with that code is not a match.
+   - The call rejects or throws in any other way (a synchronous throw from `fetcher.get` included), or `status !== 200` → `DISCOVERY_UNAVAILABLE`.
    - The body is larger than the maximum, is not strict UTF-8 (`utf8DecodeStrict`), is not JSON, or is not a JSON object (`isJsonObject`) → `DISCOVERY_INVALID`.
 3. **Issuer.** The own member `issuer` `!== profile.issuer` → `ISSUER_MISMATCH`. Exact string comparison, no normalisation.
 4. **JWKS URI.** The own member `jwks_uri` is not a string, or `!== profile.jwks_uri` → `JWKS_URI_MISMATCH`. Exact string comparison: a trailing slash, a case difference or a percent-encoding difference is a mismatch.
 5. **Fetch the JWKS** with `fetcher.get(profile.jwks_uri)`.
-   - The call rejects, or `status !== 200` → `JWKS_UNAVAILABLE`.
+   - The call rejects with `CapabilityError("INVALID_RESPONSE")` (a Fetcher-level size or framing rejection, §8.2 step 5) → `JWKS_INVALID`, by the same test as step 2.
+   - The call rejects or throws in any other way (a synchronous throw from `fetcher.get` included), or `status !== 200` → `JWKS_UNAVAILABLE`.
    - The size, UTF-8, JSON or object check fails, or `keys` is not an array → `JWKS_INVALID`.
 6. **Count usable keys.** An entry of `keys` is usable when it is a JSON object with:
    - `kty` `"RSA"`;
@@ -2311,7 +2313,10 @@ teecustody-profile check-discovery --profile <path> [--discovery-url <url>] [--p
 | discovery URL | production: if absent, `GOOGLE_DISCOVERY_URL` is used; if present it must equal that value. Development: required | `INVALID_ARGUMENT` | 2 |
 | `--probe-cors` | `new URL(o).origin === o`, and the scheme is `https:`, or `http:` on a loopback host | `INVALID_ARGUMENT` | 2 |
 | binding | `checkDiscoveryBinding` with `FetchFetcher({ maxBodyBytes: 65536, timeoutMs })` and `maxDocumentBytes` 65536 | its `DiscoveryBindingErrorCode` (`INVALID_ARGUMENT` exits 2) | 1 |
-| CORS probe (only with `--probe-cors`) | One GET of `profile.jwks_uri` and one of the discovery URL, through `node:https` / `node:http` `request`. Each sends exactly one request header, `Origin: <origin>`, follows no redirect, discards the body after at most 65536 bytes, and uses the same timeout. The JWKS response must have status 200 and `Access-Control-Allow-Origin` equal to `*` or to the origin. The discovery probe is informational only | `CORS_MISSING` | 1 |
+| CORS probe (only with `--probe-cors`) | One GET of `profile.jwks_uri` and one of the discovery URL, through `node:https` / `node:http` `request`. Each sends exactly one request header, `Origin: <origin>`, follows no redirect, discards the body after at most 65536 bytes, and uses the same timeout. The JWKS response must have status 200 and `Access-Control-Allow-Origin` equal to `*` or to the origin. The discovery probe is informational only. Any throw while a probe is issued, including a synchronous throw from `request`, is a failed probe: for JWKS it gives `CORS_MISSING`; for discovery it stays informational (exit 0) | `CORS_MISSING` | 1 |
+| any other failure (a defect: not one of the rows above) | Any caught value that is not `instanceof` the CLI's own failure type. Nothing is written to stdout. The error's message, name and stack are never written (SR-11). `INTERNAL` is a CLI-only code and is not a `DiscoveryBindingErrorCode` (precedent: §8.3 "anything else → `INTERNAL`") | `INTERNAL` | 1 |
+
+`main` returns only 0, 1 or 2.
 
 **Success output.** Exit 0 and exactly one stdout line: `ok issuer=<issuer> jwks_uri=<jwks_uri> keys=<n>`. With `--probe-cors` the line continues with ` jwks_acao=<v> discovery_acao=<v>`, where `<v>` is:
 - the header value, if it matches `[!-~]{1,256}`;
