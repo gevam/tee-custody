@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import fastapi
 import pytest
+import uvicorn
 
 import notes_gateway
 from notes_gateway import GatewayLimits, create_app
@@ -50,6 +51,36 @@ def test_package_exports_exactly_create_app_and_gateway_limits() -> None:
 
 def test_create_app_signature_equals_api_transcription() -> None:
     assert inspect.signature(create_app) == inspect.signature(_spec_create_app)
+
+
+def _spec_uvicorn_config(
+    app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimits(), host: str, port: int
+) -> uvicorn.Config: ...
+
+
+def test_server_module_exports_exactly_uvicorn_config() -> None:
+    from notes_gateway import server
+
+    assert server.__all__ == ["uvicorn_config"]
+    public = sorted(
+        name
+        for name, value in vars(server).items()
+        if not name.startswith("_") and not isinstance(value, types.ModuleType)
+    )
+    assert public == ["uvicorn_config"]
+
+
+def test_uvicorn_config_signature_equals_api_section_6_transcription() -> None:
+    from notes_gateway import server
+
+    assert inspect.signature(server.uvicorn_config, eval_str=True) == inspect.signature(
+        _spec_uvicorn_config, eval_str=True
+    )
+
+
+def test_server_module_is_not_re_exported_from_the_package() -> None:
+    assert "server" not in notes_gateway.__all__
+    assert not hasattr(notes_gateway, "uvicorn_config")
 
 
 def _spec_dev_main(argv: Sequence[str] | None = None) -> int: ...
