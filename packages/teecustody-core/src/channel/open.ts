@@ -33,6 +33,7 @@ export interface OpenDeps {
 }
 
 const ID_BYTES = 16;
+const UINT32_RANGE = 2 ** 32;
 const KEY_BYTES = 32;
 const C2T = utf8Encode("c2t");
 const T2C = utf8Encode("t2c");
@@ -41,6 +42,18 @@ interface Sealed {
     readonly envelope: Bytes;
     readonly keyC2t: Bytes;
     readonly keyT2c: Bytes;
+}
+
+// The open plaintext. The payload is validated before anything is fetched or sealed.
+function openPlaintext(payload: OpenPayload): Bytes {
+    try {
+        if (payload.op === "open_session" && !HEX32_PATTERN.test(payload.clientId)) {
+            throw new RangeError("CLIENT_ID_RANGE");
+        }
+        return encodeOpenPlaintext(payload);
+    } catch {
+        throw new ChannelError("INVALID_ARGUMENT");
+    }
 }
 
 // Spec §5.3 step 10: the share and the plaintext holding it are zeroed; `open` consumes payload.cs.
@@ -83,8 +96,21 @@ async function resolveBundle(
             return given;
         }
     }
-    const [bundle] = await deps.fetchBundles();
-    return checkBrand(bundle as VerifiedBundle);
+    const bundles = await deps.fetchBundles();
+    const index = await viaCrypto(() => uniformIndex(bundles.length, deps.crypto));
+    return checkBrand(bundles[index] as VerifiedBundle);
+}
+
+// Uniform in [0, n) from a uint32 draw; draws in the biased tail [limit, 2^32) are discarded.
+function uniformIndex(n: number, crypto: Pick<Crypto, "randomBytes">): number {
+    const limit = UINT32_RANGE - (UINT32_RANGE % n);
+    for (;;) {
+        const draw = crypto.randomBytes(4);
+        const r = new DataView(draw.buffer, draw.byteOffset, draw.byteLength).getUint32(0);
+        if (r < limit) {
+            return r % n;
+        }
+    }
 }
 
 function random16(crypto: Pick<Crypto, "randomBytes">): Bytes {
@@ -186,7 +212,7 @@ export async function openChannel(
     payload: OpenPayload,
     given: VerifiedBundle | undefined,
 ): Promise<OpenOutcome> {
-    const pt = encodeOpenPlaintext(payload);
+    const pt = openPlaintext(payload);
     try {
         return await establish(deps, payload, pt, given);
     } finally {

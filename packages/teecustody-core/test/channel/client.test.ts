@@ -11,6 +11,7 @@ import {
     DEFAULT_CHANNEL_LIMITS,
     type ChannelClientConfig,
     type ChannelLimits,
+    type OpenPayload,
 } from "../../src/channel/types.js";
 import {
     CLIENT,
@@ -776,5 +777,71 @@ describe("constructor validation (TypeError INVALID_CONFIG)", () => {
         const started = clock.now();
         expect((await failure(client.open(openSession()))).code).toBe("TIMEOUT");
         expect(clock.now() - started).toBeGreaterThanOrEqual(TEST_LIMITS.responseTimeoutMs);
+    });
+});
+
+describe("open argument validation (INVALID_ARGUMENT before anything is fetched)", () => {
+    const base = openSession();
+    it.each([
+        ["an upper-case client id", { ...base, clientId: "C1".repeat(16) }],
+        ["a short client id", { ...base, clientId: "c1".repeat(15) }],
+        ["a non-string client id", { ...base, clientId: 7 }],
+        ["a 31-byte cs", { ...base, cs: new Uint8Array(31) }],
+        ["a 15-byte key id", { ...base, keyId: new Uint8Array(15) }],
+        ["a negative epoch", { ...base, epoch: -1 }],
+        ["an epoch above uint32", { ...base, epoch: 2 ** 32 }],
+        ["an unknown op", { op: "rotate" }],
+    ])("refuses %s", async (_name, payload) => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const error = await failure(client.open(payload as unknown as OpenPayload));
+        expect(error.code).toBe("INVALID_ARGUMENT");
+        expect(verifyBundle).not.toHaveBeenCalled();
+        expect(workload.posts).toHaveLength(0);
+    });
+});
+
+describe("bundle choice", () => {
+    function scripted(inner: Crypto, script: Uint8Array[]): Crypto {
+        return {
+            ...inner,
+            randomBytes: (n) => {
+                const next = n === 4 ? script.shift() : undefined;
+                return next ?? inner.randomBytes(n);
+            },
+        };
+    }
+
+    it("picks a fetched bundle uniformly, redrawing a draw in the biased tail", async () => {
+        const fixtures = [
+            fx,
+            await instanceFixture("d1".repeat(16)),
+            await instanceFixture("d2".repeat(16)),
+        ];
+        workload = new FakeWorkload(...fixtures);
+        serveBundles(...fixtures);
+        const script = [new Uint8Array([0xff, 0xff, 0xff, 0xff]), new Uint8Array([0, 0, 0, 5])];
+        const client = new ChannelClient(
+            clientConfig(workload, clock, { crypto: scripted(workload.crypto, script) }),
+        );
+        const { session } = await client.open(openSession());
+        expect(session.instanceId).toBe("d2".repeat(16));
+        expect(script).toHaveLength(0);
+    });
+
+    it("spreads opens over every verified bundle", async () => {
+        const fixtures = [
+            fx,
+            await instanceFixture("d1".repeat(16)),
+            await instanceFixture("d2".repeat(16)),
+        ];
+        workload = new FakeWorkload(...fixtures);
+        serveBundles(...fixtures);
+        const seen = new Map<string, number>();
+        for (let i = 0; i < 60; i += 1) {
+            const client = new ChannelClient(clientConfig(workload, clock));
+            const { session } = await client.open(openSession());
+            seen.set(session.instanceId, (seen.get(session.instanceId) ?? 0) + 1);
+        }
+        expect([...seen.keys()].sort()).toEqual(fixtures.map((f) => f.instanceId).sort());
     });
 });
