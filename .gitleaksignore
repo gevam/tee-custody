@@ -1,0 +1,2 @@
+# T-26 HPKE export variable names in channel/open.ts, not a secret; Tech Lead A3 2026-10-15
+275e8284636db23b79c2b05055d4f23374ad613f:packages/teecustody-core/src/channel/open.ts:generic-api-key:110

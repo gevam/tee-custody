@@ -40,8 +40,8 @@ const T2C = utf8Encode("t2c");
 
 interface Sealed {
     readonly envelope: Bytes;
-    readonly keyC2t: Bytes;
-    readonly keyT2c: Bytes;
+    readonly exportC2t: Bytes;
+    readonly exportT2c: Bytes;
 }
 
 // The open plaintext. The payload is validated before anything is fetched or sealed.
@@ -131,12 +131,16 @@ async function seal(
     const ctx = await crypto.setupHpkeSender(pub, info);
     try {
         const ct = await ctx.seal(aadBytes, pt);
-        const keyC2t = await ctx.export(C2T, KEY_BYTES);
-        const keyT2c = await ctx.export(T2C, KEY_BYTES);
-        if (keyC2t.length !== KEY_BYTES || keyT2c.length !== KEY_BYTES) {
+        const exportC2t = await ctx.export(C2T, KEY_BYTES);
+        const exportT2c = await ctx.export(T2C, KEY_BYTES);
+        if (exportC2t.length !== KEY_BYTES || exportT2c.length !== KEY_BYTES) {
             throw new CapabilityError("INVALID_RESPONSE");
         }
-        return { envelope: encodeOpenRequest(aadBytes, ctx.encapsulatedKey, ct), keyC2t, keyT2c };
+        return {
+            envelope: encodeOpenRequest(aadBytes, ctx.encapsulatedKey, ct),
+            exportC2t,
+            exportT2c,
+        };
     } finally {
         ctx.destroy();
     }
@@ -172,14 +176,14 @@ async function establish(
         requestId,
         timestamp: Math.floor(clock.now() / 1000),
     });
-    const { envelope, keyC2t, keyT2c } = await viaCrypto(async () =>
+    const { envelope, exportC2t, exportT2c } = await viaCrypto(async () =>
         seal(crypto, pub, await hpkeInfo(crypto, ikPub, prekey.id), aadBytes, pt),
     );
     wipe(payload, pt);
     try {
         await link.post(instanceId, envelope);
         const match = await link.wait(route, {}, (body) =>
-            readOpenResult(crypto, keyT2c, requestId, body, limits),
+            readOpenResult(crypto, exportT2c, requestId, body, limits),
         );
         if (!match.ok) {
             throw new ChannelError("REMOTE_ERROR", match.error);
@@ -188,8 +192,8 @@ async function establish(
             sessionId: match.sessionId,
             instanceId,
             clientId: payload.op === "enroll" ? enrolledClientId(match.payload) : route,
-            keyC2t,
-            keyT2c,
+            keyC2t: exportC2t,
+            keyT2c: exportT2c,
             crypto,
             limits,
             link,
@@ -197,8 +201,8 @@ async function establish(
         return { session, payload: match.payload };
     } catch (error) {
         // Keys are zeroed on every failure (TRANSPORT, TIMEOUT, REMOTE_ERROR, INVALID_RESPONSE).
-        keyC2t.fill(0);
-        keyT2c.fill(0);
+        exportC2t.fill(0);
+        exportT2c.fill(0);
         throw error;
     } finally {
         if (payload.op === "enroll") {
