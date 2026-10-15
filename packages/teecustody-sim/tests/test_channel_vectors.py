@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import time
 from itertools import pairwise
 from pathlib import Path
@@ -18,6 +19,8 @@ from typing import Any
 import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.codec import EnvelopeError, decode_bundle
 from teecustody.wire import PROTO, DecodeLimits, WireError, WireErrorCode, decode
@@ -325,3 +328,157 @@ def test_noncanonical_widens_only_the_first_integer_of_a_canonical_bundle(
     assert value < 24
     canonical = data[: position + 3] + bytes([value]) + data[position + 12 :]
     assert decode_bundle(canonical, BUNDLE_DECODE_LIMITS).prekeys[0].id == value
+
+
+# --- opens (criterion 4) ---------------------------------------------------------------------
+
+OPEN_KEYS = {
+    "id",
+    "recipient_private_key",
+    "ik_pub",
+    "prekey_id",
+    "envelope",
+    "expect",
+    "plaintext",
+    "sk_c2t",
+    "sk_t2c",
+    "error_code",
+}
+OPEN_OUTCOMES = {
+    "valid_open_session": "none",
+    "valid_enroll": "none",
+    "aad_modified": "OPEN_FAILED",
+    "info_other_prekey": "OPEN_FAILED",
+    "ct_truncated": "OPEN_FAILED",  # README allows any reject code; the AEAD rejects this one
+    "enc_wrong_length": "INVALID_ENVELOPE",
+    "timestamp_over_max": "INVALID_ENVELOPE",
+}
+HPKE = CipherSuite.new(KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM)
+ENVELOPE_LIMITS = DecodeLimits(max_bytes=65_536, max_depth=2, max_items=16)
+HEX32 = re.compile(r"[0-9a-f]{32}")
+OP_NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
+MAX_UNIX_S = 2**53 - 1
+OPEN_AAD_KEYS = {"proto", "client_id", "instance_id", "prekey_id", "request_id", "timestamp"}
+
+
+def _map(data: bytes) -> dict[str, Any]:
+    value = decode(data, ENVELOPE_LIMITS)
+    assert isinstance(value, dict)
+    return value
+
+
+def _is_uint(value: object, maximum: int) -> bool:
+    return type(value) is int and 0 <= value <= maximum
+
+
+def _open_aad_is_valid(aad: dict[str, Any]) -> bool:
+    """channel.cddl `open-aad`, checked by the test itself."""
+    return (
+        set(aad) == OPEN_AAD_KEYS
+        and aad["proto"] == PROTO
+        and HEX32.fullmatch(aad["client_id"]) is not None
+        and HEX32.fullmatch(aad["instance_id"]) is not None
+        and _is_uint(aad["prekey_id"], 2**32 - 1)
+        and type(aad["request_id"]) is bytes
+        and len(aad["request_id"]) == 16
+        and _is_uint(aad["timestamp"], MAX_UNIX_S)
+    )
+
+
+def _open_request_is_valid(envelope: dict[str, Any]) -> bool:
+    """channel.cddl `open-request`, checked by the test itself."""
+    return (
+        set(envelope) == {"kind", "aad", "enc", "ct"}
+        and envelope["kind"] == "open"
+        and len(envelope["enc"]) == 32
+        and 16 <= len(envelope["ct"]) <= 2048
+        and _open_aad_is_valid(_map(envelope["aad"]))
+    )
+
+
+def _info(ik_pub: bytes, prekey_id: int) -> bytes:
+    """spec/wire/README.md: HPKE info = ascii(PROTO) || H(IK_pub) || u32be(prekey_id)."""
+    return PROTO.encode("ascii") + hashlib.sha256(ik_pub).digest() + prekey_id.to_bytes(4, "big")
+
+
+def _hpke_open(case: dict[str, Any], envelope: dict[str, Any]) -> tuple[bytes, bytes, bytes] | None:
+    key = HPKE.kem.deserialize_private_key(case["recipient_private_key"])
+    try:
+        context = HPKE.create_recipient_context(
+            envelope["enc"], key, _info(case["ik_pub"], case["prekey_id"])
+        )
+        plaintext = context.open(envelope["ct"], aad=envelope["aad"])
+    except Exception:  # noqa: BLE001 - any pyhpke failure is an HPKE open failure
+        return None
+    return plaintext, context.export(b"c2t", 32), context.export(b"t2c", 32)
+
+
+def _open_outcome(case: dict[str, Any]) -> tuple[str, bytes | None, bytes | None, bytes | None]:
+    envelope = _map(case["envelope"])
+    if not _open_request_is_valid(envelope):
+        return "INVALID_ENVELOPE", None, None, None
+    opened = _hpke_open(case, envelope)
+    if opened is None:
+        return "OPEN_FAILED", None, None, None
+    return ("none", *opened)
+
+
+def test_open_cases_are_consistent_and_match_the_outcome_table(suite: dict[str, Any]) -> None:
+    for case in suite["opens"]:
+        assert set(case) == OPEN_KEYS, case["id"]
+        assert case["error_code"] == OPEN_OUTCOMES[case["id"]], case["id"]
+        accepted = case["expect"] == "accept"
+        assert accepted == (case["error_code"] == "none"), case["id"]
+        for field in ("plaintext", "sk_c2t", "sk_t2c"):
+            assert (case[field] is not None) == accepted, (case["id"], field)
+
+
+def test_pyhpke_recipient_opens_accepted_cases_and_rejects_the_rest_as_coded(
+    suite: dict[str, Any],
+) -> None:
+    for case in suite["opens"]:
+        expected = (case["error_code"], case["plaintext"], case["sk_c2t"], case["sk_t2c"])
+        assert _open_outcome(case) == expected, case["id"]
+
+
+def test_accepted_open_plaintexts_are_the_canonical_open_payloads(suite: dict[str, Any]) -> None:
+    cases = _by_id(suite, "opens")
+    session = decode(cases["valid_open_session"]["plaintext"], ENVELOPE_LIMITS)
+    assert isinstance(session, dict)
+    assert set(session) == {"op", "cs", "key_id", "epoch"}
+    assert session["op"] == "open_session"
+    assert (len(session["cs"]), len(session["key_id"])) == (32, 16)
+    assert _is_uint(session["epoch"], 2**32 - 1)
+    assert decode(cases["valid_enroll"]["plaintext"], ENVELOPE_LIMITS) == {"op": "enroll"}
+
+
+def test_opens_are_sealed_to_a_pre_key_of_the_valid_bundle(suite: dict[str, Any]) -> None:
+    bundle = decode_bundle(_by_id(suite, "bundles")["valid"]["bundle"], BUNDLE_DECODE_LIMITS)
+    published = {prekey.id: prekey.pub for prekey in bundle.prekeys}
+    for case in suite["opens"]:
+        private = X25519PrivateKey.from_private_bytes(case["recipient_private_key"])
+        assert published[case["prekey_id"]] == private.public_key().public_bytes_raw()
+        assert case["ik_pub"] == bundle.ik_pub
+        aad = _map(_map(case["envelope"])["aad"])
+        assert (aad["instance_id"], aad["prekey_id"]) == (bundle.instance_id, case["prekey_id"])
+
+
+def test_reject_opens_change_only_their_named_field(suite: dict[str, Any]) -> None:
+    cases = _by_id(suite, "opens")
+    valid = _map(cases["valid_open_session"]["envelope"])
+    truncated = _map(cases["ct_truncated"]["envelope"])
+    assert {**truncated, "ct": valid["ct"]} == valid
+    assert valid["ct"].startswith(truncated["ct"])
+    assert len(truncated["ct"]) < len(valid["ct"])
+    short_enc = _map(cases["enc_wrong_length"]["envelope"])
+    assert {**short_enc, "enc": valid["enc"]} == valid
+    assert len(short_enc["enc"]) != 32
+    over_max = _map(_map(cases["timestamp_over_max"]["envelope"])["aad"])
+    assert over_max["timestamp"] == OVER_MAX
+    other = _map(cases["info_other_prekey"]["envelope"])
+    assert _map(other["aad"])["prekey_id"] == cases["info_other_prekey"]["prekey_id"]
+    info_case = {
+        **cases["info_other_prekey"],
+        "prekey_id": cases["info_other_prekey"]["prekey_id"] + 1,
+    }
+    assert _hpke_open(info_case, other) is not None  # sealed with prekey_id + 1 in info

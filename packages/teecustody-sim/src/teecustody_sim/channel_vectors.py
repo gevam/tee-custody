@@ -14,11 +14,13 @@ from typing import Final
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from pyhpke import AEADId, CipherSuite, KDFId, KEMId
 
 from teecustody.channel.codec import (
     PreKeyBundle,
     PreKeyEntry,
     encode_bundle,
+    hpke_info,
     prekey_signing_message,
 )
 from teecustody.wire import PROTO, CanonicalValue, encode
@@ -46,6 +48,10 @@ _PREKEY_COUNT: Final = 3
 _OVER_MAX: Final = 2**53  # one past MAX_UNIX_S / MAX_SEQ (R-1)
 _ID_BYTES: Final = 16
 _WIDE_ARGUMENT: Final = 27  # CBOR additional information: 8-byte argument
+_KEY_BYTES: Final = 32
+_HEX_DIGITS: Final = "0123456789abcdef"
+_HPKE: Final = CipherSuite.new(KEMId.DHKEM_X25519_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES256_GCM)
+_OPEN_PREKEY_ID: Final = 0
 _FRAME_NAMES: Final = (
     "valid",
     "seq_equal_last",
@@ -55,15 +61,6 @@ _FRAME_NAMES: Final = (
     "aad_session_modified",
     "wrong_key",
     "ct_bitflip",
-)
-_OPEN_IDS: Final = (
-    "valid_open_session",
-    "valid_enroll",
-    "aad_modified",
-    "info_other_prekey",
-    "ct_truncated",
-    "enc_wrong_length",
-    "timestamp_over_max",
 )
 _RESULT_IDS: Final = (
     "open_ok",
@@ -95,7 +92,8 @@ class _Workload:
     prekeys: tuple[X25519PrivateKey, ...]
 
 
-def _instance_id() -> str:
+def _hex_id() -> str:
+    """An `instance_id` / `client_id`: hex of 16 random bytes."""
     return os.urandom(_ID_BYTES).hex()
 
 
@@ -244,14 +242,10 @@ def _bundle_cases(workload: _Workload, dbgstat_token: str) -> list[CanonicalValu
         _bundle_case(
             "prekey_sig_other_instance",
             iid,
-            _bundle(
-                workload, [*valid[:last], _entry(workload, last, live, instance_id=_instance_id())]
-            ),
+            _bundle(workload, [*valid[:last], _entry(workload, last, live, instance_id=_hex_id())]),
             bad,
         ),
-        _bundle_case(
-            "instance_mismatch", _instance_id(), _bundle(workload, valid), "INSTANCE_MISMATCH"
-        ),
+        _bundle_case("instance_mismatch", _hex_id(), _bundle(workload, valid), "INSTANCE_MISMATCH"),
         _bundle_case(
             "ik_nonce_mismatch",
             iid,
@@ -297,6 +291,127 @@ def _bundle_cases(workload: _Workload, dbgstat_token: str) -> list[CanonicalValu
     ]
 
 
+@dataclass(frozen=True)
+class _Sealed:
+    """One HPKE Base-mode seal: the envelope parts and both exported session keys."""
+
+    aad: bytes
+    enc: bytes
+    ct: bytes
+    plaintext: bytes
+    sk_c2t: bytes
+    sk_t2c: bytes
+
+
+def _seal(pub: bytes, info: bytes, aad: bytes, plaintext: bytes) -> _Sealed:
+    """Sender side, `pyhpke` directly, with a fresh ephemeral key (no injected `eks`)."""
+    enc, sender = _HPKE.create_sender_context(_HPKE.kem.deserialize_public_key(pub), info)
+    ct = sender.seal(plaintext, aad)
+    return _Sealed(
+        aad=aad,
+        enc=enc,
+        ct=ct,
+        plaintext=plaintext,
+        sk_c2t=sender.export(b"c2t", _KEY_BYTES),
+        sk_t2c=sender.export(b"t2c", _KEY_BYTES),
+    )
+
+
+def _open_aad(workload: _Workload, client_id: str, timestamp: int) -> dict[str, CanonicalValue]:
+    return {
+        "proto": PROTO,
+        "client_id": client_id,
+        "instance_id": workload.instance_id,
+        "prekey_id": _OPEN_PREKEY_ID,
+        "request_id": os.urandom(_ID_BYTES),
+        "timestamp": timestamp,
+    }
+
+
+def _open_envelope(aad: bytes, enc: bytes, ct: bytes) -> bytes:
+    return encode({"kind": "open", "aad": aad, "enc": enc, "ct": ct})
+
+
+def _other_hex_digit(text: str) -> str:
+    """`text` with its first hex digit replaced by a different lowercase hex digit."""
+    return _HEX_DIGITS[(_HEX_DIGITS.index(text[0]) + 1) % len(_HEX_DIGITS)] + text[1:]
+
+
+def _open_case(
+    workload: _Workload, case_id: str, envelope: bytes, accepted: _Sealed | None, error_code: str
+) -> CanonicalValue:
+    return {
+        "id": case_id,
+        "recipient_private_key": workload.prekeys[_OPEN_PREKEY_ID].private_bytes_raw(),
+        "ik_pub": workload.ik_pub,
+        "prekey_id": _OPEN_PREKEY_ID,
+        "envelope": envelope,
+        "expect": "reject" if accepted is None else "accept",
+        "plaintext": None if accepted is None else accepted.plaintext,
+        "sk_c2t": None if accepted is None else accepted.sk_c2t,
+        "sk_t2c": None if accepted is None else accepted.sk_t2c,
+        "error_code": error_code,
+    }
+
+
+def _open_cases(workload: _Workload) -> tuple[list[CanonicalValue], _Sealed]:
+    """The open cases, and the valid `open_session` seal whose exports key the frame cases."""
+    pub = workload.prekeys[_OPEN_PREKEY_ID].public_key().public_bytes_raw()
+    info = hpke_info(workload.ik_pub, _OPEN_PREKEY_ID)
+    client_id = _hex_id()
+    open_session = encode(
+        {
+            "op": "open_session",
+            "cs": os.urandom(_KEY_BYTES),
+            "key_id": os.urandom(_ID_BYTES),
+            "epoch": 0,
+        }
+    )
+    session_aad = _open_aad(workload, client_id, workload.now)
+    session = _seal(pub, info, encode(session_aad), open_session)
+    enroll_aad = encode(_open_aad(workload, _hex_id(), workload.now))
+    enroll = _seal(pub, info, enroll_aad, encode({"op": "enroll"}))
+    # Schema-valid aad mutation (T-03 Low): one client_id hex digit; enc and ct unchanged.
+    modified_aad = encode({**session_aad, "client_id": _other_hex_digit(client_id)})
+    other_info = _seal(
+        pub, hpke_info(workload.ik_pub, _OPEN_PREKEY_ID + 1), session.aad, open_session
+    )
+    over_max = _seal(pub, info, encode(_open_aad(workload, client_id, _OVER_MAX)), open_session)
+    return [
+        _open_case(workload, "valid_open_session", _envelope_of(session), session, "none"),
+        _open_case(workload, "valid_enroll", _envelope_of(enroll), enroll, "none"),
+        _open_case(
+            workload,
+            "aad_modified",
+            _open_envelope(modified_aad, session.enc, session.ct),
+            None,
+            "OPEN_FAILED",
+        ),
+        _open_case(workload, "info_other_prekey", _envelope_of(other_info), None, "OPEN_FAILED"),
+        _open_case(
+            workload,
+            "ct_truncated",
+            _open_envelope(session.aad, session.enc, session.ct[:-1]),
+            None,
+            "OPEN_FAILED",
+        ),
+        _open_case(
+            workload,
+            "enc_wrong_length",
+            _open_envelope(session.aad, session.enc[:-1], session.ct),
+            None,
+            "INVALID_ENVELOPE",
+        ),
+        _open_case(
+            workload, "timestamp_over_max", _envelope_of(over_max), None, "INVALID_ENVELOPE"
+        ),
+    ], session
+
+
+def _envelope_of(sealed: _Sealed) -> bytes:
+    return _open_envelope(sealed.aad, sealed.enc, sealed.ct)
+
+
 def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     if now is None:
         now = int(time.time())
@@ -309,7 +424,7 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     nonce = hashlib.sha256(ik_pub).hexdigest()
     workload = _Workload(
         now=now,
-        instance_id=_instance_id(),
+        instance_id=_hex_id(),
         identity=identity,
         ik_pub=ik_pub,
         token=minter.mint(_AUDIENCE, [nonce], now),
@@ -318,6 +433,7 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     dbgstat_token = minter.mint(
         _AUDIENCE, [nonce], now, parse_alteration("alter", "dbgstat=enabled")
     )
+    opens, _ = _open_cases(workload)
     suite: dict[str, CanonicalValue] = {
         "suite": "teecustody-channel-vectors",
         "suite_version": 1,
@@ -327,7 +443,7 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
         "profile_json": "",
         "http": {},
         "bundles": _bundle_cases(workload, dbgstat_token),
-        "opens": [{"id": case_id} for case_id in _OPEN_IDS],
+        "opens": opens,
         "frames": [
             {"id": f"{direction}_{name}", "direction": direction}
             for direction in ("c2t", "t2c")
