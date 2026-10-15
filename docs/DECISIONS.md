@@ -1640,3 +1640,28 @@ This meets `coverage.line_min` 80 and `security_paths_min` 100.
 **Known flake, not a G5 blocker:** B-47 (the Core wire-fuzz wall-clock budget).
 
 **Dissent:** none
+
+## D-078 — INC-2 G7 passes (INC-2, 2026-10-15)
+
+Type: gate
+Chair / decider: Orchestrator, on the Security Reviewer's increment pass
+
+**Decision:** G7 passes on main 892343c.
+
+- **Per-branch reviews:** every INC-2 branch has Code and Security APPROVE recorded (D-039..D-076).
+- **Increment-level security pass: PASS, with 0 Critical, High or Medium findings.**
+- **Scanners:**
+  - semgrep: 0 findings;
+  - bandit: 7 Low false positives;
+  - pip-audit (39 packages): clean;
+  - pnpm audit: clean;
+  - gitleaks: 1115 commits, clean.
+  - trivy is not applicable: there is no image until INC-5.
+- **Invariants:** integration seams (secret wiping, SR-11 error categories, the log allow-list) and I1, I5, I6, I7 and I13 hold end to end. The D-043 pinned `jwks_uri` holds.
+- **Residual risks:** Low and informational, or human-accepted (T-29, D-043).
+- **New backlog items:**
+  - B-51 (Low, **Required for INC-3**): bind the verified-bundle brand to the client's trust profile.
+  - B-52 (Low): clamp or validate `timeoutMs`.
+- **Required for INC-3, carried:** B-24, B-25, B-26, B-27, B-33, B-41 and B-51. None is High.
+
+**Dissent:** none
