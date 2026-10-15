@@ -892,6 +892,59 @@ describe("verifyAttestation: the caller's identityNonce is copied at entry (T-33
         },
     );
 
+    // Round 2 (CR High): new Uint8Array(x) turns 32 or "32" into 32 zero bytes. Only a real Uint8Array is copied;
+    // anything else is nonce/MALFORMED, even against a token whose eat_nonce is 32 zero bytes.
+    const ZERO_NONCE = "00".repeat(32);
+    it.each([
+        ["the number 32", 32],
+        ['the string "32"', "32"],
+        ["a plain array of 32 zeros", new Array<number>(32).fill(0)],
+        ["an array-like {length: 32}", { length: 32 }],
+        ["a Uint8ClampedArray(32)", new Uint8ClampedArray(32)],
+        ["a Uint16Array(16)", new Uint16Array(16)],
+        ["a DataView over 32 bytes", new DataView(new ArrayBuffer(32))],
+        ["an ArrayBuffer(32)", new ArrayBuffer(32)],
+    ])("%s is not a byte view and is nonce/MALFORMED", async (_label, identityNonce) => {
+        const err = await verifyWith(await mint((c) => (c.eat_nonce = ZERO_NONCE)), {
+            expected: { identityNonce } as unknown as ExpectedAttestation,
+        });
+        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+    });
+
+    it.each([
+        ["a null expected", (): unknown => null],
+        [
+            "an identityNonce getter that throws",
+            (): unknown => ({
+                get identityNonce(): Uint8Array {
+                    throw new Error("unreadable");
+                },
+            }),
+        ],
+    ])("%s is nonce/MALFORMED, never a raw TypeError", async (_label, make) => {
+        const err = await rejection(
+            verifyAttestation(
+                await mint(),
+                PROFILE,
+                make() as ExpectedAttestation,
+                new MemorySink(),
+                harness().deps,
+            ),
+        );
+        expect([err.check, err.code]).toEqual(["nonce", "MALFORMED"]);
+    });
+
+    it("a real Uint8Array of 32 zero bytes is the control: it verifies a zero eat_nonce", async () => {
+        const result = await verifyAttestation(
+            await mint((c) => (c.eat_nonce = ZERO_NONCE)),
+            PROFILE,
+            { identityNonce: new Uint8Array(32) },
+            new MemorySink(),
+            harness().deps,
+        );
+        expect(result.issuer).toBe(ISSUER);
+    });
+
     it("a nonce whose own slice is hostile is still copied byte for byte", async () => {
         const hostile = Object.assign(IDENTITY_NONCE.slice(), {
             slice(): Uint8Array {

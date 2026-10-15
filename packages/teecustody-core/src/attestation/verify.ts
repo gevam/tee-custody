@@ -52,11 +52,14 @@ async function step<T>(check: AttestationCheckId, run: () => T | Promise<T>): Pr
 }
 
 // INC-2-API §7.1 (A2): the caller owns identityNonce, so it is copied before the first await and only the copy is
-// read. new Uint8Array(x) always copies; Buffer#slice would return a view. A value that cannot be copied is
-// undefined here and fails the nonce step as MALFORMED.
+// read. Only a real Uint8Array (Bytes; a Node Buffer is one) is copied: new Uint8Array(x) on a number, string or
+// array-like would mint zero bytes, and another view type is not the declared Bytes. Anything else, including a
+// cross-realm Uint8Array, is undefined here and fails the nonce step as MALFORMED (fail closed). new Uint8Array(u8)
+// copies, where Buffer#slice would return a view.
 function copyIdentityNonce(expected: ExpectedAttestation): Bytes | undefined {
     try {
-        return new Uint8Array(expected.identityNonce);
+        const nonce: unknown = expected.identityNonce;
+        return nonce instanceof Uint8Array ? new Uint8Array(nonce) : undefined;
     } catch {
         return undefined;
     }
