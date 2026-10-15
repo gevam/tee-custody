@@ -1,5 +1,7 @@
 // PrfShareVault (INC-2-API §8.4; FR-6; SR-5; SR-11; spec §10.1). IndexedDB is fake-indexeddb; the
 // authenticator is fake-authenticator.ts.
+import { readFileSync, readdirSync } from "node:fs";
+
 import { CapabilityError, encodeCanonical } from "@teecustody/core";
 import { IDBFactory, IDBObjectStore as FakeObjectStore } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -923,5 +925,84 @@ describe("criterion 12: the wrapping key is non-extractable", () => {
             { extractable: false, usages: ["deriveKey"] },
             { extractable: false, usages: ["deriveKey"] },
         ]);
+    });
+});
+
+/** A browser that advertises PRF (as Firefox does, V-02) whatever the authenticator can do. */
+function advertisingBrowser(): { auth: FakeAuthenticator; hints: () => number } {
+    const auth = new FakeAuthenticator();
+    const global = {
+        getClientCapabilities: vi.fn(() => Promise.resolve({ "extension:prf": true })),
+        isUserVerifyingPlatformAuthenticatorAvailable: vi.fn(() => Promise.resolve(true)),
+    };
+    vi.stubGlobal("PublicKeyCredential", global);
+    return {
+        auth,
+        hints: () =>
+            auth.hintCalls +
+            global.getClientCapabilities.mock.calls.length +
+            global.isUserVerifyingPlatformAuthenticatorAvailable.mock.calls.length,
+    };
+}
+
+describe("criteria 13-16: capability hints are never trusted (INC-2-API §8.4 a-d)", () => {
+    it("(a) a true extension:prf hint with prf.enabled false at create is UNSUPPORTED", async () => {
+        const { auth, hints } = advertisingBrowser();
+        auth.behaviour.prfEnabled = false;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        await expectNothingStored(idb);
+        expect(hints()).toBe(0);
+    });
+
+    it("(a) prf.enabled false is UNSUPPORTED even when 32-byte results are offered", async () => {
+        const { auth, hints } = advertisingBrowser();
+        auth.behaviour.createPrf = { enabled: false, results: { first: new ArrayBuffer(32) } };
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        expect(auth.gets).toHaveLength(0);
+        await expectNothingStored(idb);
+        expect(hints()).toBe(0);
+    });
+
+    it("(b) prf.enabled true but no results from create or get is UNSUPPORTED", async () => {
+        const { auth, hints } = advertisingBrowser();
+        auth.behaviour.resultsOnCreate = false;
+        auth.behaviour.resultsOnGet = false;
+        const idb = new IDBFactory();
+        expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
+        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create", "get"]);
+        await expectNothingStored(idb);
+        expect(hints()).toBe(0);
+    });
+
+    it.each([31, 33])(
+        "(c) results.first of %i bytes is UNSUPPORTED from create and from get",
+        async (n) => {
+            for (const resultsOnCreate of [true, false]) {
+                const { auth, hints } = advertisingBrowser();
+                auth.behaviour.resultLength = n;
+                auth.behaviour.resultsOnCreate = resultsOnCreate;
+                const idb = new IDBFactory();
+                expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe(
+                    "UNSUPPORTED",
+                );
+                await expectNothingStored(idb);
+                expect(hints()).toBe(0);
+            }
+        },
+    );
+
+    it("(d) no file under src/vault mentions a capability hint API", () => {
+        const dir = new URL("../../src/vault/", import.meta.url);
+        const files = readdirSync(dir, { recursive: true, withFileTypes: true }).filter((f) =>
+            f.isFile(),
+        );
+        expect(files.length).toBeGreaterThan(0);
+        for (const file of files) {
+            const text = readFileSync(`${file.parentPath}/${file.name}`, "utf8");
+            expect(text).not.toContain("getClientCapabilities");
+            expect(text).not.toContain("isUserVerifyingPlatformAuthenticatorAvailable");
+        }
     });
 });
