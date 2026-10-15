@@ -319,3 +319,32 @@ red until T-40 for the stated reasons (today (a) and (b) get 200; (c)-(f) get th
 green guard. With the two D-03 rows, 8 tests are red and all other EXPLORE tests are green (two runs). Review fixes: the harness start-up read is bounded with `select`;
 four tests that accepted any outcome now assert the single observed, contracted outcome (the vault concurrent-set test is deterministic with its double); the
 client-bundle-time margins are 5 s inside and outside the 300 s leeway so D-02 WSL clock steps cannot flip a case (one flake was seen at a 1 s margin).
+
+---
+
+# G6 result
+
+Date: 2026-10-15. Main: `892343c` (T-39, T-40, T-42 merged). Worktree `inc-2/QA-G6`. **Verdict: PASS.**
+
+| Run | Result |
+|---|---|
+| `uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway tests` (includes all Python acceptance, integration, e2e) | 4,842 passed, 0 failed |
+| `uv run pytest -q spec/vectors` | 236 passed |
+| `pnpm -r --no-bail test` | exit 0: core 1,479/1,479; tests package 673/673; web 771/771 |
+| Playwright `test:browser`, Chromium and Firefox | 12 passed, 4 skipped by design; WebKit cannot start on this host (missing system libraries), CI owns it |
+| EXPLORE files, Python | 202 passed (includes the D-03/D-04 rows, now green) |
+| EXPLORE files, TS | 54 passed |
+| FR-4 e2e (`FR04.channel-e2e.test.ts`), 5 runs | 18/18 each; no `NO_VERIFIED_BUNDLE`, no `NOT_YET_VALID` |
+
+**Phase 2 acceptance and SR table.** Every row in section 6 re-verified against main by the runs above: FR-4, FR-5, FR-6, NFR-2/3/4/6/7/8, SR-1, SR-3, SR-4, SR-6/12, SR-9, SR-11, SR-13 and SR-14 all pass. This includes the four formerly red rows
+`SR14.webcrypto-hpke.test.ts` Q1 to Q4 (T-39). Zero reds anywhere.
+
+**Defects.** D-01 to D-07 are all CLOSED in their files (D-01 MU-2; D-02 T-38/ADR 0013; D-03, D-04 T-40; D-05, D-06 T-40 A4; D-07 T-42 plus T-40 A5). No INC-2 defect is open.
+
+**INC-2-sourced backlog items for G6 to acknowledge** (B-items, not defects; none blocks G6).
+- Required for INC-3 or later: B-24 (global enroll budget), B-25 (`StaticShareOpener` not selectable), B-26 (queue ordering under pipelining), B-27 (cross-process simulator queue), B-41 (pre-key collision across clients), B-30 (before publishing `@teecustody/web`, INC-5).
+- Optional Low or info: B-28, B-29, B-31, B-32, B-33, B-34, B-35, B-36, B-37, B-38, B-39, B-40, B-42, B-43, B-44, B-46, B-47, B-48, B-49, B-50. B-45 is closed by T-39.
+
+**Traceability.** `docs/security/traceability.md` has no INC-2 GAP rows. The 13 GAP rows (I2, I3, I4, I8 to I12, §13.4, §13.5, §13.6, §13.7, §13.11) concern custody, recovery, KMS gating, image allow-list, hygiene review and environment split, which belong to INC-3 to INC-5.
+
+Cleanup: no harness process, `tc-e2e-*` directory or `test-results/` remains.
