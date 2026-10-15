@@ -12,7 +12,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Final
 
-from teecustody.audit import AppendResult, AuditClass, AuditErrorCode, AuditKey, AuditRecord
+from teecustody.audit import (
+    AppendResult,
+    AuditClass,
+    AuditError,
+    AuditErrorCode,
+    AuditKey,
+    AuditRecord,
+    validate_audit,
+)
 from teecustody.channel.codec import CLIENT_ID_PATTERN, INSTANCE_ID_PATTERN
 from teecustody.queue import (
     RELAY_ID_PATTERN,
@@ -241,13 +249,33 @@ class InMemoryAuditSink:
     """Implements `teecustody.audit.AuditSink`; thread-safe."""
 
     def __init__(self) -> None:
-        raise NotImplementedError("T-24")
+        self._lock = threading.Lock()
+        self._objects: dict[AuditKey, AuditRecord] = {}
+        self._fail_remaining = 0
+        self._fail_code = AuditErrorCode.UNAVAILABLE
 
     def append(self, key: AuditKey, record: AuditRecord) -> AppendResult:
-        raise NotImplementedError("T-24")
+        validate_audit(key, record)
+        with self._lock:
+            if self._fail_remaining > 0:
+                self._fail_remaining -= 1
+                raise AuditError(self._fail_code)
+            if key in self._objects:
+                return AppendResult.ALREADY_EXISTS
+            self._objects[key] = record
+            return AppendResult.CREATED
 
     def records(self, record_class: AuditClass | None = None) -> list[tuple[AuditKey, AuditRecord]]:
-        raise NotImplementedError("T-24")
+        with self._lock:
+            return [
+                (key, record)
+                for key, record in self._objects.items()
+                if record_class is None or key.record_class is record_class
+            ]
 
     def fail_next(self, n: int, code: AuditErrorCode = AuditErrorCode.UNAVAILABLE) -> None:
-        raise NotImplementedError("T-24")
+        if type(n) is not int or n < 0:
+            raise ValueError("FAIL_NEXT")
+        with self._lock:
+            self._fail_remaining = n
+            self._fail_code = code
