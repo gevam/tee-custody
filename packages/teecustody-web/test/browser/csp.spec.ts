@@ -95,6 +95,44 @@ async function addAuthenticator(page: Page, hasPrf: boolean): Promise<readonly s
     return ceremonies;
 }
 
+// Console errors and uncaught page errors, each as "<kind>: <text> @ <url>", minus those `expected` matches.
+function watchErrors(
+    page: Page,
+    expected: (line: string) => boolean = () => false,
+): () => string[] {
+    const lines: string[] = [];
+    page.on("console", (message) => {
+        if (message.type() === "error") {
+            lines.push(`console: ${message.text()} @ ${message.location().url}`);
+        }
+    });
+    page.on("pageerror", (error) => {
+        lines.push(`pageerror: ${error.name}: ${error.message}`);
+    });
+    return () => lines.filter((line) => !expected(line));
+}
+
+// B1 (§16.9): the discovery_cors step's page fetch of the simulator discovery URL is blocked by CORS by
+// design, and browsers log that block. Under the simulator the discovery URL is on the JWKS origin. WebKit
+// prints the URL as "http: /host:port/…" and logs a second line that names only the page origin; the
+// discovery document is the one response these pages fetch that has no Access-Control-Allow-Origin.
+function isDiscoveryCorsBlock(line: string): boolean {
+    const discovery = `${new URL(env("TC_JWKS_ORIGIN")).host}/.well-known/openid-configuration`;
+    const webkitLine = `console: Origin ${env("TC_SERVE_ORIGIN")} is not allowed by Access-Control-Allow-Origin. Status code: 200 @ `;
+    return (
+        (line.includes(discovery) &&
+            /CORS|Cross-Origin|Access-Control-Allow-Origin|Failed to load resource|access control checks/.test(
+                line,
+            )) ||
+        line === webkitLine
+    );
+}
+
+// C3: the positive control's own inline script, blocked by the policy (the violation C3 expects).
+function isInlineScriptBlock(line: string): boolean {
+    return /Content[- ]Security[- ]Policy/.test(line) && /inline script|script-src/.test(line);
+}
+
 function sleep(ms: number): Promise<void> {
     return new Promise((done) => setTimeout(done, ms));
 }
@@ -200,6 +238,7 @@ test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero v
     browserName,
 }) => {
     test.skip(browserName !== "chromium", "CDP virtual authenticator: Chromium only (FACTS V-2.5)");
+    const errors = watchErrors(page, isDiscoveryCorsBlock);
     const ceremonies = await addAuthenticator(page, true);
     const result = await runHarness(page);
     const expected: Record<Step, string> = {
@@ -218,6 +257,7 @@ test("C1 Chromium with PRF: B1 blocked, B2 rejected, every other step ok, zero v
     expect(result.violations).toBe(0);
     // A2 / INC-2-API §8.4 option (b): the first vault.set is one create then one get; vault.get is one get.
     expect(ceremonies).toEqual(["create", "get", "get"]);
+    expect(errors()).toEqual([]);
 });
 
 test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, store empty, zero violations", async ({
@@ -226,6 +266,7 @@ test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, s
 }) => {
     test.skip(browserName === "chromium", "Chromium is covered by C1 and C4");
     const expected = MATRIX[browserName as "firefox" | "webkit"];
+    const errors = watchErrors(page, isDiscoveryCorsBlock);
     const result = await runHarness(page);
     expect(Object.keys(result.steps)).toEqual([...STEPS]);
     for (const name of STEPS) {
@@ -234,11 +275,13 @@ test("C2 Firefox and WebKit: steps match the FACTS matrix, vault fails closed, s
     }
     expect(await sharesCount(page)).toBe(0);
     expect(result.violations).toBe(0);
+    expect(errors()).toEqual([]);
 });
 
 test("C3 the positive-control page with one inline script reports at least one violation", async ({
     page,
 }) => {
+    const errors = watchErrors(page, isInlineScriptBlock);
     await page.goto(`${env("TC_SERVE_ORIGIN")}/control/inline.html`);
     const handle = await page.waitForFunction(
         () => {
@@ -252,6 +295,7 @@ test("C3 the positive-control page with one inline script reports at least one v
     expect(
         await page.evaluate(() => (window as { __inlineRan?: true }).__inlineRan),
     ).toBeUndefined();
+    expect(errors()).toEqual([]);
 });
 
 test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the shares store empty", async ({
@@ -259,6 +303,7 @@ test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the share
     browserName,
 }) => {
     test.skip(browserName !== "chromium", "CDP virtual authenticator: Chromium only (FACTS V-2.5)");
+    const errors = watchErrors(page, isDiscoveryCorsBlock);
     const ceremonies = await addAuthenticator(page, false);
     const result = await runHarness(page);
     expect(result.steps.vault).toBe(NO_PRF_VAULT);
@@ -266,6 +311,7 @@ test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the share
     expect(ceremonies).toEqual(["create"]);
     expect(await sharesCount(page)).toBe(0);
     expect(result.violations).toBe(0);
+    expect(errors()).toEqual([]);
 });
 
 // INC-2-API §9.3 rev 3 with the 2026-10-12 addendum (img-src 'self') and §16.7 (connect-src).
@@ -309,6 +355,7 @@ test("C5 index.html has one SRI script, nothing inline, no icon link, and the ex
         expect(scriptSrc?.split(" ")).not.toContain(keyword);
     }
 
+    const errors = watchErrors(page);
     await page.goto("about:blank");
     const shape: PageShape = await page.evaluate((text) => {
         const doc = new DOMParser().parseFromString(text, "text/html");
@@ -330,6 +377,7 @@ test("C5 index.html has one SRI script, nothing inline, no icon link, and the ex
         handlers: 0,
         icons: 0,
     });
+    expect(errors()).toEqual([]);
 });
 
 test("C6 GET /favicon.ico is 204 with an empty body", async () => {
@@ -343,11 +391,13 @@ test("C6 Firefox loading index.html records no img-src violation for its automat
     browserName,
 }) => {
     test.skip(browserName !== "firefox", "only Firefox requests /favicon.ico (FACTS V-2.2 note)");
+    const errors = watchErrors(page, isDiscoveryCorsBlock);
     await runHarness(page);
     // The listener keeps counting after the run; read the live count once the favicon window has passed.
     await sleep(FAVICON_WINDOW_MS);
     const live = await page.evaluate(() => (window as { __result?: HarnessResult }).__result);
     expect(live?.violations).toBe(0);
+    expect(errors()).toEqual([]);
 });
 
 // SR review (DNS rebinding): only the loopback names the page is served under are answered.
