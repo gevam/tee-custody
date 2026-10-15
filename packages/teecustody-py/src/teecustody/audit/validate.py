@@ -84,6 +84,8 @@ def _check_count(record_class: AuditClass, record: AuditRecord) -> None:
 
 
 def validate_audit(key: AuditKey, record: AuditRecord) -> None:
+    if type(key) is not AuditKey or type(record) is not AuditRecord:
+        raise _invalid()
     if not isinstance(key.record_class, AuditClass) or not _matches(AUDIT_ID_PATTERN, key.id):
         raise _invalid()
     if not _matches(OUTCOME_PATTERN, record.outcome):
@@ -97,7 +99,9 @@ def validate_audit(key: AuditKey, record: AuditRecord) -> None:
 
 
 def audit_json(record: AuditRecord) -> bytes:
-    body = {f.name: getattr(record, f.name) for f in fields(record)}
+    if not isinstance(record, AuditRecord):
+        raise _invalid()
+    body = {f.name: getattr(record, f.name) for f in fields(AuditRecord)}
     present = {name: value for name, value in body.items() if value is not None}
     return json.dumps(present, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
         "ascii"

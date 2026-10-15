@@ -5,7 +5,8 @@ import os
 import subprocess
 import sys
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -253,3 +254,41 @@ def test_rejection_never_echoes_the_offending_value(key: AuditKey, record: Audit
     assert err.__context__ is None
     rendered = str(err) + repr(err) + "".join(traceback.format_exception(err))
     assert SENTINEL not in rendered
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LeakyRecord(AuditRecord):
+    body: str = SENTINEL
+
+
+@dataclass(frozen=True, slots=True)
+class LeakyKey(AuditKey):
+    body: str = SENTINEL
+
+
+LEAKY = LeakyRecord(outcome="OPEN_ACCEPTED", ts=TS)
+DUCK_RECORD = SimpleNamespace(outcome="OPEN_ACCEPTED", ts=TS, body=SENTINEL)
+NOT_RECORDS = {
+    "record-subclass": (EVENT_KEY, LEAKY),
+    "record-duck": (EVENT_KEY, DUCK_RECORD),
+    "key-subclass": (LeakyKey(AuditClass.EVENT, "event-1"), EVENT),
+    "key-duck": (SimpleNamespace(record_class=AuditClass.EVENT, id="event-1"), EVENT),
+}
+
+
+@pytest.mark.parametrize(("key", "record"), list(NOT_RECORDS.values()), ids=list(NOT_RECORDS))
+def test_validate_rejects_anything_but_exact_key_and_record_types(key: Any, record: Any) -> None:
+    with pytest.raises(AuditError) as caught:
+        validate_audit(key, record)
+    assert str(caught.value) == "INVALID_ARGUMENT"
+
+
+def test_audit_json_serialises_only_audit_record_fields_of_a_subclass() -> None:
+    assert audit_json(LEAKY) == b'{"outcome":"OPEN_ACCEPTED","ts":1800000000000}'
+
+
+def test_audit_json_rejects_a_duck_typed_record_with_only_the_code() -> None:
+    with pytest.raises(AuditError) as caught:
+        audit_json(DUCK_RECORD)  # type: ignore[arg-type]
+    assert str(caught.value) == "INVALID_ARGUMENT"
+    assert caught.value.__context__ is None
