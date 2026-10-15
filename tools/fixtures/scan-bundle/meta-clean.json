@@ -1,0 +1,117 @@
+{
+    "inputs": {
+        "packages/teecustody-web/src/index.ts": {
+            "bytes": 240,
+            "imports": [],
+            "format": "esm"
+        },
+        "packages/teecustody-core/src/index.ts": {
+            "bytes": 600,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/mod.js": {
+            "bytes": 2,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/src/cipherSuiteNative.js": {
+            "bytes": 17972,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/algorithm.js": {
+            "bytes": 1204,
+            "imports": [
+                {
+                    "path": "crypto",
+                    "kind": "dynamic-import",
+                    "external": true
+                }
+            ],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/utils/misc.js": {
+            "bytes": 2230,
+            "imports": [
+                {
+                    "path": "crypto",
+                    "kind": "dynamic-import",
+                    "external": true
+                },
+                {
+                    "path": "crypto",
+                    "kind": "dynamic-import",
+                    "external": true
+                }
+            ],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/curve/montgomery.js": {
+            "bytes": 2,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/hash/hmac.js": {
+            "bytes": 5396,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/hash/sha3.js": {
+            "bytes": 1244,
+            "imports": [],
+            "format": "esm"
+        },
+        "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/xCryptoKey.js": {
+            "bytes": 2,
+            "imports": [],
+            "format": "esm"
+        }
+    },
+    "outputs": {
+        "index.js": {
+            "imports": [
+                {
+                    "path": "crypto",
+                    "kind": "dynamic-import",
+                    "external": true
+                }
+            ],
+            "exports": [],
+            "entryPoint": "packages/teecustody-web/src/index.ts",
+            "inputs": {
+                "packages/teecustody-web/src/index.ts": {
+                    "bytesInOutput": 120
+                },
+                "packages/teecustody-core/src/index.ts": {
+                    "bytesInOutput": 300
+                },
+                "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/mod.js": {
+                    "bytesInOutput": 0
+                },
+                "node_modules/.pnpm/@hpke+core@1.9.0/node_modules/@hpke/core/esm/src/cipherSuiteNative.js": {
+                    "bytesInOutput": 8986
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/algorithm.js": {
+                    "bytesInOutput": 602
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/utils/misc.js": {
+                    "bytesInOutput": 1115
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/curve/montgomery.js": {
+                    "bytesInOutput": 0
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/hash/hmac.js": {
+                    "bytesInOutput": 2698
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/hash/sha3.js": {
+                    "bytesInOutput": 622
+                },
+                "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/xCryptoKey.js": {
+                    "bytesInOutput": 0
+                }
+            },
+            "bytes": 14483
+        }
+    }
+}

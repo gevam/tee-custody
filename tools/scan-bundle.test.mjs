@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import * as esbuild from "esbuild";
 
-import { buildOptions, main } from "./scan-bundle.mjs";
+import { buildOptions, checkMetafile, main } from "./scan-bundle.mjs";
 
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
@@ -24,6 +24,10 @@ function fixture(name, source) {
     writeFileSync(path, source);
     return path;
 }
+
+const ENTRY = "src/index.ts";
+const COMMON = "node_modules/.pnpm/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/";
+const meta = (name) => JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), "utf8"));
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -219,5 +223,28 @@ describe("criterion 7 (C7a.2): a try-guarded Node import", () => {
             alias: { a: "/x/a.ts" },
         });
         assert.ok(!("logOverride" in options));
+    });
+});
+
+describe("criterion 8 (C7a.1, D-051 a): output externals and per-input attribution", () => {
+    for (const [name, lines] of [
+        ["meta-extra-external", [`external-import\t${ENTRY}\tfs`]],
+        ["meta-allowance-unused", [`external-allowance\t${ENTRY}\t0`]],
+        ["meta-allowance-twice", [`external-allowance\t${ENTRY}\t2`]],
+        [
+            "meta-attribution-mismatch",
+            [
+                `external-attribution\t${ENTRY}\t${COMMON}algorithm.js`,
+                `external-attribution\t${ENTRY}\t${COMMON}utils/misc.js`,
+            ],
+        ],
+    ]) {
+        it(`${name} exits 2 with the stated lines`, () => {
+            assert.deepEqual(checkMetafile(meta(name), ENTRY), { code: 2, lines });
+        });
+    }
+
+    it("meta-clean exits 0", () => {
+        assert.deepEqual(checkMetafile(meta("meta-clean"), ENTRY), { code: 0, lines: [] });
     });
 });

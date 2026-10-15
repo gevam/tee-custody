@@ -63,17 +63,53 @@ const isAllowedCrypto = (imported) =>
     imported.path === HPKE_CRYPTO_EXTERNALS.output.path &&
     imported.kind === HPKE_CRYPTO_EXTERNALS.output.kind;
 
+// pnpm paths carry a node_modules/.pnpm/@hpke+<pkg>@<ver>/ prefix; match on the suffix from @hpke/.
+function hpkeSuffix(input) {
+    const at = input.lastIndexOf("node_modules/@hpke/");
+    return at < 0 ? null : input.slice(at);
+}
+
+function checkAttribution(metafile, entry, lines) {
+    const seen = new Set();
+    for (const [input, { imports }] of Object.entries(metafile.inputs)) {
+        const suffix = hpkeSuffix(input);
+        const expected = HPKE_CRYPTO_EXTERNALS.inputs[suffix] ?? 0;
+        const externals = imports.filter((imported) => imported.external);
+        seen.add(suffix);
+        if (externals.length !== expected || !externals.every(isAllowedCrypto)) {
+            lines.push(`external-attribution\t${entry}\t${input}`);
+        }
+    }
+    for (const suffix of Object.keys(HPKE_CRYPTO_EXTERNALS.inputs)) {
+        if (!seen.has(suffix)) {
+            lines.push(`external-attribution\t${entry}\t${suffix}`);
+        }
+    }
+}
+
 export function checkMetafile(metafile, entry) {
     const lines = [];
     const webScan = Object.keys(metafile.inputs).some((input) =>
         input.includes("node_modules/@hpke/common/"),
     );
+    let allowed = 0;
     for (const output of Object.values(metafile.outputs)) {
         for (const imported of output.imports) {
-            if (imported.external && !(webScan && isAllowedCrypto(imported))) {
+            if (!imported.external) {
+                continue;
+            }
+            if (webScan && isAllowedCrypto(imported)) {
+                allowed += 1;
+            } else {
                 lines.push(`external-import\t${entry}\t${imported.path}`);
             }
         }
+    }
+    if (webScan) {
+        if (allowed !== HPKE_CRYPTO_EXTERNALS.output.count) {
+            lines.push(`external-allowance\t${entry}\t${allowed}`);
+        }
+        checkAttribution(metafile, entry, lines);
     }
     return { code: lines.length > 0 ? 2 : 0, lines };
 }
