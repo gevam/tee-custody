@@ -1,6 +1,7 @@
 // Bounded X25519 key generation in createWebCrypto (T-39; ADR 0011 C8, C8.1–C8.4; B-45 §5 R1–R3;
 // INC-2-API §8.1). Faults are injected on the global subtle that @hpke/core uses (C3a.3).
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 
 import {
     CipherSuite,
@@ -419,5 +420,42 @@ describe("concurrency (criterion 9, C8.4 d)", () => {
         );
         await crypto.setupHpkeSender(pk, INFO);
         expect(h.probeCalls()).toBe(4);
+    });
+});
+
+const WEB_ROOT = new URL("../../", import.meta.url);
+
+function webFile(path: string): string {
+    return readFileSync(new URL(path, WEB_ROOT), "utf8");
+}
+
+describe("bounded with no timers, options or exports (criterion 10, C8.1, C8.5)", () => {
+    it("has no timer, microtask scheduling or console in webcrypto.ts", () => {
+        const source = webFile("src/crypto/webcrypto.ts");
+        for (const banned of ["setTimeout", "setInterval", "queueMicrotask", "console"]) {
+            expect(source).not.toContain(banned);
+        }
+    });
+
+    it("exports only createWebCrypto from webcrypto.ts", async () => {
+        const module: object = await import("../../src/crypto/webcrypto.js");
+        expect(Object.keys(module)).toEqual(["createWebCrypto"]);
+    });
+
+    it("keeps Playwright retries at exactly one setting of 0 and no test-level retry", () => {
+        expect(webFile("playwright.config.ts").match(/\bretries\s*:\s*\S+/g)).toEqual([
+            "retries: 0,",
+        ]);
+        const browserDir = new URL("test/browser/", WEB_ROOT);
+        const files = readdirSync(browserDir, { recursive: true, withFileTypes: true })
+            .filter((entry) => entry.isFile())
+            .map((entry) => readFileSync(`${entry.parentPath}/${entry.name}`, "utf8"));
+        expect(files.length).toBeGreaterThan(0);
+        for (const text of files) {
+            expect(text).not.toMatch(/\bretries\b/);
+            for (const [, options] of text.matchAll(/describe\.configure\(\s*\{([^}]*)\}/g)) {
+                expect(options?.trim()).toMatch(/^timeout:\s*[\d_]+,?$/);
+            }
+        }
     });
 });
