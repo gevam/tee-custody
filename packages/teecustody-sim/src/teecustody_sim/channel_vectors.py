@@ -57,11 +57,8 @@ _FRAME_OP: Final = "test.echo"  # the test-double operation (WAVES.md "Channel o
 _FIRST_SEQ: Final = {"c2t": 0, "t2c": 1}  # D2-3: t2c seq 0 belongs to the open_result
 _FRAME_KINDS: Final = {"c2t": "frame", "t2c": "frame_result"}
 _NOT_APPLICABLE: Final = -1  # `last_seq` (and `re`) of an open_result case
-_LAYOUT_FIELDS: Final = {
-    "prekey_preimage": ("instance_id", "prekey_id", "pub", "not_after", "image_digest"),
-    "hpke_info": ("ik_pub", "prekey_id"),
-    "session_nonce": ("seq",),
-}
+_MAX_SEQ: Final = 2**53 - 1
+_U32_OVER_MAX: Final = 2**32
 
 
 @dataclass(frozen=True)
@@ -592,6 +589,79 @@ def _result_cases(key: bytes, request_id: bytes, session_id: bytes) -> list[Cano
     ]
 
 
+def _layout_case(
+    case_id: str, kind: str, inputs: dict[str, CanonicalValue], output: bytes | None = None
+) -> CanonicalValue:
+    return {
+        "id": case_id,
+        "kind": kind,
+        "inputs": inputs,
+        "expect": "reject" if output is None else "accept",
+        "bytes": output,
+    }
+
+
+def _layout_rejects(
+    kind: str, valid: dict[str, CanonicalValue], broken: dict[str, CanonicalValue]
+) -> list[CanonicalValue]:
+    """One reject per input field: that field alone breaks its width or range rule."""
+    return [
+        _layout_case(f"{kind}_{name}_range", kind, {**valid, name: value})
+        for name, value in broken.items()
+    ]
+
+
+def _layout_cases(workload: _Workload) -> list[CanonicalValue]:
+    """spec/wire/README.md "Channel byte layouts", computed here from the formulas."""
+    pub = workload.prekeys[_OPEN_PREKEY_ID].public_key().public_bytes_raw()
+    not_after = workload.now + _PREKEY_TTL_S
+    digest = _LAUNCH.image_digest
+    preimage: dict[str, CanonicalValue] = {
+        "instance_id": workload.instance_id,
+        "prekey_id": _OPEN_PREKEY_ID,
+        "pub": pub,
+        "not_after": not_after,
+        "image_digest": digest,
+    }
+    preimage_bytes = b"".join(
+        (
+            b"prekey-v1",
+            workload.instance_id.encode("ascii"),
+            _OPEN_PREKEY_ID.to_bytes(4, "big"),
+            pub,
+            not_after.to_bytes(8, "big"),
+            digest.encode("ascii"),
+        )
+    )
+    info: dict[str, CanonicalValue] = {"ik_pub": workload.ik_pub, "prekey_id": _OPEN_PREKEY_ID}
+    info_bytes = (
+        PROTO.encode("ascii")
+        + hashlib.sha256(workload.ik_pub).digest()
+        + _OPEN_PREKEY_ID.to_bytes(4, "big")
+    )
+    nonce: dict[str, CanonicalValue] = {"seq": _MAX_SEQ}
+    return [
+        _layout_case("prekey_preimage_accept", "prekey_preimage", preimage, preimage_bytes),
+        *_layout_rejects(
+            "prekey_preimage",
+            preimage,
+            {
+                "instance_id": workload.instance_id[:-1],
+                "prekey_id": _U32_OVER_MAX,
+                "pub": pub[:-1],
+                "not_after": _OVER_MAX,
+                "image_digest": digest[:-1],
+            },
+        ),
+        _layout_case("hpke_info_accept", "hpke_info", info, info_bytes),
+        *_layout_rejects(
+            "hpke_info", info, {"ik_pub": workload.ik_pub[:-1], "prekey_id": _U32_OVER_MAX}
+        ),
+        _layout_case("session_nonce_accept", "session_nonce", nonce, _session_nonce(_MAX_SEQ)),
+        *_layout_rejects("session_nonce", nonce, {"seq": _OVER_MAX}),
+    ]
+
+
 def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
     if now is None:
         now = int(time.time())
@@ -630,11 +700,7 @@ def generate_channel_suite(out_dir: Path, *, now: int | None = None) -> Path:
             *_frame_cases("t2c", session.sk_t2c, session_id),
         ],
         "results": _result_cases(session.sk_t2c, request_id, session_id),
-        "layouts": [
-            {"id": case_id, "kind": kind}
-            for kind, fields in _LAYOUT_FIELDS.items()
-            for case_id in (f"{kind}_accept", *(f"{kind}_{name}_range" for name in fields))
-        ],
+        "layouts": _layout_cases(workload),
     }
     path = out_dir / _SUITE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)

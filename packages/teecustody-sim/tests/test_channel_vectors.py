@@ -696,3 +696,61 @@ def _decrypt_envelope(case: dict[str, Any]) -> bytes:
     plaintext = _decrypt(case["key"], _map(envelope["aad"])["seq"], envelope["ct"], envelope["aad"])
     assert plaintext is not None
     return plaintext
+
+
+# --- layouts (criterion 2: one accept per builder, one reject per width/range rule) ------------
+
+LAYOUT_KEYS = {"id", "kind", "inputs", "expect", "bytes"}
+LAYOUT_LENGTHS = {"prekey_preimage": 156, "hpke_info": 47, "session_nonce": 12}
+IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+FIELD_RULES = {  # spec/wire/README.md: every builder rejects these before hashing or sealing
+    "instance_id": lambda v: type(v) is str and HEX32.fullmatch(v) is not None,
+    "prekey_id": lambda v: _is_uint(v, 2**32 - 1),
+    "pub": lambda v: type(v) is bytes and len(v) == 32,
+    "ik_pub": lambda v: type(v) is bytes and len(v) == 32,
+    "not_after": lambda v: _is_uint(v, MAX_UNIX_S),
+    "image_digest": lambda v: type(v) is str and IMAGE_DIGEST.fullmatch(v) is not None,
+    "seq": lambda v: _is_uint(v, MAX_UNIX_S),
+}
+
+
+def _layout_bytes(kind: str, inputs: dict[str, Any]) -> bytes:
+    if kind == "prekey_preimage":
+        return _prekey_preimage(**inputs)
+    if kind == "hpke_info":
+        return _info(inputs["ik_pub"], inputs["prekey_id"])
+    return _nonce(inputs["seq"])
+
+
+def test_layout_accept_cases_carry_the_exact_builder_output(suite: dict[str, Any]) -> None:
+    for case in suite["layouts"]:
+        assert set(case) == LAYOUT_KEYS, case["id"]
+        assert set(case["inputs"]) == set(LAYOUT_INPUTS[case["kind"]]), case["id"]
+        if case["id"].endswith("_accept"):
+            assert case["expect"] == "accept", case["id"]
+            assert all(FIELD_RULES[name](value) for name, value in case["inputs"].items())
+            assert case["bytes"] == _layout_bytes(case["kind"], case["inputs"]), case["id"]
+            assert len(case["bytes"]) == LAYOUT_LENGTHS[case["kind"]], case["id"]
+
+
+def test_layout_reject_cases_break_exactly_their_named_field(suite: dict[str, Any]) -> None:
+    for case in suite["layouts"]:
+        if case["id"].endswith("_accept"):
+            continue
+        field = case["id"].removeprefix(f"{case['kind']}_").removesuffix("_range")
+        assert (case["expect"], case["bytes"]) == ("reject", None), case["id"]
+        broken = {name for name, value in case["inputs"].items() if not FIELD_RULES[name](value)}
+        assert broken == {field}, case["id"]
+
+
+def test_layout_accept_cases_use_the_suite_workload_and_the_seq_boundary(
+    suite: dict[str, Any],
+) -> None:
+    layouts = _by_id(suite, "layouts")
+    valid = decode_bundle(_by_id(suite, "bundles")["valid"]["bundle"], BUNDLE_DECODE_LIMITS)
+    preimage = layouts["prekey_preimage_accept"]["inputs"]
+    assert preimage["instance_id"] == valid.instance_id
+    assert (preimage["prekey_id"], preimage["pub"]) == (valid.prekeys[0].id, valid.prekeys[0].pub)
+    assert layouts["hpke_info_accept"]["inputs"]["ik_pub"] == valid.ik_pub
+    assert layouts["session_nonce_accept"]["inputs"]["seq"] == MAX_UNIX_S
+    assert layouts["session_nonce_seq_range"]["inputs"]["seq"] == OVER_MAX
