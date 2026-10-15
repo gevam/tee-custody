@@ -455,3 +455,61 @@ def test_a_connection_beyond_max_connections_is_closed_at_once_and_others_are_un
         sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
         assert read_response(sock) == (200, b'{"bundles":[]}')
     assert records.outcomes().count("GATEWAY_CONNECTION_LIMIT") == 1
+
+
+# ------------------------------------------------------------- criterion 8: parse failures
+PARSE_FAILURE_400 = (
+    b"HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 27\r\n"
+    b"cache-control: no-store\r\nx-content-type-options: nosniff\r\nconnection: close\r\n\r\n"
+    b'{"code":"INVALID_ARGUMENT"}'
+)
+PARSE_FAILURES = {
+    "c: header named Bad Header": b"GET /bundles HTTP/1.1\r\nHost: x\r\nBad Header: v\r\n\r\n",
+    "d: TLS ClientHello prefix": bytes.fromhex("16 03 01 00 c4 01 00 00 c0 03 03") + bytes(40),
+    "e: missing Host": b"GET /bundles HTTP/1.1\r\n\r\n",
+    "e: missing Host, Connection: close": b"GET /bundles HTTP/1.1\r\nConnection: close\r\n\r\n",
+    "f: incomplete 20000-byte value": b"GET /bundles HTTP/1.1\r\nHost: x\r\nX-Big: " + b"a" * 20000,
+}
+# Nothing of the input, the path or the peer may appear in any log record (SR-3, SR-11).
+LEAK_MARKERS = ("Bad Header", "bundles", "X-Big", "GARBAGE", "aaaa", "127.0.0.1", "Host")
+
+
+def _assert_nothing_leaked(records: Records) -> None:
+    for line in records.rendered():
+        for marker in LEAK_MARKERS:
+            assert marker not in line
+
+
+@pytest.mark.parametrize("payload", PARSE_FAILURES.values(), ids=PARSE_FAILURES.keys())
+def test_a_request_the_parser_rejects_gets_exactly_the_json_400_then_eof(
+    payload: bytes, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(payload)
+
+    data, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert data == PARSE_FAILURE_400
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+    _assert_nothing_leaked(records)
+
+
+def test_garbage_after_a_kept_alive_200_gets_exactly_the_json_400_then_eof(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    start = time.perf_counter()
+    sock.sendall(b"GARBAGE\x00\x01\r\n\r\n")
+
+    data, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert data == PARSE_FAILURE_400
+    assert live.relay.calls == 1
+    assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_INVALID_ARGUMENT"]
+    _assert_nothing_leaked(records)

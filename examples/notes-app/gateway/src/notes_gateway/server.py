@@ -14,6 +14,17 @@ from teecustody.obs import get_logger as _get_logger
 __all__ = ["uvicorn_config"]
 
 _LOG = _get_logger("gateway")
+# §6 "Parse failures": the exact bytes for a request the HTTP parser rejects. No CORS headers.
+_PARSE_FAILURE_400 = (
+    b"HTTP/1.1 400 Bad Request\r\n"
+    b"content-type: application/json\r\n"
+    b"content-length: 27\r\n"
+    b"cache-control: no-store\r\n"
+    b"x-content-type-options: nosniff\r\n"
+    b"connection: close\r\n"
+    b"\r\n"
+    b'{"code":"INVALID_ARGUMENT"}'
+)
 
 
 def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
@@ -34,6 +45,12 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
             # Arm first: super() may parse a pipelined request, which must start a new cycle.
             self._arm()
             super().on_response_complete()
+
+        def send_400_response(self, msg: str) -> None:
+            """The §6 parse-failure answer in place of uvicorn's text/plain body."""
+            self.transport.write(_PARSE_FAILURE_400)
+            self.transport.close()
+            _LOG.info("GATEWAY_INVALID_ARGUMENT")
 
         def _arm(self) -> None:
             self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
