@@ -1,8 +1,9 @@
 """T-24: the simulator in-memory queue (INC-2-API §4.11, §5.1; spec §9, §15.2; SR-3, SR-4)."""
 
+import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -496,3 +497,97 @@ def test_non_integer_bundle_expiry_is_invalid_argument(bad: object) -> None:
         queue.publish_bundle(GOOD, b"b", bad)  # type: ignore[arg-type]
 
     assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+
+
+# ---------------------------------------------------------------- criterion 9: thread safety
+# An exception in any worker thread fails the test (pytest's unhandled-thread-exception warning is
+# an error under this repository's filterwarnings).
+MESSAGES = 1000
+PUBLISHERS = 4
+CONSUMERS = 4
+
+
+@pytest.fixture
+def frequent_thread_switches() -> Iterator[None]:
+    """Switch threads every microsecond so unlocked read-modify-write sequences interleave."""
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(previous)
+
+
+def _start(target: Callable[..., None], count: int, *args: object) -> list[threading.Thread]:
+    threads = [threading.Thread(target=target, args=(index, *args)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    return threads
+
+
+def _join(threads: list[threading.Thread]) -> None:
+    for thread in threads:
+        thread.join(30)
+
+
+def _publisher(offset: int, queue: InMemoryQueue, published: list[str]) -> None:
+    for index in range(offset, MESSAGES, PUBLISHERS):
+        published.append(queue.publish_request(GOOD, f"{index:032x}", b"%d" % index))
+
+
+@pytest.mark.usefixtures("frequent_thread_switches")
+def test_concurrent_publish_pull_ack_delivers_every_message_once_before_its_deadline() -> None:
+    queue = InMemoryQueue(ack_deadline_s=30.0)
+    queue.publish_bundle(GOOD, b"b", int(time.time()) + 600)
+    published: list[str] = []
+    delivered: list[str] = []
+    stop_at = time.monotonic() + 20
+
+    def consume(_: int) -> None:
+        while len(delivered) < MESSAGES and time.monotonic() < stop_at:
+            for message in queue.pull_requests(GOOD, 7, 0.01):
+                delivered.append(message.message_id)
+                queue.ack(message.message_id)
+
+    consumers = _start(consume, CONSUMERS)
+    _join(_start(_publisher, PUBLISHERS, queue, published))
+    _join(consumers)
+
+    assert len(set(published)) == MESSAGES
+    assert sorted(delivered) == sorted(published)
+
+
+@pytest.mark.usefixtures("frequent_thread_switches")
+def test_concurrent_redelivery_is_at_least_once_and_never_after_ack() -> None:
+    queue = InMemoryQueue(ack_deadline_s=0.02)
+    queue.publish_bundle(GOOD, b"b", int(time.time()) + 600)
+    published: list[str] = []
+    seen: dict[str, int] = {}
+    acked: set[str] = set()
+    after_ack: list[str] = []
+    ledger = threading.Lock()  # orders each pull and each ack against the record of acks
+    stop_at = time.monotonic() + 20
+
+    def consume(_: int) -> None:
+        while len(acked) < MESSAGES and time.monotonic() < stop_at:
+            with ledger:
+                pulled = queue.pull_requests(GOOD, 5, 0.0)
+                after_ack.extend(m.message_id for m in pulled if m.message_id in acked)
+                for message in pulled:
+                    seen[message.message_id] = seen.get(message.message_id, 0) + 1
+            for message in pulled:
+                if seen[message.message_id] >= 2:  # the first delivery is left un-acked
+                    with ledger:
+                        queue.ack(message.message_id)
+                        acked.add(message.message_id)
+            if not pulled:
+                time.sleep(0.001)
+
+    consumers = _start(consume, CONSUMERS)
+    _join(_start(_publisher, PUBLISHERS, queue, published))
+    _join(consumers)
+
+    assert after_ack == []
+    assert acked == set(published)
+    assert len(acked) == MESSAGES
+    assert all(seen[message_id] >= 2 for message_id in published)
