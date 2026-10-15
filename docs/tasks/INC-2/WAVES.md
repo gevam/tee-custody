@@ -56,6 +56,14 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
     confirms whether one is needed here.
 - D-03 and D-04 close when T-40 merges. Neither is downgraded by documentation alone.
 
+**Amended 2026-10-15 (Orchestrator: flaky Core test blocks G8).**
+- New task T-41 (Wave 6, MID). It is test-only, in Core `test/channel/session.test.ts`.
+- The criterion-7 maxInFlight test asserted post order `[0, 1, 2]` and failed with `[1, 0, 2]` about 1 run in 8.
+- T-41 asserts only what INC-2-API §7.4 promises: allocated seqs, sorted, are exactly {0, 1, 2}; the rejected request
+  consumes none. It adds a deterministic forced-reorder test.
+- Scan of `test/channel/**`: no other assertion on the post or arrival order of concurrent requests.
+- T-41 depends only on T-26 (merged) and shares no file with any open task. Ordering itself stays B-26 (Architect).
+
 ## CONTRACT_ISSUEs against INC-2-API.md (for the Orchestrator)
 
 | Id | Issue | Blocking | Proposal |
@@ -154,10 +162,11 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 6 | T-39 | Bounded X25519 keygen retry (ADR 0011 C8, `X25519_KEYGEN_ATTEMPTS` = 3, private); failed probe not cached; FACTS re-recorded at Playwright 1.63.0 (B-45, D-069) | STRONG | T-17, T-27, T-32 (all merged); QA-T-39 merged; SA C8 sign-off (done) | |
 | 6 | QA-T-40 | QA: D-03 row un-xfailed (red), D-03 idle row, D-04 parse-failure rows; on `inc-2/QA-exec` before it merges (in T-40.md) | MID (QA) | QA-exec | |
 | 6 | T-40 | Gateway server hardening: `header_read_timeout_s`, `max_connections`, JSON parse-failure 400 via `notes_gateway.server.uvicorn_config` (D-03, D-04) | STRONG | T-14, T-31 (merged); QA-exec + QA-T-40 merged; Architect §6 "Server hardening" text committed | Architect (§6) |
+| 6 | T-41 | Core `session.test.ts` criterion-7 maxInFlight test: order-free seq assertions + forced-reorder test (flake `[1,0,2]`; B-26 evidence) | MID | T-26 (merged) | |
 
-Counts: 45 items (40 tasks T-01..T-40, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
+Counts: 46 items (41 tasks T-01..T-41, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
 Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
-3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 4: QA-T-39, then T-39 (both merged), and QA-T-40, then T-40. The largest wave is Wave 1.
+3: T-31, T-38 and QA-T-38. Wave 5 has 1. Wave 6 has 5: QA-T-39, then T-39 (both merged), QA-T-40, then T-40, and T-41. The largest wave is Wave 1.
 
 `parallelism.max_engineers` = 8, so Wave 1 runs in three batches, MU-1 and the critical path first:
 - B1: T-07, T-08, T-21, T-33, T-15, T-16, T-17, T-37 (deadline 2026-10-24, D-049).
@@ -226,6 +235,7 @@ real wiring is proven by `test_run_loop_contract.py` and T-31.
   - Web `src/crypto/webcrypto.ts`, `test/crypto/webcrypto.test.ts`: T-17 W1, T-39 W6.
   - `docs/tasks/INC-2/FACTS.md`: V-02 W0, T-39 W6 (B-45 §9 items 1–4; superseded 1.64.0 table kept).
   - `tests/acceptance/SR14.webcrypto-hpke.test.ts`: QA (after W0), QA-T-39 W6 (append one `describe` only).
+- Core `test/channel/session.test.ts`: T-26 W2, T-41 W6 (criterion-7 `describe` only).
 - T-40 (W6) creates `notes_gateway/server.py` and gateway `tests/test_server.py`. It shares no file with T-39 or QA-T-39.
 - T-39 (W6) also creates `packages/teecustody-web/test/crypto/webcrypto-keygen-retry.test.ts`. It runs T-32's
   `csp.spec.ts` with `--repeat-each=20` and edits no T-32 file.
@@ -343,6 +353,15 @@ Python: everything in API-TL §4 (`teecustody.channel`, `.queue`, `.audit`, `.ru
 `tests/e2e/channel_harness.py` (TL-8, from Wave 4). Doubles: `tests.support.channel_doubles`.
 TypeScript: `@teecustody/core` and `@teecustody/web` names in API-TL §4. Test support QA may reuse:
 `tests/support/*`, `packages/teecustody-core/test/support/channel-crypto.ts` (fake HPKE, AEAD spy).
+
+## G4 conditions (Wave 6, T-41, against main 31bae29, 2026-10-15)
+
+| Condition | Status |
+|---|---|
+| Same-wave file overlap | Met. T-41 owns only Core `test/channel/session.test.ts`; T-40/QA-T-40 are gateway/Python-only |
+| Inputs exist | Met. T-26 merged; helpers `connect`, `echo`, `workload.afterHandle` exist |
+| Acceptance red for the right reason | Met. The flake was observed (`[1, 0, 2]`, 1 run in 8). The Tech Lead prototyped T-41 criterion 1 in scratch with the old assertion: red 3/3 with `[1, 0, 2]`, and the statuses are unchanged |
+| Contract stubs | Not applicable. Test-only; no boundary changes |
 
 ## G4 conditions (Wave 6, T-40, against main 556be95, 2026-10-15)
 
