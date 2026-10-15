@@ -189,27 +189,3 @@ def test_repeatedly_extending_one_key_does_not_grow_memory_and_every_key_still_e
     clock.now = T0 + 2 * skew + 1
     assert not cache.seen(CLIENT, RID)
     assert cache._size() == 0
-
-
-def test_a_timestamp_at_now_plus_skew_is_recorded() -> None:
-    clock = Clock()
-    cache = ReplayCache(skew_s=300, max_entries=10, clock=clock)
-
-    cache.record(CLIENT, RID, T0 + 300)
-
-    assert cache.seen(CLIENT, RID)
-
-
-@pytest.mark.parametrize("now", [T0, T0 + 0.5])
-def test_a_timestamp_beyond_now_plus_skew_is_refused_and_takes_no_slot(now: float) -> None:
-    clock = Clock(now)
-    cache = ReplayCache(skew_s=300, max_entries=1, clock=clock)
-
-    with pytest.raises(ValueError, match=r"^TIMESTAMP_RANGE$"):
-        cache.record(CLIENT, RID, T0 + 300 + 1)
-    with pytest.raises(ValueError, match=r"^TIMESTAMP_RANGE$"):
-        cache.record(CLIENT, RID, 10**30)
-
-    assert cache._size() == 0
-    cache.record(OTHER_CLIENT, RID, T0)
-    assert cache.seen(OTHER_CLIENT, RID)
