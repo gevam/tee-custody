@@ -1,9 +1,12 @@
 """T-23 criteria 1-4, 7: t2c nonce discipline (R-5, D2-16, SR-14; INC-2-API §4.9)."""
 
 import os
+from typing import ClassVar
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from teecustody.channel.codec import (
     MAX_SEQ,
@@ -12,6 +15,7 @@ from teecustody.channel.codec import (
     encode_frame_aad,
     encode_open_result_aad,
 )
+from teecustody.channel import session as session_module
 from teecustody.channel.session import SessionReject, SessionRejectCode, T2cSealer, _nonce
 from teecustody.secrets import Secret
 
@@ -100,3 +104,63 @@ def test_a_counter_beyond_max_seq_is_exhausted() -> None:
     with pytest.raises(SessionReject) as err:
         sealer.seal_frame_result(OP, SESSION_ID, b"beyond")
     assert err.value.code is SessionRejectCode.EXHAUSTED
+
+
+# ---------------------------------------------------------------- criterion 4 (R-5 property)
+SEALS_PER_EXAMPLE = 1000
+
+
+class _SpyAesGcm:
+    """Stands in for `AESGCM` inside `teecustody.channel.session`; records every (key, nonce)."""
+
+    calls: ClassVar[list[tuple[bytes, bytes]]] = []
+    fail_next: ClassVar[bool] = False
+
+    def __init__(self, key: bytes) -> None:
+        self._key = key
+
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None) -> bytes:
+        _SpyAesGcm.calls.append((self._key, nonce))
+        if _SpyAesGcm.fail_next:
+            _SpyAesGcm.fail_next = False
+            raise RuntimeError("injected")
+        return AESGCM(self._key).encrypt(nonce, data, associated_data)
+
+
+@settings(max_examples=5, deadline=None)
+@given(
+    st.lists(
+        st.tuples(st.booleans(), st.booleans()),
+        min_size=SEALS_PER_EXAMPLE,
+        max_size=SEALS_PER_EXAMPLE,
+    )
+)
+def test_no_key_nonce_pair_is_ever_reused_and_the_counter_never_decreases(
+    steps: list[tuple[bool, bool]],
+) -> None:
+    _SpyAesGcm.calls = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(session_module, "AESGCM", _SpyAesGcm)
+        sealer, _key = _opened_sealer()
+        sent: list[bytes] = []
+        counter = sealer._next_seq
+        for index, (encrypt_fails, publish_fails) in enumerate(steps):
+            _SpyAesGcm.fail_next = encrypt_fails
+            try:
+                aad_bytes, ct = sealer.seal_frame_result(OP, SESSION_ID, index.to_bytes(2, "big"))
+            except RuntimeError:
+                assert encrypt_fails
+            else:
+                assert not encrypt_fails
+                first = aad_bytes + ct
+                sent.append(first)
+                if publish_fails:
+                    # The run loop re-publishes the stored bytes; it never asks for a new seal.
+                    calls_before = len(_SpyAesGcm.calls)
+                    sent.append(first)
+                    assert len(_SpyAesGcm.calls) == calls_before
+                    assert sent[-1] == sent[-2]
+            assert sealer._next_seq > counter
+            counter = sealer._next_seq
+    assert len(_SpyAesGcm.calls) == SEALS_PER_EXAMPLE + 1
+    assert len(set(_SpyAesGcm.calls)) == len(_SpyAesGcm.calls)
