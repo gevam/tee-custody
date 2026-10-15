@@ -2,7 +2,11 @@
 // verifyBundle is module-mocked (A1, TL-12); the fake workload answers through the fake Transport.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createVerifiedBundle, type VerifiedBundle } from "../../src/bundle/types.js";
+import {
+    BundleError,
+    createVerifiedBundle,
+    type VerifiedBundle,
+} from "../../src/bundle/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
@@ -241,5 +245,48 @@ describe("criterion 3: only branded, fresh bundles are used (B-13)", () => {
         const expired = brandedBundle(fx, clock.now(), clock.now());
         await client.open(openSession(), expired);
         expect(verifyBundle).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("criterion 4: no verified bundle, no usable pre-key", () => {
+    it("fails NO_VERIFIED_BUNDLE when the verifier rejects every published bundle, and sends nothing", async () => {
+        const other = await instanceFixture("d4".repeat(16));
+        workload = new FakeWorkload(fx, other);
+        vi.mocked(verifyBundle).mockRejectedValue(new BundleError("ATTESTATION_FAILED"));
+        const client = new ChannelClient(clientConfig(workload, clock));
+        expect((await failure(client.fetchVerifiedBundles())).code).toBe("NO_VERIFIED_BUNDLE");
+        expect((await failure(client.open(openSession()))).code).toBe("NO_VERIFIED_BUNDLE");
+        expect(verifyBundle).toHaveBeenCalledTimes(4);
+        expect(workload.posts).toHaveLength(0);
+    });
+
+    it("discards the bundles that fail and keeps the ones that verify", async () => {
+        const other = await instanceFixture("d4".repeat(16));
+        workload = new FakeWorkload(other, fx);
+        serveBundles(fx);
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const bundles = await client.fetchVerifiedBundles();
+        expect(bundles.map((b) => b.instanceId)).toEqual([fx.instanceId]);
+    });
+
+    it("fails NO_USABLE_PREKEY once every pre-key of the instance has been used", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        for (let i = 0; i < fx.prekeys.length; i += 1) {
+            await client.open(openSession());
+        }
+        const ids = workload.opens.map((o) => o.aad.get("prekey_id"));
+        expect(new Set(ids).size).toBe(fx.prekeys.length);
+        expect((await failure(client.open(openSession()))).code).toBe("NO_USABLE_PREKEY");
+        expect(workload.posts).toHaveLength(fx.prekeys.length);
+    });
+
+    it("keeps the used set per instance and per client", async () => {
+        const first = new ChannelClient(clientConfig(workload, clock));
+        for (let i = 0; i < fx.prekeys.length; i += 1) {
+            await first.open(openSession());
+        }
+        const second = new ChannelClient(clientConfig(workload, clock));
+        await second.open(openSession());
+        expect(workload.opens).toHaveLength(fx.prekeys.length + 1);
     });
 });

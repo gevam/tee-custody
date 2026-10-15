@@ -140,10 +140,13 @@ export class ChannelClient {
             verifierLimits: this.#limits.verifier,
             bundleLimits: this.#limits.bundle,
         };
-        const verified: VerifiedBundle[] = [];
-        for (const p of published) {
-            verified.push(await verifyBundle(p, trustProfile, securityEvents, deps));
-        }
+        // Spec §5.2: a bundle that fails verification is discarded, never used as a fallback.
+        const results = await Promise.all(
+            published.map((p) =>
+                verifyBundle(p, trustProfile, securityEvents, deps).catch(() => undefined),
+            ),
+        );
+        const verified = results.filter((b): b is VerifiedBundle => b !== undefined);
         if (verified.length === 0) {
             throw new ChannelError("NO_VERIFIED_BUNDLE");
         }
