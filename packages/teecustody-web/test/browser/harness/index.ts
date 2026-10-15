@@ -141,7 +141,6 @@ async function main(): Promise<void> {
     const fetcher = new FetchFetcher({ maxBodyBytes: 65_536, timeoutMs: HTTP_TIMEOUT_MS });
     const transport = new FetchTransport({
         baseUrl: config.gateway,
-        maxResponseBytes: 1_048_576,
         timeoutMs: HTTP_TIMEOUT_MS,
     });
     const now = (): number => Date.now();

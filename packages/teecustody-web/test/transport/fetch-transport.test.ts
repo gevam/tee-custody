@@ -1,6 +1,8 @@
 // FetchTransport (INC-2-API §8.3, §6; FR-5; SR-1, SR-3/R-7, SR-5, SR-11). Synthetic values only.
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 
 import { CapabilityError } from "@teecustody/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -847,5 +849,210 @@ describe("FetchTransport against a real loopback HTTP server", () => {
             res.write('{"bundles":');
         });
         expect(await codeOf(real(origin, 50).listBundles())).toBe("UNAVAILABLE");
+    });
+});
+
+// T-42 (D-07; INC-2-API §8.3 amended, §6 "Maximal response sizes"): maxResponseBytes defaults to 2,097,152.
+
+// Unpadded base64url length of `bytes` bytes.
+function b64Chars(bytes: number): number {
+    const rest = bytes % 3;
+    return Math.floor(bytes / 3) * 4 + (rest === 0 ? 0 : rest + 1);
+}
+
+const MAX_FRAME_CHARS = b64Chars(32_926);
+const MAX_BUNDLE_CHARS = b64Chars(65_536);
+
+function replyItem(chars: number): string {
+    return `{"request_id":"${RID}","body":"${"A".repeat(chars)}"}`;
+}
+
+function responsesJson(items: readonly string[], next: string): string {
+    return `{"responses":[${items.join(",")}],"next":"${next}"}`;
+}
+
+// Valid compact §6 GET /responses JSON of exactly `total` bytes: maximal frames, then a last item and the
+// `next` cursor (128 or 127 chars) absorbing the remainder. No base64url length is ≡ 1 (mod 4).
+function responsesPage(total: number): string {
+    const full = replyItem(MAX_FRAME_CHARS).length + 1;
+    const overhead = replyItem(0).length;
+    let cursor = 128;
+    const count = Math.floor(
+        (total - responsesJson([], "A".repeat(cursor)).length - overhead) / full,
+    );
+    let last = total - responsesJson([], "A".repeat(cursor)).length - count * full - overhead;
+    if (last % 4 === 1) {
+        cursor -= 1;
+        last += 1;
+    }
+    const items = [...Array<string>(count).fill(replyItem(MAX_FRAME_CHARS)), replyItem(last)];
+    return responsesJson(items, "A".repeat(cursor));
+}
+
+// The §6 maximal GET /responses page at the default max_page 32.
+const MAXIMAL_PAGE = responsesJson(
+    Array<string>(32).fill(replyItem(MAX_FRAME_CHARS)),
+    "A".repeat(128),
+);
+
+// The §6 maximal GET /bundles page: 16 bundles at the 65,536-byte decode limit.
+const MAXIMAL_BUNDLES = `{"bundles":[${Array<string>(16)
+    .fill(`{"instance_id":"${IID}","bundle":"${"A".repeat(MAX_BUNDLE_CHARS)}"}`)
+    .join(",")}]}`;
+
+// A body streamed in 64 KiB chunks with no Content-Length; records whether it was cancelled.
+function streamed(text: string): { response: Response; cancelled: () => boolean } {
+    const bytes = new TextEncoder().encode(text);
+    let offset = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+        {
+            pull(controller) {
+                if (offset >= bytes.byteLength) {
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(bytes.slice(offset, offset + 65_536));
+                offset += 65_536;
+            },
+            cancel() {
+                cancelled = true;
+            },
+        },
+        { highWaterMark: 0 },
+    );
+    const response = new Response(stream, { status: 200 });
+    return { response, cancelled: () => cancelled };
+}
+
+function defaulted(fetch: FetchFn): FetchTransport {
+    return new FetchTransport({ baseUrl: BASE, timeoutMs: 1000, fetch });
+}
+
+function explicitlyUndefined(fetch: FetchFn): FetchTransport {
+    const options = { baseUrl: BASE, maxResponseBytes: undefined, timeoutMs: 1000, fetch };
+    // @ts-expect-error exactOptionalPropertyTypes rejects an explicit undefined
+    return new FetchTransport(options);
+}
+
+describe.each([
+    ["omitted", defaulted],
+    ["undefined", explicitlyUndefined],
+])("FetchTransport T-42 criteria 1 and 3: maxResponseBytes %s means 2,097,152", (_name, build) => {
+    it("accepts a streamed page of exactly 2,097,152 bytes", async () => {
+        const page = responsesPage(2_097_152);
+        expect(page.length).toBe(2_097_152);
+        const { response } = streamed(page);
+        expect(response.headers.get("Content-Length")).toBeNull();
+        const { fetch } = spy(response);
+        const result = await build(fetch).getResponses(CID);
+        expect(result.responses.length).toBeGreaterThan(32);
+        expect(result.next?.length).toBeGreaterThanOrEqual(127);
+    });
+
+    it("refuses a streamed page of 2,097,153 bytes and cancels the stream", async () => {
+        const page = responsesPage(2_097_153);
+        expect(page.length).toBe(2_097_153);
+        const body = streamed(page);
+        const { fetch } = spy(body.response);
+        expect(await codeOf(build(fetch).getResponses(CID))).toBe("INVALID_RESPONSE");
+        expect(body.cancelled()).toBe(true);
+    });
+
+    it("refuses Content-Length 2097153 before any read, never acquiring a reader", async () => {
+        const body = endlessBody(new Uint8Array(1));
+        const getReader = vi.spyOn(body.stream, "getReader");
+        const response = new Response(body.stream, {
+            status: 200,
+            headers: { "Content-Length": "2097153" },
+        });
+        const { fetch } = spy(response);
+        expect(await codeOf(build(fetch).getResponses(CID))).toBe("INVALID_RESPONSE");
+        expect(getReader).not.toHaveBeenCalled();
+        expect(body.pulls()).toBe(0);
+        expect(body.cancelled()).toBe(true);
+    });
+});
+
+describe("FetchTransport T-42 criterion 2: the default covers the §6 maximal pages", () => {
+    it("reads the 1,406,937-byte maximal GET /responses page", async () => {
+        expect(MAXIMAL_PAGE.length).toBe(1_406_937);
+        const { fetch } = spy(streamed(MAXIMAL_PAGE).response);
+        const page = await defaulted(fetch).getResponses(CID);
+        expect(page.responses).toHaveLength(32);
+        for (const reply of page.responses) {
+            expect(reply.requestId).toBe(RID);
+            expect(reply.body.byteLength).toBe(32_926);
+        }
+        expect(page.next).toBe("A".repeat(128));
+    });
+
+    it("reads the 1,399,133-byte maximal GET /bundles page", async () => {
+        expect(MAXIMAL_BUNDLES.length).toBe(1_399_133);
+        const { fetch } = spy(streamed(MAXIMAL_BUNDLES).response);
+        const bundles = await defaulted(fetch).listBundles();
+        expect(bundles).toHaveLength(16);
+        for (const entry of bundles) {
+            expect(entry.instanceId).toBe(IID);
+            expect(entry.bundle.byteLength).toBe(65_536);
+        }
+    });
+});
+
+describe("FetchTransport T-42 criterion 4: an explicit maxResponseBytes still applies", () => {
+    it("refuses the 1,406,937-byte maximal page at an explicit 1,048,576 (§6 interoperability rule)", async () => {
+        const body = streamed(MAXIMAL_PAGE);
+        const { fetch } = spy(body.response);
+        expect(await codeOf(make(fetch, { maxResponseBytes: 1_048_576 }).getResponses(CID))).toBe(
+            "INVALID_RESPONSE",
+        );
+        expect(body.cancelled()).toBe(true);
+    });
+
+    it("accepts a 2,500,000-byte page at an explicit 3,000,000", async () => {
+        const page = responsesPage(2_500_000);
+        expect(page.length).toBe(2_500_000);
+        const { fetch } = spy(streamed(page).response);
+        const result = await make(fetch, { maxResponseBytes: 3_000_000 }).getResponses(CID);
+        expect(result.responses.length).toBeGreaterThan(32);
+    });
+});
+
+describe("FetchTransport T-42 criterion 5: a given maxResponseBytes is validated as before", () => {
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53, "1024", null])(
+        "refuses maxResponseBytes %s with TypeError(INVALID_CONFIG)",
+        (value) => {
+            const error = configError({ maxResponseBytes: value as number });
+            expect(error).toBeInstanceOf(TypeError);
+            expect((error as TypeError).message).toBe("INVALID_CONFIG");
+        },
+    );
+
+    it("still requires timeoutMs", () => {
+        const options = { baseUrl: BASE, fetch: spy().fetch };
+        let error: unknown;
+        try {
+            new FetchTransport(options as unknown as FetchTransportOptions);
+        } catch (thrown) {
+            error = thrown;
+        }
+        expect(error).toBeInstanceOf(TypeError);
+        expect((error as TypeError).message).toBe("INVALID_CONFIG");
+    });
+});
+
+describe("FetchTransport T-42 criterion 6: the default is the contract number, not an export", () => {
+    const source = readFileSync(
+        fileURLToPath(new URL("../../src/transport/fetch-transport.ts", import.meta.url)),
+        "utf8",
+    );
+
+    it("states 2_097_152 exactly once in fetch-transport.ts", () => {
+        expect(source.split("2_097_152")).toHaveLength(2);
+    });
+
+    it("exports no default constant from the module", async () => {
+        const module = await import("../../src/transport/fetch-transport.js");
+        expect(Object.keys(module)).toEqual(["FetchTransport"]);
     });
 });

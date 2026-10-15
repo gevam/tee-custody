@@ -75,7 +75,7 @@ describe("INC-2-API §8 type pins", () => {
     it("pins FetchTransport (§8.3)", () => {
         expectTypeOf<FetchTransportOptions>().toEqualTypeOf<{
             readonly baseUrl: string;
-            readonly maxResponseBytes: number;
+            readonly maxResponseBytes?: number;
             readonly timeoutMs: number;
             readonly fetch?: FetchFn;
         }>();
