@@ -18,7 +18,7 @@ import type { FetchFn } from "../fetch/fetcher.js";
 
 export interface FetchTransportOptions {
     readonly baseUrl: string; // https origin (+ optional path prefix); http only on loopback hosts
-    readonly maxResponseBytes: number; // default 1048576
+    readonly maxResponseBytes?: number; // default 2097152 (D-07: ≥ the §6 maximal page at default limits)
     readonly timeoutMs: number;
     readonly fetch?: FetchFn;
 }
@@ -28,6 +28,7 @@ type Json = Record<string, unknown>;
 const HEX32 = /^[0-9a-f]{32}$/;
 const CURSOR = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_REQUEST_BYTES = 65_536;
+const DEFAULT_MAX_RESPONSE_BYTES = 2_097_152;
 
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
@@ -243,14 +244,15 @@ export class FetchTransport implements Transport {
 
     // TypeError("INVALID_CONFIG")
     constructor(options: FetchTransportOptions) {
-        if (
-            !isPositiveSafeInteger(options.maxResponseBytes) ||
-            !isPositiveSafeInteger(options.timeoutMs)
-        ) {
+        const maxResponseBytes =
+            options.maxResponseBytes === undefined
+                ? DEFAULT_MAX_RESPONSE_BYTES
+                : options.maxResponseBytes;
+        if (!isPositiveSafeInteger(maxResponseBytes) || !isPositiveSafeInteger(options.timeoutMs)) {
             throw invalidConfig();
         }
         this.#base = resolutionBase(options.baseUrl);
-        this.#maxResponseBytes = options.maxResponseBytes;
+        this.#maxResponseBytes = maxResponseBytes;
         this.#timeoutMs = options.timeoutMs;
         this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     }
