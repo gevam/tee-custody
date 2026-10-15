@@ -1133,3 +1133,17 @@ def test_readme_documents_request_framing_the_write_deadline_and_check_step_0() 
     assert "| `write_timeout_s` | 30.0 |" in readme
     assert "0. Transfer-Encoding rule" in readme
     assert "GATEWAY_WRITE_TIMEOUT" in readme
+
+
+def test_resume_writing_without_a_pending_write_timer_only_resumes(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+    protocol.flow.write_paused = False
+    loop.handles[1].fire()  # the fired timer found the writer resumed and cleared itself
+    protocol.flow.write_paused = True
+
+    protocol.resume_writing()
+
+    assert not protocol.flow.write_paused
+    assert len(loop.handles) == 2
+    assert (transport.aborts, records.outcomes()) == (0, [])
