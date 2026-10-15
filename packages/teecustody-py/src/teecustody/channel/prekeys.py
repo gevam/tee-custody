@@ -1,4 +1,9 @@
-"""Pre-key store (INC-2-API §4.7; spec §4, §5.1). `PreKeyPublic` is frozen; bodies: T-22."""
+"""Pre-key store (INC-2-API §4.7; spec §4, §5.1; SR-14, NFR-3).
+
+The only caller of `IdentityKey.sign`: each pre-key is signed once, at generation, over the
+156-byte layout of `prekey_signing_message`. Private keys are single-use `Secret`s, wiped on
+expiry, on shutdown and when their generation fails.
+"""
 
 import math
 from collections import deque
@@ -26,6 +31,8 @@ class PreKeyPublic:
 
 
 class PreKeyStore:
+    """Bounded pool of single-use X25519 pre-keys; "live" = not taken and `not_after > now`."""
+
     def __init__(
         self,
         *,

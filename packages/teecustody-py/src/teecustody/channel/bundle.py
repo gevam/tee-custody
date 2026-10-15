@@ -1,4 +1,4 @@
-"""Canonical pre-key bundle builder (INC-2-API §4.7; spec §5.1). Body belongs to T-22."""
+"""Canonical pre-key bundle builder (INC-2-API §4.7; spec §5.1). Signs nothing (SR-14)."""
 
 from collections.abc import Sequence
 
