@@ -7,6 +7,7 @@ sockets. Every wait is bounded, every socket is closed and every server is stopp
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import socket
 import threading
@@ -36,14 +37,15 @@ INSTANCE = "a1" * 16
 class Relay:
     """A RelayQueue fake that counts calls; `list_bundles` sleeps `delay_s` first."""
 
-    def __init__(self, delay_s: float = 0.0) -> None:
+    def __init__(self, delay_s: float = 0.0, bundles: list[PublishedBundle] | None = None) -> None:
         self.calls = 0
         self.delay_s = delay_s
+        self.bundles = bundles or []
 
     def list_bundles(self, max_bundles: int) -> list[PublishedBundle]:
         self.calls += 1
         time.sleep(self.delay_s)
-        return []
+        return self.bundles
 
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         self.calls += 1
@@ -1029,3 +1031,93 @@ def test_connection_lost_cancels_both_timers() -> None:
     protocol.connection_lost(None)
 
     assert [h.cancelled for h in loop.handles] == [True, True]
+
+
+# ----------------------------------------------------------- criteria 20, 21: write deadline (live)
+BIG_BUNDLES = [PublishedBundle(f"{i:032x}", bytes([i]) * 4096) for i in range(16)]
+ONE_IN_FLIGHT = {
+    "per_source_max_in_flight": 1,
+    "per_source_rate": 1000.0,
+    "per_source_burst": 10000,
+    "global_rate": 1000.0,
+    "global_burst": 10000,
+}
+GET_BUNDLES = b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n"
+GET_BUNDLES_CLOSE = b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+
+
+def _small_window(live: LiveGateway) -> socket.socket:
+    """A client socket with SO_RCVBUF=4096, set before connecting."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    live.sockets.append(sock)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    sock.settimeout(IO_BOUND_S)
+    sock.connect(("127.0.0.1", live.port))
+    return sock
+
+
+def test_a_pipelining_client_that_never_reads_is_aborted_and_frees_its_slot(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(Relay(bundles=BIG_BUNDLES), write_timeout_s=1.0, **ONE_IN_FLIGHT)
+    reader = _small_window(live)
+    stopped: list[str] = []
+
+    def flood() -> None:
+        reader.settimeout(2.0)
+        try:
+            for _ in range(2000):
+                reader.sendall(GET_BUNDLES)
+            stopped.append("sent 2000")
+        except (TimeoutError, OSError) as error:
+            stopped.append(type(error).__name__)
+
+    flooder = threading.Thread(target=flood, daemon=True)
+    flooder.start()
+    first_429: float | None = None
+    served_at: float | None = None
+    give_up = time.perf_counter() + 15.0
+    while served_at is None and time.perf_counter() < give_up:
+        if first_429 is not None and time.perf_counter() - first_429 > 4.0:
+            break
+        other = live.connect()
+        other.sendall(GET_BUNDLES_CLOSE)
+        status, _ = read_response(other)
+        other.close()
+        if status == 429 and first_429 is None:
+            first_429 = time.perf_counter()
+        elif status == 200 and first_429 is not None:
+            served_at = time.perf_counter()
+        time.sleep(0.25)
+
+    assert first_429 is not None, "the non-reading client never held the source's slot"
+    assert served_at is not None, "still only 429 more than 4 s after the first one"
+    assert served_at - first_429 <= 4.0
+    flooder.join(STOP_TIMEOUT_S)
+    assert not flooder.is_alive()
+    assert stopped
+    read_to_eof(reader, time.perf_counter(), IO_BOUND_S)  # EOF or reset; fails if still open
+    assert records.outcomes().count("GATEWAY_WRITE_TIMEOUT") == 1
+
+
+def test_a_slow_but_steady_reader_receives_the_whole_response(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(Relay(bundles=BIG_BUNDLES), write_timeout_s=2.0)
+    sock = _small_window(live)
+    sock.sendall(GET_BUNDLES_CLOSE)
+    data = bytearray()
+    deadline = time.perf_counter() + 15.0
+    while True:
+        assert time.perf_counter() < deadline, "response not received within 15 s"
+        time.sleep(0.05)
+        chunk = sock.recv(8192)
+        if not chunk:
+            break
+        data += chunk
+
+    status, headers, body = _parse(bytes(data))
+    assert status == 200
+    assert len(body) == int(headers[b"content-length"])
+    assert len(json.loads(body)["bundles"]) == 16
+    assert "GATEWAY_WRITE_TIMEOUT" not in records.outcomes()
