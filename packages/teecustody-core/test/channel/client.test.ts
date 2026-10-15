@@ -490,3 +490,55 @@ describe("criterion 6: unauthenticated responses are ignored (SR-4, FR-4 §5.6)"
         expect((await failure(client.open(openSession()))).code).toBe("TIMEOUT");
     });
 });
+
+describe("response routing: one poll loop per route, cursor kept per client route", () => {
+    it("resumes a route from the cursor its last exchange reached", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const first = await client.open(openSession());
+        await first.session.request("test.echo", map({ n: 1 }));
+        await first.session.close();
+        const before = workload.polls.length;
+        await client.open(openSession());
+        const resumed = workload.polls[before];
+        expect(resumed?.route).toBe(CLIENT);
+        expect(resumed?.after).toBe("3");
+    });
+
+    it("does not re-read a long route history on the next open", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const { session } = await client.open(openSession());
+        for (let n = 0; n < 200; n += 1) {
+            await session.request("test.echo", map({ n }));
+        }
+        await session.close();
+        const before = workload.polls.length;
+        await client.open(openSession());
+        expect(workload.opens).toHaveLength(2);
+        expect(workload.polls.slice(before).map((p) => p.after)).toEqual(["202"]);
+    });
+
+    it("never polls an enrol reply route again after its open", async () => {
+        workload.onOpen = () => ({ kind: "ok", payload: map({ client_id: CLIENT }) });
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const { session } = await client.open({ op: "enroll" });
+        const route = workload.opens[0]?.aad.get("client_id");
+        await session.request("test.echo", map({ n: 1 }));
+        await client.open(openSession());
+        const routePolls = workload.polls.filter((p) => p.route === route);
+        expect(routePolls).toHaveLength(1);
+        expect(workload.polls.filter((p) => p.route === CLIENT).length).toBeGreaterThan(0);
+    });
+
+    it("serves two sessions of the same client from one route", async () => {
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const a = await client.open(openSession());
+        const b = await client.open(openSession());
+        const [ra, rb] = await Promise.all([
+            a.session.request("test.echo", map({ n: 1 })),
+            b.session.request("test.echo", map({ n: 2 })),
+        ]);
+        expect([asMap(ra).get("n"), asMap(rb).get("n")]).toEqual([1, 2]);
+        await a.session.close();
+        expect(asMap(await b.session.request("test.echo", map({ n: 3 }))).get("n")).toBe(3);
+    });
+});

@@ -34,18 +34,15 @@ interface Waiter {
     reject(error: unknown): void;
 }
 
-interface RouteState {
-    readonly waiters: Set<Waiter>;
-    cursor: ResponseCursor | undefined;
-    polling: boolean;
-}
-
-// One poll loop per route (INC-2-API §7.4): it runs while the route has a waiter.
+// One poll loop per route (INC-2-API §7.4): it runs while the route has a waiter. A route's cursor outlives
+// its loop, so the next exchange on that client route does not re-read the history; an enrol reply route's
+// cursor is forgotten when its open ends (R-4).
 class Router implements SessionLink {
     readonly #transport: Transport;
     readonly #clock: Clock;
     readonly #limits: ChannelLimits;
-    readonly #routes = new Map<ClientId, RouteState>();
+    readonly #routes = new Map<ClientId, Set<Waiter>>();
+    readonly #cursors = new Map<ClientId, ResponseCursor>();
 
     constructor(transport: Transport, clock: Clock, limits: ChannelLimits) {
         this.#transport = transport;
@@ -64,90 +61,82 @@ class Router implements SessionLink {
         owner: object,
         match: (body: Bytes) => Promise<T | undefined>,
     ): Promise<T> {
-        const state = this.#state(route);
         return new Promise<T>((resolve, reject) => {
-            state.waiters.add({
+            const waiter: Waiter = {
                 owner,
                 deadline: this.#clock.now() + this.#limits.responseTimeoutMs,
                 match,
                 resolve: resolve as (value: unknown) => void,
                 reject,
-            });
-            if (!state.polling) {
-                state.polling = true;
-                void this.#poll(route, state);
+            };
+            const waiters = this.#routes.get(route);
+            if (waiters === undefined) {
+                const fresh = new Set([waiter]);
+                this.#routes.set(route, fresh);
+                void this.#poll(route, fresh);
+            } else {
+                waiters.add(waiter);
             }
         });
     }
 
     cancel(owner: object, error: Error): void {
-        for (const state of this.#routes.values()) {
-            for (const waiter of state.waiters) {
+        for (const waiters of this.#routes.values()) {
+            for (const waiter of waiters) {
                 if (waiter.owner === owner) {
-                    state.waiters.delete(waiter);
+                    waiters.delete(waiter);
                     waiter.reject(error);
                 }
             }
         }
     }
 
-    attach(route: ClientId): void {
-        this.#state(route);
+    forget(route: ClientId): void {
+        this.#cursors.delete(route);
     }
 
-    detach(route: ClientId): void {
-        this.#routes.delete(route);
-    }
-
-    #state(route: ClientId): RouteState {
-        let state = this.#routes.get(route);
-        if (state === undefined) {
-            state = { waiters: new Set(), cursor: undefined, polling: false };
-            this.#routes.set(route, state);
-        }
-        return state;
-    }
-
-    async #poll(route: ClientId, state: RouteState): Promise<void> {
-        while (state.waiters.size > 0) {
+    async #poll(route: ClientId, waiters: Set<Waiter>): Promise<void> {
+        while (waiters.size > 0) {
             try {
-                const page = await this.#transport.getResponses(route, state.cursor);
-                state.cursor = page.next ?? state.cursor;
+                const page = await this.#transport.getResponses(route, this.#cursors.get(route));
+                if (page.next !== undefined) {
+                    this.#cursors.set(route, page.next);
+                }
                 for (const response of page.responses) {
-                    await this.#dispatch(state, response.body);
+                    await this.#dispatch(waiters, response.body);
                 }
             } catch {
                 // A transport error is retried on the next poll until the waiters time out.
             }
-            this.#expire(state);
-            if (state.waiters.size > 0) {
+            this.#expire(waiters);
+            if (waiters.size > 0) {
                 await this.#clock.sleep(this.#limits.pollIntervalMs);
             }
         }
-        state.polling = false;
+        this.#routes.delete(route);
     }
 
     // Each body goes to every pending waiter; an unmatched body is discarded.
-    async #dispatch(state: RouteState, body: Bytes): Promise<void> {
-        for (const waiter of [...state.waiters]) {
+    async #dispatch(waiters: Set<Waiter>, body: Bytes): Promise<void> {
+        for (const waiter of [...waiters]) {
             try {
                 const result = await waiter.match(body);
                 if (result !== undefined) {
-                    state.waiters.delete(waiter);
+                    waiters.delete(waiter);
                     waiter.resolve(result);
                 }
             } catch (error) {
-                state.waiters.delete(waiter);
+                waiters.delete(waiter);
                 waiter.reject(error);
             }
         }
     }
 
-    #expire(state: RouteState): void {
+    #expire(waiters: Set<Waiter>): void {
         const now = this.#clock.now();
-        for (const waiter of state.waiters) {
+        for (const waiter of waiters) {
             if (now >= waiter.deadline) {
-                state.waiters.delete(waiter);
+                waiters.delete(waiter);
                 waiter.reject(new ChannelError("TIMEOUT"));
             }
         }

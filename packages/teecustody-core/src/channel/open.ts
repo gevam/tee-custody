@@ -154,6 +154,10 @@ async function establish(
         keyC2t.fill(0);
         keyT2c.fill(0);
         throw error;
+    } finally {
+        if (payload.op === "enroll") {
+            link.forget(route);
+        }
     }
 }
 

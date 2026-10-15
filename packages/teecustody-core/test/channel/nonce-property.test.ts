@@ -73,7 +73,6 @@ describe("criterion 8: R-5 nonce uniqueness property", () => {
             );
 
             let n = 0;
-            const sessions: unknown[] = [];
             while (spy.calls.length < SEALS) {
                 workload.postFailure = undefined;
                 const { session } = await client.open({
@@ -103,7 +102,7 @@ describe("criterion 8: R-5 nonce uniqueness property", () => {
                         }
                     }
                 }
-                sessions.push(session);
+                await session.close().catch(() => undefined);
             }
 
             expect(spy.calls.length).toBeGreaterThanOrEqual(SEALS);

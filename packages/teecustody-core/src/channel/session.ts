@@ -37,9 +37,8 @@ export interface SessionLink {
     ): Promise<T>;
     // Rejects every pending wait of `owner` with `error`.
     cancel(owner: object, error: Error): void;
-    // A route stays known (its cursor kept) while attached.
-    attach(route: ClientId): void;
-    detach(route: ClientId): void;
+    // Drops what the router keeps for a one-shot route (an enrol reply route, R-4).
+    forget(route: ClientId): void;
 }
 
 // T-26 design (API-TL §3). The Session takes ownership of both key buffers.
@@ -160,7 +159,6 @@ export class Session {
         this.#crypto = init.crypto;
         this.#limits = init.limits;
         this.#link = init.link;
-        init.link.attach(this.clientId);
     }
 
     get closed(): boolean {
@@ -251,7 +249,7 @@ export class Session {
         return { seq, envelope };
     }
 
-    // Local close: keys zeroed, pending requests released, route detached.
+    // Local close: keys zeroed, pending requests released.
     #shutdown(): void {
         if (!this.#live) {
             return;
@@ -261,7 +259,6 @@ export class Session {
         this.#keyC2t.fill(0);
         this.#keyT2c.fill(0);
         this.#link.cancel(this, new ChannelError("SESSION_CLOSED"));
-        this.#link.detach(this.clientId);
     }
 
     // sends op "close"; idempotent; destroys keys even on failure
