@@ -1684,3 +1684,22 @@ Chair / decider: Orchestrator, on QA's G6 run (branch inc-2/QA-G6, ec1abaf, off 
 - **Traceability:** no INC-2 GAP row. The 13 remaining GAP rows belong to INC-3..INC-5.
 
 **Dissent:** none
+
+## D-080 — INC-2 G8 passes; `inc-2` tagged locally (INC-2, 2026-10-15)
+
+Type: gate
+Chair / decider: Orchestrator
+
+**Decision:** G8 passes.
+- QA G6 report merged: 577c3d5.
+- Trunk green at 577c3d5:
+  - Python 4842; spec/vectors 236;
+  - Core 1479, tests 673, web 771;
+  - lint_command exits 0; gitleaks clean.
+- CHANGELOG INC-2 release notes: 0e20909.
+- Annotated tag `inc-2` on 0e20909, **local only, not pushed**. This follows the inc-1 precedent (D-037). Pushing to origin stays an open human question.
+- Deployable per ARCHITECTURE.md for INC-2's scope: simulator, in-memory queue and reference gateway. The workload image and Confidential Space deployment are INC-3..INC-5.
+
+**Next:** INC-2 retrospective (PROCESS §3.9).
+
+**Dissent:** none
