@@ -84,20 +84,22 @@ def test_full_cache_accepts_a_new_entry_once_every_entry_has_expired() -> None:
 
 
 def test_a_long_run_with_a_moving_clock_is_fast_and_stays_within_max_entries() -> None:
-    skew, max_entries = 1_000, 20_000
+    skew, per_second = 1_000, 10
+    # The cap equals the steady-state live count, so the cache is full at the start of every second.
+    max_entries = per_second * (skew + 1)
     clock = Clock()
     cache = ReplayCache(skew_s=skew, max_entries=max_entries, clock=clock)
     largest = 0
 
     started = time.perf_counter()
     for n in range(100_000):
-        clock.now = T0 + n // 10
-        cache.record(CLIENT, n.to_bytes(16, "big"), T0 + n // 10)
+        clock.now = T0 + n // per_second
+        cache.record(CLIENT, n.to_bytes(16, "big"), T0 + n // per_second)
         largest = max(largest, cache._size())
     elapsed = time.perf_counter() - started
 
     assert elapsed < 2.0
-    assert largest <= max_entries
+    assert largest == max_entries
     assert cache.seen(CLIENT, (99_999).to_bytes(16, "big"))
     assert not cache.seen(CLIENT, (0).to_bytes(16, "big"))
 
