@@ -33,7 +33,7 @@ from teecustody.channel.server import OutboundResponse, ProcessResult
 from teecustody.channel.session import SessionTable, T2cSealer
 from teecustody.config import BoundaryLimits, ChannelParams, ConfigError, ConfigErrorCode
 from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage
-from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
+from teecustody.runtime import RunLoop, StopCode, TickReport, WorkloadStopped, run_loop
 from teecustody.secrets import Secret
 from teecustody.wire import CanonicalValue, DecodeLimits
 
@@ -1291,3 +1291,89 @@ def test_c14_an_undelivered_response_backs_off_even_though_its_ack_succeeds(
     world.clock.now += 1
     world.loop.tick()
     assert len(world.queue.named("pull")) == pulls + 1
+
+
+# ---------------------------------------------------------------- criterion 16 (A2 CM1): re-check
+def tick_outcome(world: World) -> TickReport | WorkloadStopped:
+    """The tick's report, or the stop it raised, so the side effects are asserted either way."""
+    try:
+        return world.loop.tick()
+    except WorkloadStopped as stopped:
+        return stopped
+
+
+def near_expiry(monkeypatch: pytest.MonkeyPatch) -> tuple[World, float]:
+    """A started world 0.5 s before its token expires; refreshes fail and keep the current token."""
+    world = World(monkeypatch)
+    exp = float(world.launcher.issued[0].expires_at)
+    world.launcher.fail = True
+    world.clock.now = exp - 0.5
+    return world, exp
+
+
+def test_c16_a_pull_that_returns_after_expiry_processes_answers_and_acks_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, exp = near_expiry(monkeypatch)
+    answered(world, 1, b"req-1")
+    answered(world, 2, b"req-2")
+    original_pull = world.queue.pull_requests
+
+    def blocking_pull(instance_id: str, max_messages: int, wait_s: float) -> list[QueueMessage]:
+        world.clock.now = exp + 0.5  # the long-poll returns after the token expired
+        return original_pull(instance_id, max_messages, wait_s)
+
+    monkeypatch.setattr(world.queue, "pull_requests", blocking_pull)
+
+    outcome = tick_outcome(world)
+
+    assert world.server.bodies == [], outcome
+    assert world.queue.named("publish_response") == []
+    assert world.queue.named("ack") == []
+    assert isinstance(outcome, WorkloadStopped)
+    assert outcome.code is StopCode.ATTESTATION_EXPIRED
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+
+
+def test_c16_expiry_inside_a_process_call_answers_that_message_and_stops_before_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, exp = near_expiry(monkeypatch)
+    first = answered(world, 1, b"req-1")
+    answered(world, 2, b"req-2")
+
+    def slow_process(_body: bytes) -> None:
+        world.clock.now = exp + 0.5
+
+    world.server.on_process = slow_process
+
+    outcome = tick_outcome(world)
+
+    assert world.server.bodies == [b"req-1"], outcome
+    assert [c[3] for c in world.queue.named("publish_response")] == [first]
+    assert world.queue.named("ack") == [("ack", f"{1:032x}")]
+    assert isinstance(outcome, WorkloadStopped)
+    assert outcome.code is StopCode.ATTESTATION_EXPIRED
+    assert len(world.queue.named("withdraw_bundle")) == 1
+
+
+def test_c16_expiry_before_a_due_republish_publishes_no_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world, exp = near_expiry(monkeypatch)
+    prekeys = world.server.kwargs["prekeys"]  # every pre-key is past its TTL: a republish is due
+    original_expire = prekeys.expire
+
+    def slow_expire() -> int:
+        world.clock.now = exp + 0.5
+        return original_expire()
+
+    monkeypatch.setattr(prekeys, "expire", slow_expire)
+    bundles_before = len(world.queue.bundles)
+
+    outcome = tick_outcome(world)
+
+    assert len(world.queue.bundles) == bundles_before, outcome
+    assert isinstance(outcome, WorkloadStopped)
+    assert outcome.code is StopCode.ATTESTATION_EXPIRED
+    assert len(world.queue.named("withdraw_bundle")) == 1

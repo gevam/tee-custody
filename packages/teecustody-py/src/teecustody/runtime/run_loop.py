@@ -235,10 +235,9 @@ class RunLoop:
 
     def _refresh(self, live: _Live) -> RefreshOutcome | None:
         """(1) Expiry first (A1), then B-08: never ask before `next_refresh_attempt_at`."""
+        self._stop_if_expired(live)
         now = self._clock()
         expires_at = live.lifecycle.current().expires_at
-        if now >= expires_at:
-            self._stop(StopCode.ATTESTATION_EXPIRED)
         if now < self._next_refresh_attempt_at:
             return None
         try:
@@ -254,6 +253,11 @@ class RunLoop:
             if not self._same_digest(live):
                 self._stop(StopCode.DIGEST_CHANGED)
         return outcome
+
+    def _stop_if_expired(self, live: _Live) -> None:
+        """A2: nothing is published or processed at or after the current token's expiry."""
+        if self._clock() >= live.lifecycle.current().expires_at:
+            self._stop(StopCode.ATTESTATION_EXPIRED)
 
     def _same_digest(self, live: _Live) -> bool:
         """The refreshed token names this image; an unreadable digest is not this image."""
@@ -283,6 +287,7 @@ class RunLoop:
         due = self._clock() - live.published_at >= self._limits.bundle_republish_min_interval_s
         if not (changed and due and self._queue_ready()):
             return False
+        self._stop_if_expired(live)
         try:
             self._publish(live, live.lifecycle.current())
         except QueueError as err:  # stays due; the backoff also skips this tick's pull
@@ -330,6 +335,7 @@ class RunLoop:
 
     def _handle(self, live: _Live, message: QueueMessage) -> bool:
         """Sealed once; a retry re-sends the same bytes (R-5). False if a queue call failed."""
+        self._stop_if_expired(live)  # A2: a pull may have blocked across expiry
         response = live.server.process(message.body).response
         delivered = response is None or self._publish_response(response, message.request_id)
         try:
