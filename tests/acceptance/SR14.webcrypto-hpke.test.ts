@@ -282,3 +282,108 @@ describe("Ed25519 and randomness through the adapter", () => {
         }
     });
 });
+
+/** Counts X25519 generateKey calls in order (call 1 = the probe) and injects faults by call number. */
+function faultSubtle(fault: (call: number) => "reject" | "hide" | undefined): {
+    subtle: SubtleCrypto;
+    calls: () => number;
+} {
+    const real = globalThis.crypto.subtle;
+    let calls = 0;
+    const subtle = new Proxy(real, {
+        get(target, prop) {
+            const value = Reflect.get(target, prop, target) as unknown;
+            if (typeof value !== "function") {
+                return value;
+            }
+            return (...args: unknown[]) => {
+                if (prop === "generateKey") {
+                    const a = args[0];
+                    const name = typeof a === "string" ? a : ((a as { name?: string }).name ?? "");
+                    if (name === "X25519") {
+                        calls += 1;
+                        const f = fault(calls);
+                        if (f === "reject") {
+                            throw new DOMException("T14-SENTINEL-c8 transient", "OperationError");
+                        }
+                        if (f === "hide") {
+                            throw new DOMException("not supported", "NotSupportedError");
+                        }
+                    }
+                }
+                return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+        },
+    });
+    return { subtle, calls: () => calls };
+}
+
+function hex(s: string): Uint8Array {
+    return new Uint8Array(Buffer.from(s, "hex"));
+}
+
+const LOW_ORDER: readonly (readonly [string, Uint8Array])[] = [
+    ["zero", new Uint8Array(32)],
+    ["one", hex("01" + "00".repeat(31))],
+    ["order-8 a", hex("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800")],
+    ["order-8 b", hex("5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157")],
+    ["p-1", hex("ecff" + "ff".repeat(29) + "7f")],
+    ["p", hex("edff" + "ff".repeat(29) + "7f")],
+    ["p+1", hex("eeff" + "ff".repeat(29) + "7f")],
+];
+
+describe("SR-14 bounded X25519 key generation (ADR 0011 C8)", () => {
+    it("Q1: a transient failure of the sender's ephemeral key (call 2) is retried and round-trips", async () => {
+        const { subtle, calls } = faultSubtle((n) => (n === 2 ? "reject" : undefined));
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
+        const { sk, pk } = x25519();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        const ct = await sender.seal(AAD, PT);
+        const receiver = await crypto.setupHpkeReceiver(sk, sender.encapsulatedKey, INFO);
+        expect(Array.from(await receiver.open(AAD, ct))).toEqual(Array.from(PT));
+        expect(calls()).toBeGreaterThanOrEqual(3);
+    });
+
+    it("Q2: every call after the probe failing gives UNSUPPORTED without a cause", async () => {
+        const { subtle } = faultSubtle((n) => (n > 1 ? "reject" : undefined));
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
+        const { pk } = x25519();
+        const error = await failure(crypto.setupHpkeSender(pk, INFO));
+        expect(code(error)).toBe("UNSUPPORTED");
+        expect((error as CapabilityError).cause).toBeUndefined();
+    });
+
+    it("Q3: a failed probe (call 1 only) is retried and the sender resolves", async () => {
+        const { subtle } = faultSubtle((n) => (n === 1 ? "reject" : undefined));
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
+        const { pk } = x25519();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+    });
+
+    it("Q4: a failed probe is not cached; the same adapter recovers when X25519 returns", async () => {
+        let hidden = true;
+        const { subtle } = faultSubtle(() => (hidden ? "hide" : undefined));
+        installGlobalSubtle(subtle);
+        const crypto = createWebCrypto();
+        const { pk } = x25519();
+        expect(code(await failure(crypto.setupHpkeSender(pk, INFO)))).toBe("UNSUPPORTED");
+        hidden = false;
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+    });
+
+    it.each(LOW_ORDER)(
+        "Q5: low-order recipient key (%s) gives INVALID_ARGUMENT after exactly one keygen past the probe",
+        async (_name, key) => {
+            const { subtle, calls } = faultSubtle(() => undefined);
+            installGlobalSubtle(subtle);
+            const crypto = createWebCrypto();
+            expect(code(await failure(crypto.setupHpkeSender(key, INFO)))).toBe("INVALID_ARGUMENT");
+            expect(calls()).toBe(2);
+        },
+    );
+});
