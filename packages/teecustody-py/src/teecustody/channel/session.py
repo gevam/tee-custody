@@ -8,7 +8,13 @@ from enum import StrEnum
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from teecustody.channel.codec import FrameAad, OpenResultAad, encode_open_result_aad
+from teecustody.channel.codec import (
+    MAX_SEQ,
+    FrameAad,
+    OpenResultAad,
+    encode_frame_aad,
+    encode_open_result_aad,
+)
 from teecustody.channel.ports import CloseReason, SessionInfo
 from teecustody.secrets import Secret
 
@@ -50,12 +56,23 @@ class T2cSealer:
             raise SessionReject(SessionRejectCode.USED)
         self._next_seq = 1
         aad_bytes = encode_open_result_aad(aad)
-        return aad_bytes, AESGCM(self._key.reveal()).encrypt(_nonce(0), plaintext, aad_bytes)
+        return aad_bytes, self._encrypt(0, plaintext, aad_bytes)
 
     def seal_frame_result(
         self, op: str, session_id: bytes, plaintext: bytes
     ) -> tuple[bytes, bytes]:
-        raise SessionReject(SessionRejectCode.USED)
+        seq = self._next_seq
+        if seq == 0:
+            raise SessionReject(SessionRejectCode.USED)
+        if seq > MAX_SEQ:
+            raise SessionReject(SessionRejectCode.EXHAUSTED)
+        self._next_seq = seq + 1
+        aad_bytes = encode_frame_aad(FrameAad(session_id=session_id, seq=seq, op=op))
+        return aad_bytes, self._encrypt(seq, plaintext, aad_bytes)
+
+    def _encrypt(self, seq: int, plaintext: bytes, aad_bytes: bytes) -> bytes:
+        """The one AES-GCM encryption under sk_t2c; `seq` was allocated and persisted by the caller."""
+        return AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
 
     def wipe(self) -> None:
         raise NotImplementedError("T-23")

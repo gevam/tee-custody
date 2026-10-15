@@ -5,7 +5,13 @@ import os
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from teecustody.channel.codec import OpenResultAad, encode_open_result_aad
+from teecustody.channel.codec import (
+    MAX_SEQ,
+    FrameAad,
+    OpenResultAad,
+    encode_frame_aad,
+    encode_open_result_aad,
+)
 from teecustody.channel.session import SessionReject, SessionRejectCode, T2cSealer, _nonce
 from teecustody.secrets import Secret
 
@@ -61,3 +67,36 @@ def test_an_exception_inside_the_open_result_seal_burns_nonce_zero(
     with pytest.raises(SessionReject) as err:
         sealer.seal_open_result(OPEN_AAD, b"opened")
     assert err.value.code is SessionRejectCode.USED
+
+
+# ---------------------------------------------------------------- criterion 3
+def _opened_sealer() -> tuple[T2cSealer, bytes]:
+    sealer, key = _sealer()
+    sealer.seal_open_result(OPEN_AAD, b"opened")
+    return sealer, key
+
+
+def test_frame_results_use_seqs_one_two_three_in_order() -> None:
+    sealer, key = _opened_sealer()
+    for seq in (1, 2, 3):
+        aad_bytes, ct = sealer.seal_frame_result(OP, SESSION_ID, b"frame %d" % seq)
+        assert aad_bytes == encode_frame_aad(FrameAad(session_id=SESSION_ID, seq=seq, op=OP))
+        assert AESGCM(key).decrypt(_nonce(seq), ct, aad_bytes) == b"frame %d" % seq
+
+
+def test_the_last_seq_is_max_seq_and_the_next_is_exhausted() -> None:
+    sealer, key = _opened_sealer()
+    sealer._next_seq = MAX_SEQ
+    aad_bytes, ct = sealer.seal_frame_result(OP, SESSION_ID, b"last")
+    assert AESGCM(key).decrypt(_nonce(MAX_SEQ), ct, aad_bytes) == b"last"
+    with pytest.raises(SessionReject) as err:
+        sealer.seal_frame_result(OP, SESSION_ID, b"beyond")
+    assert err.value.code is SessionRejectCode.EXHAUSTED
+
+
+def test_a_counter_beyond_max_seq_is_exhausted() -> None:
+    sealer, _key = _opened_sealer()
+    sealer._next_seq = MAX_SEQ + 1
+    with pytest.raises(SessionReject) as err:
+        sealer.seal_frame_result(OP, SESSION_ID, b"beyond")
+    assert err.value.code is SessionRejectCode.EXHAUSTED
