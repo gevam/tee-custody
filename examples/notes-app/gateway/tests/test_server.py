@@ -11,11 +11,13 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
+from uvicorn.server import ServerState
 
 from notes_gateway import GatewayLimits, create_app
 from notes_gateway import server as gateway_server
@@ -513,3 +515,178 @@ def test_garbage_after_a_kept_alive_200_gets_exactly_the_json_400_then_eof(
     assert live.relay.calls == 1
     assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_INVALID_ARGUMENT"]
     _assert_nothing_leaked(records)
+
+
+# ------------------------------------------------------------- criterion 11: protocol hooks (fakes)
+class FakeHandle:
+    def __init__(self, delay: float, callback: Callable[..., object], args: tuple[object, ...]):
+        self.delay = delay
+        self.callback = callback
+        self.args = args
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        self.callback(*self.args)
+
+
+class FakeLoop:
+    """The only loop method the protocol hooks use without a request: `call_later`."""
+
+    def __init__(self) -> None:
+        self.handles: list[FakeHandle] = []
+
+    def call_later(
+        self, delay: float, callback: Callable[..., object], *args: object
+    ) -> FakeHandle:
+        handle = FakeHandle(delay, callback, args)
+        self.handles.append(handle)
+        return handle
+
+
+class FakeTransport:
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self.closes = 0
+        self.closing = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    def close(self) -> None:
+        self.closes += 1
+        self.closing = True
+
+    def is_closing(self) -> bool:
+        return self.closing
+
+    def get_extra_info(self, name: str, default: object = None) -> object:
+        return default
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
+
+
+HOOK_TIMEOUT_S = 7.0
+
+
+def _protocol(
+    *, max_connections: int = 64, others: int = 0
+) -> tuple[Any, FakeLoop, FakeTransport, ServerState]:
+    limits = GatewayLimits(header_read_timeout_s=HOOK_TIMEOUT_S, max_connections=max_connections)
+    config = gateway_server.uvicorn_config(
+        create_app(Relay(), limits=limits), limits=limits, host="127.0.0.1", port=0
+    )
+    loop, transport, state = FakeLoop(), FakeTransport(), ServerState()
+    state.connections.update(object() for _ in range(others))  # type: ignore[misc]
+    protocol = config.http(config=config, server_state=state, app_state={}, _loop=loop)
+    protocol.connection_made(transport)
+    return protocol, loop, transport, state
+
+
+def test_connection_made_arms_one_deadline_for_the_current_cycle(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+
+    [handle] = loop.handles
+    assert handle.delay == HOOK_TIMEOUT_S
+    assert handle.args == (None,)
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_the_deadline_closes_an_unchanged_cycle_without_writing(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes) == ([], 1)
+    assert records.outcomes() == ["GATEWAY_HEADER_TIMEOUT"]
+
+
+def test_connection_lost_cancels_the_pending_deadline() -> None:
+    protocol, loop, _transport, _ = _protocol()
+
+    protocol.connection_lost(None)
+
+    assert loop.handles[0].cancelled
+
+
+def test_the_deadline_does_nothing_once_a_new_cycle_exists(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.cycle = SimpleNamespace(response_started=False, response_complete=False)
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_the_deadline_does_nothing_on_a_closing_transport(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+    transport.closing = True
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_response_completion_on_a_closing_transport_arms_nothing() -> None:
+    protocol, loop, transport, _ = _protocol()
+    transport.closing = True
+
+    protocol.on_response_complete()
+
+    assert len(loop.handles) == 1
+    assert not loop.handles[0].cancelled
+
+
+def test_response_completion_rearms_for_the_completed_cycle_before_uvicorn_runs() -> None:
+    protocol, loop, _transport, state = _protocol()
+    completed = SimpleNamespace(response_started=True, response_complete=True)
+    protocol.cycle = completed
+
+    protocol.on_response_complete()
+
+    first, rearmed, keep_alive = loop.handles
+    assert first.cancelled
+    assert (rearmed.delay, rearmed.args, rearmed.cancelled) == (HOOK_TIMEOUT_S, (completed,), False)
+    assert keep_alive.delay == 5
+    assert state.total_requests == 1
+
+
+@pytest.mark.parametrize(
+    ("cycle", "written"),
+    [
+        (None, [PARSE_FAILURE_400]),
+        (SimpleNamespace(response_started=True, response_complete=False), []),
+        (SimpleNamespace(response_started=False, response_complete=False), [PARSE_FAILURE_400]),
+        (SimpleNamespace(response_started=True, response_complete=True), [PARSE_FAILURE_400]),
+    ],
+    ids=["no cycle", "started, not complete", "not started", "started and complete"],
+)
+def test_send_400_response_never_interleaves_with_a_response_in_progress(
+    cycle: SimpleNamespace | None, written: list[bytes], records: Records
+) -> None:
+    protocol, _loop, transport, _ = _protocol()
+    protocol.cycle = cycle
+
+    protocol.send_400_response("Invalid HTTP request received.")
+
+    assert transport.written == written
+    assert transport.closes == 1
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+@pytest.mark.parametrize(("others", "closed"), [(63, False), (64, True)])
+def test_connection_made_closes_only_beyond_max_connections(
+    others: int, closed: bool, records: Records
+) -> None:
+    _proto, loop, transport, _ = _protocol(max_connections=64, others=others)
+
+    assert transport.closes == int(closed)
+    assert transport.written == []
+    assert len(loop.handles) == int(not closed)
+    assert records.outcomes() == (["GATEWAY_CONNECTION_LIMIT"] if closed else [])

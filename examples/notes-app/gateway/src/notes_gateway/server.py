@@ -33,6 +33,8 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
     max_connections = limits.max_connections
 
     class _GatewayProtocol(_H11Protocol):
+        _deadline: asyncio.TimerHandle | None = None
+
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
             super().connection_made(transport)
             if len(self.connections) > max_connections:
@@ -41,23 +43,34 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
                 return
             self._arm()
 
+        def connection_lost(self, exc: Exception | None) -> None:
+            if self._deadline is not None:
+                self._deadline.cancel()
+            super().connection_lost(exc)
+
         def on_response_complete(self) -> None:
             # Arm first: super() may parse a pipelined request, which must start a new cycle.
-            self._arm()
+            if not self.transport.is_closing():
+                self._arm()
             super().on_response_complete()
 
         def send_400_response(self, msg: str) -> None:
-            """The §6 parse-failure answer in place of uvicorn's text/plain body."""
-            self.transport.write(_PARSE_FAILURE_400)
+            """The §6 parse-failure answer in place of uvicorn's text/plain body. Nothing is
+            written into a response already in progress; the connection is only closed."""
+            cycle = self.cycle
+            if cycle is None or not cycle.response_started or cycle.response_complete:
+                self.transport.write(_PARSE_FAILURE_400)
             self.transport.close()
             _LOG.info("GATEWAY_INVALID_ARGUMENT")
 
         def _arm(self) -> None:
-            self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
+            if self._deadline is not None:
+                self._deadline.cancel()
+            self._deadline = self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
 
         def _expire(self, cycle: _RequestResponseCycle | None) -> None:
             """Close if no request has been parsed since arming (a new request is a new cycle)."""
-            if self.cycle is cycle:
+            if self.cycle is cycle and not self.transport.is_closing():
                 self.transport.close()
                 _LOG.info("GATEWAY_HEADER_TIMEOUT")
 
