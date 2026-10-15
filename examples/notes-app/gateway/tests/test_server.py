@@ -1,0 +1,1167 @@
+"""T-40: gateway uvicorn server hardening (INC-2-API §6 "Server hardening"; SR-3, SR-4, SR-11).
+
+Live tests run `uvicorn.Server(uvicorn_config(...))` in a thread on 127.0.0.1:0 and talk raw
+sockets. Every wait is bounded, every socket is closed and every server is stopped on teardown.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import socket
+import threading
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+import uvicorn
+from uvicorn.protocols.http.h11_impl import H11Protocol
+from uvicorn.server import ServerState
+
+from notes_gateway import GatewayLimits, create_app
+from notes_gateway import server as gateway_server
+from teecustody.obs import JsonLogFormatter
+from teecustody.queue import PublishedBundle, ResponsePage
+
+START_TIMEOUT_S = 10.0
+STOP_TIMEOUT_S = 10.0
+IO_BOUND_S = 5.0
+PARTIAL_HEADERS = b"GET /bundles HTTP/1.1\r\nHost: x\r\nX-A: "
+INSTANCE = "a1" * 16
+
+
+class Relay:
+    """A RelayQueue fake that counts calls; `list_bundles` sleeps `delay_s` first."""
+
+    def __init__(self, delay_s: float = 0.0, bundles: list[PublishedBundle] | None = None) -> None:
+        self.calls = 0
+        self.delay_s = delay_s
+        self.bundles = bundles or []
+
+    def list_bundles(self, max_bundles: int) -> list[PublishedBundle]:
+        self.calls += 1
+        time.sleep(self.delay_s)
+        return self.bundles
+
+    def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
+        self.calls += 1
+        return "11" * 16
+
+    def pull_responses(self, client_id: str, after: str | None, max_messages: int) -> ResponsePage:
+        self.calls += 1
+        return ResponsePage((), None)
+
+
+# ------------------------------------------------------------- criterion 10: the uvicorn settings
+@pytest.fixture
+def config_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    real_config = uvicorn.Config
+
+    class RecordingConfig(real_config):  # type: ignore[valid-type,misc]
+        def __init__(self, app: Any, **kwargs: Any) -> None:
+            calls.append(kwargs)
+            super().__init__(app, **kwargs)
+
+    monkeypatch.setattr(uvicorn, "Config", RecordingConfig)
+    return calls
+
+
+def test_uvicorn_config_has_every_section_6_setting(config_calls: list[dict[str, Any]]) -> None:
+    app = create_app(Relay())
+
+    config = gateway_server.uvicorn_config(app, host="127.0.0.1", port=0)
+
+    assert len(config_calls) == 1
+    assert config.app is app
+    assert (config.host, config.port) == ("127.0.0.1", 0)
+    assert isinstance(config.http, type)
+    assert issubclass(config.http, H11Protocol)
+    assert config.http is not H11Protocol
+    assert config.ws == "none"
+    assert config.proxy_headers is False
+    assert config.server_header is False
+    assert config.access_log is False
+    assert config.h11_max_incomplete_event_size == 16384
+    assert config.timeout_keep_alive == 5
+    assert config.log_level == "warning"
+    assert config.limit_concurrency is None
+    assert "forwarded_allow_ips" not in config_calls[0]
+    assert "limit_concurrency" not in config_calls[0]
+
+
+def test_uvicorn_config_loads_the_gateway_protocol_and_no_websocket_protocol() -> None:
+    config = gateway_server.uvicorn_config(create_app(Relay()), host="127.0.0.1", port=0)
+
+    config.load()
+
+    assert config.http_protocol_class is config.http
+    assert config.ws_protocol_class is None
+
+
+# ------------------------------------------------------------- criterion 9: limits validation
+INVALID_LIMITS: list[dict[str, object]] = [
+    {"header_read_timeout_s": 0.5},
+    {"header_read_timeout_s": 60.5},
+    {"header_read_timeout_s": float("nan")},
+    {"header_read_timeout_s": float("inf")},
+    {"header_read_timeout_s": True},
+    {"header_read_timeout_s": "10"},
+    {"max_connections": 0},
+    {"max_connections": True},
+    {"max_connections": 3.0},
+    {"max_connections": 63},
+    {"max_header_bytes": 1023},
+    {"max_header_bytes": 12289},
+    {"max_header_bytes": True},
+    {"max_header_count": 15},
+    {"max_header_count": 257},
+    {"max_header_count": True},
+    {"write_timeout_s": 0.5},
+    {"write_timeout_s": 60.5},
+    {"write_timeout_s": float("nan")},
+    {"write_timeout_s": float("inf")},
+    {"write_timeout_s": True},
+    {"write_timeout_s": "30"},
+    {"max_page": 0},
+    {"cors_origins": ("*",)},
+]
+BOUNDARY_LIMITS: list[dict[str, object]] = [
+    {"header_read_timeout_s": 1.0},
+    {"header_read_timeout_s": 60.0},
+    {"max_connections": 64},
+    {"max_header_bytes": 1024},
+    {"max_header_bytes": 12288},
+    {"max_header_count": 16},
+    {"max_header_count": 256},
+    {"write_timeout_s": 1.0},
+    {"write_timeout_s": 60.0},
+]
+
+
+@pytest.mark.parametrize("fields", INVALID_LIMITS, ids=repr)
+def test_uvicorn_config_refuses_limits_that_create_app_refuses(fields: dict[str, object]) -> None:
+    limits = GatewayLimits(**fields)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"^INVALID_(LIMITS|CORS_ORIGIN)$") as refused:
+        create_app(Relay(), limits=limits)
+    app = create_app(Relay())
+
+    with pytest.raises(ValueError, match=r"^INVALID_(LIMITS|CORS_ORIGIN)$") as also_refused:
+        gateway_server.uvicorn_config(app, limits=limits, host="127.0.0.1", port=0)
+
+    assert str(also_refused.value) == str(refused.value)
+
+
+@pytest.mark.parametrize("fields", BOUNDARY_LIMITS, ids=repr)
+def test_uvicorn_config_accepts_boundary_limits(fields: dict[str, object]) -> None:
+    limits = GatewayLimits(**fields)  # type: ignore[arg-type]
+    app = create_app(Relay(), limits=limits)
+
+    config = gateway_server.uvicorn_config(app, limits=limits, host="127.0.0.1", port=0)
+
+    assert issubclass(config.http, H11Protocol)
+
+
+# ------------------------------------------------------------- live server harness
+class Records(logging.Handler):
+    """Collects the rendered JSON of every record it sees."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+        self.setFormatter(JsonLogFormatter())
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def outcomes(self) -> list[str]:
+        return [r.getMessage() for r in self.records if r.name == "teecustody.gateway"]
+
+    def rendered(self) -> list[str]:
+        return [self.format(r) for r in self.records]
+
+
+class LiveGateway:
+    """The gateway under `uvicorn.Server(uvicorn_config(...))` in a thread on 127.0.0.1:0."""
+
+    def __init__(self, relay: Relay, limits: GatewayLimits, records: Records) -> None:
+        self.relay = relay
+        app = create_app(relay, limits=limits)
+        self.config = gateway_server.uvicorn_config(app, limits=limits, host="127.0.0.1", port=0)
+        # uvicorn's dictConfig ran in Config(); attach afterwards so it cannot drop the handler.
+        logging.getLogger("uvicorn.error").addHandler(records)
+        self.server = uvicorn.Server(self.config)
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.sockets: list[socket.socket] = []
+        self.port = 0
+
+    def start(self) -> LiveGateway:
+        self.thread.start()
+        deadline = time.perf_counter() + START_TIMEOUT_S
+        while not self.server.started:
+            assert self.thread.is_alive(), "server thread exited before it started"
+            assert time.perf_counter() < deadline, "server did not start within 10 s"
+            time.sleep(0.01)
+        self.port = self.server.servers[0].sockets[0].getsockname()[1]
+        return self
+
+    def connect(self) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=IO_BOUND_S)
+        self.sockets.append(sock)
+        return sock
+
+    def open_connections(self) -> int:
+        return len(self.server.server_state.connections)
+
+    def wait_connections(self, count: int, bound_s: float = IO_BOUND_S) -> None:
+        deadline = time.perf_counter() + bound_s
+        while self.open_connections() != count:
+            assert time.perf_counter() < deadline, f"open connections never reached {count}"
+            time.sleep(0.005)
+
+    def stop(self) -> None:
+        for sock in self.sockets:
+            sock.close()
+        self.server.should_exit = True
+        self.thread.join(STOP_TIMEOUT_S)
+        if self.thread.is_alive():  # pragma: no cover - only a broken server gets here
+            self.server.force_exit = True
+            self.thread.join(STOP_TIMEOUT_S)
+        assert not self.thread.is_alive()
+
+
+@pytest.fixture
+def records() -> Iterator[Records]:
+    handler = Records()
+    base = logging.getLogger("teecustody")
+    saved = base.level
+    base.setLevel(logging.INFO)
+    base.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        base.removeHandler(handler)
+        base.setLevel(saved)
+        logging.getLogger("uvicorn.error").removeHandler(handler)
+
+
+@pytest.fixture
+def gateway(records: Records) -> Iterator[Callable[..., LiveGateway]]:
+    started: list[LiveGateway] = []
+
+    def start(relay: Relay | None = None, **limits: Any) -> LiveGateway:
+        live = LiveGateway(relay or Relay(), GatewayLimits(**limits), records)
+        started.append(live)
+        return live.start()
+
+    try:
+        yield start
+    finally:
+        for live in started:
+            live.stop()
+
+
+def read_to_eof(sock: socket.socket, start: float, bound_s: float) -> tuple[bytes, float]:
+    """Every byte until the peer closes, and the close time relative to `start`. A reset counts
+    as the close. Fails if the peer has not closed `bound_s` after `start`."""
+    data = bytearray()
+    while True:
+        remaining = start + bound_s - time.perf_counter()
+        assert remaining > 0, f"no EOF within {bound_s} s"
+        sock.settimeout(remaining)
+        try:
+            chunk = sock.recv(65536)
+        except TimeoutError:
+            pytest.fail(f"no EOF within {bound_s} s")
+        except ConnectionResetError:
+            chunk = b""
+        if not chunk:
+            return bytes(data), time.perf_counter() - start
+        data += chunk
+
+
+def read_response(sock: socket.socket, bound_s: float = IO_BOUND_S) -> tuple[int, bytes]:
+    """One HTTP/1.1 response with a Content-Length body: (status, body)."""
+    deadline = time.perf_counter() + bound_s
+    data = bytearray()
+
+    def fill() -> None:
+        remaining = deadline - time.perf_counter()
+        assert remaining > 0, "response incomplete"
+        sock.settimeout(remaining)
+        chunk = sock.recv(65536)
+        assert chunk, "connection closed mid-response"
+        data.extend(chunk)
+
+    while b"\r\n\r\n" not in data:
+        fill()
+    head, _, _ = bytes(data).partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    headers = dict(line.lower().split(b": ", 1) for line in lines[1:])
+    length = int(headers[b"content-length"])
+    while len(data) < len(head) + 4 + length:
+        fill()
+    body = bytes(data[len(head) + 4 : len(head) + 4 + length])
+    leftover = bytes(data[len(head) + 4 + length :])
+    assert leftover == b"", "read past one response"
+    return int(lines[0].split(b" ")[1]), body
+
+
+# ------------------------------------------------------------- criteria 1-3: header-read deadline
+def test_partial_headers_are_closed_silently_at_the_header_deadline(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(header_read_timeout_s=1.0)
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(PARTIAL_HEADERS)
+
+    data, closed_at = read_to_eof(sock, start, 3.0)
+
+    assert data == b""
+    assert 0.9 <= closed_at <= 3.0
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_HEADER_TIMEOUT"]
+
+
+def test_an_idle_connection_that_sends_nothing_is_closed_at_the_header_deadline(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(header_read_timeout_s=1.0)
+    sock = live.connect()
+    start = time.perf_counter()
+
+    data, closed_at = read_to_eof(sock, start, 3.0)
+
+    assert data == b""
+    assert 0.9 <= closed_at <= 3.0
+    assert records.outcomes() == ["GATEWAY_HEADER_TIMEOUT"]
+
+
+def _trickle(
+    sock: socket.socket, payload: bytes, start: float, gap_s: float, bound_s: float
+) -> float:
+    """Send `payload` one byte every `gap_s` until the peer closes; the close time after `start`.
+    Fails if the peer is still open `bound_s` after `start`."""
+    for byte in payload:
+        try:
+            sock.sendall(bytes([byte]))
+        except (BrokenPipeError, ConnectionResetError):
+            return time.perf_counter() - start
+        sock.settimeout(gap_s)
+        try:
+            chunk = sock.recv(1)
+        except TimeoutError:
+            assert time.perf_counter() - start <= bound_s, f"still open after {bound_s} s"
+            continue
+        except ConnectionResetError:
+            chunk = b""
+        assert chunk == b"", "the server wrote bytes to a timed-out connection"
+        return time.perf_counter() - start
+    pytest.fail("payload exhausted before the server closed")
+
+
+def test_the_header_deadline_is_total_and_not_reset_by_trickled_bytes(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(header_read_timeout_s=1.0)
+    sock = live.connect()
+    start = time.perf_counter()
+
+    closed_at = _trickle(sock, PARTIAL_HEADERS + b"a" * 64, start, 0.25, 3.0)
+
+    assert 0.9 <= closed_at <= 3.0
+
+
+# ------------------------------------------------------------- criterion 5: complete headers
+REQUEST_TIMEOUT = b'{"code":"REQUEST_TIMEOUT"}'
+
+
+def test_once_headers_are_complete_only_the_body_deadline_applies(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(header_read_timeout_s=1.0, body_read_timeout_s=3.0)
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(
+        f"POST /requests/{INSTANCE} HTTP/1.1\r\nHost: x\r\n"
+        "Content-Type: application/octet-stream\r\nContent-Length: 10\r\n\r\nx".encode()
+    )
+
+    status, body = read_response(sock, 6.0)
+    answered_at = time.perf_counter() - start
+
+    assert (status, body) == (408, REQUEST_TIMEOUT)
+    assert 2.5 <= answered_at <= 5.0
+    assert live.relay.calls == 0
+
+
+def test_a_route_slower_than_the_header_deadline_still_answers(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(Relay(delay_s=2.0), header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    assert read_response(sock, 6.0) == (200, b'{"bundles":[]}')
+
+
+# ------------------------------------------------------------- criterion 4: kept-alive connections
+def test_the_deadline_restarts_after_a_response_on_a_kept_alive_connection(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    start = time.perf_counter()
+
+    closed_at = _trickle(sock, PARTIAL_HEADERS + b"a" * 64, start, 0.25, 3.0)
+
+    assert closed_at <= 3.0
+    assert live.relay.calls == 1
+    assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_HEADER_TIMEOUT"]
+
+
+# ------------------------------------------------------------- criterion 6: pipelining
+def test_two_pipelined_requests_in_one_write_both_get_200(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(Relay(delay_s=1.5), header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n" * 2)
+
+    first = read_response(sock, 6.0)
+    second = read_response(sock, 6.0)
+
+    assert first == second == (200, b'{"bundles":[]}')
+    assert live.relay.calls == 2
+
+
+# ------------------------------------------------------------- criterion 7: connection cap
+def test_a_connection_beyond_max_connections_is_closed_at_once_and_others_are_unaffected(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(
+        max_concurrency=4, per_source_max_in_flight=4, max_connections=4, header_read_timeout_s=10.0
+    )
+    held = [live.connect() for _ in range(4)]
+    live.wait_connections(4)
+    excess = live.connect()
+    start = time.perf_counter()
+
+    data, closed_at = read_to_eof(excess, start, 0.5)
+
+    assert data == b""
+    assert closed_at <= 0.5
+    assert records.outcomes() == ["GATEWAY_CONNECTION_LIMIT"]
+    live.wait_connections(4)
+    held[0].close()
+    live.wait_connections(3)
+    fresh = live.connect()
+    fresh.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(fresh) == (200, b'{"bundles":[]}')
+    for sock in held[1:]:
+        sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert read_response(sock) == (200, b'{"bundles":[]}')
+    assert records.outcomes().count("GATEWAY_CONNECTION_LIMIT") == 1
+
+
+# ------------------------------------------------------------- criterion 8: parse failures
+PARSE_FAILURE_400 = (
+    b"HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 27\r\n"
+    b"cache-control: no-store\r\nx-content-type-options: nosniff\r\nconnection: close\r\n\r\n"
+    b'{"code":"INVALID_ARGUMENT"}'
+)
+PARSE_FAILURES = {
+    "c: header named Bad Header": b"GET /bundles HTTP/1.1\r\nHost: x\r\nBad Header: v\r\n\r\n",
+    "d: TLS ClientHello prefix": bytes.fromhex("16 03 01 00 c4 01 00 00 c0 03 03") + bytes(40),
+    "e: missing Host": b"GET /bundles HTTP/1.1\r\n\r\n",
+    "e: missing Host, Connection: close": b"GET /bundles HTTP/1.1\r\nConnection: close\r\n\r\n",
+    "f: incomplete 20000-byte value": b"GET /bundles HTTP/1.1\r\nHost: x\r\nX-Big: " + b"a" * 20000,
+}
+# Nothing of the input, the path or the peer may appear in any log record (SR-3, SR-11).
+LEAK_MARKERS = ("Bad Header", "bundles", "X-Big", "GARBAGE", "aaaa", "127.0.0.1", "Host")
+
+
+def _assert_nothing_leaked(records: Records) -> None:
+    for line in records.rendered():
+        for marker in LEAK_MARKERS:
+            assert marker not in line
+
+
+@pytest.mark.parametrize("payload", PARSE_FAILURES.values(), ids=PARSE_FAILURES.keys())
+def test_a_request_the_parser_rejects_gets_exactly_the_json_400_then_eof(
+    payload: bytes, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(payload)
+
+    data, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert data == PARSE_FAILURE_400
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+    _assert_nothing_leaked(records)
+
+
+def test_garbage_after_a_kept_alive_200_gets_exactly_the_json_400_then_eof(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    start = time.perf_counter()
+    sock.sendall(b"GARBAGE\x00\x01\r\n\r\n")
+
+    data, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert data == PARSE_FAILURE_400
+    assert live.relay.calls == 1
+    assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_INVALID_ARGUMENT"]
+    _assert_nothing_leaked(records)
+
+
+# ------------------------------------------------------------- criterion 11: protocol hooks (fakes)
+class FakeHandle:
+    def __init__(self, delay: float, callback: Callable[..., object], args: tuple[object, ...]):
+        self.delay = delay
+        self.callback = callback
+        self.args = args
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        self.callback(*self.args)
+
+
+class FakeLoop:
+    """The only loop method the protocol hooks use without a request: `call_later`."""
+
+    def __init__(self) -> None:
+        self.handles: list[FakeHandle] = []
+
+    def call_later(
+        self, delay: float, callback: Callable[..., object], *args: object
+    ) -> FakeHandle:
+        handle = FakeHandle(delay, callback, args)
+        self.handles.append(handle)
+        return handle
+
+
+class FakeTransport:
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self.closes = 0
+        self.aborts = 0
+        self.closing = False
+        self.buffer_limits: list[dict[str, int | None]] = []
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    def close(self) -> None:
+        self.closes += 1
+        self.closing = True
+
+    def abort(self) -> None:
+        self.aborts += 1
+        self.closing = True
+
+    def set_write_buffer_limits(self, high: int | None = None, low: int | None = None) -> None:
+        self.buffer_limits.append({"high": high, "low": low})
+
+    def is_closing(self) -> bool:
+        return self.closing
+
+    def get_extra_info(self, name: str, default: object = None) -> object:
+        return default
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
+
+
+HOOK_TIMEOUT_S = 7.0
+WRITE_TIMEOUT_S = 3.0
+
+
+def _protocol(
+    *, max_connections: int = 64, others: int = 0, conn: object | None = None
+) -> tuple[Any, FakeLoop, FakeTransport, ServerState]:
+    """A gateway protocol on fakes, after `connection_made`. With `conn`, that stub replaces the
+    h11 connection before `connection_made`, so its `our_state` then is the recorded idle state."""
+    limits = GatewayLimits(
+        header_read_timeout_s=HOOK_TIMEOUT_S,
+        max_connections=max_connections,
+        write_timeout_s=WRITE_TIMEOUT_S,
+    )
+    config = gateway_server.uvicorn_config(
+        create_app(Relay(), limits=limits), limits=limits, host="127.0.0.1", port=0
+    )
+    loop, transport, state = FakeLoop(), FakeTransport(), ServerState()
+    state.connections.update(object() for _ in range(others))  # type: ignore[misc]
+    protocol = config.http(config=config, server_state=state, app_state={}, _loop=loop)
+    if conn is not None:
+        protocol.conn = conn
+    protocol.connection_made(transport)
+    return protocol, loop, transport, state
+
+
+def test_connection_made_arms_one_deadline_for_the_current_cycle(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+
+    [handle] = loop.handles
+    assert handle.delay == HOOK_TIMEOUT_S
+    assert handle.args == (None,)
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_the_deadline_closes_an_unchanged_cycle_without_writing(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes) == ([], 1)
+    assert records.outcomes() == ["GATEWAY_HEADER_TIMEOUT"]
+
+
+def test_connection_lost_cancels_the_pending_deadline() -> None:
+    protocol, loop, _transport, _ = _protocol()
+
+    protocol.connection_lost(None)
+
+    assert loop.handles[0].cancelled
+
+
+def test_the_deadline_does_nothing_once_a_new_cycle_exists(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.cycle = SimpleNamespace(response_started=False, response_complete=False)
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_the_deadline_does_nothing_on_a_closing_transport(records: Records) -> None:
+    _proto, loop, transport, _ = _protocol()
+    transport.closing = True
+
+    loop.handles[0].fire()
+
+    assert (transport.written, transport.closes, records.outcomes()) == ([], 0, [])
+
+
+def test_response_completion_on_a_closing_transport_arms_nothing() -> None:
+    protocol, loop, transport, _ = _protocol()
+    transport.closing = True
+
+    protocol.on_response_complete()
+
+    assert len(loop.handles) == 1
+    assert not loop.handles[0].cancelled
+
+
+def test_response_completion_rearms_for_the_completed_cycle_before_uvicorn_runs() -> None:
+    protocol, loop, _transport, state = _protocol()
+    completed = SimpleNamespace(response_started=True, response_complete=True)
+    protocol.cycle = completed
+
+    protocol.on_response_complete()
+
+    first, rearmed, keep_alive = loop.handles
+    assert first.cancelled
+    assert (rearmed.delay, rearmed.args, rearmed.cancelled) == (HOOK_TIMEOUT_S, (completed,), False)
+    assert keep_alive.delay == 5
+    assert state.total_requests == 1
+
+
+# Distinct stand-ins for h11's server states; the protocol compares them by identity only.
+IDLE, SEND_RESPONSE, SEND_BODY, DONE = (object() for _ in range(4))
+
+
+def _cycle(*, started: bool, complete: bool, more_body: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        response_started=started, response_complete=complete, more_body=more_body
+    )
+
+
+@pytest.mark.parametrize(
+    ("cycle", "our_state", "written"),
+    [
+        (None, IDLE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=False), SEND_BODY, []),
+        (_cycle(started=False, complete=False), SEND_RESPONSE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=True), IDLE, [PARSE_FAILURE_400]),
+    ],
+    ids=["no cycle", "started, not complete", "not started", "started and complete"],
+)
+def test_send_400_response_never_interleaves_with_a_response_in_progress(
+    cycle: SimpleNamespace | None, our_state: object, written: list[bytes], records: Records
+) -> None:
+    conn = SimpleNamespace(our_state=IDLE)
+    protocol, _loop, transport, _ = _protocol(conn=conn)
+    protocol.cycle = cycle
+    conn.our_state = our_state
+
+    protocol.send_400_response("Invalid HTTP request received.")
+
+    assert transport.written == written
+    assert transport.closes == 1
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+@pytest.mark.parametrize(("others", "closed"), [(63, False), (64, True)])
+def test_connection_made_closes_only_beyond_max_connections(
+    others: int, closed: bool, records: Records
+) -> None:
+    _proto, loop, transport, _ = _protocol(max_connections=64, others=others)
+
+    assert transport.closes == int(closed)
+    assert transport.written == []
+    assert len(loop.handles) == int(not closed)
+    assert records.outcomes() == (["GATEWAY_CONNECTION_LIMIT"] if closed else [])
+
+
+# ------------------------------------------------------------- criterion 17: segmentation (A2)
+OVERSIZED = {
+    "a: 20000-byte header value": b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+    + b"X-Big: "
+    + b"a" * 20000
+    + b"\r\n\r\n",
+    "b: 3000 headers": b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+    + b"".join(f"X-{n}: v\r\n".encode() for n in range(3000))
+    + b"\r\n",
+}
+WITHIN_LIMITS = (
+    b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Pad: " + b"a" * 4000 + b"\r\n\r\n"
+)
+UNLIMITED_RATE = {"per_source_rate": 1e6, "per_source_burst": 10**6}
+
+
+def _send(sock: socket.socket, payload: bytes, segment: int | None) -> None:
+    """All of `payload` in one sendall, or `segment`-byte writes 10 ms apart. A peer that closes
+    early ends the sending; the answer is read afterwards."""
+    chunks = (
+        [payload]
+        if segment is None
+        else [payload[i : i + segment] for i in range(0, len(payload), segment)]
+    )
+    for index, chunk in enumerate(chunks):
+        if index:
+            time.sleep(0.01)
+        try:
+            sock.sendall(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+
+def _parse(raw: bytes) -> tuple[int, dict[bytes, bytes], bytes]:
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    headers = dict(line.lower().split(b": ", 1) for line in lines[1:])
+    return int(lines[0].split(b" ")[1]), headers, body
+
+
+@pytest.mark.parametrize("segment", [None, 1024], ids=["one sendall", "1024-byte writes"])
+@pytest.mark.parametrize("payload", OVERSIZED.values(), ids=OVERSIZED.keys())
+def test_an_oversized_header_block_gets_the_json_400_however_it_is_segmented(
+    payload: bytes, segment: int | None, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(**UNLIMITED_RATE)
+    for _ in range(10):
+        sock = live.connect()
+        start = time.perf_counter()
+        _send(sock, payload, segment)
+
+        raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+        status, headers, body = _parse(raw)
+
+        assert (status, body) == (400, b'{"code":"INVALID_ARGUMENT"}')
+        assert headers[b"content-type"] == b"application/json"
+        assert headers[b"cache-control"] == b"no-store"
+        assert headers[b"x-content-type-options"] == b"nosniff"
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"] * 10
+    _assert_nothing_leaked(records)
+
+
+@pytest.mark.parametrize("segment", [None, 1024], ids=["one sendall", "1024-byte writes"])
+def test_a_header_block_within_the_limits_gets_200_however_it_is_segmented(
+    segment: int | None, gateway: Callable[..., LiveGateway]
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    _send(sock, WITHIN_LIMITS, segment)
+
+    raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert _parse(raw)[0::2] == (200, b'{"bundles":[]}')
+
+
+# ------------------------------------------------------------- criterion 10: no upgrade path (live)
+UPGRADE_REQUEST = (
+    b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+    b"Sec-WebSocket-Version: 13\r\n\r\n"
+)
+
+
+def test_a_websocket_upgrade_request_reaches_the_app_and_is_never_upgraded(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(UPGRADE_REQUEST)
+
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    assert live.relay.calls == 1
+
+
+# ------------------------------------------------------------- README (A1 (3); §6)
+def _readme() -> str:
+    path = Path(__file__).resolve().parents[1] / "README.md"
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_readme_documents_the_server_hardening_limits_and_check_order() -> None:
+    readme = _readme()
+    for row in (
+        "| `header_read_timeout_s` | 10.0 |",
+        "| `max_connections` | 512 |",
+        "| `max_header_bytes` | 8192 |",
+        "| `max_header_count` | 64 |",
+    ):
+        assert row in readme
+    assert (
+        "1. per-source in-flight cap; 2. global concurrency; 3. global bucket; 4. per-source "
+        "bucket; 5. header limits; 6. control-character path rule; 7. routing." in readme
+    )
+
+
+def test_readme_documents_uvicorn_config_parse_failures_and_the_connection_cap() -> None:
+    readme = _readme()
+    assert "uvicorn_config(app, limits=limits, host=" in readme
+    assert "a request the HTTP parser rejects" in readme
+    assert 'ws="none"' in readme
+    assert (
+        "The connection cap is global, not per source: one source can hold up to "
+        "`max_connections` connections for `header_read_timeout_s` each." in readme
+    )
+    assert "per-client connection limits in its fronting proxy" in readme
+    for outcome in ("GATEWAY_HEADER_TIMEOUT", "GATEWAY_CONNECTION_LIMIT"):
+        assert outcome in readme
+
+
+# ------------------------------------------- criterion 18: no unsolicited 400 (A4.1, amended by A6)
+# The no-write rows (a response in progress; a response sent while the same request's body still
+# arrives) cannot be reached live: a Content-Length body cannot fail to parse, a chunked body is
+# refused at step 0 (criterion 22) and every gateway response is a single message. This fake
+# transport is their only coverage; the live rows below reach the write branch.
+@pytest.mark.parametrize(
+    ("cycle", "our_state", "written"),
+    [
+        (None, IDLE, [PARSE_FAILURE_400]),
+        (_cycle(started=False, complete=False, more_body=True), SEND_RESPONSE, [PARSE_FAILURE_400]),
+        (_cycle(started=True, complete=False, more_body=True), SEND_BODY, []),
+        (_cycle(started=True, complete=True, more_body=True), DONE, []),
+        (_cycle(started=True, complete=True, more_body=True), IDLE, [PARSE_FAILURE_400]),
+    ],
+    ids=[
+        "no cycle, IDLE",
+        "not started",
+        "started, SEND_BODY",
+        "complete, DONE (own body still arriving)",
+        "complete, IDLE (next cycle started; stale more_body)",
+    ],
+)
+def test_send_400_response_writes_only_when_no_response_has_begun_for_the_parsed_request(
+    cycle: SimpleNamespace | None, our_state: object, written: list[bytes], records: Records
+) -> None:
+    conn = SimpleNamespace(our_state=IDLE)
+    protocol, _loop, transport, _ = _protocol(conn=conn)
+    protocol.cycle = cycle
+    conn.our_state = our_state
+
+    protocol.send_400_response("Invalid HTTP request received.")
+
+    assert transport.written == written
+    assert transport.closes == 1
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+def _read_one_response(sock: socket.socket, bound_s: float = IO_BOUND_S) -> bytes:
+    """The raw bytes of one response with a Content-Length body."""
+    deadline = time.perf_counter() + bound_s
+    data = bytearray()
+    while True:
+        head, sep, rest = bytes(data).partition(b"\r\n\r\n")
+        if sep:
+            length = int(_parse(head + sep)[1][b"content-length"])
+            if len(rest) >= length:
+                return bytes(data)
+        remaining = deadline - time.perf_counter()
+        assert remaining > 0, "response incomplete"
+        sock.settimeout(remaining)
+        chunk = sock.recv(65536)
+        assert chunk, "connection closed mid-response"
+        data += chunk
+
+
+EARLY_404 = b"POST /nope HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n"
+NOT_FOUND = b'{"code":"NOT_FOUND"}'
+
+
+@pytest.mark.parametrize("gap_s", [None, 0.05], ids=["one write", "two writes 50 ms apart"])
+def test_a_malformed_request_after_an_early_404_gets_the_json_400(
+    gap_s: float | None, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    sock.sendall(EARLY_404)
+    first = _read_one_response(sock)
+    assert _parse(first)[0::2] == (404, NOT_FOUND)
+    start = time.perf_counter()
+    if gap_s is None:
+        sock.sendall(b"12345GARBAGE\x00\x01\r\n\r\n")
+    else:
+        sock.sendall(b"12345")
+        time.sleep(gap_s)
+        sock.sendall(b"GARBAGE\x00\x01\r\n\r\n")
+
+    rest, _ = read_to_eof(sock, start, IO_BOUND_S)
+
+    assert rest == PARSE_FAILURE_400
+    assert (first + rest).count(b"HTTP/1.1 ") == 2
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_NOT_FOUND", "GATEWAY_INVALID_ARGUMENT"]
+
+
+# ----------------------------------------------------------- criterion 22: Transfer-Encoding (A4.5)
+TRANSFER_ENCODED = {
+    "POST with Content-Length and chunked": f"POST /requests/{INSTANCE} HTTP/1.1\r\n".encode()
+    + b"Host: x\r\nContent-Type: application/octet-stream\r\nContent-Length: 5\r\n"
+    + b"Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    "GET with chunked only": b"GET /bundles HTTP/1.1\r\nHost: x\r\n"
+    b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+}
+
+
+@pytest.mark.parametrize("payload", TRANSFER_ENCODED.values(), ids=TRANSFER_ENCODED.keys())
+def test_a_transfer_encoded_request_gets_the_json_400_and_the_connection_closes(
+    payload: bytes, gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway()
+    sock = live.connect()
+    start = time.perf_counter()
+    sock.sendall(payload)
+
+    raw, _ = read_to_eof(sock, start, IO_BOUND_S)
+    status, headers, body = _parse(raw)
+
+    assert (status, body) == (400, b'{"code":"INVALID_ARGUMENT"}')
+    assert headers[b"connection"] == b"close"
+    assert headers[b"content-type"] == b"application/json"
+    assert headers[b"cache-control"] == b"no-store"
+    assert headers[b"x-content-type-options"] == b"nosniff"
+    assert live.relay.calls == 0
+    assert records.outcomes() == ["GATEWAY_INVALID_ARGUMENT"]
+
+
+# ------------------------------------------------------------- criterion 21: write deadline (fakes)
+def test_connection_made_sets_the_write_high_water_mark_to_zero_once() -> None:
+    _proto, _loop, transport, _ = _protocol()
+
+    assert transport.buffer_limits == [{"high": 0, "low": None}]
+
+
+def test_a_connection_closed_by_the_cap_sets_no_write_limits() -> None:
+    _proto, _loop, transport, _ = _protocol(max_connections=64, others=64)
+
+    assert transport.buffer_limits == []
+
+
+def test_pause_writing_arms_exactly_one_write_timer() -> None:
+    protocol, loop, _transport, _ = _protocol()
+
+    protocol.pause_writing()
+    protocol.pause_writing()
+
+    header, write = loop.handles
+    assert (write.delay, write.callback, write.args) == (
+        WRITE_TIMEOUT_S,
+        protocol._write_expired,
+        (),
+    )
+    assert protocol.flow.write_paused
+    assert not header.cancelled
+
+
+def test_resume_writing_cancels_the_write_timer_and_a_new_pause_rearms() -> None:
+    protocol, loop, _transport, _ = _protocol()
+    protocol.pause_writing()
+
+    protocol.resume_writing()
+
+    assert loop.handles[1].cancelled
+    assert not protocol.flow.write_paused
+    protocol.pause_writing()
+    assert len(loop.handles) == 3
+    assert not loop.handles[2].cancelled
+
+
+def test_the_write_timer_does_nothing_once_writing_resumed(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+    protocol.flow.write_paused = False
+
+    loop.handles[1].fire()
+
+    assert (transport.aborts, transport.closes, records.outcomes()) == (0, 0, [])
+    protocol.pause_writing()  # a fired timer is not pending: the next pause arms a new one
+    assert len(loop.handles) == 3
+
+
+def test_the_write_timer_aborts_a_still_paused_connection(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+
+    loop.handles[1].fire()
+
+    assert (transport.aborts, transport.closes, transport.written) == (1, 0, [])
+    assert records.outcomes() == ["GATEWAY_WRITE_TIMEOUT"]
+
+
+def test_connection_lost_cancels_both_timers() -> None:
+    protocol, loop, _transport, _ = _protocol()
+    protocol.pause_writing()
+
+    protocol.connection_lost(None)
+
+    assert [h.cancelled for h in loop.handles] == [True, True]
+
+
+# ----------------------------------------------------------- criteria 20, 21: write deadline (live)
+BIG_BUNDLES = [PublishedBundle(f"{i:032x}", bytes([i]) * 4096) for i in range(16)]
+ONE_IN_FLIGHT = {
+    "per_source_max_in_flight": 1,
+    "per_source_rate": 1000.0,
+    "per_source_burst": 10000,
+    "global_rate": 1000.0,
+    "global_burst": 10000,
+}
+GET_BUNDLES = b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n"
+GET_BUNDLES_CLOSE = b"GET /bundles HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+
+
+def _small_window(live: LiveGateway) -> socket.socket:
+    """A client socket with SO_RCVBUF=4096, set before connecting."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    live.sockets.append(sock)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    sock.settimeout(IO_BOUND_S)
+    sock.connect(("127.0.0.1", live.port))
+    return sock
+
+
+def test_a_pipelining_client_that_never_reads_is_aborted_and_frees_its_slot(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(Relay(bundles=BIG_BUNDLES), write_timeout_s=1.0, **ONE_IN_FLIGHT)
+    reader = _small_window(live)
+    stopped: list[str] = []
+
+    def flood() -> None:
+        reader.settimeout(2.0)
+        try:
+            for _ in range(2000):
+                reader.sendall(GET_BUNDLES)
+            stopped.append("sent 2000")
+        except (TimeoutError, OSError) as error:
+            stopped.append(type(error).__name__)
+
+    flooder = threading.Thread(target=flood, daemon=True)
+    flooder.start()
+    first_429: float | None = None
+    served_at: float | None = None
+    give_up = time.perf_counter() + 15.0
+    while served_at is None and time.perf_counter() < give_up:
+        if first_429 is not None and time.perf_counter() - first_429 > 4.0:
+            break
+        other = live.connect()
+        other.sendall(GET_BUNDLES_CLOSE)
+        status, _ = read_response(other)
+        other.close()
+        if status == 429 and first_429 is None:
+            first_429 = time.perf_counter()
+        elif status == 200 and first_429 is not None:
+            served_at = time.perf_counter()
+        time.sleep(0.25)
+
+    assert first_429 is not None, "the non-reading client never held the source's slot"
+    assert served_at is not None, "still only 429 more than 4 s after the first one"
+    assert served_at - first_429 <= 4.0
+    flooder.join(STOP_TIMEOUT_S)
+    assert not flooder.is_alive()
+    assert stopped
+    read_to_eof(reader, time.perf_counter(), IO_BOUND_S)  # EOF or reset; fails if still open
+    assert records.outcomes().count("GATEWAY_WRITE_TIMEOUT") == 1
+
+
+def test_a_slow_but_steady_reader_receives_the_whole_response(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(Relay(bundles=BIG_BUNDLES), write_timeout_s=2.0)
+    sock = _small_window(live)
+    sock.sendall(GET_BUNDLES_CLOSE)
+    data = bytearray()
+    deadline = time.perf_counter() + 15.0
+    while True:
+        assert time.perf_counter() < deadline, "response not received within 15 s"
+        time.sleep(0.05)
+        chunk = sock.recv(8192)
+        if not chunk:
+            break
+        data += chunk
+
+    status, headers, body = _parse(bytes(data))
+    assert status == 200
+    assert len(body) == int(headers[b"content-length"])
+    assert len(json.loads(body)["bundles"]) == 16
+    assert "GATEWAY_WRITE_TIMEOUT" not in records.outcomes()
+
+
+def test_readme_documents_request_framing_the_write_deadline_and_check_step_0() -> None:
+    readme = _readme()
+    assert (
+        "A fronting proxy must forward the client's `Content-Length` framing and must not "
+        "re-encode request bodies as chunked: the gateway refuses every request that carries "
+        "`Transfer-Encoding` (check step 0)." in readme
+    )
+    assert "| `write_timeout_s` | 30.0 |" in readme
+    assert "0. Transfer-Encoding rule" in readme
+    assert "GATEWAY_WRITE_TIMEOUT" in readme
+
+
+def test_resume_writing_without_a_pending_write_timer_only_resumes(records: Records) -> None:
+    protocol, loop, transport, _ = _protocol()
+    protocol.pause_writing()
+    protocol.flow.write_paused = False
+    loop.handles[1].fire()  # the fired timer found the writer resumed and cleared itself
+    protocol.flow.write_paused = True
+
+    protocol.resume_writing()
+
+    assert not protocol.flow.write_paused
+    assert len(loop.handles) == 2
+    assert (transport.aborts, records.outcomes()) == (0, [])

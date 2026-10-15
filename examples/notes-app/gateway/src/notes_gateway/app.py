@@ -73,8 +73,9 @@ _LOOPBACK_ORIGIN_PATTERN = re.compile(rf"http://(?:localhost|127\.0\.0\.1|\[::1\
 _DEFAULT_PORTS = {"https": "443", "http": "80"}
 
 
-def _validate(limits: GatewayLimits) -> None:
-    """API-TL TL-4: numeric limits first, then the CORS allow-list."""
+def validate_limits(limits: GatewayLimits) -> None:
+    """API-TL TL-4: numeric limits first, then the CORS allow-list. package-internal; used by
+    `create_app` and `server.uvicorn_config`."""
     for name in _INT_LIMITS:
         value = getattr(limits, name)
         if type(value) is not int or value <= 0:
@@ -85,8 +86,19 @@ def _validate(limits: GatewayLimits) -> None:
             raise ValueError("INVALID_LIMITS")
     if limits.per_source_max_in_flight > limits.max_concurrency:
         raise ValueError("INVALID_LIMITS")
-    timeout_s = limits.body_read_timeout_s
-    if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
+    for timeout_s in (
+        limits.body_read_timeout_s,
+        limits.header_read_timeout_s,
+        limits.write_timeout_s,
+    ):
+        if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
+            raise ValueError("INVALID_LIMITS")
+    ranges = (
+        (limits.max_connections, limits.max_concurrency, math.inf),
+        (limits.max_header_bytes, 1024, 12288),
+        (limits.max_header_count, 16, 256),
+    )
+    if not all(type(value) is int and low <= value <= high for value, low, high in ranges):
         raise ValueError("INVALID_LIMITS")
     origins: object = limits.cors_origins
     if type(origins) is not tuple or not all(_valid_origin(o) for o in origins):
@@ -260,7 +272,8 @@ class _Limiter:
 
 
 class _Guard:
-    """Outer ASGI layer: response headers, concurrency, rate limits and CORS preflight."""
+    """Outer ASGI layer: response headers, concurrency, rate limits, header limits and CORS
+    preflight."""
 
     def __init__(self, app: ASGIApp, *, limits: GatewayLimits, clock: Callable[[], float]) -> None:
         self._app = app
@@ -270,6 +283,8 @@ class _Guard:
         self._in_flight_by_source: dict[str, int] = {}  # no zero entries; <= max_concurrency keys
         self._limiter = _Limiter(limits, clock)
         self._cors_origins = frozenset(limits.cors_origins)
+        self._max_header_bytes = limits.max_header_bytes
+        self._max_header_count = limits.max_header_count
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -288,6 +303,11 @@ class _Guard:
         cors = len(origins) == 1 and origins[0] in self._cors_origins
         cors_headers = _cors_headers(origins[0]) if cors else []
         send = _with_headers(send, [*_SECURITY_HEADERS, *cors_headers])
+        if "transfer-encoding" in headers:  # step 0 (D-06; RFC 9112 §6.3): no slot, no token
+            response = _refuse(scope, 400, "INVALID_ARGUMENT")
+            response.headers["Connection"] = "close"
+            await response(scope, receive, send)
+            return
         source = _source_key(scope.get("client"))
         held = self._in_flight_by_source.get(source, 0)
         if held >= self._per_source_max or self._in_flight >= self._max_concurrency:
@@ -308,6 +328,9 @@ class _Guard:
         if retry is not None:
             await _rate_limited(scope, retry)(scope, receive, send)
             return
+        if not self._headers_within_limits(scope):
+            await _refuse(scope, 400, "INVALID_ARGUMENT")(scope, receive, send)
+            return
         if _CONTROL_CHARACTER_PATTERN.search(scope["path"]):
             await _refuse(scope, 404, "NOT_FOUND")(scope, receive, send)
             return
@@ -317,6 +340,13 @@ class _Guard:
             await _PREFLIGHT(scope, receive, send)
             return
         await self._app(scope, receive, send)
+
+    def _headers_within_limits(self, scope: Scope) -> bool:
+        """§6 header limits, measured on the parsed scope so segmentation cannot change them."""
+        headers: list[tuple[bytes, bytes]] = scope["headers"]
+        size = len(scope["raw_path"]) + len(scope["query_string"])
+        size += sum(len(name) + len(value) for name, value in headers)
+        return size <= self._max_header_bytes and len(headers) <= self._max_header_count
 
     def _release(self, source: str) -> None:
         remaining = self._in_flight_by_source[source] - 1
@@ -379,7 +409,7 @@ def create_app(
     clock: Callable[[], float] = time.monotonic,
 ) -> fastapi.FastAPI:
     """Build the gateway ASGI app over `queue` (routes: INC-2-API §6)."""
-    _validate(limits)
+    validate_limits(limits)
     app = fastapi.FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(_Guard, limits=limits, clock=clock)
     app.router.redirect_slashes = False

@@ -201,6 +201,87 @@ def test_harness_runs_uvicorn_without_proxy_headers_server_header_or_access_log(
     assert "forwarded_allow_ips" not in calls[0]
 
 
+def test_server_config_calls_uvicorn_config_once_with_the_limits_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from notes_gateway import GatewayLimits, create_app, server
+
+    from teecustody_sim.backends import InMemoryQueue
+    from tests.e2e import channel_harness
+
+    calls: list[tuple[object, dict[str, Any]]] = []
+    real_uvicorn_config = server.uvicorn_config
+
+    def recording_uvicorn_config(app: Any, **kwargs: Any) -> uvicorn.Config:
+        calls.append((app, kwargs))
+        return real_uvicorn_config(app, **kwargs)
+
+    monkeypatch.setattr(server, "uvicorn_config", recording_uvicorn_config)
+    limits = GatewayLimits(header_read_timeout_s=5.0)
+    app = create_app(InMemoryQueue(), limits=limits)
+
+    config = channel_harness.server_config(app, limits)
+
+    [(called_app, kwargs)] = calls
+    assert called_app is app
+    assert kwargs["limits"] is limits
+    assert (kwargs["host"], kwargs["port"]) == ("127.0.0.1", 0)
+    assert config.ws == "none"
+
+
+def test_server_config_defaults_to_the_default_gateway_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from notes_gateway import GatewayLimits, create_app, server
+
+    from teecustody_sim.backends import InMemoryQueue
+    from tests.e2e import channel_harness
+
+    seen: list[GatewayLimits] = []
+    real_uvicorn_config = server.uvicorn_config
+
+    def recording_uvicorn_config(app: Any, **kwargs: Any) -> uvicorn.Config:
+        seen.append(kwargs["limits"])
+        return real_uvicorn_config(app, **kwargs)
+
+    monkeypatch.setattr(server, "uvicorn_config", recording_uvicorn_config)
+    channel_harness.server_config(create_app(InMemoryQueue()))
+
+    assert seen == [GatewayLimits()]
+
+
+def test_harness_passes_create_apps_limits_object_to_server_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from notes_gateway import GatewayLimits, create_app, server
+
+    from tests.e2e import channel_harness
+
+    app_limits: list[GatewayLimits] = []
+    config_limits: list[GatewayLimits] = []
+    real_uvicorn_config = server.uvicorn_config
+
+    def recording_create_app(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(create_app).bind(*args, **kwargs)
+        bound.apply_defaults()
+        app_limits.append(bound.arguments["limits"])
+        return create_app(*args, **kwargs)
+
+    def recording_uvicorn_config(app: Any, **kwargs: Any) -> uvicorn.Config:
+        config_limits.append(kwargs["limits"])
+        return real_uvicorn_config(app, **kwargs)
+
+    monkeypatch.setattr(channel_harness, "create_app", recording_create_app)
+    monkeypatch.setattr(server, "uvicorn_config", recording_uvicorn_config)
+    origin = "http://127.0.0.1:1"
+    stdout = _ReadyStdout()
+    assert _run_harness_in_process(monkeypatch, ["--cors-origin", origin], stdout) == 0
+    [given] = app_limits
+    [configured] = config_limits
+    assert configured is given
+    assert given == GatewayLimits(cors_origins=(origin,))
+
+
 def test_harness_gateway_limits_are_the_defaults_except_cors_origins() -> None:
     from notes_gateway import GatewayLimits
 

@@ -305,3 +305,37 @@ def test_main_rejects_abbreviated_options(
     assert f"unrecognized arguments: {rejected}" in captured.err
     assert captured.out == ""
     assert no_bind.configs == []
+
+
+def test_main_builds_its_config_with_uvicorn_config_and_the_limits_given_to_create_app(
+    no_bind: _Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from notes_gateway import server
+
+    app_limits: list[GatewayLimits] = []
+    config_calls: list[tuple[Any, dict[str, Any]]] = []
+    real_uvicorn_config = server.uvicorn_config
+
+    def recording_create_app(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(create_app).bind(*args, **kwargs)
+        bound.apply_defaults()
+        app_limits.append(bound.arguments["limits"])
+        return create_app(*args, **kwargs)
+
+    def recording_uvicorn_config(app: Any, **kwargs: Any) -> uvicorn.Config:
+        config_calls.append((app, kwargs))
+        return real_uvicorn_config(app, **kwargs)
+
+    monkeypatch.setattr(dev, "create_app", recording_create_app)
+    monkeypatch.setattr(server, "uvicorn_config", recording_uvicorn_config)
+
+    assert dev.main(["--host", "127.0.0.2", "--port", "0"]) == 1
+
+    [(app, kwargs)] = config_calls
+    [limits] = app_limits
+    assert kwargs["limits"] is limits
+    assert limits == GatewayLimits()
+    assert (kwargs["host"], kwargs["port"]) == ("127.0.0.2", 0)
+    [config] = no_bind.configs
+    assert config.app is app
+    assert config.ws == "none"

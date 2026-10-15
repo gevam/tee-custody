@@ -31,6 +31,7 @@ from typing import Final
 import fastapi
 import uvicorn
 from notes_gateway import GatewayLimits, create_app
+from notes_gateway import server as gateway_server
 
 from teecustody.attest import ConfidentialSpaceLauncher
 from teecustody.runtime import RunLoop
@@ -60,17 +61,13 @@ POLL_S: Final = 0.05
 FIXTURE_MODE: Final = 0o600
 
 
-def server_config(app: fastapi.FastAPI) -> uvicorn.Config:
-    """The gateway's uvicorn configuration (A3): no proxy headers, server header or access log."""
-    return uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=0,
-        access_log=False,
-        proxy_headers=False,
-        server_header=False,
-        log_level="warning",
-    )
+DEFAULT_LIMITS: Final = GatewayLimits()
+
+
+def server_config(app: fastapi.FastAPI, limits: GatewayLimits = DEFAULT_LIMITS) -> uvicorn.Config:
+    """The gateway's uvicorn configuration (INC-2-API §6 "Server hardening"): `uvicorn_config`
+    with the `limits` given to `create_app`, on 127.0.0.1:0."""
+    return gateway_server.uvicorn_config(app, limits=limits, host="127.0.0.1", port=0)
 
 
 def gateway_limits(cors_origins: tuple[str, ...]) -> GatewayLimits:
@@ -159,8 +156,9 @@ class _Harness:
             token_type=TOKEN_TYPE,
         )
         self._spawn(lambda: loop.run(self.stop))
-        app = create_app(queue, limits=gateway_limits(self.cors_origins))
-        self.server = server = uvicorn.Server(server_config(app))
+        limits = gateway_limits(self.cors_origins)
+        app = create_app(queue, limits=limits)
+        self.server = server = uvicorn.Server(server_config(app, limits))
         self._spawn(server.run)
 
         if not self._await(

@@ -1,7 +1,7 @@
 """Development entry point (API-TL TL-5): the gateway over the simulator's in-memory queue.
 
-Only this module may import `teecustody_sim`, and only lazily. uvicorn runs with proxy headers,
-the server header and the access log off (INC-2-API §6 "Server configuration").
+Only this module may import `teecustody_sim`, and only lazily. uvicorn runs with the gateway's
+`uvicorn_config` (INC-2-API §6 "Server hardening").
 """
 
 import argparse
@@ -16,7 +16,9 @@ from types import FrameType
 
 import uvicorn
 
+from notes_gateway import server as gateway_server
 from notes_gateway.app import create_app
+from notes_gateway.limits import GatewayLimits
 from teecustody.obs import configure_logging, get_logger
 
 _LOOPBACK_V4 = ipaddress.IPv4Network("127.0.0.0/8")
@@ -57,14 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(sys.stderr, logging.WARNING)
     if options.allow_non_loopback:
         get_logger("gateway").warning("SIM_NON_LOOPBACK_BIND")
-    config = uvicorn.Config(
-        create_app(InMemoryQueue()),
+    limits = GatewayLimits()
+    config = gateway_server.uvicorn_config(
+        create_app(InMemoryQueue(), limits=limits),
+        limits=limits,
         host=options.host,
         port=options.port,
-        access_log=False,
-        proxy_headers=False,
-        server_header=False,
-        log_level="warning",
     )
     server = uvicorn.Server(config)
     stop = threading.Event()

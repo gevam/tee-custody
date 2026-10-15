@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import fastapi
 import pytest
+import uvicorn
 
 import notes_gateway
 from notes_gateway import GatewayLimits, create_app
@@ -50,6 +51,36 @@ def test_package_exports_exactly_create_app_and_gateway_limits() -> None:
 
 def test_create_app_signature_equals_api_transcription() -> None:
     assert inspect.signature(create_app) == inspect.signature(_spec_create_app)
+
+
+def _spec_uvicorn_config(
+    app: fastapi.FastAPI, *, limits: GatewayLimits = GatewayLimits(), host: str, port: int
+) -> uvicorn.Config: ...
+
+
+def test_server_module_exports_exactly_uvicorn_config() -> None:
+    from notes_gateway import server
+
+    assert server.__all__ == ["uvicorn_config"]
+    public = sorted(
+        name
+        for name, value in vars(server).items()
+        if not name.startswith("_") and not isinstance(value, types.ModuleType)
+    )
+    assert public == ["uvicorn_config"]
+
+
+def test_uvicorn_config_signature_equals_api_section_6_transcription() -> None:
+    from notes_gateway import server
+
+    assert inspect.signature(server.uvicorn_config, eval_str=True) == inspect.signature(
+        _spec_uvicorn_config, eval_str=True
+    )
+
+
+def test_server_module_is_not_re_exported_from_the_package() -> None:
+    assert "server" not in notes_gateway.__all__
+    assert not hasattr(notes_gateway, "uvicorn_config")
 
 
 def _spec_dev_main(argv: Sequence[str] | None = None) -> int: ...
@@ -84,6 +115,11 @@ _SPEC_LIMITS: tuple[tuple[str, object], ...] = (
     ("cors_origins", ()),
     ("per_source_max_in_flight", 8),
     ("body_read_timeout_s", 10.0),
+    ("header_read_timeout_s", 10.0),
+    ("max_connections", 512),
+    ("max_header_bytes", 8192),
+    ("max_header_count", 64),
+    ("write_timeout_s", 30.0),
 )
 
 
@@ -93,6 +129,10 @@ def test_gateway_limits_fields_and_defaults_equal_api_section_6() -> None:
     assert actual == _SPEC_LIMITS
     for name, value in _SPEC_LIMITS:
         assert type(getattr(limits, name)) is type(value)
+
+
+def test_gateway_limits_has_the_seventeen_fields_of_the_amended_section_6() -> None:
+    assert len(dataclasses.fields(GatewayLimits)) == 17
 
 
 def test_gateway_limits_is_frozen() -> None:
@@ -115,6 +155,11 @@ class _SpecGatewayLimits:
     cors_origins: tuple[str, ...] = ()
     per_source_max_in_flight: int = 8
     body_read_timeout_s: float = 10.0
+    header_read_timeout_s: float = 10.0
+    max_connections: int = 512
+    max_header_bytes: int = 8192
+    max_header_count: int = 64
+    write_timeout_s: float = 30.0
 
 
 def test_gateway_limits_signature_equals_spec_dataclass() -> None:
@@ -233,3 +278,43 @@ def test_test_client_imports_without_deprecation_warning() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# ------------------------------------------------- T-40 criterion 19 (A4.2, A4.3): internals
+_GATEWAY_SRC = Path(notes_gateway.__file__).resolve().parent
+
+
+def _imports_from(module_file: str) -> list[tuple[str, str]]:
+    tree = ast.parse((_GATEWAY_SRC / module_file).read_text(encoding="utf-8"))
+    return [
+        (node.module or "", alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    ]
+
+
+def test_server_imports_only_h11protocol_from_uvicorns_h11_module() -> None:
+    names = [
+        name
+        for module, name in _imports_from("server.py")
+        if module == "uvicorn.protocols.http.h11_impl"
+    ]
+    assert names == ["H11Protocol"]
+
+
+@pytest.mark.parametrize("module_file", sorted(p.name for p in _GATEWAY_SRC.glob("*.py")))
+def test_no_gateway_module_imports_a_private_name_from_another_module(module_file: str) -> None:
+    private = [(m, n) for m, n in _imports_from(module_file) if n.startswith("_")]
+    assert private == []
+
+
+def test_validate_limits_is_package_internal_in_app() -> None:
+    from notes_gateway import app
+
+    assert callable(app.validate_limits)
+    assert not hasattr(app, "_validate")
+    assert "validate_limits" not in notes_gateway.__all__
+    assert not hasattr(notes_gateway, "validate_limits")
+    doc = " ".join((app.validate_limits.__doc__ or "").split())
+    assert "package-internal; used by `create_app` and `server.uvicorn_config`" in doc
