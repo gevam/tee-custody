@@ -71,7 +71,7 @@ class T2cSealer:
         return aad_bytes, self._encrypt(seq, plaintext, aad_bytes)
 
     def _encrypt(self, seq: int, plaintext: bytes, aad_bytes: bytes) -> bytes:
-        """The one AES-GCM encryption under sk_t2c; `seq` was allocated and persisted by the caller."""
+        """The only AES-GCM encryption under sk_t2c; the caller allocated and persisted `seq`."""
         return AESGCM(self._key.reveal()).encrypt(_nonce(seq), plaintext, aad_bytes)
 
     def wipe(self) -> None:
