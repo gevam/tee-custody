@@ -18,7 +18,7 @@ from teecustody.audit.ports import (
     AuditRecord,
     AuditSink,
 )
-from teecustody.obs.types import AllowListedLogger
+from teecustody.obs.types import OUTCOME_PATTERN, AllowListedLogger
 
 _CONFLICT = "AUDIT_WRITE_CONFLICT"
 
@@ -39,6 +39,11 @@ class AggregateOutcome(StrEnum):
 
 
 _PENDING_MAX: Final = 2 * len(AggregateOutcome)
+
+
+def _drop_log(outcome: str) -> str:
+    named = f"AUDIT_PENDING_DROPPED_{outcome}"
+    return named if OUTCOME_PATTERN.fullmatch(named) else "AUDIT_PENDING_DROPPED"
 
 
 class AuditEmitter:
@@ -110,8 +115,8 @@ class AuditEmitter:
             return
         self._pending.append((key, record))
         if len(self._pending) > _PENDING_MAX:
-            self._pending.popleft()
-            self._logger.warning("AUDIT_PENDING_DROPPED")
+            _, dropped = self._pending.popleft()
+            self._logger.warning(_drop_log(dropped.outcome))
 
     def _attempt(self, key: AuditKey, record: AuditRecord) -> bool:
         """Append once; False iff the sink is UNAVAILABLE and the record should stay pending."""

@@ -268,16 +268,17 @@ def _unavailable(n: int) -> list[BaseException | AppendResult | None]:
     return [AuditError(AuditErrorCode.UNAVAILABLE) for _ in range(n)]
 
 
-def test_unavailable_keeps_a_bounded_pending_queue_and_retries_on_tick() -> None:
+def test_unavailable_keeps_a_bounded_sheddable_queue_and_retries_on_tick() -> None:
     emitter, sink, _, logger = _make()
     sink.faults = _unavailable(30)
     for i in range(30):
-        emitter.alert("AUDIT_WRITE_CONFLICT", request_id=_subject(i))
+        emitter.pre_principal_alert("KCV_MISMATCH", subject_client_id=_subject(i))
     assert sink.stored == {}
     assert PENDING_MAX == 24
-    assert logger.lines == [("warning", "AUDIT_PENDING_DROPPED", {})] * (30 - PENDING_MAX)
+    dropped = ("warning", "AUDIT_PENDING_DROPPED_KCV_MISMATCH", {})
+    assert logger.lines == [dropped] * (30 - PENDING_MAX)
     emitter.tick()
-    written = [r.request_id for _, r in sink.of(AuditClass.ALERT)]
+    written = [r.subject_client_id for _, r in sink.of(AuditClass.ALERT)]
     assert written == [_subject(i) for i in range(30 - PENDING_MAX, 30)]
     attempts = sink.attempts
     emitter.tick()
@@ -392,3 +393,22 @@ def test_a_retry_that_finds_its_record_already_written_raises_one_conflict_alert
     attempts = sink.attempts
     emitter.tick()
     assert sink.attempts == attempts
+
+
+@pytest.mark.parametrize(
+    ("outcome", "log"),
+    [
+        ("A" * 42, "AUDIT_PENDING_DROPPED_" + "A" * 42),
+        ("A" * 43, "AUDIT_PENDING_DROPPED"),
+        ("kcv mismatch", "AUDIT_PENDING_DROPPED"),
+    ],
+    ids=["64-chars", "65-chars", "not-a-code"],
+)
+def test_drop_log_falls_back_when_the_named_outcome_is_not_a_valid_code(
+    outcome: str, log: str
+) -> None:
+    emitter, sink, _, logger = _make()
+    sink.faults = _unavailable(PENDING_MAX + 1)
+    for i in range(PENDING_MAX + 1):
+        emitter.pre_principal_alert(outcome, subject_client_id=_subject(i))
+    assert logger.lines == [("warning", log, {})]
