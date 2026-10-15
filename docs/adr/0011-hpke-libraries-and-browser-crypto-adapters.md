@@ -687,11 +687,22 @@ admission and the D-051 pins are not reopened.
 
   FACTS names the engine exactly (the Playwright WebKit build and its OS). It does not attribute the measurement to
   Apple Safari.
-- **C8.3 — Reachability unchanged.**
-  - The C3a.1 input manifest is identical to the D-051 table: 43 inputs, 48,911 B, `curve/**` 0 B, `hash/hmac.js`
-    2,698 B, `hash/sha3.js` 622 B.
-  - The C7a.1 external entry is unchanged, and T-27 is green.
-  - Any difference stops the task.
+- **C8.3 — Reachability unchanged** (restated 2026-10-15 after the T-39 security review).
+  - The T-39 branch's `@hpke/*` input manifest must equal, byte for byte and input by input, the manifest of its
+    merge-base on `main`.
+  - Against the D-051 table, these must hold exactly:
+    - the same 43 input paths;
+    - the same set of 29 inputs with non-zero bytes;
+    - `curve/**` at 0 B;
+    - `hash/hmac.js` at 2,698 B and `hash/sha3.js` at 622 B.
+  - The C7a.1 external entry is unchanged, and the T-27 / SR-13 scan passes.
+  - Any other per-input byte change is allowed only if it is a pure esbuild identifier rename forced by a collision
+    with project code, shown by the output being byte-identical to T-17's once the renames are reverted.
+  - **Recorded drift.** The D-051 total of 48,911 B became 48,927 B on `main` through two renames, with no change in
+    reachability:
+    - +4 B at the T-18 merge (`release` → `release2`);
+    - +12 B at the T-20 merge (`aad` → `aad2`, which collides with `prf-vault.ts:338`).
+  - Anything else stops the task.
 - **C8.4 — Tests.** They are deterministic and inject faults with `vi.spyOn(globalThis.crypto.subtle, "generateKey")`,
   rejecting with a `DOMException` of the name recorded under C8.2. Required: B-45 criteria 1–7, plus:
   - (a) A failed attempt leaves nothing. Between a failing sender `generateKey` and the next attempt there are zero
