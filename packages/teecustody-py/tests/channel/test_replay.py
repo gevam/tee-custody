@@ -162,27 +162,31 @@ def test_a_full_cache_still_extends_a_present_key_without_growing() -> None:
 
 
 def test_repeatedly_extending_one_key_does_not_grow_memory_and_every_key_still_expires() -> None:
+    # Every re-record stays inside [now - skew, now + skew], so no superseded heap entry expires.
+    skew = 50_000
     clock = Clock()
-    cache = ReplayCache(skew_s=300, max_entries=2, clock=clock)
+    cache = ReplayCache(skew_s=skew, max_entries=2, clock=clock)
     cache.record(OTHER_CLIENT, RID, T0)
-    cache.record(CLIENT, RID, T0)
 
     tracemalloc.start()
     try:
         before, _ = tracemalloc.get_traced_memory()
-        for n in range(1, 100_001):
-            clock.now = T0 + n
-            cache.record(CLIENT, RID, T0 + n)
+        for n in range(2 * skew + 1):
+            cache.record(CLIENT, RID, T0 - skew + n)
         after, _ = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
     assert after - before < 64 * 1024
+    assert cache._size() == 2
+    clock.now = T0 + skew
+    assert cache.seen(OTHER_CLIENT, RID)
+    clock.now = T0 + skew + 1
     assert not cache.seen(OTHER_CLIENT, RID)
     assert cache._size() == 1
-    clock.now = T0 + 100_000 + 300
+    clock.now = T0 + 2 * skew
     assert cache.seen(CLIENT, RID)
-    clock.now = T0 + 100_000 + 300 + 1
+    clock.now = T0 + 2 * skew + 1
     assert not cache.seen(CLIENT, RID)
     assert cache._size() == 0
 
