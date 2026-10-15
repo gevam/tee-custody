@@ -9,10 +9,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import NoReturn
 
 from teecustody.attest.claims import own_image_digest
 from teecustody.attest.lifecycle import AttestationLifecycle, RefreshOutcome
-from teecustody.attest.ports import AttestationToken, Launcher
+from teecustody.attest.ports import AttestationToken, Launcher, LauncherError
 from teecustody.audit.emitter import AuditEmitter
 from teecustody.audit.ports import AuditSink
 from teecustody.channel.bundle import build_bundle
@@ -201,16 +202,26 @@ class RunLoop:
         now = self._clock()
         if now < self._next_refresh_attempt_at:
             return None
-        outcome = live.lifecycle.refresh_if_due()
+        try:
+            outcome = live.lifecycle.refresh_if_due()
+        except LauncherError:
+            self._stop(StopCode.ATTESTATION_EXPIRED)
         if outcome is RefreshOutcome.FAILED_KEPT_CURRENT:
             self._refresh_failures += 1
             self._next_refresh_attempt_at = now + self._backoff(self._refresh_failures)
         elif outcome is RefreshOutcome.REFRESHED:
             self._refresh_failures = 0
+            token = live.lifecycle.current()
+            if own_image_digest(token, max_token_bytes=self._limits.max_token_bytes) != live.digest:
+                self._stop(StopCode.DIGEST_CHANGED)
         return outcome
 
+    def _stop(self, code: StopCode) -> NoReturn:
+        self.shutdown()
+        raise WorkloadStopped(code)
+
     def _backoff(self, failures: int) -> int:
-        """`min(retry_max, retry_min × 2^(n−1))` for the n-th consecutive failure (B-08)."""
+        """`min(retry_max, retry_min * 2^(n-1))` for the n-th consecutive failure (B-08)."""
         retry_min = self._limits.attestation_retry_min_s
         return min(self._limits.attestation_retry_max_s, retry_min * 2 ** (failures - 1))
 
@@ -218,4 +229,4 @@ class RunLoop:
         raise NotImplementedError("T-29")
 
     def shutdown(self) -> None:
-        raise NotImplementedError("T-29")
+        self._queue.withdraw_bundle(self._instance_id)

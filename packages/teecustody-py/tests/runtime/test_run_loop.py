@@ -7,11 +7,12 @@ import base64
 import hashlib
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from teecustody.attest.lifecycle import RefreshOutcome
 from teecustody.attest.ports import AttestationToken, LauncherError, LauncherErrorCode
 from teecustody.audit.ports import AppendResult, AuditClass, AuditKey, AuditRecord
 from teecustody.channel.codec import decode_bundle, prekey_signing_message
@@ -25,10 +26,10 @@ from teecustody.channel.ports import (
     RemoteErrorCode,
     SessionInfo,
 )
-from teecustody.channel.server import OutboundResponse, ProcessResult
+from teecustody.channel.server import ProcessResult
 from teecustody.config import BoundaryLimits, ChannelParams
 from teecustody.queue.ports import QueueMessage
-from teecustody.runtime import RunLoop, run_loop
+from teecustody.runtime import RunLoop, StopCode, WorkloadStopped, run_loop
 from teecustody.wire import CanonicalValue, DecodeLimits
 
 AUDIENCE = "https://runloop.teecustody.test/tee"
@@ -104,7 +105,9 @@ class FakeQueue:
         self.calls.append(("publish_bundle", instance_id))
         self.bundles.append((instance_id, bundle, expires_at))
 
-    def pull_requests(self, instance_id: str, max_messages: int, wait_s: float) -> list[QueueMessage]:
+    def pull_requests(
+        self, instance_id: str, max_messages: int, wait_s: float
+    ) -> list[QueueMessage]:
         self.calls.append(("pull", instance_id, max_messages, wait_s))
         if self.pull_errors:
             raise self.pull_errors.pop(0)
@@ -177,7 +180,7 @@ class NullHandler:
 class FakeServer:
     """Stands in for `ChannelServer`; `script` maps a body to its result (default: no response)."""
 
-    instances: list["FakeServer"] = []
+    instances: ClassVar[list["FakeServer"]] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -262,3 +265,45 @@ def test_c1_start_attests_the_identity_key_and_publishes_one_signed_bundle(
     token_exp = world.launcher.issued[0].expires_at
     assert expires_at == min(token_exp, max(e.not_after for e in bundle.prekeys))
     assert world.logger.outcomes().count("BUNDLE_PUBLISHED") == 1
+
+
+# ---------------------------------------------------------------- criterion 3: expired token
+def test_c3_an_expired_token_shuts_down_then_stops_with_attestation_expired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.launcher.fail = True
+    world.clock.now += TOKEN_LIFETIME + 1
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.ATTESTATION_EXPIRED
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+
+
+# ---------------------------------------------------------------- criterion 4: digest change
+def test_c4_a_refreshed_token_with_another_digest_shuts_down_then_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.launcher.digest = OTHER_DIGEST
+    world.clock.now += TOKEN_LIFETIME - PARAMS.refresh_margin_s
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.DIGEST_CHANGED
+    assert len(world.launcher.issued) == 2
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+    assert len(world.queue.bundles) == 1  # the other digest is never published
+
+
+def test_c4_a_refreshed_token_with_the_same_digest_keeps_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.clock.now += TOKEN_LIFETIME - PARAMS.refresh_margin_s
+
+    assert world.loop.tick().refresh is RefreshOutcome.REFRESHED
+    assert world.queue.named("withdraw_bundle") == []

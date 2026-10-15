@@ -71,7 +71,9 @@ class Queue:
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         del instance_id, bundle, expires_at
 
-    def pull_requests(self, instance_id: str, max_messages: int, wait_s: float) -> list[QueueMessage]:
+    def pull_requests(
+        self, instance_id: str, max_messages: int, wait_s: float
+    ) -> list[QueueMessage]:
         self.pulls += 1
         if self.pull_errors:
             raise self.pull_errors.pop(0)
