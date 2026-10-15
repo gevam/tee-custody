@@ -6,7 +6,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from teecustody.channel import IdentityKey, PreKeyStore, hpke
+from teecustody.attest.ports import AttestationToken
+from teecustody.channel import IdentityKey, PreKeyStore, build_bundle, hpke
 from teecustody.channel.codec import prekey_signing_message
 from teecustody.config import ChannelParams
 from teecustody.secrets import Secret
@@ -351,3 +352,42 @@ def test_c9_malformed_image_digest_is_refused(image_digest: str) -> None:
         )
 
     assert excinfo.value.args == ("IMAGE_DIGEST_RANGE",)
+
+
+def test_c10_identity_signs_once_per_generated_key_and_never_in_build_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bytes] = []
+    original = IdentityKey.sign
+
+    def recording(self: IdentityKey, message: bytes) -> bytes:
+        calls.append(message)
+        return original(self, message)
+
+    monkeypatch.setattr(IdentityKey, "sign", recording)
+    clock = FakeClock()
+    identity = IdentityKey.generate()
+    store = make_store(clock=clock, identity=identity)
+
+    store.top_up()
+    for prekey_id in range(8):
+        store.take(prekey_id)
+    store.top_up()
+    entries = store.public_entries()
+
+    assert len(calls) == 18  # 10 + 8 generated keys
+    assert calls[8:] == [
+        prekey_signing_message(INSTANCE_ID, e.id, e.pub, e.not_after, IMAGE_DIGEST) for e in entries
+    ]
+
+    build_bundle(
+        instance_id=INSTANCE_ID,
+        token=AttestationToken(value="a.b.c", issued_at=0, expires_at=1),
+        ik_pub=identity.public_bytes(),
+        prekeys=entries,
+        published_at=int(clock()),
+    )
+    store.public_entries()
+    store.expire()
+
+    assert len(calls) == 18
