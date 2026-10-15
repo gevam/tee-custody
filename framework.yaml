@@ -89,7 +89,7 @@ coding_standards:
 
 # Commands the roles run. Must work from a clean checkout.
 test_command: "uv run pytest -q packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway tests && pnpm -r test && uv run pytest -q spec/vectors"
-lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off"
+lint_command: "uv run ruff check . && uv run ruff format --check . && uv run mypy --strict packages/teecustody-py/src packages/teecustody-sim/src examples/notes-app/gateway/src && pnpm -r lint && pnpm -r typecheck && uvx semgrep==1.178.0 --config .semgrep.yml --error --metrics=off --disable-nosem"
 coverage_command: "uv run pytest --cov=teecustody --cov=teecustody_sim --cov=notes_gateway --cov-report=term-missing packages/teecustody-py packages/teecustody-sim examples/notes-app/gateway && pnpm -r coverage"
 # The Architect may replace uv/pnpm in an ADR; the three commands stay single-line and clean-checkout runnable.
 

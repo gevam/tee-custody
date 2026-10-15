@@ -1160,3 +1160,13 @@ Participants: Release Engineer, Code and Security Reviewers
 - **Gitleaks:** false positives handled with single `.gitleaksignore` fingerprints; history was not rewritten.
 
 **Dissent:** none
+
+## D-055 — lint_command runs semgrep with --disable-nosem (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (framework.yaml commands)
+Participants: Software Engineer (T-27)
+
+**Decision:** `lint_command` now passes `--disable-nosem` to semgrep, so a `// nosemgrep` or `# nosemgrep` comment can no longer silence a security rule. T-27 showed that such a comment hid a banned `@hpke/common` import. The Orchestrator verified that the full scan on main exits 0 with the flag, and the repo source contains no nosem comments. The Tech Lead adds the same flag to the CI semgrep step, which T-27 owns.
+
+**Dissent:** none
