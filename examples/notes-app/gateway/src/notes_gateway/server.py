@@ -23,6 +23,14 @@ def _protocol_class(limits: _GatewayLimits) -> type[_H11Protocol]:
     class _GatewayProtocol(_H11Protocol):
         def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
             super().connection_made(transport)
+            self._arm()
+
+        def on_response_complete(self) -> None:
+            # Arm first: super() may parse a pipelined request, which must start a new cycle.
+            self._arm()
+            super().on_response_complete()
+
+        def _arm(self) -> None:
             self.loop.call_later(header_read_timeout_s, self._expire, self.cycle)
 
         def _expire(self, cycle: _RequestResponseCycle | None) -> None:

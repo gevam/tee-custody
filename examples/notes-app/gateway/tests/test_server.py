@@ -394,3 +394,20 @@ def test_a_route_slower_than_the_header_deadline_still_answers(
     sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
 
     assert read_response(sock, 6.0) == (200, b'{"bundles":[]}')
+
+
+# ------------------------------------------------------------- criterion 4: kept-alive connections
+def test_the_deadline_restarts_after_a_response_on_a_kept_alive_connection(
+    gateway: Callable[..., LiveGateway], records: Records
+) -> None:
+    live = gateway(header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert read_response(sock) == (200, b'{"bundles":[]}')
+    start = time.perf_counter()
+
+    closed_at = _trickle(sock, PARTIAL_HEADERS + b"a" * 64, start, 0.25, 3.0)
+
+    assert closed_at <= 3.0
+    assert live.relay.calls == 1
+    assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_HEADER_TIMEOUT"]
