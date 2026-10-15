@@ -671,3 +671,55 @@ def test_readme_requires_the_uvicorn_settings_that_keep_the_source_key_honest() 
         "Behind a reverse proxy, every client shares the proxy's peer address, so the per-source "
         "limit collapses to the global limit." in " ".join(readme.split())
     )
+
+
+# ------------------------------------------------- T-40 criteria 9 and 17: server-hardening limits
+T40_INVALID_LIMITS: list[dict[str, object]] = [
+    {"header_read_timeout_s": 0.5},
+    {"header_read_timeout_s": 0.999},
+    {"header_read_timeout_s": 60.5},
+    {"header_read_timeout_s": float("nan")},
+    {"header_read_timeout_s": float("inf")},
+    {"header_read_timeout_s": True},
+    {"header_read_timeout_s": "10"},
+    {"max_connections": 0},
+    {"max_connections": True},
+    {"max_connections": 3.0},
+    {"max_connections": 63},
+    {"max_connections": 4, "max_concurrency": 5, "per_source_max_in_flight": 5},
+    {"max_connections": "512"},
+    {"max_header_bytes": 1023},
+    {"max_header_bytes": 12289},
+    {"max_header_bytes": True},
+    {"max_header_bytes": 8192.0},
+    {"max_header_count": 15},
+    {"max_header_count": 257},
+    {"max_header_count": True},
+    {"max_header_count": 64.0},
+]
+T40_BOUNDARY_LIMITS: list[dict[str, object]] = [
+    {"header_read_timeout_s": 1.0},
+    {"header_read_timeout_s": 1},
+    {"header_read_timeout_s": 60.0},
+    {"max_connections": 64},
+    {"max_connections": 4, "max_concurrency": 4, "per_source_max_in_flight": 4},
+    {"max_header_bytes": 1024},
+    {"max_header_bytes": 12288},
+    {"max_header_count": 16},
+    {"max_header_count": 256},
+]
+
+
+@pytest.mark.parametrize("fields", T40_INVALID_LIMITS, ids=repr)
+def test_create_app_refuses_out_of_range_server_hardening_limits(
+    fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match=r"^INVALID_LIMITS$"):
+        create_app(CountingRelay(), limits=GatewayLimits(**fields))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("fields", T40_BOUNDARY_LIMITS, ids=repr)
+def test_create_app_accepts_boundary_server_hardening_limits(fields: dict[str, object]) -> None:
+    app = create_app(CountingRelay(), limits=GatewayLimits(**fields))  # type: ignore[arg-type]
+
+    assert TestClient(app).get("/bundles").status_code == 200

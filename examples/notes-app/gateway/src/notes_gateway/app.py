@@ -85,8 +85,15 @@ def _validate(limits: GatewayLimits) -> None:
             raise ValueError("INVALID_LIMITS")
     if limits.per_source_max_in_flight > limits.max_concurrency:
         raise ValueError("INVALID_LIMITS")
-    timeout_s = limits.body_read_timeout_s
-    if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
+    for timeout_s in (limits.body_read_timeout_s, limits.header_read_timeout_s):
+        if not _positive_number(timeout_s) or not 1.0 <= timeout_s <= 60.0:
+            raise ValueError("INVALID_LIMITS")
+    ranges = (
+        (limits.max_connections, limits.max_concurrency, math.inf),
+        (limits.max_header_bytes, 1024, 12288),
+        (limits.max_header_count, 16, 256),
+    )
+    if not all(type(value) is int and low <= value <= high for value, low, high in ranges):
         raise ValueError("INVALID_LIMITS")
     origins: object = limits.cors_origins
     if type(origins) is not tuple or not all(_valid_origin(o) for o in origins):
