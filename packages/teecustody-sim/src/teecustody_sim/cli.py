@@ -352,6 +352,9 @@ def _write_vectors(out: Path) -> None:
         generate_channel_suite(staging)
         for relative in _VECTOR_PATHS:
             (out / relative.parent).mkdir(exist_ok=True)
+        # B-23: one unwritable target would fail its rename after the others had replaced theirs.
+        if not all(os.access(out / relative.parent, os.W_OK) for relative in _VECTOR_PATHS):
+            raise SimConfigError(SimConfigErrorCode.INVALID_PATH)
         for relative in _VECTOR_PATHS:
             os.replace(staging / relative, out / relative)
     finally:

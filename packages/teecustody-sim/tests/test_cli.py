@@ -1130,6 +1130,41 @@ def test_vectors_leaves_existing_outputs_untouched_when_a_later_generator_fails(
     assert sorted(out.rglob("*")) == sorted({*before, *(p.parent for p in before)})
 
 
+@pytest.mark.parametrize("channel_exists", [False, True])
+def test_vectors_replaces_nothing_when_a_target_directory_is_read_only(
+    cli: Cli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_generators: list[tuple[str, Any, Any]],
+    channel_exists: bool,
+) -> None:
+    """BACKLOG B-23: every target directory is checked writable before the first rename."""
+    out = tmp_path / "out"
+    _existing_suite(out)
+    _existing_corpus(out)
+    (out / "channel").mkdir()
+    if channel_exists:
+        (out / "channel" / "suite.cbor").write_bytes(b"approved channel suite")
+    (out / "channel").chmod(0o500)
+    if os.geteuid() == 0:  # root ignores directory modes: the refusal is injected instead
+        real_access = os.access
+        monkeypatch.setattr(
+            cli_module.os,
+            "access",
+            lambda path, mode: Path(path) != out / "channel" and real_access(path, mode),
+        )
+    before = _tree(tmp_path)
+    try:
+        code, stdout, err = cli("vectors", "--out", str(out), "--force")
+    finally:
+        (out / "channel").chmod(0o700)
+
+    assert (code, stdout, err) == (2, "", "INVALID_PATH\n")
+    assert [name for name, _, _ in recorded_generators] == ["suite", "corpus", "channel"]
+    assert _tree(tmp_path) == before
+    assert sorted(out.rglob("*")) == sorted({*before, *(p.parent for p in before), out / "channel"})
+
+
 @pytest.fixture
 def recorded_profile(monkeypatch: pytest.MonkeyPatch) -> RecordingProfileBuilder:
     builder = RecordingProfileBuilder()
