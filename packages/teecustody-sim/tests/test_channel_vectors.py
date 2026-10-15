@@ -7,13 +7,20 @@ specification, not against the code that produced it (SR-14, NFR-7).
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import time
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from teecustody.wire import PROTO, DecodeLimits, decode
+from teecustody.channel.codec import EnvelopeError, decode_bundle
+from teecustody.wire import PROTO, DecodeLimits, WireError, WireErrorCode, decode
 from teecustody_sim.channel_vectors import generate_channel_suite
 
 NOW = 1_900_000_000
@@ -150,3 +157,171 @@ def test_layout_and_frame_ids_name_their_kind_and_direction(suite: dict[str, Any
         assert case["id"].startswith(f"{case['kind']}_")
     for case in suite["frames"]:
         assert case["id"].startswith(f"{case['direction']}_")
+
+
+# --- bundles (criterion 3) -------------------------------------------------------------------
+
+BUNDLE_KEYS = {"id", "instance_id", "bundle", "expect", "error_code", "usable_prekey_ids"}
+BUNDLE_DECODE_LIMITS = DecodeLimits(max_bytes=65_536, max_depth=4, max_items=4_096)
+BUNDLE_OUTCOMES = {  # spec/vectors/README.md, from the INC-2-API §7.2 check order
+    "valid": "none",
+    "prekey_sig_corrupted": "PREKEY_SIGNATURE_INVALID",
+    "prekey_sig_other_digest": "PREKEY_SIGNATURE_INVALID",
+    "prekey_sig_other_instance": "PREKEY_SIGNATURE_INVALID",
+    "instance_mismatch": "INSTANCE_MISMATCH",
+    "ik_nonce_mismatch": "ATTESTATION_FAILED",
+    "all_prekeys_expired": "NO_USABLE_PREKEY",
+    "some_prekeys_expired": "none",
+    "expired_prekey_sig_corrupted": "PREKEY_SIGNATURE_INVALID",
+    "prekey_ids_unsorted_or_duplicate": "MALFORMED",
+    "published_at_over_max": "MALFORMED",
+    "not_after_over_max": "MALFORMED",
+    "unknown_key": "MALFORMED",
+    "noncanonical": "MALFORMED",
+    "token_dbgstat_enabled": "ATTESTATION_FAILED",
+}
+DBGSTAT_DISABLED = "disabled-since-boot"
+OVER_MAX = 2**53
+
+
+def _by_id(suite: dict[str, Any], array: str) -> dict[str, dict[str, Any]]:
+    return {case["id"]: case for case in suite[array]}
+
+
+def _jwt_payload(token: str) -> dict[str, Any]:
+    segment = token.split(".")[1]
+    payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _prekey_preimage(
+    instance_id: str, prekey_id: int, pub: bytes, not_after: int, image_digest: str
+) -> bytes:
+    """spec/wire/README.md "Channel byte layouts": the 156-byte pre-key signing preimage."""
+    return b"".join(
+        (
+            b"prekey-v1",
+            instance_id.encode("ascii"),
+            prekey_id.to_bytes(4, "big"),
+            pub,
+            not_after.to_bytes(8, "big"),
+            image_digest.encode("ascii"),
+        )
+    )
+
+
+def _signature_verifies(ik_pub: bytes, message: bytes, sig: bytes) -> bool:
+    try:
+        Ed25519PublicKey.from_public_bytes(ik_pub).verify(sig, message)
+    except InvalidSignature:
+        return False
+    return True
+
+
+def _bundle_outcome(case: dict[str, Any], now: int) -> tuple[str, list[int]]:
+    """The test's own INC-2-API §7.2 walk: schema, instance, token binding, every signature, expiry.
+
+    The token's own RS256 signature is checked against the suite's JWKS in criterion 9.
+    """
+    try:
+        bundle = decode_bundle(case["bundle"], BUNDLE_DECODE_LIMITS)
+    except EnvelopeError:
+        return "MALFORMED", []
+    if bundle.instance_id != case["instance_id"]:
+        return "INSTANCE_MISMATCH", []
+    claims = _jwt_payload(bundle.token)
+    nonce = hashlib.sha256(bundle.ik_pub).hexdigest()
+    if claims["eat_nonce"] != nonce or claims["dbgstat"] != DBGSTAT_DISABLED:
+        return "ATTESTATION_FAILED", []
+    digest = claims["submods"]["container"]["image_digest"]
+    for prekey in bundle.prekeys:
+        preimage = _prekey_preimage(
+            bundle.instance_id, prekey.id, prekey.pub, prekey.not_after, digest
+        )
+        if not _signature_verifies(bundle.ik_pub, hashlib.sha256(preimage).digest(), prekey.sig):
+            return "PREKEY_SIGNATURE_INVALID", []
+    usable = [prekey.id for prekey in bundle.prekeys if prekey.not_after * 1000 > now * 1000]
+    return ("none", usable) if usable else ("NO_USABLE_PREKEY", [])
+
+
+def test_bundle_cases_are_consistent_and_match_the_outcome_table(suite: dict[str, Any]) -> None:
+    for case in suite["bundles"]:
+        assert set(case) == BUNDLE_KEYS, case["id"]
+        assert case["error_code"] == BUNDLE_OUTCOMES[case["id"]], case["id"]
+        assert (case["expect"] == "accept") == (case["error_code"] == "none"), case["id"]
+        usable = case["usable_prekey_ids"]
+        assert usable == sorted(usable), case["id"]
+        assert (usable == []) == (case["expect"] == "reject"), case["id"]
+
+
+def test_every_bundle_case_fails_or_passes_for_its_stated_reason(suite: dict[str, Any]) -> None:
+    for case in suite["bundles"]:
+        outcome = _bundle_outcome(case, suite["generated_at"])
+        assert outcome == (case["error_code"], case["usable_prekey_ids"]), case["id"]
+
+
+def test_valid_bundle_signatures_verify_over_the_section_2_preimage(suite: dict[str, Any]) -> None:
+    case = _by_id(suite, "bundles")["valid"]
+    bundle = decode_bundle(case["bundle"], BUNDLE_DECODE_LIMITS)
+    digest = _jwt_payload(bundle.token)["submods"]["container"]["image_digest"]
+    assert bundle.instance_id == case["instance_id"]
+    assert len(bundle.prekeys) > 1
+    for prekey in bundle.prekeys:
+        preimage = _prekey_preimage(
+            bundle.instance_id, prekey.id, prekey.pub, prekey.not_after, digest
+        )
+        assert len(preimage) == 156
+        assert _signature_verifies(bundle.ik_pub, hashlib.sha256(preimage).digest(), prekey.sig)
+        assert prekey.not_after == suite["generated_at"] + 3600  # pre-key ttl
+    assert bundle.published_at == suite["generated_at"]
+
+
+def test_some_and_all_expired_pre_keys_expire_ten_seconds_before_now(
+    suite: dict[str, Any],
+) -> None:
+    now = suite["generated_at"]
+    cases = _by_id(suite, "bundles")
+    for case_id in ("all_prekeys_expired", "some_prekeys_expired", "expired_prekey_sig_corrupted"):
+        prekeys = decode_bundle(cases[case_id]["bundle"], BUNDLE_DECODE_LIMITS).prekeys
+        assert {p.not_after for p in prekeys if p.not_after <= now} == {now - 10}, case_id
+    some = decode_bundle(cases["some_prekeys_expired"]["bundle"], BUNDLE_DECODE_LIMITS).prekeys
+    assert 0 < len(cases["some_prekeys_expired"]["usable_prekey_ids"]) < len(some)
+
+
+def _raw_bundle(case: dict[str, Any]) -> dict[str, Any]:
+    raw = decode(case["bundle"], BUNDLE_DECODE_LIMITS)
+    assert isinstance(raw, dict)
+    return raw
+
+
+def test_malformed_bundles_break_exactly_their_named_rule(suite: dict[str, Any]) -> None:
+    cases = _by_id(suite, "bundles")
+    valid = _raw_bundle(cases["valid"])
+    ids = [
+        entry["id"] for entry in _raw_bundle(cases["prekey_ids_unsorted_or_duplicate"])["prekeys"]
+    ]
+    assert any(later <= earlier for earlier, later in pairwise(ids))
+    assert _raw_bundle(cases["published_at_over_max"])["published_at"] == OVER_MAX
+    not_afters = [e["not_after"] for e in _raw_bundle(cases["not_after_over_max"])["prekeys"]]
+    assert OVER_MAX in not_afters
+    assert all(value <= OVER_MAX for value in not_afters)
+    unknown = _raw_bundle(cases["unknown_key"])
+    assert set(unknown) > set(valid)
+    assert {key: unknown[key] for key in valid} == valid
+    with pytest.raises(WireError) as noncanonical:
+        decode(cases["noncanonical"]["bundle"], BUNDLE_DECODE_LIMITS)
+    assert noncanonical.value.code is WireErrorCode.NONCANONICAL
+
+
+def test_noncanonical_widens_only_the_first_integer_of_a_canonical_bundle(
+    suite: dict[str, Any],
+) -> None:
+    data = suite["bundles"][BUNDLE_CASES.index("noncanonical")]["bundle"]
+    position = data.index(b"\x62id")  # first pre-key map: "id" is its first key
+    widened = data[position + 3 : position + 12]
+    assert widened[0] == 0x1B  # major type 0, 8-byte argument
+    value = int.from_bytes(widened[1:], "big")
+    assert value < 24
+    canonical = data[: position + 3] + bytes([value]) + data[position + 12 :]
+    assert decode_bundle(canonical, BUNDLE_DECODE_LIMITS).prekeys[0].id == value
