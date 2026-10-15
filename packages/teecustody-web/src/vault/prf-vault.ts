@@ -145,7 +145,10 @@ export class PrfShareVault implements ShareVault {
         }
     }
 
-    /** Creates the passkey; PRF output comes from `create` if it evaluated, else from one `get`. */
+    /**
+     * Creates the passkey with PRF enabled but not evaluated. Any create-time PRF output is ignored
+     * (and wiped): the key always comes from one `get`, the operation every later read uses (§8.4).
+     */
     async #enroll(client: ClientId, salt: Buf): Promise<CredentialPrf> {
         const credentials = this.#credentials();
         const { name, displayName } = this.#options.user(client);
@@ -159,7 +162,7 @@ export class PrfShareVault implements ShareVault {
             ],
             authenticatorSelection: { residentKey: "required", userVerification: "required" },
             timeout: this.#timeoutMs,
-            extensions: { prf: { eval: { first: salt } } },
+            extensions: { prf: {} },
         };
         const created = await this.#ceremony((signal) => credentials.create({ signal, publicKey }));
         const credentialId = new Uint8Array(created.rawId);
@@ -170,9 +173,8 @@ export class PrfShareVault implements ShareVault {
         if (outputs?.enabled !== true) {
             throw new CapabilityError("UNSUPPORTED");
         }
-        const first = outputs.results?.first;
-        const prf = first === undefined ? await this.#assert(credentialId, salt) : prfOutput(first);
-        return { credentialId, prf };
+        wipe(outputs.results?.first);
+        return { credentialId, prf: await this.#assert(credentialId, salt) };
     }
 
     /** A second `set` keeps the stored passkey and evaluates its PRF over a fresh salt. */
@@ -240,7 +242,7 @@ export class PrfShareVault implements ShareVault {
         try {
             ikm = await subtle.importKey("raw", prf, "HKDF", false, ["deriveKey"]);
         } finally {
-            new Uint8Array(prf).fill(0);
+            wipe(prf);
         }
         const label = ascii(INFO_LABEL);
         const id = ascii(client);
@@ -372,13 +374,19 @@ function checkClient(client: unknown): void {
     }
 }
 
+function wipe(buffer: unknown): void {
+    if (buffer instanceof ArrayBuffer) {
+        new Uint8Array(buffer).fill(0);
+    }
+}
+
 /** PRF support is established only by a 32-byte `results.first` (INC-2-API §8.4). */
 function prfOutput(first: unknown): ArrayBuffer {
     if (!(first instanceof ArrayBuffer)) {
         throw new CapabilityError("UNSUPPORTED");
     }
     if (first.byteLength !== 32) {
-        new Uint8Array(first).fill(0);
+        wipe(first);
         throw new CapabilityError("UNSUPPORTED");
     }
     return first;

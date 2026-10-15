@@ -31,6 +31,8 @@ export interface FakeBehaviour {
     getCredential: unknown;
     /** The ceremony never settles on its own; it rejects with AbortError when its signal aborts. */
     hang: boolean;
+    /** As `hang`, for `get` only. */
+    hangGet: boolean;
 }
 
 const NONE = Symbol("none");
@@ -54,6 +56,7 @@ export class FakeAuthenticator {
         createCredential: NONE,
         getCredential: NONE,
         hang: false,
+        hangGet: false,
     };
     /** PRF outputs handed out, so tests can check they were wiped. */
     readonly outputs: ArrayBuffer[] = [];
@@ -111,6 +114,9 @@ export class FakeAuthenticator {
         const publicKey = options?.publicKey as Ceremony["publicKey"];
         this.ceremonies.push({ kind: "get", publicKey, signal: options?.signal ?? undefined });
         await this.#fail(this.behaviour.getError, options?.signal ?? undefined);
+        if (this.behaviour.hangGet) {
+            await hangUntilAborted(options?.signal ?? undefined);
+        }
         if (this.behaviour.getCredential !== NONE) {
             return this.behaviour.getCredential as Credential | null;
         }
@@ -137,11 +143,7 @@ export class FakeAuthenticator {
             throw new DOMException("ceremony failed", name);
         }
         if (this.behaviour.hang) {
-            await new Promise<never>((_resolve, reject) => {
-                signal?.addEventListener("abort", () => {
-                    reject(new DOMException("aborted", "AbortError"));
-                });
-            });
+            await hangUntilAborted(signal);
         }
     }
 
@@ -160,6 +162,14 @@ export class FakeAuthenticator {
         this.outputs.push(out.buffer);
         return out.buffer;
     }
+}
+
+function hangUntilAborted(signal: AbortSignal | undefined): Promise<never> {
+    return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+        });
+    });
 }
 
 function evalFirst(extensions: AuthenticationExtensionsClientInputs | undefined) {

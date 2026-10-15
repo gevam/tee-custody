@@ -129,10 +129,20 @@ async function decryptIndependently(
     record: StoredRecord,
     client: string,
 ): Promise<Uint8Array> {
+    return decryptWithPrf(
+        await auth.prf(record.prf_salt as Uint8Array<ArrayBuffer>),
+        record,
+        client,
+    );
+}
+
+async function decryptWithPrf(
+    prf: ArrayBuffer,
+    record: StoredRecord,
+    client: string,
+): Promise<Uint8Array> {
     const salt = record.prf_salt as Uint8Array<ArrayBuffer>;
-    const ikm = await crypto.subtle.importKey("raw", await auth.prf(salt), "HKDF", false, [
-        "deriveKey",
-    ]);
+    const ikm = await crypto.subtle.importKey("raw", prf, "HKDF", false, ["deriveKey"]);
     const info = Buffer.concat([
         Buffer.from("teecustody/vault/v1", "ascii"),
         Buffer.from([0]),
@@ -257,7 +267,7 @@ describe("criterion 3: ceremony options", () => {
         });
         expect(bytes(first?.challenge).length).toBe(32);
         expect(first?.timeout).toBe(60_000);
-        expect(first?.extensions).toHaveProperty("prf");
+        expect(first?.extensions).toEqual({ prf: {} });
 
         const [record] = await records(idb);
         const get = auth.gets[0]?.publicKey;
@@ -302,7 +312,7 @@ describe("criterion 3: ceremony options", () => {
     });
 });
 
-describe("criterion 4: PRF output from create or from get", () => {
+describe("criterion 4 / §8.4 (e): the key always comes from one get, never from create", () => {
     it("uses the get result when create reports enabled without results (V-2.5 Chromium shape)", async () => {
         const auth = new FakeAuthenticator();
         auth.behaviour.resultsOnCreate = false;
@@ -312,17 +322,37 @@ describe("criterion 4: PRF output from create or from get", () => {
         expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
     });
 
-    it("uses the create result without a get when create evaluates the PRF", async () => {
+    it("(e) ignores create-time results A and encrypts only under the key from get-time output B", async () => {
         const auth = new FakeAuthenticator();
-        auth.behaviour.resultsOnGet = false;
-        const v = vault(auth, new IDBFactory());
-        await v.set(CLIENT, SHARE.slice());
-        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create"]);
-        expect(
-            Array.from(bytes(auth.creates[0]?.publicKey.extensions?.prf?.eval?.first)),
-        ).toHaveLength(32);
-        auth.behaviour.resultsOnGet = true;
-        expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+        const a = new Uint8Array(32).fill(0xa5);
+        auth.behaviour.createPrf = { enabled: true, results: { first: a.slice().buffer } };
+        const idb = new IDBFactory();
+        await vault(auth, idb).set(CLIENT, SHARE.slice());
+
+        expect(auth.ceremonies.map((c) => c.kind)).toEqual(["create", "get"]);
+        expect(auth.creates[0]?.publicKey.extensions).toEqual({ prf: {} });
+        const [record] = await records(idb);
+        expect(Array.from(bytes(auth.gets[0]?.publicKey.extensions?.prf?.eval?.first))).toEqual(
+            Array.from((record as StoredRecord).prf_salt as Uint8Array),
+        );
+        // Decrypts under B = the get-time PRF over prf_salt ...
+        const plain = await decryptIndependently(auth, record as StoredRecord, CLIENT);
+        expect(Array.from(plain)).toEqual(Array.from(SHARE));
+        // ... and not under A.
+        await expect(
+            decryptWithPrf(a.slice().buffer, record as StoredRecord, CLIENT),
+        ).rejects.toThrow();
+    });
+
+    it("ignores a create-time result of any length", async () => {
+        for (const n of [0, 31, 33]) {
+            const auth = new FakeAuthenticator();
+            auth.behaviour.createPrf = { enabled: true, results: { first: new ArrayBuffer(n) } };
+            const v = vault(auth, new IDBFactory());
+            await v.set(CLIENT, SHARE.slice());
+            expect(auth.gets).toHaveLength(1);
+            expect(Array.from((await v.get(CLIENT)) ?? [])).toEqual(Array.from(SHARE));
+        }
     });
 });
 
@@ -387,18 +417,6 @@ describe("criterion 5: UNSUPPORTED with nothing written", () => {
         expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
         await expectNothingStored(idb);
     });
-
-    it.each([31, 33, 0])(
-        "fails when create returns a %i-byte PRF output, without a get",
-        async (n) => {
-            const auth = new FakeAuthenticator();
-            auth.behaviour.createPrf = { enabled: true, results: { first: new ArrayBuffer(n) } };
-            const idb = new IDBFactory();
-            expect(await codeOf(vault(auth, idb).set(CLIENT, SHARE.slice()))).toBe("UNSUPPORTED");
-            expect(auth.gets).toHaveLength(0);
-            await expectNothingStored(idb);
-        },
-    );
 
     it("fails when the authenticator's PRF output is 31 bytes", async () => {
         const auth = new FakeAuthenticator();
@@ -469,7 +487,7 @@ describe("criterion 6: USER_PRESENCE_REQUIRED with nothing written", () => {
         expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
     });
 
-    it("aborts a ceremony that outlives timeoutMs even if the browser ignores the timeout", async () => {
+    it("(f) aborts a create that never settles through signal at timeoutMs", async () => {
         const auth = new FakeAuthenticator();
         auth.behaviour.hang = true;
         const idb = new IDBFactory();
@@ -480,6 +498,21 @@ describe("criterion 6: USER_PRESENCE_REQUIRED with nothing written", () => {
         expect(Date.now() - started).toBeGreaterThanOrEqual(25);
         expect(auth.creates[0]?.signal?.aborted).toBe(true);
         await expectNothingStored(idb);
+    });
+
+    it("(f) aborts a get that never settles, on the first set and on a read", async () => {
+        const auth = new FakeAuthenticator();
+        const idb = new IDBFactory();
+        const v = vault(auth, idb, { timeoutMs: 30 });
+        auth.behaviour.hangGet = true;
+        expect(await codeOf(v.set(CLIENT, SHARE.slice()))).toBe("USER_PRESENCE_REQUIRED");
+        expect(auth.gets[0]?.signal?.aborted).toBe(true);
+        await expectNothingStored(idb);
+        auth.behaviour.hangGet = false;
+        await v.set(CLIENT, SHARE.slice());
+        auth.behaviour.hangGet = true;
+        expect(await codeOf(v.get(CLIENT))).toBe("USER_PRESENCE_REQUIRED");
+        expect(auth.gets.at(-1)?.signal?.aborted).toBe(true);
     });
 
     it("does not abort a ceremony that completes in time", async () => {
@@ -798,12 +831,13 @@ describe("criterion 11: a second set reuses the credential", () => {
         const v = vault(auth, idb);
         await v.set(CLIENT, SHARE.slice());
         const [first] = await records(idb);
+        const before = auth.ceremonies.length;
         const replacement = SHARE.map((b) => b ^ 0xff);
         await v.set(CLIENT, replacement);
         const [second] = await records(idb);
         expect(auth.creates).toHaveLength(1);
-        expect(auth.gets).toHaveLength(1);
-        const get = auth.gets[0]?.publicKey;
+        expect(auth.ceremonies.slice(before).map((c) => c.kind)).toEqual(["get"]);
+        const get = auth.gets.at(-1)?.publicKey;
         expect(Array.from(bytes(get?.allowCredentials?.[0]?.id))).toEqual(
             Array.from((first as StoredRecord).credential_id as Uint8Array),
         );
@@ -1072,22 +1106,11 @@ describe("wiping temporary secrets", () => {
         }
     });
 
-    it("zeroes the PRF output from create", async () => {
-        const auth = new FakeAuthenticator();
-        await vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice());
-        expect(auth.gets).toHaveLength(0);
-        expect(new Uint8Array(auth.outputs[0] ?? new ArrayBuffer(1)).every((b) => b === 0)).toBe(
-            true,
-        );
-    });
-
-    it.each([31, 33])("zeroes a rejected %i-byte PRF output from create", async (n) => {
+    it.each([31, 32, 33])("zeroes an ignored %i-byte create-time PRF output", async (n) => {
         const auth = new FakeAuthenticator();
         const first = new Uint8Array(n).fill(0x77).buffer;
         auth.behaviour.createPrf = { enabled: true, results: { first } };
-        expect(await codeOf(vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice()))).toBe(
-            "UNSUPPORTED",
-        );
+        await vault(auth, new IDBFactory()).set(CLIENT, SHARE.slice());
         expect(new Uint8Array(first).every((b) => b === 0)).toBe(true);
     });
 
