@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import * as esbuild from "esbuild";
 
-import { buildOptions, checkMetafile, main } from "./scan-bundle.mjs";
+import { HPKE_INPUT_ALLOWLIST, buildOptions, checkMetafile, main } from "./scan-bundle.mjs";
 
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
@@ -246,5 +246,78 @@ describe("criterion 8 (C7a.1, D-051 a): output externals and per-input attributi
 
     it("meta-clean exits 0", () => {
         assert.deepEqual(checkMetafile(meta("meta-clean"), ENTRY), { code: 0, lines: [] });
+    });
+});
+
+// T-17's signed C6 follow-up item 4 (ADR 0011, D-051): every @hpke/* input and its bytesInOutput.
+const SIGNED_ITEM_4 = [
+    ["node_modules/@hpke/common/esm/_dnt.shims.js", 1480],
+    ["node_modules/@hpke/common/esm/mod.js", 0],
+    ["node_modules/@hpke/common/esm/src/algorithm.js", 602],
+    ["node_modules/@hpke/common/esm/src/consts.js", 142],
+    ["node_modules/@hpke/common/esm/src/curve/curve.js", 0],
+    ["node_modules/@hpke/common/esm/src/curve/modular.js", 0],
+    ["node_modules/@hpke/common/esm/src/curve/montgomery.js", 0],
+    ["node_modules/@hpke/common/esm/src/errors.js", 846],
+    ["node_modules/@hpke/common/esm/src/hash/hash.js", 204],
+    ["node_modules/@hpke/common/esm/src/hash/hmac.js", 2698],
+    ["node_modules/@hpke/common/esm/src/hash/md.js", 0],
+    ["node_modules/@hpke/common/esm/src/hash/sha2.js", 0],
+    ["node_modules/@hpke/common/esm/src/hash/sha3.js", 622],
+    ["node_modules/@hpke/common/esm/src/hash/u64.js", 528],
+    ["node_modules/@hpke/common/esm/src/identifiers.js", 636],
+    ["node_modules/@hpke/common/esm/src/interfaces/aeadEncryptionContext.js", 42],
+    ["node_modules/@hpke/common/esm/src/interfaces/dhkemPrimitives.js", 196],
+    ["node_modules/@hpke/common/esm/src/interfaces/kemInterface.js", 90],
+    ["node_modules/@hpke/common/esm/src/kdfs/hkdf.js", 4930],
+    ["node_modules/@hpke/common/esm/src/kems/dhkem.js", 5796],
+    ["node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/ec.js", 500],
+    ["node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/xCurve.js", 0],
+    ["node_modules/@hpke/common/esm/src/kems/hybridkem.js", 0],
+    ["node_modules/@hpke/common/esm/src/utils/bignum.js", 0],
+    ["node_modules/@hpke/common/esm/src/utils/misc.js", 1115],
+    ["node_modules/@hpke/common/esm/src/utils/noble.js", 1305],
+    ["node_modules/@hpke/common/esm/src/xCryptoKey.js", 0],
+    ["node_modules/@hpke/core/esm/mod.js", 0],
+    ["node_modules/@hpke/core/esm/src/aeads/aesGcm.js", 2677],
+    ["node_modules/@hpke/core/esm/src/aeads/exportOnly.js", 0],
+    ["node_modules/@hpke/core/esm/src/cipherSuiteNative.js", 8986],
+    ["node_modules/@hpke/core/esm/src/encryptionContext.js", 1601],
+    ["node_modules/@hpke/core/esm/src/exporterContext.js", 1616],
+    ["node_modules/@hpke/core/esm/src/kems/dhkemNative.js", 0],
+    ["node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x25519.js", 5789],
+    ["node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x448.js", 134],
+    ["node_modules/@hpke/core/esm/src/kems/dhkemX25519.js", 918],
+    ["node_modules/@hpke/core/esm/src/kems/dhkemX448.js", 0],
+    ["node_modules/@hpke/core/esm/src/mutex.js", 1452],
+    ["node_modules/@hpke/core/esm/src/native.js", 108],
+    ["node_modules/@hpke/core/esm/src/recipientContext.js", 1799],
+    ["node_modules/@hpke/core/esm/src/senderContext.js", 1964],
+    ["node_modules/@hpke/core/esm/src/utils/emitNotSupported.js", 135],
+];
+
+describe("criterion 9 (C3a.1): the bundle-input manifest", () => {
+    for (const [name, id, input] of [
+        ["meta-curve-bytes", "hpke-curve-bytes", "curve/montgomery.js"],
+        ["meta-unlisted-hpke", "hpke-input-unlisted", "xCryptoKey.js"],
+        ["meta-fragment-grew", "hpke-fragment-grew", "hash/hmac.js"],
+    ]) {
+        it(`${name} exits 1 with exactly one ${id} line`, () => {
+            assert.deepEqual(checkMetafile(meta(name), ENTRY), {
+                code: 1,
+                lines: [`${id}\t${ENTRY}\t${COMMON}${input}`],
+            });
+        });
+    }
+
+    it("HPKE_INPUT_ALLOWLIST lists only item 4 inputs with bytes, capping exactly hash/**", () => {
+        const expected = Object.fromEntries(
+            SIGNED_ITEM_4.filter(([, bytes]) => bytes > 0).map(([input, bytes]) => [
+                input,
+                input.startsWith("node_modules/@hpke/common/esm/src/hash/") ? bytes : null,
+            ]),
+        );
+        assert.deepEqual(HPKE_INPUT_ALLOWLIST, expected);
+        assert.equal(Object.keys(HPKE_INPUT_ALLOWLIST).length, 29);
     });
 });

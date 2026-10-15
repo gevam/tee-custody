@@ -59,6 +59,44 @@ export const HPKE_CRYPTO_EXTERNALS = {
     },
 };
 
+// ADR 0011 C3a.1, D-051: T-17's signed C6 follow-up item 4 for @hpke/core 1.9.0 and @hpke/common
+// 1.10.1. Only inputs with bytesInOutput > 0 are listed; every hash/** input is capped at its
+// recorded size, every other input is null (no cap). A version change of either package resets this
+// list and needs a new C6 sign-off.
+export const HPKE_INPUT_ALLOWLIST = {
+    "node_modules/@hpke/common/esm/_dnt.shims.js": null,
+    "node_modules/@hpke/common/esm/src/algorithm.js": null,
+    "node_modules/@hpke/common/esm/src/consts.js": null,
+    "node_modules/@hpke/common/esm/src/errors.js": null,
+    "node_modules/@hpke/common/esm/src/hash/hash.js": 204,
+    "node_modules/@hpke/common/esm/src/hash/hmac.js": 2698,
+    "node_modules/@hpke/common/esm/src/hash/sha3.js": 622,
+    "node_modules/@hpke/common/esm/src/hash/u64.js": 528,
+    "node_modules/@hpke/common/esm/src/identifiers.js": null,
+    "node_modules/@hpke/common/esm/src/interfaces/aeadEncryptionContext.js": null,
+    "node_modules/@hpke/common/esm/src/interfaces/dhkemPrimitives.js": null,
+    "node_modules/@hpke/common/esm/src/interfaces/kemInterface.js": null,
+    "node_modules/@hpke/common/esm/src/kdfs/hkdf.js": null,
+    "node_modules/@hpke/common/esm/src/kems/dhkem.js": null,
+    "node_modules/@hpke/common/esm/src/kems/dhkemPrimitives/ec.js": null,
+    "node_modules/@hpke/common/esm/src/utils/misc.js": null,
+    "node_modules/@hpke/common/esm/src/utils/noble.js": null,
+    "node_modules/@hpke/core/esm/src/aeads/aesGcm.js": null,
+    "node_modules/@hpke/core/esm/src/cipherSuiteNative.js": null,
+    "node_modules/@hpke/core/esm/src/encryptionContext.js": null,
+    "node_modules/@hpke/core/esm/src/exporterContext.js": null,
+    "node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x25519.js": null,
+    "node_modules/@hpke/core/esm/src/kems/dhkemPrimitives/x448.js": null,
+    "node_modules/@hpke/core/esm/src/kems/dhkemX25519.js": null,
+    "node_modules/@hpke/core/esm/src/mutex.js": null,
+    "node_modules/@hpke/core/esm/src/native.js": null,
+    "node_modules/@hpke/core/esm/src/recipientContext.js": null,
+    "node_modules/@hpke/core/esm/src/senderContext.js": null,
+    "node_modules/@hpke/core/esm/src/utils/emitNotSupported.js": null,
+};
+
+const CURVE_INPUTS = "node_modules/@hpke/common/esm/src/curve/";
+
 const isAllowedCrypto = (imported) =>
     imported.path === HPKE_CRYPTO_EXTERNALS.output.path &&
     imported.kind === HPKE_CRYPTO_EXTERNALS.output.kind;
@@ -87,6 +125,27 @@ function checkAttribution(metafile, entry, lines) {
     }
 }
 
+function checkManifest(metafile, entry) {
+    const lines = [];
+    for (const output of Object.values(metafile.outputs)) {
+        for (const [input, { bytesInOutput }] of Object.entries(output.inputs)) {
+            const suffix = hpkeSuffix(input);
+            if (suffix === null || bytesInOutput === 0) {
+                continue;
+            }
+            const cap = HPKE_INPUT_ALLOWLIST[suffix];
+            if (suffix.startsWith(CURVE_INPUTS)) {
+                lines.push(`hpke-curve-bytes\t${entry}\t${input}`);
+            } else if (cap === undefined) {
+                lines.push(`hpke-input-unlisted\t${entry}\t${input}`);
+            } else if (cap !== null && bytesInOutput > cap) {
+                lines.push(`hpke-fragment-grew\t${entry}\t${input}`);
+            }
+        }
+    }
+    return lines;
+}
+
 export function checkMetafile(metafile, entry) {
     const lines = [];
     const webScan = Object.keys(metafile.inputs).some((input) =>
@@ -111,7 +170,9 @@ export function checkMetafile(metafile, entry) {
         }
         checkAttribution(metafile, entry, lines);
     }
-    return { code: lines.length > 0 ? 2 : 0, lines };
+    const code = lines.length > 0 ? 2 : 0;
+    const manifest = checkManifest(metafile, entry);
+    return { code: Math.max(code, manifest.length > 0 ? 1 : 0), lines: [...lines, ...manifest] };
 }
 
 export function buildOptions(entryPath, alias) {
