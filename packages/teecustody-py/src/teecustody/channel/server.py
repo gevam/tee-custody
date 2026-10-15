@@ -3,6 +3,7 @@
 `ChannelOutcome`, `OutboundResponse` and `ProcessResult` are frozen; bodies belong to T-28.
 """
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -74,6 +75,9 @@ class ProcessResult:
 
 _CLOSE_OP: Final = "close"
 _MAX_RESULT_PLAINTEXT: Final = 32_768  # every encoded result plaintext (§4.10 step 9, §3.1)
+
+
+_INTERNAL_OPEN_RESULT: Final = encode_open_result_plaintext(OpenRejected(RemoteErrorCode.INTERNAL))
 
 
 def _frame_plaintext(re: int, body: FrameResultBody) -> bytes:
@@ -211,10 +215,20 @@ class ChannelServer:
         finally:
             private_key.wipe()
         sealer = T2cSealer(opened.sk_t2c)
-        decision = self._decide_open(aad, opened, sealer)
+        try:
+            decision = self._decide_open(aad, opened, sealer)
+        except Exception:  # noqa: BLE001 - R-5: an unexpected failure still gets its one answer
+            self._audit.count(AggregateOutcome.OPEN_REJECTED)
+            decision = _OpenDecision(AggregateOutcome.OPEN_REJECTED, _INTERNAL_OPEN_RESULT, None)
+        finally:
+            opened.plaintext.wipe()
         if decision.session is None:
+            opened.sk_c2t.wipe()
             nil = OpenResultAad(session_id=None, request_id=aad.request_id)
-            aad_bytes, ct = sealer.seal_open_result(nil, decision.plaintext)
+            try:
+                aad_bytes, ct = sealer.seal_open_result(nil, decision.plaintext)
+            finally:
+                sealer.wipe()
         else:
             aad_bytes, ct = decision.session.seal_open_result(aad.request_id, decision.plaintext)
             self._logger.info(
@@ -269,7 +283,12 @@ class ChannelServer:
         )
         if not _principal_ok(principal, claimed):
             return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
-        plaintext = encode_open_result_plaintext(result)
+        try:
+            plaintext = encode_open_result_plaintext(result)
+        except (wire.WireError, ValueError):
+            return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
+        if len(plaintext) > _MAX_RESULT_PLAINTEXT:
+            return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.LIMIT_EXCEEDED)
         try:
             session = self._sessions.create(
                 session_id=session_id, client_id=principal, sk_c2t=opened.sk_c2t, t2c=sealer
@@ -278,15 +297,21 @@ class ChannelServer:
             return self._abort(
                 info, AggregateOutcome.CHANNEL_LIMIT_EXCEEDED, RemoteErrorCode.LIMIT_EXCEEDED
             )
+        except Exception:  # noqa: BLE001 - A1 SESSION_ID_IN_USE and any other table failure
+            return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
         return _OpenDecision(ChannelOutcome.SESSION_OPENED, plaintext, session)
 
     def _abort(
         self, info: SessionInfo, outcome: AggregateOutcome, error: RemoteErrorCode
     ) -> _OpenDecision:
         """The opener accepted but the channel refuses: no session exists (TL-2, §4.8)."""
-        self._opener.closed(info, CloseReason.OPEN_ABORTED)
+        with contextlib.suppress(Exception):
+            self._opener.closed(info, CloseReason.OPEN_ABORTED)
         return self._refuse(outcome, error)
 
     def _refuse(self, outcome: AggregateOutcome, error: RemoteErrorCode) -> _OpenDecision:
+        plaintext = encode_open_result_plaintext(
+            OpenRejected(error)
+        )  # before counting: counted once
         self._audit.count(outcome)
-        return _OpenDecision(outcome, encode_open_result_plaintext(OpenRejected(error)), None)
+        return _OpenDecision(outcome, plaintext, None)
