@@ -162,7 +162,7 @@ REQUIREMENTS SR-1/SR-9/SR-13, THREAT_MODEL T-29, FACTS.md (V-02).
 | 6 | T-39 | Bounded X25519 keygen retry (ADR 0011 C8, `X25519_KEYGEN_ATTEMPTS` = 3, private); failed probe not cached; FACTS re-recorded at Playwright 1.63.0 (B-45, D-069) | STRONG | T-17, T-27, T-32 (all merged); QA-T-39 merged; SA C8 sign-off (done) | |
 | 6 | QA-T-40 | QA: D-03 row un-xfailed (red), D-03 idle row, D-04 parse-failure rows; on `inc-2/QA-exec` before it merges (in T-40.md) | MID (QA) | QA-exec | |
 | 6 | T-40 | Gateway server hardening: `header_read_timeout_s`, `max_connections`, JSON parse-failure 400 via `notes_gateway.server.uvicorn_config` (D-03, D-04) | STRONG | T-14, T-31 (merged); QA-exec + QA-T-40 merged; Architect §6 "Server hardening" text committed | Architect (§6) |
-| 6 | T-41 | Core `session.test.ts` criterion-7 maxInFlight test: order-free seq assertions + forced-reorder test (flake `[1,0,2]`; B-26 evidence) | MID | T-26 (merged) | |
+| 6 | T-41 | Core `session.test.ts` criterion-7 maxInFlight test: order-free seq assertions + forced-reorder test (flake `[1,0,2]`; B-26 evidence); A1: encrypt-count + distinct-nonce assertions on six refuse paths incl. criterion 10 (SR-14) | MID | T-26 (merged) | |
 
 Counts: 46 items (41 tasks T-01..T-41, the QA items QA-T-38, QA-T-39 and QA-T-40, and V-01 and V-02), 7 waves. Wave 0 has 8 (+ TL).
 Wave 1 has 19: T-07..T-21, T-33, T-36, T-37, and T-34 as the MU-1 tail. Wave 2 has 6 and Wave 3 has 4. Wave 4 has
