@@ -100,7 +100,11 @@ class _Request:
 
 
 class InMemoryQueue:
-    """Implements `teecustody.queue.Queue`; thread-safe."""
+    """Implements `teecustody.queue.Queue`; thread-safe.
+
+    A new route's cursor bound reveals the global response count: accepted for the simulator only
+    (B-33); production queues must not expose it.
+    """
 
     def __init__(
         self,
