@@ -869,9 +869,16 @@ def _age_exempt(repo: Repo, ecosystem: str, name: str) -> bool:
     shipped = members | {d.name for d in repo.direct if d.ecosystem == PYPI and d.shipped}
     libraries = {LIBRARY_PACKAGE, SIM_PACKAGE}
     libraries |= {dep for lib in libraries for dep in repo.python_declared.get(lib, frozenset())}
+    unlocked = {
+        dep
+        for project, deps in repo.python_declared.items()
+        if project not in repo.uv_members
+        for dep in deps
+    }
     return (
         versions == {exception.version}
         and exception.member in repo.uv_members
+        and not unlocked & {exception.via, exception.member}
         and name in _closure(graph, [exception.member])
         and name not in libraries | _closure(graph, libraries)
         and name not in _reachable_avoiding(graph, shipped, exception.via)
