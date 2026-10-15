@@ -143,7 +143,7 @@ export function createWebCrypto(options?: WebCryptoOptions): Crypto {
         });
     }
 
-    /** ADR 0011 C7a.3: no @hpke/* call unless `globalThis.crypto.subtle` exists right now. C8: only success is cached. */
+    /** ADR 0011 C7a.3: no @hpke/* call unless `globalThis.crypto.subtle` exists right now. */
     async function hpkeSuite(): Promise<CipherSuite> {
         const globalSubtle = platformCrypto()?.subtle;
         if (globalSubtle === undefined) {
