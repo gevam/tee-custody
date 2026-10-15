@@ -935,6 +935,13 @@ When a class is full, its oldest record is dropped and `AUDIT_PENDING_DROPPED_<O
 is the dropped record's outcome. If the clock moves backwards, the emitter ends the current interval at its nominal
 end and logs `AUDIT_CLOCK_BACKWARD`. The constructor enforces the §4.4 ranges.
 
+Two further rules (T-12 A2):
+- At most **one** `ALERT_CAP_REACHED` is pending at any time. A later one is dropped and logged
+  `AUDIT_PENDING_DROPPED_ALERT_CAP_REACHED`. This keeps the class-1 slots for real `alert()` records during long
+  outages.
+- If `close()` runs exactly at the interval start, it writes `interval_end = interval_start + 1`, because
+  `validate_audit` rejects `start >= end`.
+
 The emitter never raises into the
 channel (fail closed applies to the triggering operation, which already failed). Example:
 `audit.count(AggregateOutcome.OPEN_FAILED)`.
