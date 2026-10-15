@@ -14,14 +14,19 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from acc_channel import (
     CLIENT_ID,
     OTHER_CLIENT_ID,
     SENTINEL_CS,
     OpenSent,
+    aggregate_counts,
+    b64u,
     build_open,
     cbor,
     open_session_payload,
+    prekey_signature_valid,
     read_frame_result,
     read_open_result,
     seal_frame,
@@ -29,10 +34,10 @@ from acc_channel import (
 )
 from acc_runloop import RunWorld, make_run_world
 from acc_support import RunningSim
+from teecustody.wire import WireError
 
 HEX32 = re.compile(r"[0-9a-f]{32}")
 B64U_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
-ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 OP_NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
 MAX_UINT53 = 9007199254740991
 
@@ -91,7 +96,7 @@ def _inner(env: dict[str, Any], where: str, expected: set[str], out: list[str]) 
     """Decode a `bstr .cbor` AAD field and check its map shape."""
     try:
         aad = uncbor(env["aad"]) if isinstance(env["aad"], bytes) else None
-    except Exception:  # noqa: BLE001 - any decode failure is a violation
+    except WireError:  # the aad is not canonical CBOR: reported as a violation below
         aad = None
     if aad is None or not _keys(aad, expected, where, out):
         out.append(f"{where}: aad is not a canonical-CBOR map of the allowed fields")
@@ -128,6 +133,11 @@ def check_bundle(body: bytes) -> list[str]:
         out.append("bundle.token: not a compact JWS")
     if not _bstr(b["IK_pub"], 32):
         out.append("bundle.IK_pub: not 32 bytes")
+    shape_ok = (
+        _bstr(b["IK_pub"], 32)
+        and isinstance(b["instance_id"], str)
+        and HEX32.fullmatch(b["instance_id"]) is not None
+    )
     if not _is_uint(b["published_at"]):
         out.append("bundle.published_at: not unix-s")
     prekeys = b["prekeys"]
@@ -145,6 +155,15 @@ def check_bundle(body: bytes) -> list[str]:
             out.append(f"prekeys[{i}].not_after: not unix-s")
         if not _bstr(e["sig"], 64):
             out.append(f"prekeys[{i}].sig: not 64 bytes")
+        elif not (
+            shape_ok
+            and _is_uint(e["id"], 4294967295)
+            and _bstr(e["pub"], 32)
+            and _is_uint(e["not_after"])
+        ):
+            out.append(f"prekeys[{i}].sig: not verifiable (malformed fields)")
+        elif not prekey_signature_valid(b["IK_pub"], b["instance_id"], e):
+            out.append(f"prekeys[{i}].sig: not a valid Ed25519 signature by IK_pub")
     return out
 
 
@@ -233,7 +252,7 @@ def walk(value: Any) -> Any:
         if isinstance(value, bytes):
             try:
                 inner = uncbor(value)
-            except Exception:  # noqa: BLE001 - opaque ciphertext is not CBOR
+            except WireError:  # opaque ciphertext is not canonical CBOR: nothing to descend into
                 return
             yield from walk(inner)
     elif isinstance(value, dict):
@@ -274,7 +293,7 @@ class Flows:
     error_open_results: list[str] = field(default_factory=list)
     error_frame_results: list[str] = field(default_factory=list)
     echoed: list[Any] = field(default_factory=list)
-    silent_rejections: int = 0
+    audit: dict[str, int] = field(default_factory=dict)
 
 
 def _send(f: Flows, body: bytes) -> None:
@@ -347,7 +366,6 @@ def _drive(running_sim: RunningSim) -> Flows:
     _send(f, _stale_open(f, ROUTE_B).body)
     world.tick(2)
     assert len(_responses(f, ROUTE_A)) == n_before and _responses(f, ROUTE_B) == []
-    f.silent_rejections += 2
 
     unknown = _fresh_open(f, ROUTE_UNKNOWN)
     _send(f, unknown.body)
@@ -371,13 +389,16 @@ def _drive(running_sim: RunningSim) -> Flows:
     world.tick(2)
     rr = _responses(f, ROUTE_C)
     assert len(rr) == 2  # the replayed frame is dropped silently, no response
-    f.silent_rejections += 1
     f.sentinels["session_key_c2t_b"] = sent_b.c2t
     f.sentinels["session_key_t2c_b"] = sent_b.t2c
 
     # Bundle upkeep: advance past the refresh interval so a refreshed bundle is published
     world.clock.now += 3400
     world.tick(3)
+    # The three silent drops are visible as aggregate audit outcomes, not as responses
+    world.clock.now += world.limits.audit_aggregate_interval_s + 1
+    world.tick(2)
+    f.audit = aggregate_counts(world.sink)
     return f
 
 
@@ -421,7 +442,10 @@ def test_I7_flows_cover_every_message_type_and_error_paths(running_sim: RunningS
     assert kinds == {"open", "frame", "open_result", "frame_result"}
     assert f.ok_open_results == 2 and f.ok_frame_results >= 4
     assert len(f.error_open_results) == 1 and len(f.error_frame_results) == 1
-    assert f.silent_rejections == 3  # stale, replayed request_id, replayed seq: no response
+    # stale, replayed request_id and replayed seq produced no response, only audit outcomes
+    assert f.audit.get("REQUEST_STALE") == 1
+    assert f.audit.get("REQUEST_REPLAYED") == 1
+    assert f.audit.get("FRAME_SEQ_REJECTED") == 1
 
 
 def test_I7_every_queue_message_has_only_the_cddl_fields_and_kinds(
@@ -455,7 +479,7 @@ def test_I7_no_sentinel_secret_or_plaintext_appears_in_any_queue_message(
     assert check_all(f.rec.captured, f.sentinels) == []
 
 
-def test_I7_checker_rejects_injected_extra_fields_and_plaintext(running_sim: RunningSim) -> None:
+def test_I7_checker_rejects_injected_extra_fields_and_bad_kinds(running_sim: RunningSim) -> None:
     # Given the clean captured list
     f = _drive(running_sim)
     clean = list(f.rec.captured)
@@ -467,40 +491,132 @@ def test_I7_checker_rejects_injected_extra_fields_and_plaintext(running_sim: Run
         assert isinstance(d, dict)
         return d
 
-    def mutated(kind: str, edit: Any) -> list[tuple[str, bytes]]:
+    def mutated(kind: str, edit: Any) -> tuple[str, bytes]:
         d = decoded(kind)
         edit(d)
-        return [*clean, (kind, cbor(d))]
+        return (kind, cbor(d))
 
-    def with_inner_aad(kind: str, extra: dict[str, Any]) -> list[tuple[str, bytes]]:
+    def with_inner_aad(kind: str, extra: dict[str, Any]) -> tuple[str, bytes]:
         d = decoded(kind)
         d["aad"] = cbor({**uncbor(d["aad"]), **extra})
-        return [*clean, (kind, cbor(d))]
+        return (kind, cbor(d))
 
-    cases: dict[str, list[tuple[str, bytes]]] = {
-        "extra field on bundle": mutated("bundle", lambda d: d.update(debug="x")),
-        "extra field on prekey entry": mutated("bundle", lambda d: d["prekeys"][0].update(x=1)),
-        "extra field on request": mutated("request", lambda d: d.update(note="x")),
-        "extra field on response": mutated("response", lambda d: d.update(trace="x")),
-        "extra field inside aad": with_inner_aad("response", {"payload": "x"}),
-        "plaintext sentinel field on request": mutated("request", lambda d: d.update(p=NOTE)),
-        "plaintext sentinel bytes in bundle": mutated("bundle", lambda d: d.update(x=BLOB)),
-        "client share in response": mutated("response", lambda d: d.update(cs=SENTINEL_CS)),
-        "session key in aad": with_inner_aad("request", {"k": f.sentinels["session_key_c2t"]}),
-        "short public key": mutated("bundle", lambda d: d.update(IK_pub=d["IK_pub"][:31])),
-        "token not a JWS": mutated("bundle", lambda d: d.update(token="plaintext token")),
-        "unknown kind": mutated("response", lambda d: d.update(kind="debug")),
-        "raw sentinel appended to a valid envelope": [
-            *clean,
-            ("response", first["response"] + NOTE.encode()),
-        ],
+    cases: dict[str, tuple[tuple[str, bytes], str]] = {
+        "extra field on bundle": (mutated("bundle", lambda d: d.update(debug="x")), "fields"),
+        "extra field on prekey entry": (
+            mutated("bundle", lambda d: d["prekeys"][0].update(x=1)),
+            "fields",
+        ),
+        "extra field on request": (mutated("request", lambda d: d.update(note="x")), "fields"),
+        "extra field on response": (mutated("response", lambda d: d.update(trace="x")), "fields"),
+        "extra field inside aad": (with_inner_aad("response", {"payload": "x"}), "fields"),
+        "share as extra field": (
+            mutated("response", lambda d: d.update(cs=SENTINEL_CS)),
+            "fields",
+        ),
+        "short public key": (
+            mutated("bundle", lambda d: d.update(IK_pub=d["IK_pub"][:31])),
+            "IK_pub: not 32 bytes",
+        ),
+        "token not a JWS": (
+            mutated("bundle", lambda d: d.update(token="plaintext token")),
+            "not a compact JWS",
+        ),
+        "unknown kind": (mutated("response", lambda d: d.update(kind="debug")), "kind"),
+        # A private key (or any non-signature) published in place of a pre-key signature
+        "pre-key sig that is not a signature by IK_pub": (
+            mutated("bundle", lambda d: d["prekeys"][0].update(sig=bytes(range(64)))),
+            "not a valid Ed25519 signature",
+        ),
+        "pre-key sig swapped between entries": (
+            mutated(
+                "bundle",
+                lambda d: d["prekeys"][0].update(sig=d["prekeys"][1]["sig"]),
+            ),
+            "not a valid Ed25519 signature",
+        ),
     }
-    # When each is added to a copy of the captured list
-    # Then the checker reports a problem (and the unmodified list stays clean)
-    for name, bad in cases.items():
-        try:
-            problems = check_all(bad, f.sentinels)
-        except Exception:  # noqa: BLE001 - a body the canonical decoder rejects also fails I7
-            problems = ["undecodable"]
-        assert problems, f"checker accepted: {name}"
+    # When each is added to a copy of the captured list, then the structural check fails with the
+    # expected reason (and the unmodified list stays clean)
+    for name, (bad, reason) in cases.items():
+        problems = check_all([*clean, bad], f.sentinels)
+        assert problems and all(p.startswith(f"#{len(clean)} ") for p in problems), name
+        assert any(reason in p for p in problems), f"{name}: {problems}"
+    assert check_all(clean, f.sentinels) == []
+
+
+def test_I7_sentinel_search_alone_catches_secrets_inside_allowed_fields(
+    running_sim: RunningSim,
+) -> None:
+    # Given secrets placed inside fields the CDDL allows (ciphertext, token, AAD values, enc),
+    # so the structure check passes and only the sentinel search can fire
+    f = _drive(running_sim)
+    clean = list(f.rec.captured)
+    first = {k: next(b for kk, b in clean if kk == k) for k in ("bundle", "request", "response")}
+    marker_op, marker_rid = "i7.marker.op", b"I7-MARKER-RID-16"
+    assert len(marker_rid) == 16
+    sentinels = {
+        **f.sentinels,
+        "aad_op_marker": marker_op.encode(),
+        "aad_rid_marker": marker_rid,
+    }
+
+    def mutated(kind: str, **edit: Any) -> tuple[str, bytes]:
+        d = uncbor(first[kind])
+        d.update(edit)
+        return (kind, cbor(d))
+
+    def aad_edit(kind: str, **edit: Any) -> tuple[str, bytes]:
+        d = uncbor(first[kind])
+        d["aad"] = cbor({**uncbor(d["aad"]), **edit})
+        return (kind, cbor(d))
+
+    pad = bytes(16)
+    frame_request = next(b for k, b in clean if k == "request" and uncbor(b)["kind"] == "frame")
+    d = uncbor(frame_request)
+    d["aad"] = cbor({**uncbor(d["aad"]), "op": marker_op})
+    marker_frame = ("request", cbor(d))
+    cases: dict[str, tuple[tuple[str, bytes], str]] = {
+        "client share inside response ct": (
+            mutated("response", ct=SENTINEL_CS + pad),
+            "client_share",
+        ),
+        "payload note inside request ct": (
+            mutated("request", ct=NOTE.encode() + pad),
+            "payload_note",
+        ),
+        "payload bytes inside request ct": (mutated("request", ct=BLOB + pad), "payload_blob"),
+        "session key inside enc": (
+            mutated("request", enc=f.sentinels["session_key_c2t"]),
+            "session_key_c2t",
+        ),
+        "payload note inside token string": (
+            mutated("bundle", token=f"eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJ4In0.{NOTE}"),
+            "payload_note",
+        ),
+        "client share (base64url) inside token string": (
+            mutated(
+                "bundle",
+                token="eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJ4In0." + b64u(SENTINEL_CS),
+            ),
+            "client_share_b64u",
+        ),
+        "marker inside frame aad op": (marker_frame, "aad_op_marker"),
+        "marker inside response aad request_id": (
+            aad_edit("response", request_id=marker_rid),
+            "aad_rid_marker",
+        ),
+    }
+    for name, (bad, expected) in cases.items():
+        # Then the structure is still valid, so a structural-only checker would accept it
+        assert CHECKERS[bad[0]](bad[1]) == [], name
+        # And the sentinel search reports exactly the planted sentinel by name
+        assert sentinel_leaks(bad[1], sentinels) == [expected], name
+        assert check_all([*clean, bad], sentinels) == [
+            f"#{len(clean)} {bad[0]}: sentinel {expected} present"
+        ], name
+    # A raw sentinel appended after a valid envelope is non-canonical CBOR: the decoder rejects it
+    # with WireError (and so no checker can wave it through)
+    with pytest.raises(WireError):
+        check_all([("response", first["response"] + NOTE.encode())], sentinels)
     assert check_all(clean, f.sentinels) == []
