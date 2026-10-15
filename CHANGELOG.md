@@ -39,3 +39,19 @@
 - T-07: Python channel codec and byte layouts
 - T-16: Core bundle verification and pre-key selection
 - T-15: Core channel wire codec and byte layouts
+- T-08: Workload HPKE open via pyhpke with RFC 9180 KATs
+- T-13: Workload image digest read from its token
+- T-09: ChannelParams and BoundaryLimits validation
+- T-11: Audit record validation and serialisation
+- T-17: @hpke/core adoption and WebCrypto Crypto adapter
+- T-37: Scoped D-049 h11 age exception in dependency-policy tool
+- T-33: Core trust profile v2 and pinned jwks_uri verification
+- T-21: Simulator Google parity and D-043 attacker path
+- T-34: Attestation vectors regenerated for trust profile v2
+- T-36: INC-1 acceptance tests updated for trust profile v2
+- T-10: Open-request replay cache
+- T-12: Audit emitter with aggregates, capped alerts and retries
+- T-18: FetchFetcher with boundary controls
+- T-19: FetchTransport against the gateway contract
+- T-14: Reference queue gateway HTTP contract
+- T-20: WebAuthn-PRF share vault
