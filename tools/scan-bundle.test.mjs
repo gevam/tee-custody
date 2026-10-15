@@ -2,8 +2,10 @@
 // Runs with Node's test runner from the core package's `lint` script.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { main } from "./scan-bundle.mjs";
@@ -11,6 +13,15 @@ import { main } from "./scan-bundle.mjs";
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
 const FIXTURES = join(TOOLS, "fixtures", "scan-bundle");
+
+const scratch = mkdtempSync(join(tmpdir(), "scan-bundle-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+
+function fixture(name, source) {
+    const path = join(scratch, name);
+    writeFileSync(path, source);
+    return path;
+}
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -50,4 +61,23 @@ describe("criterion 2: each violating fixture", () => {
             assert.ok(!result.stdout.includes(source));
         });
     }
+});
+
+describe("criterion 3: the guards in the patterns", () => {
+    it("passes x.Function(1) and evaluate(1)", async () => {
+        const entry = fixture("guards.js", "export const f = (x) => [x.Function(1), evaluate(1)];\n");
+        assert.deepEqual(await run(["--entry", entry]), { code: 0, stdout: "", stderr: "" });
+    });
+
+    it("passes setTimeout with a function", async () => {
+        const entry = fixture("timer-fn.js", "export const f = (fn) => setTimeout(fn, 1);\n");
+        assert.deepEqual(await run(["--entry", entry]), { code: 0, stdout: "", stderr: "" });
+    });
+
+    it("flags setTimeout with a string as string-timer", async () => {
+        const entry = fixture("timer-string.js", 'export const f = () => setTimeout("x", 1);\n');
+        const result = await run(["--entry", entry]);
+        assert.equal(result.code, 1);
+        assert.match(result.stdout, /^string-timer\t[^\t]+\t\d+\n$/);
+    });
 });
