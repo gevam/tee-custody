@@ -14,6 +14,7 @@ import {
     HPKE_INPUT_ALLOWLIST,
     buildOptions,
     checkMetafile,
+    PATTERNS,
     main,
     scanText,
 } from "./scan-bundle.mjs";
@@ -57,11 +58,11 @@ describe("criterion 1: a clean bundle", () => {
 
 describe("criterion 2: each violating fixture", () => {
     const CASES = [
-        ["eval", "eval.js", "eval(s)"],
+        ["eval-call", "eval.js", "eval(s)"],
         ["new-function", "new-function.js", "constructor(body)"],
         ["function-call", "function-call.js", "Function(body)"],
-        ["dynamic-import", "dynamic-import.js", "import(name)"],
-        ["string-timer", "string-timer.js", "tick()"],
+        ["import-computed", "dynamic-import.js", "import(name)"],
+        ["timer-string", "string-timer.js", "tick()"],
     ];
     for (const [id, file, source] of CASES) {
         it(`${file} exits 1 with exactly one ${id} line and no source text`, async () => {
@@ -73,6 +74,64 @@ describe("criterion 2: each violating fixture", () => {
             assert.ok(!result.stdout.includes(source));
         });
     }
+});
+
+describe("criterion 14 (A7): the widened §9.2 patterns", () => {
+    for (const [id, file, count] of [
+        ["eval-indirect", "eval-indirect.js", 1],
+        ["function-global", "function-global.js", 1],
+        ["function-indexed", "function-indexed.js", 2],
+        ["reflect-construct", "reflect-construct.js", 1],
+        ["constructor-call", "constructor-call.js", 1],
+        ["import-computed", "import-computed.js", 3],
+    ]) {
+        it(`${file} exits 1 with only ${id} lines, one per form`, async () => {
+            const entry = join(FIXTURES, file);
+            const result = await run(["--entry", entry]);
+            assert.equal(result.code, 1);
+            const lines = result.stdout.trimEnd().split("\n");
+            assert.equal(lines.length, count);
+            for (const line of lines) {
+                assert.match(line, new RegExp(`^${id}\\t${escape(entry)}\\t\\d+$`));
+            }
+            assert.equal(result.stderr, "");
+        });
+    }
+
+    for (const file of ["neg-this-constructor.js", "neg-eval-property.js"]) {
+        it(`${file} exits 0`, async () => {
+            const entry = join(FIXTURES, file);
+            assert.deepEqual(await run(["--entry", entry]), { code: 0, stdout: "", stderr: "" });
+        });
+    }
+
+    it('neg-import-literal.js: the literal import("crypto") matches no pattern', async () => {
+        // A browser build can only keep import("crypto") as a guarded external, which C7a.1 rejects
+        // outside the web scan, so the patterns are checked on the real esbuild output.
+        const { outputFiles } = await esbuild.build(
+            buildOptions(join(FIXTURES, "neg-import-literal.js"), {}),
+        );
+        assert.match(outputFiles[0].text, /import\("crypto"\)/);
+        assert.deepEqual(scanText(outputFiles[0].text), []);
+    });
+
+    it("keeps the ten ids in the §9.2 order", () => {
+        assert.deepEqual(
+            PATTERNS.map(([id]) => id),
+            [
+                "eval-call",
+                "eval-indirect",
+                "new-function",
+                "function-call",
+                "function-global",
+                "function-indexed",
+                "reflect-construct",
+                "constructor-call",
+                "import-computed",
+                "timer-string",
+            ],
+        );
+    });
 });
 
 describe("criterion 3: the guards in the patterns", () => {
@@ -89,11 +148,11 @@ describe("criterion 3: the guards in the patterns", () => {
         assert.deepEqual(await run(["--entry", entry]), { code: 0, stdout: "", stderr: "" });
     });
 
-    it("flags setTimeout with a string as string-timer", async () => {
+    it("flags setTimeout with a string as timer-string", async () => {
         const entry = fixture("timer-string.js", 'export const f = () => setTimeout("x", 1);\n');
         const result = await run(["--entry", entry]);
         assert.equal(result.code, 1);
-        assert.match(result.stdout, /^string-timer\t[^\t]+\t\d+\n$/);
+        assert.match(result.stdout, /^timer-string\t[^\t]+\t\d+\n$/);
     });
 });
 
@@ -136,7 +195,7 @@ describe("the command line", () => {
         assert.deepEqual([clean.status, clean.stdout, clean.stderr], [0, "", ""]);
         const evil = cli("--entry", join(FIXTURES, "eval.js"));
         assert.equal(evil.status, 1);
-        assert.match(evil.stdout, /^eval\t/);
+        assert.match(evil.stdout, /^eval-call\t/);
         const usage = cli();
         assert.equal(usage.status, 2);
         assert.match(usage.stderr, /^usage: /);
@@ -346,8 +405,8 @@ describe("criterion 10 (§16.5 D4): no trust-profile input in the bundle", () =>
 describe("edge cases: the patterns", () => {
     it("reports UTF-8 byte offsets, one hit per match", () => {
         assert.deepEqual(scanText("é eval(1); eval(2)"), [
-            { id: "eval", offset: 3 },
-            { id: "eval", offset: 12 },
+            { id: "eval-call", offset: 3 },
+            { id: "eval-call", offset: 12 },
         ]);
     });
 
@@ -365,8 +424,22 @@ describe("edge cases: the patterns", () => {
         assert.deepEqual(scanText(text), []);
     });
 
-    it("passes literal dynamic imports in every quote style", () => {
-        assert.deepEqual(scanText("import('a'); import(\"b\"); import(`c`)"), []);
+    it("passes one plain quoted literal and flags anything else as import-computed", () => {
+        assert.deepEqual(scanText('import(\'a\'); import("b"); import("c" )'), []);
+        const flagged = [
+            "import(`c`)",
+            'import("a\\x41")',
+            'import("$x")',
+            'import("a", o)',
+            "import('a' + x)",
+        ];
+        for (const text of flagged) {
+            assert.deepEqual(
+                scanText(text).map((hit) => hit.id),
+                ["import-computed"],
+                text,
+            );
+        }
     });
 
     it("flags whitespace variants and setInterval", () => {
@@ -374,7 +447,7 @@ describe("edge cases: the patterns", () => {
             scanText(
                 "eval (1); new\n Function; Function (1); import (\n x); setInterval( 'x')",
             ).map((hit) => hit.id),
-            ["eval", "new-function", "function-call", "dynamic-import", "string-timer"],
+            ["eval-call", "new-function", "function-call", "import-computed", "timer-string"],
         );
     });
 });
@@ -387,7 +460,7 @@ describe("edge cases: several entries", () => {
         const result = await run(["--entry", guarded, "--entry", evil, "--entry", clean]);
         assert.equal(result.code, 2);
         assert.ok(result.stdout.startsWith(`external-import\t${guarded}\tfs\n`));
-        assert.match(result.stdout, new RegExp(`\\neval\\t${escape(evil)}\\t\\d+\\n$`));
+        assert.match(result.stdout, new RegExp(`\\neval-call\\t${escape(evil)}\\t\\d+\\n$`));
         assert.equal(result.stdout.split("\n").length, 3);
     });
 });

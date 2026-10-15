@@ -17,12 +17,18 @@ import * as esbuild from "esbuild";
 // Metafile paths are relative to the repository, whatever directory the scan runs from.
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 
+// INC-2-API §9.2, widened 2026-10-15 (A7). A tripwire: the enforce-mode CSP (T-32) is the control.
 export const PATTERNS = [
-    ["eval", /\beval\s*\(/g],
+    ["eval-call", /\beval\s*\(/g],
+    ["eval-indirect", /\(\s*0\s*,\s*eval\s*\)/g],
     ["new-function", /\bnew\s+Function\b/g],
     ["function-call", /(?<![.\w$])Function\s*\(/g],
-    ["dynamic-import", /\bimport\s*\(\s*(?!["'`])/g],
-    ["string-timer", /\bset(?:Timeout|Interval)\s*\(\s*["'`]/g],
+    ["function-global", /\b(?:globalThis|window|self|global)\s*\.\s*Function\b/g],
+    ["function-indexed", /\[\s*["'`](?:Function|constructor|eval)["'`]\s*\]/g],
+    ["reflect-construct", /\bReflect\s*\.\s*construct\s*\(\s*Function\b/g],
+    ["constructor-call", /(?<!\bnew\s+[\w$.]*)\.constructor\s*\(/g],
+    ["import-computed", /\bimport\s*\(\s*(?!"[^"\\\n${}]*"\s*\)|'[^'\\\n]*'\s*\))/g],
+    ["timer-string", /\bset(?:Timeout|Interval)\s*\(\s*["'`]/g],
 ];
 
 export function scanText(text) {
