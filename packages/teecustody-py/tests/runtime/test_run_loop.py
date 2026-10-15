@@ -106,9 +106,13 @@ class FakeQueue:
         self.inbox: list[QueueMessage] = []
         self.pull_errors: list[Exception] = []
         self.publish_errors: list[Exception] = []
+        self.bundle_errors: list[Exception] = []
+        self.ack_errors: list[Exception] = []
 
     def publish_bundle(self, instance_id: str, bundle: bytes, expires_at: int) -> None:
         self.calls.append(("publish_bundle", instance_id))
+        if self.bundle_errors:
+            raise self.bundle_errors.pop(0)
         self.bundles.append((instance_id, bundle, expires_at))
 
     def pull_requests(
@@ -122,6 +126,8 @@ class FakeQueue:
 
     def ack(self, message_id: str) -> None:
         self.calls.append(("ack", message_id))
+        if self.ack_errors:
+            raise self.ack_errors.pop(0)
 
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
         self.calls.append(("publish_response", client_id, request_id, body))
@@ -380,7 +386,7 @@ def test_c5_publish_failing_twice_is_logged_and_the_message_still_acked(
     answered(world, 1, b"req-1")
     world.queue.publish_errors = [
         QueueError(QueueErrorCode.UNAVAILABLE),
-        QueueError(QueueErrorCode.INTERNAL),
+        QueueError(QueueErrorCode.UNAVAILABLE),
     ]
 
     world.loop.tick()
@@ -405,6 +411,7 @@ def burn(world: World, count: int) -> None:
         message(i, str(e.id).encode()) for i, e in enumerate(prekeys.public_entries()[:count])
     )
     world.loop.tick()
+    world.server.on_process = None
 
 
 def burn_alerts(world: World) -> list[AuditRecord]:
@@ -713,8 +720,10 @@ def test_c11_a_stop_raised_by_a_tick_propagates_after_a_single_shutdown(
     world = World(monkeypatch, start=False)
     world.queue.pull_errors = [QueueError(QueueErrorCode.INTERNAL)]
 
-    with pytest.raises(QueueError):
+    with pytest.raises(WorkloadStopped) as stopped:
         world.loop.run(threading.Event())
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
 
     assert len(world.queue.named("withdraw_bundle")) == 1
 
@@ -1055,3 +1064,161 @@ def test_c13_start_after_shutdown_is_refused(monkeypatch: pytest.MonkeyPatch) ->
     assert len(world.launcher.calls) == 1
     with pytest.raises(RuntimeError, match="NOT_STARTED"):
         world.loop.tick()
+
+
+# ---------------------------------------------------------------- criterion 14 (A1): queue errors
+def unavailable() -> QueueError:
+    return QueueError(QueueErrorCode.UNAVAILABLE)
+
+
+def test_c14_one_unavailable_on_republish_is_absorbed_and_the_republish_stays_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS)
+    world.clock.now += 1
+    burn(world, 1)  # the pre-key set changed
+    world.queue.bundle_errors = [unavailable()]
+    world.clock.now = START + world.limits.bundle_republish_min_interval_s
+
+    report = world.loop.tick()  # republish fails: no exception, no pull this tick
+
+    assert report.bundle_published is False
+    assert world.queue.calls[-1][0] == "publish_bundle"
+    world.clock.now += world.limits.attestation_retry_min_s
+    assert world.loop.tick().bundle_published is True
+
+
+def test_c14_one_unavailable_ack_ends_the_ticks_queue_work_and_the_count_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+    world.queue.inbox = [message(1, b"a"), message(2, b"b")]
+    world.queue.ack_errors = [unavailable()]
+
+    report = world.loop.tick()
+
+    assert world.server.bodies == [b"a"]  # b is redelivered later, never processed now
+    assert report.processed == 1
+    for _ in range(9):  # nine more failures after a success never stop the loop
+        world.clock.now += world.limits.attestation_retry_max_s
+        world.queue.pull_errors = [unavailable()]
+        world.loop.tick()
+    world.clock.now += world.limits.attestation_retry_max_s
+    world.loop.tick()  # success resets the count
+    world.clock.now += world.limits.attestation_retry_max_s
+    world.queue.pull_errors = [unavailable()]
+    world.loop.tick()
+    assert world.queue.named("withdraw_bundle") == []
+
+
+def test_c14_a_publish_response_failure_then_success_resets_the_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch)
+
+    def failing_pulls(n: int) -> None:
+        for _ in range(n):
+            world.queue.pull_errors = [unavailable()]
+            world.loop.tick()
+            world.clock.now += world.limits.attestation_retry_max_s
+
+    failing_pulls(8)
+    answered(world, 1, b"req")
+    world.queue.publish_errors = [unavailable()]  # the 9th failure; the retry succeeds
+
+    world.loop.tick()
+    world.clock.now += world.limits.attestation_retry_max_s
+    failing_pulls(9)  # would be the 19th: the count was reset
+
+    assert len(world.queue.named("publish_response")) == 2
+    assert world.queue.named("withdraw_bundle") == []
+
+
+def test_c14_ten_consecutive_unavailable_across_queue_calls_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS)
+    step = world.limits.attestation_retry_max_s  # every tick is past the current backoff
+
+    def tick() -> None:
+        world.clock.now += step
+        world.loop.tick()
+
+    answered(world, 1, b"req")
+    world.queue.publish_errors = [unavailable(), unavailable()]
+    world.queue.ack_errors = [unavailable()]
+    tick()  # failures 1-3: publish, its retry, ack
+    world.queue.pull_errors = [unavailable()] * 3
+    for _ in range(3):
+        tick()  # failures 4-6: pulls
+    prekeys = world.server.kwargs["prekeys"]
+    prekeys.take(prekeys.public_entries()[0].id)  # a republish is now due
+    world.queue.bundle_errors = [unavailable()] * 4
+    for _ in range(3):
+        tick()  # failures 7-9: republishes
+    assert world.queue.named("withdraw_bundle") == []
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        tick()  # failure 10
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+    assert world.queue.bundles[-1:] == world.queue.bundles[:1]  # never republished
+
+
+@pytest.mark.parametrize("call", ["bundle", "pull", "publish", "ack"])
+def test_c14_any_other_queue_error_stops_at_once(
+    monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    world = World(monkeypatch, params=BURN_PARAMS)
+    world.clock.now += 1
+    burn(world, 1)
+    world.clock.now = START + world.limits.bundle_republish_min_interval_s
+    answered(world, 7, b"req")
+    getattr(
+        world.queue,
+        {
+            "bundle": "bundle_errors",
+            "pull": "pull_errors",
+            "publish": "publish_errors",
+            "ack": "ack_errors",
+        }[call],
+    ).append(QueueError(QueueErrorCode.INTERNAL))
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.tick()
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE
+    assert world.queue.named("withdraw_bundle") == [("withdraw_bundle", world.loop.instance_id)]
+
+
+def test_c14_an_unavailable_queue_at_start_defers_the_first_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    world.queue.bundle_errors = [unavailable()]
+
+    world.loop.start()
+
+    assert world.queue.bundles == []
+    world.clock.now += world.limits.attestation_retry_min_s
+    assert world.loop.tick().bundle_published is True
+    assert len(world.queue.bundles) == 1
+
+
+def test_c14_a_failing_withdraw_in_run_is_reported_as_a_stop_not_a_raw_queue_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = World(monkeypatch, start=False)
+    stop = threading.Event()
+    stop.set()
+
+    def failing(instance_id: str) -> None:
+        raise unavailable()
+
+    monkeypatch.setattr(world.queue, "withdraw_bundle", failing)
+
+    with pytest.raises(WorkloadStopped) as stopped:
+        world.loop.run(stop)
+
+    assert stopped.value.code is StopCode.QUEUE_UNAVAILABLE

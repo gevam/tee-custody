@@ -22,7 +22,7 @@ from teecustody.channel.identity import IdentityKey
 from teecustody.channel.ports import CloseReason, FrameHandler, SessionInfo, SessionOpener
 from teecustody.channel.prekeys import PreKeyPublic, PreKeyStore
 from teecustody.channel.replay import ReplayCache
-from teecustody.channel.server import ChannelServer
+from teecustody.channel.server import ChannelServer, OutboundResponse
 from teecustody.channel.session import SessionTable
 from teecustody.config import BoundaryLimits, ChannelParams, ConfigError, ConfigErrorCode
 from teecustody.obs.logger import get_logger
@@ -31,7 +31,7 @@ from teecustody.queue.ports import QueueError, QueueErrorCode, QueueMessage, Wor
 
 _DEFAULT_PARAMS = ChannelParams()
 _DEFAULT_LIMITS = BoundaryLimits()
-_MAX_PULL_FAILURES: Final = 10  # consecutive UNAVAILABLE pulls before QUEUE_UNAVAILABLE
+_MAX_QUEUE_FAILURES: Final = 10  # consecutive UNAVAILABLE queue calls before QUEUE_UNAVAILABLE
 
 
 def _ms(seconds: float) -> int:
@@ -117,8 +117,8 @@ class RunLoop:
         self._started = False
         self._refresh_failures = 0
         self._next_refresh_attempt_at = float("-inf")
-        self._pull_failures = 0
-        self._next_pull_at = float("-inf")
+        self._queue_failures = 0
+        self._next_queue_at = float("-inf")
         self._pull_skipped = False
 
     @property
@@ -186,7 +186,10 @@ class RunLoop:
         live = _Live(ik, lifecycle, digest, prekeys, audit, sessions, server, self._clock())
         self._live = live
         self._top_up(live)
-        self._publish(live, token)
+        try:
+            self._publish(live, token)
+        except QueueError as err:  # UNAVAILABLE: a later tick publishes once the queue is back
+            self._queue_failed(err)
 
     def tick(self) -> TickReport:
         live = self._require_live()
@@ -195,12 +198,7 @@ class RunLoop:
         live.prekeys.expire()
         self._top_up(live)
         bundle_published = self._republish_if_changed(live)
-        processed = 0
-        messages = self._pull()
-        self._pull_skipped = messages is None
-        for message in messages or ():
-            self._handle(live, message)
-            processed += 1
+        processed = self._serve(live)
         live.sessions.expire_idle()
         self._check_burn(live)
         live.audit.tick()
@@ -212,9 +210,12 @@ class RunLoop:
             while not stop.is_set():
                 self.tick()
                 if self._pull_skipped:
-                    stop.wait(min(self._limits.pull_wait_s, self._next_pull_at - self._clock()))
+                    stop.wait(min(self._limits.pull_wait_s, self._next_queue_at - self._clock()))
         finally:
-            self.shutdown()
+            try:
+                self.shutdown()
+            except QueueError:  # A1: no raw QueueError escapes the loop
+                raise WorkloadStopped(StopCode.QUEUE_UNAVAILABLE) from None
 
     def shutdown(self) -> None:
         """Idempotent: withdraw the bundle, close every session, wipe pre-keys, flush audit."""
@@ -280,9 +281,13 @@ class RunLoop:
         """(3) new token or changed pre-key set; at most once per republish min interval."""
         changed = live.token_refreshed or live.prekeys.public_entries() != live.published
         due = self._clock() - live.published_at >= self._limits.bundle_republish_min_interval_s
-        if not (changed and due):
+        if not (changed and due and self._queue_ready()):
             return False
-        self._publish(live, live.lifecycle.current())
+        try:
+            self._publish(live, live.lifecycle.current())
+        except QueueError as err:  # stays due; the backoff also skips this tick's pull
+            self._queue_failed(err)
+            return False
         return True
 
     def _publish(self, live: _Live, token: AttestationToken) -> None:
@@ -296,45 +301,68 @@ class RunLoop:
         )
         expires_at = min(token.expires_at, max(p.not_after for p in entries))  # TL-3
         self._queue.publish_bundle(self._instance_id, body, expires_at)
+        self._queue_failures = 0
         live.published = entries
         live.published_at = self._clock()
         live.token_refreshed = False
         self._logger.info("BUNDLE_PUBLISHED")
 
-    def _pull(self) -> list[QueueMessage] | None:
-        """(4) pull, or None while backing off (B-08 formula, own counter; 10 in a row stop)."""
-        now = self._clock()
-        if now < self._next_pull_at:
-            return None
+    def _serve(self, live: _Live) -> int:
+        """(5) pull, process, respond, ack; any failed queue call ends this tick's queue work."""
+        self._pull_skipped = not self._queue_ready()
+        if self._pull_skipped:
+            return 0
         try:
             messages = self._queue.pull_requests(
                 self._instance_id, self._limits.pull_max_messages, self._limits.pull_wait_s
             )
         except QueueError as err:
-            if err.code is not QueueErrorCode.UNAVAILABLE:
-                raise
             self._logger.warning("QUEUE_PULL_FAILED")
-            self._pull_failures += 1
-            if self._pull_failures >= _MAX_PULL_FAILURES:
-                self._stop(StopCode.QUEUE_UNAVAILABLE)
-            self._next_pull_at = now + self._backoff(self._pull_failures)
-            return []
-        self._pull_failures = 0
-        return messages
+            self._queue_failed(err)
+            return 0
+        self._queue_failures = 0
+        processed = 0
+        for message in messages:
+            processed += 1
+            if not self._handle(live, message):
+                break
+        return processed
 
-    def _handle(self, live: _Live, message: QueueMessage) -> None:
-        """(4) process, respond, ack. Sealed once; a retry re-sends the same bytes (R-5)."""
+    def _handle(self, live: _Live, message: QueueMessage) -> bool:
+        """Sealed once; a retry re-sends the same bytes (R-5). False if a queue call failed."""
         response = live.server.process(message.body).response
-        if response is not None:
-            for _ in range(2):
-                try:
-                    self._queue.publish_response(
-                        response.client_id, message.request_id, response.body
-                    )
-                    break
-                except QueueError:
-                    self._logger.warning("RESPONSE_PUBLISH_FAILED")
-        self._queue.ack(message.message_id)
+        delivered = response is None or self._publish_response(response, message.request_id)
+        try:
+            self._queue.ack(message.message_id)
+        except QueueError as err:  # not acked: redelivered later, then rejected as a replay
+            self._queue_failed(err)
+            return False
+        self._queue_failures = 0
+        return delivered
+
+    def _publish_response(self, response: OutboundResponse, request_id: str) -> bool:
+        for _ in range(2):
+            try:
+                self._queue.publish_response(response.client_id, request_id, response.body)
+            except QueueError as err:
+                self._logger.warning("RESPONSE_PUBLISH_FAILED")
+                self._queue_failed(err)
+                continue
+            self._queue_failures = 0
+            return True
+        return False
+
+    def _queue_ready(self) -> bool:
+        return self._clock() >= self._next_queue_at
+
+    def _queue_failed(self, err: QueueError) -> None:
+        """A1: UNAVAILABLE backs off on one shared counter; the 10th, or any other code, stops."""
+        if err.code is not QueueErrorCode.UNAVAILABLE:
+            self._stop(StopCode.QUEUE_UNAVAILABLE)
+        self._queue_failures += 1
+        if self._queue_failures >= _MAX_QUEUE_FAILURES:
+            self._stop(StopCode.QUEUE_UNAVAILABLE)
+        self._next_queue_at = self._clock() + self._backoff(self._queue_failures)
 
     def _check_burn(self, live: _Live) -> None:
         """(6) SR-12: one PREKEY_BURN_HIGH per ended interval whose own consumption is too high."""

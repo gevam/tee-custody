@@ -50,6 +50,7 @@ class Launcher:
         self.clock = clock
         self.fail = False
         self.calls = 0
+        self.lifetime = 3600
 
     def get_attestation_token(
         self, audience: str, token_type: str, identity_nonce: bytes
@@ -60,7 +61,7 @@ class Launcher:
         claims = {"submods": {"container": {"image_digest": DIGEST}}}
         value = f"{_b64(b'{}')}.{_b64(json.dumps(claims).encode())}.{_b64(b'sig')}"
         now = int(self.clock())
-        return AttestationToken(value=value, issued_at=now, expires_at=now + 3600)
+        return AttestationToken(value=value, issued_at=now, expires_at=now + self.lifetime)
 
 
 class Queue:
@@ -118,12 +119,21 @@ class Server:
 
 
 class World:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        refresh_margin_s: int = 3599,
+        lifetime: int = 3600,
+        retry_max: int = RETRY_MAX,
+    ) -> None:
+        self.retry_max = retry_max
         monkeypatch.setattr(run_loop, "ChannelServer", Server)
         self.clock = Clock()
         self.launcher = Launcher(self.clock)
+        self.launcher.lifetime = lifetime
         self.queue = Queue()
-        # A margin of 3599 s makes the 3600 s token due one second after issue.
+        # By default a margin of 3599 s makes the 3600 s token due one second after issue.
         self.loop = RunLoop(
             launcher=self.launcher,
             queue=self.queue,
@@ -132,11 +142,13 @@ class World:
             handler=Handler(),
             audience="https://backoff.teecustody.test/tee",
             token_type="OIDC",
-            params=ChannelParams(prekey_batch=2, prekey_low_water=1, refresh_margin_s=3599),
+            params=ChannelParams(
+                prekey_batch=2, prekey_low_water=1, refresh_margin_s=refresh_margin_s
+            ),
             limits=BoundaryLimits(
                 pull_wait_s=0.01,
                 attestation_retry_min_s=RETRY_MIN,
-                attestation_retry_max_s=RETRY_MAX,
+                attestation_retry_max_s=retry_max,
             ),
             clock=self.clock,
         )
@@ -213,7 +225,7 @@ def pull_until_failures_exhausted(world: World, expected_pulls: int) -> None:
     base = world.queue.pulls - 1
     for failures in range(1, expected_pulls):
         assert world.queue.pulls == base + failures
-        delay = min(RETRY_MAX, RETRY_MIN * 2 ** (failures - 1))
+        delay = min(world.retry_max, RETRY_MIN * 2 ** (failures - 1))
         world.clock.now += delay - 1
         world.tick(20)
         assert world.queue.pulls == base + failures, failures
@@ -221,10 +233,15 @@ def pull_until_failures_exhausted(world: World, expected_pulls: int) -> None:
         world.loop.tick()
 
 
+def quiet_world(monkeypatch: pytest.MonkeyPatch) -> World:
+    """No refresh or pre-key expiry (each a republish, a queue success) during the streaks."""
+    return World(monkeypatch, refresh_margin_s=300, lifetime=86_400, retry_max=60)
+
+
 def test_c6_ten_consecutive_unavailable_pulls_shut_down_and_stop(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    world = World(monkeypatch)
+    world = quiet_world(monkeypatch)
     world.queue.pull_errors = unavailable(10)
     world.loop.tick()
 
@@ -241,7 +258,7 @@ def test_c6_ten_consecutive_unavailable_pulls_shut_down_and_stop(
 def test_c6_fewer_than_ten_failures_recover_and_reset_the_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    world = World(monkeypatch)
+    world = quiet_world(monkeypatch)
     world.queue.pull_errors = unavailable(9)
     world.loop.tick()
     pull_until_failures_exhausted(world, 10)  # the 10th pull succeeds
