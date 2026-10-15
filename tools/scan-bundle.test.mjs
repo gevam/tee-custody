@@ -12,6 +12,8 @@ const TOOLS = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(TOOLS);
 const FIXTURES = join(TOOLS, "fixtures", "scan-bundle");
 
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 async function run(args, cwd = REPO) {
     let stdout = "";
     let stderr = "";
@@ -28,4 +30,24 @@ describe("criterion 1: a clean bundle", () => {
         const result = await run(["--entry", join(FIXTURES, "clean.js")]);
         assert.deepEqual(result, { code: 0, stdout: "", stderr: "" });
     });
+});
+
+describe("criterion 2: each violating fixture", () => {
+    const CASES = [
+        ["eval", "eval.js", "eval(s)"],
+        ["new-function", "new-function.js", "constructor(body)"],
+        ["function-call", "function-call.js", "Function(body)"],
+        ["dynamic-import", "dynamic-import.js", "import(name)"],
+        ["string-timer", "string-timer.js", "tick()"],
+    ];
+    for (const [id, file, source] of CASES) {
+        it(`${file} exits 1 with exactly one ${id} line and no source text`, async () => {
+            const entry = join(FIXTURES, file);
+            const result = await run(["--entry", entry]);
+            assert.equal(result.code, 1);
+            assert.match(result.stdout, new RegExp(`^${id}\\t${escape(entry)}\\t\\d+\\n$`));
+            assert.equal(result.stderr, "");
+            assert.ok(!result.stdout.includes(source));
+        });
+    }
 });
