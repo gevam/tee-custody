@@ -82,6 +82,8 @@ _SPEC_LIMITS: tuple[tuple[str, object], ...] = (
     ("max_concurrency", 64),
     ("max_sources_tracked", 10_000),
     ("cors_origins", ()),
+    ("per_source_max_in_flight", 8),
+    ("body_read_timeout_s", 10.0),
 )
 
 
@@ -111,6 +113,8 @@ class _SpecGatewayLimits:
     max_concurrency: int = 64
     max_sources_tracked: int = 10_000
     cors_origins: tuple[str, ...] = ()
+    per_source_max_in_flight: int = 8
+    body_read_timeout_s: float = 10.0
 
 
 def test_gateway_limits_signature_equals_spec_dataclass() -> None:
