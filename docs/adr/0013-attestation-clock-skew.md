@@ -68,3 +68,50 @@ const CLOCK_SKEW_MS = CLOCK_SKEW_S * 1000;
   - A new Core task (proposed INC-2 T-37, STRONG tier, `security.paths`) owns `claims.ts`, `claims.test.ts` and `tests/acceptance/FR02.attestation-checks.test.ts`. It needs 100% branch coverage and boundary tests at ±1 ms around 300 s for `nbf` and `iat`, plus the `min` rule with `token_max_age_s` set to 60.
   - No Python, simulator, profile, wire or vector change.
   - The Architect updates the §6.4 Location column of the traceability matrix under D-014, and the Attestation section of ARCHITECTURE.md once the ADR is accepted.
+
+## Security Architect sign-off (2026-10-15)
+**APPROVE**, with conditions S1–S6. Status stays Proposed until the Orchestrator records the decision.
+
+**Assessment.**
+- **Spec §6.4 and I13: conformant. Not a constraint-deviation.**
+  - `exp` keeps zero leeway, and the past side of `iat` is unchanged.
+  - The future side of `iat` gets stricter, which stays inside "within `TOKEN_MAX_AGE`".
+  - `nbf` is our own extra check, not a §6 check. A bounded tolerance on it never goes below the spec floor.
+  - The rule is identical under both profiles and reads no `profile_kind`. It adds no flag and no skip.
+- **A constant is acceptable.** Spec §14 has no client clock-skew parameter, so this is not a §14 parameter. Adding one would be a spec change, which only the human can make. The tolerance is a check-logic bound, not a trust anchor. A profile field would add misconfiguration surface (a host could set 86400) and give no security benefit.
+- **Security impact.**
+  - The leeway does not move the end of any token's acceptance window. Per token, the client-clock window goes from `[max(nbf, iat − maxAge), min(exp, iat + maxAge)]` to `[max(nbf − 300, iat − min(maxAge, 300)), min(exp, iat + maxAge)]`. Only the start moves, and it moves by at most 300 s.
+  - `nbf` and `iat` are inside the Google-signed payload, so no attacker can pre-date or post-date a token. The only extra tokens admitted are genuine ones that are up to 300 s "early".
+  - Tightening future `iat` from 3600 s to 300 s removes 3300 s of the old leeway in which a token from a lagging client clock or a misbehaving issuer clock was accepted. A client more than 300 s behind already failed at the TEE (`REQUEST_STALE`), so availability does not get worse.
+  - Replay is unchanged, because it is bounded server-side (`REQUEST_SKEW`, the replay cache and single-use pre-keys) and does not depend on this check.
+  - The client-clock-behind residual (a client behind by D accepts tokens that expired up to D ago) is pre-existing and is not widened by this ADR. It is recorded as threat T-30 (Low).
+- **300 s is right.**
+  - It equals the `REQUEST_SKEW` default, so a client with more skew than this cannot complete a request anyway.
+  - It keeps both approved negative vectors rejecting with margin: `nbf_future` at +600 and `iat_future` at +3660 are evaluated at `verify_at_ms` = `generated_at` × 1000.
+  - The vector contract test structurally enforces "< 600": at 600, `nbf_future` would be accepted and the test would fail.
+- **No new vectors.** Only Core verifies tokens, so a cross-language vector adds no parity value. The INC-1 rows still cover rejection beyond the window. The ±1 ms boundaries belong in Core unit tests (S3). A within-skew positive vector is optional and, being human-gated, is not requested.
+- **Python parity: no change.** The workload never verifies a token. `parse_token_metadata` checks only `exp > iat`, `aud` and the nonce, and `AttestationLifecycle` rejects a token it just obtained if that token has already expired. If a Python verifier is ever added, it must implement this ADR's rule exactly.
+
+**Conditions.**
+- **S1. Order of landing (blocking).** T-37 merges only after the D-02 Q1 fix and its deterministic regression test.
+  - The regression test must assert clock freshness directly. It uses an injected clock and asserts that `now` is read during verification, after the fetch, and is never cached across opens. It must not depend on an `nbf` rejection, because this ADR's leeway would hide that rejection.
+  - If Q1 finds a cached or stale `now` anywhere on a verification or bundle-reuse path (`verifyAttestation`, `verifyBundle`, `resolveBundle`), it is filed as a separate security defect. It is High until triaged, because a stale `now` lets the `exp` check accept expired tokens.
+- **S2. The rule is exactly as in Decision.**
+  - Order: exp → iat-past → iat-future → nbf.
+  - The `Number.isFinite(maxAgeMs)` guard stays, and every comparison stays negated.
+  - Error codes and check ids are unchanged.
+  - `CLOCK_SKEW_S` is not exported, and the api-surface tests stay unchanged.
+  - No code reads `profile_kind`.
+- **S3. Boundary tests that pin the constant** (they fail if it drifts in either direction):
+  - `nbf` = now + 300 s passes, and now + 300 s + 1 ms rejects `NOT_YET_VALID`.
+  - The same pair for `iat`.
+  - With `token_max_age_s` = 60: `iat` at now + 60 s passes and at now + 60 s + 1 ms rejects. With `iat` = now, `nbf` at now + 300 s still passes, which shows the `nbf` bound does not depend on `maxAge`.
+  - `exp` = now still rejects `EXPIRED`.
+  - The existing NaN and Infinity cases for both the clock and `maxAge` stay.
+- **S4. Repair tests that the leeway would make vacuous** in `claims.test.ts`. Each of the following must use a value outside the new window so that it still discriminates:
+  - "checkTime ignores an inherited nbf" uses `NOW_S + 60`. Use a value beyond the skew, for example `NOW_S + 301`.
+  - "checks iat before nbf" uses `nbf: NOW_S + 1`. Use a value beyond the skew.
+  - "iat exactly max age in the future" flips to a rejection.
+  - "nbf one second ahead (no skew)" flips to a pass.
+- **S5. Vectors unchanged.** The `nbf_future` and `iat_future` rows in the contract test and in FR02 pass without modification.
+- **S6. Traceability.** Only the §6.4 Location column changes (D-014). No other `docs/security/` change. The spec is silent on `nbf` and on which direction "within" applies to `iat`. That is a non-blocking candidate for a future spec revision, which only the human can make.

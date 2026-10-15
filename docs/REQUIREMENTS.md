@@ -177,6 +177,16 @@ These requirements capture the structural controls needed by the threat model. A
     - `credentials: "omit"` is asserted on every Fetcher and Transport request.
     - `verifyBundle` and `ChannelClient.open` reject a structurally identical but unbranded `VerifiedAttestation` or `VerifiedBundle`.
   - Bundles (spec §5.2; Q3 ruling): any one pre-key signature failure, including one on an already-expired entry, discards the whole bundle. Expired entries are only filtered out, and only after every signature has verified.
+  - Token time (spec §6.4; ADR 0013, D-02 Q2; Core `checkTime` unit tests plus FR-2 acceptance rows). Each case checks an exact boundary at ±1 ms, so the constant cannot drift silently:
+    - `exp` = now → `EXPIRED`; `exp` = now + 1 s passes. There is never any leeway on `exp`.
+    - `iat` = now − `token_max_age_s` passes; 1 s older → `EXPIRED`.
+    - `nbf` = now + 300 s passes; now + 300 s + 1 ms → `NOT_YET_VALID`.
+    - `iat` = now + 300 s passes; now + 300 s + 1 ms → `NOT_YET_VALID`.
+    - With `token_max_age_s` = 60: `iat` = now + 60 s passes, and now + 60 s + 1 ms → `NOT_YET_VALID`. With `iat` = now, `nbf` = now + 300 s passes.
+    - A NaN or Infinity clock, or a NaN or Infinity `token_max_age_s`, fails closed.
+    - The vector rows `nbf_future` and `iat_future` still reject without changes to the vectors.
+    - The rule is the same under development and production profiles, and the skew constant is not exported.
+    - Clock freshness (D-02 Q1, ADR 0013 S1): with an injected clock, `verifyAttestation`, `verifyBundle` and bundle reuse read `now` at verification time and never reuse a value read before the fetch or in an earlier open.
 
 **SR-2 [INC-1 onward] Centralized authorization and tenant isolation.** A single boundary policy shall authorize the authenticated principal, operation, resource owner, epoch, and pending recovery state before dispatch or backend access. Adapters shall enforce tenant-scoped resource keys as defense in depth. Host application authorization remains host-owned and shall not be implied by successful library authentication.
 - Given an authenticated client or service principal, when it requests an operation or resource outside its tenant, role, epoch, or pending recovery, then the central policy rejects it before handler invocation or secret access.
