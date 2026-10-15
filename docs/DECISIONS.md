@@ -1251,3 +1251,24 @@ Participants: Code Reviewer, Security Reviewer, Tech Lead, Architect
 - The CR Low, a double clock read in `_refresh`, goes to BACKLOG as B-37 under A2. The SR info note (do not chain SDK exceptions into `QueueError`) was added to B-33.
 
 **Dissent:** none
+
+## D-061 — T-35 verdicts; human approves the binding-check fixture (INC-2, 2026-10-15)
+
+Type: gate-routing + human approval (always_human: trust profile)
+Chair / decider: human (fixture); Orchestrator (recording verdicts)
+Participants: Code Reviewer, Security Reviewer, Tech Lead, Architect, human
+
+**Decision:** T-35 (inc-2/T-35-profile-check-discovery, tip b6a39c0) is approved to merge.
+
+**Review history:**
+- Round 1 (0bed446): Security APPROVE with two Lows; Code REQUEST_CHANGES with 1 High (test gap), 2 Medium (fail-open catch; test gap) and 2 Lows.
+- Tech Lead rulings:
+  - A2 (ada5b67): web `.prettierignore` `dist/`; the cron deviation is accepted.
+  - A3 (913634b): an `INTERNAL` catch-all with exit 1; `instanceof` checks; `CapabilityError("INVALID_RESPONSE")` maps to `*_INVALID`.
+- The Architect aligned §16.5 (05d85b8).
+- Round 2 (0bed446..b6a39c0): Code APPROVE and Security APPROVE.
+- Backlog: the `discovery_acao` token for a failed probe is deferred (B-39, Orchestrator); the CR round-2 optional test Low is B-40; the pre-existing semgrep evasion is B-38.
+
+**Human approval:** the human approved `packages/teecustody-web/test/fixtures/binding-check-production-profile.json` with sha256 `58805f3d603626093bfdc38b70885b1b61ce116a64d1bd71a1dd8934abbca983`, on the condition that it merges only if the round-2 reviews approve and the file is unchanged. Its values are inert: zero digest, signer key_id and args/env hashes, and a `.invalid` audience. It also carries Google's public issuer and jwks_uri, as pinned by D-043.
+
+**Dissent:** none
