@@ -1537,3 +1537,24 @@ No security review: the change is test-only, and its subject (SR-14 test strengt
 **Ordering itself:** stays B-26, required for INC-3, with new evidence that Core posts frames in seal-completion order.
 
 **Dissent:** none
+
+## D-074 — D-05/D-06 folded into T-40 (A4); D-07 fixed by FetchTransport default 2 MiB (new T-42) (INC-2, 2026-10-15)
+
+Type: scope + design
+Chair / decider: Orchestrator, on Tech Lead (T-40 A4/A5, D-07.md) and Architect (§6/§8.3: 15cee3c, 4010972)
+Participants: Security Reviewer (found D-05, D-06), Architect (found D-07), Tech Lead
+
+**Decision:**
+1. **D-05 and D-06 are fixed inside T-40 (A4).**
+   - D-05 (Medium, slow-read DoS): `write_timeout_s`, default 30 s. A stalled response is aborted and its in-flight slots are freed.
+   - D-06 (Low): any `Transfer-Encoding` request gets the JSON 400 with `Connection: close`.
+   - The round also fixes the T-40 round-1 Lows (no unsolicited 400; uvicorn internals; `validate_limits`).
+   - A4.8 adds the README rule that fronting proxies keep Content-Length.
+   - The Architect confirmed that no legitimate client sends chunked request bodies.
+2. **D-07 (Medium) is fixed by option (i).**
+   - The defect: a full gateway page, 1,406,937 B at the defaults, exceeded FetchTransport's conventional 1 MiB `maxResponseBytes`, so a client's cursor could stall forever.
+   - The fix: `maxResponseBytes` becomes optional in `FetchTransport`, with a default of 2,097,152 B and the same SR-4 bound, implemented by new task T-42 (STRONG). T-40 A5 covers only the README numbers and a guard test.
+   - Making a required option optional is additive and backward-compatible in an unreleased package. It is not a §8 public-API escalation.
+3. G6 needs D-05, D-06 and D-07 closed, along with D-03 and D-04.
+
+**Dissent:** none
