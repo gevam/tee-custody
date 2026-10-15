@@ -507,6 +507,49 @@ def test_invalid_namespace_is_refused_at_construction(namespace: str) -> None:
         InMemoryQueue(namespace=namespace)
 
 
+# ---------------------------------------------------------------- bodies (SR-4)
+MAX_BODY = 65_536  # INC-2-API §4.4 / §6: max_request_bytes, the gateway's request cap
+BAD_BODIES: list[object] = [
+    b"",
+    b"x" * (MAX_BODY + 1),
+    bytearray(b"x"),
+    memoryview(b"x"),
+    "x",
+    None,
+]
+BODY_CALLS: dict[str, Callable[[InMemoryQueue, object], object]] = {
+    "publish_request": lambda q, v: q.publish_request(GOOD, "01" * 16, v),  # type: ignore[arg-type]
+    "publish_response": lambda q, v: q.publish_response(GOOD, "01" * 16, v),  # type: ignore[arg-type]
+}
+
+
+@pytest.mark.parametrize(
+    "bad", BAD_BODIES, ids=["empty", "oversize", "bytearray", "memoryview", "str", "none"]
+)
+@pytest.mark.parametrize("call", list(BODY_CALLS))
+def test_a_body_that_is_not_one_to_max_request_bytes_of_bytes_is_invalid(
+    call: str, bad: object
+) -> None:
+    queue = _queue(FakeClock())
+    queue.publish_bundle(GOOD, b"live", int(START) + 600)
+
+    with pytest.raises(QueueError) as caught:
+        BODY_CALLS[call](queue, bad)
+
+    assert _code(caught) is QueueErrorCode.INVALID_ARGUMENT
+    assert queue.pull_requests(GOOD, 10, 0.0) == []
+    assert queue.pull_responses(GOOD, None, 10) == ResponsePage((), None)
+
+
+@pytest.mark.parametrize("size", [1, MAX_BODY])
+@pytest.mark.parametrize("call", list(BODY_CALLS))
+def test_bodies_at_the_size_bounds_are_accepted(call: str, size: int) -> None:
+    queue = _queue(FakeClock())
+    queue.publish_bundle(GOOD, b"live", int(START) + 600)
+
+    BODY_CALLS[call](queue, b"x" * size)
+
+
 # ---------------------------------------------------------------- constructor settings (SR-4)
 NAN, INF = float("nan"), float("inf")
 

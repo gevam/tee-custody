@@ -38,6 +38,7 @@ from teecustody.queue import (
 _NAMESPACE_PATTERN: Final = re.compile(r"[a-z][a-z0-9-]{0,31}")  # fullmatch only (R-7)
 _MAX_COUNT: Final = 1000  # max_messages / max_bundles per call, from 1
 _MAX_WAIT_S: Final = 30.0
+_MAX_BODY_BYTES: Final = 65_536  # INC-2-API §4.4/§6 max_request_bytes, the gateway request cap
 _MAX_ACK_DEADLINE_S: Final = 600.0  # constructor settings; ValueError("INVALID_LIMITS") outside
 _MAX_RETENTION_S: Final = 86_400.0
 _MAX_TOPIC_DEPTH: Final = 100_000
@@ -59,6 +60,11 @@ def _is_size(value: object, maximum: int) -> bool:
 
 def _check_id(pattern: re.Pattern[str], value: object) -> None:
     if not (isinstance(value, str) and pattern.fullmatch(value)):
+        raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
+
+
+def _check_body(value: object) -> None:
+    if not (isinstance(value, bytes) and 1 <= len(value) <= _MAX_BODY_BYTES):
         raise QueueError(QueueErrorCode.INVALID_ARGUMENT)
 
 
@@ -175,6 +181,7 @@ class InMemoryQueue:
     def publish_response(self, client_id: str, request_id: str, body: bytes) -> None:
         _check_id(CLIENT_ID_PATTERN, client_id)
         _check_id(RELAY_ID_PATTERN, request_id)
+        _check_body(body)
         with self._cond:
             now = self._clock()
             self._purge(now)
@@ -205,6 +212,7 @@ class InMemoryQueue:
     def publish_request(self, instance_id: str, request_id: str, body: bytes) -> str:
         _check_id(INSTANCE_ID_PATTERN, instance_id)
         _check_id(RELAY_ID_PATTERN, request_id)
+        _check_body(body)
         with self._cond:
             now = self._clock()
             self._purge(now)
