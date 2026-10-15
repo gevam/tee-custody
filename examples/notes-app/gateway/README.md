@@ -27,7 +27,7 @@ given to `create_app` (see "Server hardening" below).
 | Route | Request | Success | Errors |
 |---|---|---|---|
 | `GET /bundles` | no body | `200 {"bundles":[{"instance_id":"<32hex>","bundle":"<b64url>"}]}` (at most `max_bundles`) | 503, 500 |
-| `POST /requests/{instance}` | `Content-Type: application/octet-stream`, `Content-Length` required, 1..`max_request_bytes` raw envelope bytes | `202 {"request_id":"<32hex>"}` (relay id minted by the gateway) | 400, 404 `UNKNOWN_INSTANCE`, 503, 500 |
+| `POST /requests/{instance}` | `Content-Type: application/octet-stream`, `Content-Length` required, 1..`max_request_bytes` raw envelope bytes, no `Transfer-Encoding` | `202 {"request_id":"<32hex>"}` (relay id minted by the gateway) | 400, 404 `UNKNOWN_INSTANCE`, 503, 500 |
 | `GET /responses/{client}?after=<cursor>` | `after` optional | `200 {"responses":[{"request_id":"<32hex>","body":"<b64url>"}],"next":"<cursor>"\|null}` (at most `max_page`) | 400, 503, 500 |
 | any request over a limit | — | — | `429 {"code":"RATE_LIMITED"}` with `Retry-After: <int s>` |
 | request body not received within `body_read_timeout_s` | — | — | `408 {"code":"REQUEST_TIMEOUT"}` with `Connection: close` |
@@ -55,7 +55,7 @@ Every error body is exactly `{"code":"<CODE>"}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `INVALID_ARGUMENT` | bad route id, cursor, headers or body; a header block over `max_header_bytes` or `max_header_count`; a request the HTTP parser rejects (malformed or oversized header block, missing `Host`, non-HTTP bytes); queue `INVALID_ARGUMENT` |
+| 400 | `INVALID_ARGUMENT` | bad route id, cursor, headers or body; any `Transfer-Encoding` (with `Connection: close`); a header block over `max_header_bytes` or `max_header_count`; a request the HTTP parser rejects (malformed or oversized header block, missing `Host`, non-HTTP bytes); queue `INVALID_ARGUMENT` |
 | 404 | `UNKNOWN_INSTANCE` | queue `NOT_FOUND` (no live bundle for the instance) |
 | 404 | `NOT_FOUND` | unknown path |
 | 404 | `NOT_FOUND` | control character in the decoded path |
@@ -86,9 +86,13 @@ carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 | `max_connections` | 512 | open connections per process in any state, at least `max_concurrency`; an excess connection is closed at once without a response |
 | `max_header_bytes` | 8192 | 1024..12288; `raw_path` + query string + every header name and value, in bytes; excess gets `400` |
 | `max_header_count` | 64 | 16..256; headers per request; excess gets `400` |
+| `write_timeout_s` | 30.0 | 1.0..60.0 s for a client to drain response bytes the kernel could not take at once; the connection is then aborted |
 
 Every request passes these checks in order, before routing and before any queue call:
 
+0. Transfer-Encoding rule: any request carrying `Transfer-Encoding`, with or without `Content-Length`, gets
+   `400 INVALID_ARGUMENT` with `Connection: close`, takes no slot and no token, and the connection is closed
+   after the response;
 1. per-source in-flight cap;
 2. global concurrency;
 3. global bucket;
@@ -112,13 +116,16 @@ uvicorn's defaults a loopback peer could spoof `X-Forwarded-For` and choose its 
 proxy, every client shares the proxy's peer address, so the per-source limit collapses to the global limit. The
 connection cap is global, not per source: one source can hold up to `max_connections` connections for
 `header_read_timeout_s` each. That is accepted for this reference gateway; a production deployment puts
-per-client connection limits in its fronting proxy.
+per-client connection limits in its fronting proxy. A fronting proxy must forward the client's `Content-Length`
+framing and must not re-encode request bodies as chunked: the gateway refuses every request that carries
+`Transfer-Encoding` (check step 0).
 
 `create_app` and `uvicorn_config` raise `ValueError("INVALID_LIMITS")` unless every integer field is a
 positive `int`, every rate is a finite positive `int` or `float` (`bool` is refused), `per_source_max_in_flight`
 is at most `max_concurrency`, `body_read_timeout_s` and `header_read_timeout_s` are finite numbers in 1.0..60.0,
 `max_connections` is an `int` of at least `max_concurrency`, `max_header_bytes` is an `int` in 1024..12288 and
-`max_header_count` is an `int` in 16..256. They then check `cors_origins`.
+`max_header_count` is an `int` in 16..256, and `write_timeout_s` is a finite number in 1.0..60.0. They then check
+`cors_origins`.
 
 ## Server hardening
 
@@ -136,7 +143,13 @@ the following, because uvicorn handles these paths before the app runs:
 - **Parse failures.** A request the HTTP parser rejects gets exactly `400 {"code":"INVALID_ARGUMENT"}` with
   `Content-Type: application/json`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
   `Connection: close` (no CORS headers), and the connection is closed. If a response is already in progress on
-  the connection, nothing is written; the connection is only closed.
+  the connection, or the response is complete while the request body is still arriving, nothing is written; the
+  connection is only closed. Every request gets at most one response.
+- **Write deadline.** The write high-water mark is 0, so response bytes the kernel cannot take at once pause the
+  writer. The client must then drain them within `write_timeout_s`, or the connection is aborted and the
+  buffered bytes are discarded; the request ends as a client disconnect and its in-flight slots are released.
+  Each pause starts a new deadline and a full drain cancels it. A client that pipelines requests and never reads
+  therefore holds a slot for at most `write_timeout_s`.
 
 The hooks rely on uvicorn 0.54.0 internals; any uvicorn version change re-runs their tests.
 
@@ -159,7 +172,7 @@ The hooks rely on uvicorn 0.54.0 internals; any uvicorn version change re-runs t
 
 One `info` line per request on the `teecustody.gateway` logger, with outcome `GATEWAY_<CODE>` (`GATEWAY_OK`,
 `GATEWAY_INVALID_ARGUMENT`, `GATEWAY_REQUEST_TIMEOUT`, `GATEWAY_RATE_LIMITED`, …) and no fields. The server
-hooks log `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, and `GATEWAY_INVALID_ARGUMENT` for a parse
-failure, also without fields. Paths, ids, origins, peer addresses, request bytes and bodies are not logged.
+hooks log `GATEWAY_HEADER_TIMEOUT`, `GATEWAY_CONNECTION_LIMIT`, `GATEWAY_WRITE_TIMEOUT`, and
+`GATEWAY_INVALID_ARGUMENT` for a parse failure, also without fields. Paths, ids, origins, peer addresses, request bytes and bodies are not logged.
 uvicorn access logging must be disabled (`access_log=False`); uvicorn's own constant warning for a parse failure
 remains and carries neither the input nor the peer.

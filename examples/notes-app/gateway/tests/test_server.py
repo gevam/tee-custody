@@ -1121,3 +1121,15 @@ def test_a_slow_but_steady_reader_receives_the_whole_response(
     assert len(body) == int(headers[b"content-length"])
     assert len(json.loads(body)["bundles"]) == 16
     assert "GATEWAY_WRITE_TIMEOUT" not in records.outcomes()
+
+
+def test_readme_documents_request_framing_the_write_deadline_and_check_step_0() -> None:
+    readme = _readme()
+    assert (
+        "A fronting proxy must forward the client's `Content-Length` framing and must not "
+        "re-encode request bodies as chunked: the gateway refuses every request that carries "
+        "`Transfer-Encoding` (check step 0)." in readme
+    )
+    assert "| `write_timeout_s` | 30.0 |" in readme
+    assert "0. Transfer-Encoding rule" in readme
+    assert "GATEWAY_WRITE_TIMEOUT" in readme
