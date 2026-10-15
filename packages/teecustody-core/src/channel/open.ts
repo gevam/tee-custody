@@ -1,3 +1,240 @@
-// Open flow: INC-2-API §7.4 `open` steps (1)–(7). Stub → T-26, which designs the helpers this module
-// shares with session.ts and client.ts (API-TL §3); none of them is ever exported from index.ts.
-export {};
+// Open flow: INC-2-API §7.4 `open` steps (1)–(7); spec §5.2–§5.4. Internal to the channel module (API-TL §3);
+// nothing here is exported from index.ts.
+import { selectPreKey } from "../bundle/select.js";
+import { isVerifiedAttestation } from "../attestation/types.js";
+import { isVerifiedBundle, type VerifiedBundle } from "../bundle/types.js";
+import {
+    CapabilityError,
+    type Bytes,
+    type ClientId,
+    type Crypto,
+    type InstanceId,
+} from "../capabilities.js";
+import { hexEncode, utf8Encode } from "../encoding.js";
+import { ChannelError } from "./errors.js";
+import { createSession, readOpenResult, viaCrypto, type SessionLink } from "./session.js";
+import type { ChannelLimits, Clock, OpenOutcome, OpenPayload } from "./types.js";
+import type { CanonicalValue } from "../wire/types.js";
+import {
+    HEX32_PATTERN,
+    encodeOpenAad,
+    encodeOpenPlaintext,
+    encodeOpenRequest,
+    hpkeInfo,
+} from "./wire.js";
+
+export interface OpenDeps {
+    readonly crypto: Crypto;
+    readonly clock: Clock;
+    readonly limits: ChannelLimits;
+    readonly link: SessionLink;
+    fetchBundles(): Promise<readonly VerifiedBundle[]>;
+    usedPrekeys(instanceId: InstanceId): Set<number>;
+}
+
+const ID_BYTES = 16;
+const UINT32_RANGE = 2 ** 32;
+const KEY_BYTES = 32;
+const C2T = utf8Encode("c2t");
+const T2C = utf8Encode("t2c");
+
+interface Sealed {
+    readonly envelope: Bytes;
+    readonly exportC2t: Bytes;
+    readonly exportT2c: Bytes;
+}
+
+// The open plaintext. The payload is validated before anything is fetched or sealed.
+function openPlaintext(payload: OpenPayload): Bytes {
+    try {
+        if (payload.op === "open_session" && !HEX32_PATTERN.test(payload.clientId)) {
+            throw new RangeError("CLIENT_ID_RANGE");
+        }
+        return encodeOpenPlaintext(payload);
+    } catch {
+        throw new ChannelError("INVALID_ARGUMENT");
+    }
+}
+
+// Spec §5.3 step 10: the share and the plaintext holding it are zeroed; `open` consumes payload.cs.
+function wipe(payload: OpenPayload, pt: Bytes): void {
+    pt.fill(0);
+    if (payload.op === "open_session") {
+        payload.cs.fill(0);
+    }
+}
+
+// R-4: an enrolled session's client id is the `client_id` of the open-result payload map, never the route.
+function enrolledClientId(payload: CanonicalValue): ClientId {
+    const clientId: unknown = payload instanceof Map ? payload.get("client_id") : undefined;
+    if (typeof clientId !== "string" || !HEX32_PATTERN.test(clientId)) {
+        throw new ChannelError("INVALID_RESPONSE");
+    }
+    return clientId;
+}
+
+// B-13: both runtime brands are checked by the consumer itself; a structural copy is refused.
+function checkBrand(bundle: VerifiedBundle): VerifiedBundle {
+    if (!isVerifiedBundle(bundle) || !isVerifiedAttestation(bundle.attestation)) {
+        throw new ChannelError("UNVERIFIED_BUNDLE");
+    }
+    return bundle;
+}
+
+// Step (1): a given bundle is used while fresh; a stale one, or none, means a fetch.
+async function resolveBundle(
+    deps: OpenDeps,
+    given: VerifiedBundle | undefined,
+): Promise<VerifiedBundle> {
+    if (given !== undefined) {
+        checkBrand(given);
+        const now = deps.clock.now();
+        if (
+            now - given.verifiedAtMs <= deps.limits.bundleMaxAgeMs &&
+            given.attestation.expiresAtMs > now
+        ) {
+            return given;
+        }
+    }
+    const bundles = await deps.fetchBundles();
+    const index = await viaCrypto(() => uniformIndex(bundles.length, deps.crypto));
+    return checkBrand(bundles[index] as VerifiedBundle);
+}
+
+// Uniform in [0, n) from a uint32 draw; draws in the biased tail [limit, 2^32) are discarded.
+function uniformIndex(n: number, crypto: Pick<Crypto, "randomBytes">): number {
+    const limit = UINT32_RANGE - (UINT32_RANGE % n);
+    for (;;) {
+        const draw = crypto.randomBytes(4);
+        const r = new DataView(draw.buffer, draw.byteOffset, draw.byteLength).getUint32(0);
+        if (r < limit) {
+            return r % n;
+        }
+    }
+}
+
+function random16(crypto: Pick<Crypto, "randomBytes">): Bytes {
+    const bytes = crypto.randomBytes(ID_BYTES);
+    if (bytes.length !== ID_BYTES) {
+        throw new CapabilityError("INVALID_RESPONSE");
+    }
+    return bytes;
+}
+
+async function seal(
+    crypto: Crypto,
+    pub: Bytes,
+    info: Bytes,
+    aadBytes: Bytes,
+    pt: Bytes,
+): Promise<Sealed> {
+    const ctx = await crypto.setupHpkeSender(pub, info);
+    const exported: Bytes[] = [];
+    try {
+        const ct = await ctx.seal(aadBytes, pt);
+        for (const label of [C2T, T2C]) {
+            const derived = await ctx.export(label, KEY_BYTES);
+            exported.push(derived);
+            if (derived.length !== KEY_BYTES) {
+                throw new CapabilityError("INVALID_RESPONSE");
+            }
+        }
+        const [exportC2t, exportT2c] = exported as [Bytes, Bytes];
+        return {
+            envelope: encodeOpenRequest(aadBytes, ctx.encapsulatedKey, ct),
+            exportC2t,
+            exportT2c,
+        };
+    } catch (error) {
+        // Keys already exported are zeroed when a later step fails.
+        for (const out of exported) {
+            out.fill(0);
+        }
+        throw error;
+    } finally {
+        ctx.destroy();
+    }
+}
+
+async function establish(
+    deps: OpenDeps,
+    payload: OpenPayload,
+    pt: Bytes,
+    given: VerifiedBundle | undefined,
+): Promise<OpenOutcome> {
+    const { crypto, clock, limits, link } = deps;
+    const bundle = await resolveBundle(deps, given);
+    const instanceId = bundle.instanceId;
+    const used = deps.usedPrekeys(instanceId);
+    // Selected and marked used in one synchronous step: a concurrent open cannot pick the same pre-key.
+    const prekey = await viaCrypto(() => {
+        const chosen = selectPreKey(bundle, used, clock.now(), crypto);
+        if (chosen !== undefined) {
+            used.add(chosen.id);
+        }
+        return chosen;
+    });
+    if (prekey === undefined) {
+        throw new ChannelError("NO_USABLE_PREKEY");
+    }
+    const pub = prekey.publicKey;
+    const ikPub = bundle.identityPublicKey;
+    const requestId = await viaCrypto(() => random16(crypto));
+    // R-4: for enroll, a fresh CSPRNG reply route for this call only, never stored or reused.
+    const route =
+        payload.op === "enroll"
+            ? hexEncode(await viaCrypto(() => random16(crypto)))
+            : payload.clientId;
+    const aadBytes = encodeOpenAad({
+        clientId: route,
+        instanceId,
+        prekeyId: prekey.id,
+        requestId,
+        timestamp: Math.floor(clock.now() / 1000),
+    });
+    const { envelope, exportC2t, exportT2c } = await viaCrypto(async () =>
+        seal(crypto, pub, await hpkeInfo(crypto, ikPub, prekey.id), aadBytes, pt),
+    );
+    wipe(payload, pt);
+    try {
+        const match = await link.exchange(instanceId, envelope, route, {}, (body) =>
+            readOpenResult(crypto, exportT2c, requestId, body, limits),
+        );
+        if (!match.ok) {
+            throw new ChannelError("REMOTE_ERROR", match.error);
+        }
+        const session = createSession({
+            sessionId: match.sessionId,
+            instanceId,
+            clientId: payload.op === "enroll" ? enrolledClientId(match.payload) : route,
+            keyC2t: exportC2t,
+            keyT2c: exportT2c,
+            crypto,
+            limits,
+            link,
+        });
+        return { session, payload: match.payload };
+    } catch (error) {
+        // Keys are zeroed on every failure (TRANSPORT, TIMEOUT, REMOTE_ERROR, INVALID_RESPONSE).
+        exportC2t.fill(0);
+        exportT2c.fill(0);
+        throw error;
+    } finally {
+        if (payload.op === "enroll") {
+            link.forget(route);
+        }
+    }
+}
+
+export async function openChannel(
+    deps: OpenDeps,
+    payload: OpenPayload,
+    given: VerifiedBundle | undefined,
+): Promise<OpenOutcome> {
+    const pt = openPlaintext(payload);
+    try {
+        return await establish(deps, payload, pt, given);
+    } finally {
+        wipe(payload, pt);
+    }
+}

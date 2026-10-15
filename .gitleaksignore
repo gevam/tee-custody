@@ -1,2 +1,4 @@
 # T-19 test sentinel base64("secret-body-bytes"), not a secret; Tech Lead A2 2026-10-15
 be3e5bec3a07a714095ec2a105b8410360115d9d:packages/teecustody-web/test/transport/fetch-transport.test.ts:generic-api-key:639
+# T-26 HPKE export variable names in channel/open.ts, not a secret; Tech Lead A3 2026-10-15
+275e8284636db23b79c2b05055d4f23374ad613f:packages/teecustody-core/src/channel/open.ts:generic-api-key:110
