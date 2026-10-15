@@ -9,6 +9,7 @@ import {
     DhkemX25519HkdfSha256,
     EncapError,
     InvalidParamError,
+    NotSupportedError,
     SerializeError,
     ValidationError,
 } from "@hpke/core";
@@ -83,11 +84,14 @@ function algorithmName(algorithm: unknown): string {
     return typeof algorithm === "string" ? algorithm : (algorithm as Algorithm).name;
 }
 
+/** true: the call rejects; "sync": the call throws synchronously; false: the real call runs. */
+type FaultPlan = (call: number) => boolean | "sync";
+
 interface Harness {
     /** Ordered global subtle calls: `generateKey <alg> <probe|sender> <ok|fail>`, `exportKey`, `deriveBits <alg> <key alg>`. */
     readonly log: string[];
     /** Replaces the fault plan; `fails(n)` is asked for the n-th X25519 generateKey (n = 1 is the first). */
-    setFault(fails: (call: number) => boolean): void;
+    setFault(fails: FaultPlan): void;
     probeCalls(): number;
     senderCalls(): number;
 }
@@ -96,7 +100,7 @@ interface Harness {
  * Spies generateKey, exportKey and deriveBits on globalThis.crypto.subtle. The probe is the
  * non-extractable X25519 generateKey; @hpke/core's ephemeral key is generated extractable.
  */
-function harness(fails: (call: number) => boolean = () => false): Harness {
+function harness(fails: FaultPlan = () => false): Harness {
     const subtle = globalThis.crypto.subtle;
     const realGenerate = subtle.generateKey.bind(subtle) as (...a: unknown[]) => Promise<unknown>;
     const realExport = subtle.exportKey.bind(subtle) as (...a: unknown[]) => Promise<unknown>;
@@ -109,9 +113,14 @@ function harness(fails: (call: number) => boolean = () => false): Harness {
         const role = args[1] === false ? "probe" : "sender";
         if (name === "X25519") {
             x25519Calls += 1;
-            if (plan(x25519Calls)) {
+            const fault = plan(x25519Calls);
+            if (fault !== false) {
                 log.push(`generateKey ${name} ${role} fail`);
-                return Promise.reject(new DOMException(`${SENTINEL} transient`, FAULT_NAME));
+                const error = new DOMException(`${SENTINEL} transient`, FAULT_NAME);
+                if (fault === "sync") {
+                    throw error;
+                }
+                return Promise.reject(error);
             }
         }
         log.push(`generateKey ${name} ${role} ok`);
@@ -420,6 +429,101 @@ describe("concurrency (criterion 9, C8.4 d)", () => {
         );
         await crypto.setupHpkeSender(pk, INFO);
         expect(h.probeCalls()).toBe(4);
+    });
+});
+
+/** Lets every queued microtask run (Node runs all of them before an immediate). */
+function drainMicrotasks(): Promise<void> {
+    return new Promise((resolve) => {
+        setImmediate(resolve);
+    });
+}
+
+describe("stale failed-probe reset (criterion 9, R1 guard, C8.4 d)", () => {
+    // Caller A's probe fails on its last attempt; `offset` microtasks later caller B starts, with
+    // caller C queued just before it. Some offset puts B on the settled failed probe after A's waiter,
+    // and C between A's reset and B's waiter: C's new probe is then current when B's waiter runs, and B
+    // must not discard it. Every offset ends with exactly 4 probes (3 failed, 1 ok) and one CipherSuite.
+    it.each(Array.from({ length: 12 }, (_, offset) => offset))(
+        "never discards a newer in-flight probe (B starts %i microtasks after the last failure)",
+        async (offset) => {
+            const { pk } = x25519();
+            const crypto = createWebCrypto();
+            const late: Promise<unknown>[] = [];
+            // C is queued before B is called, so C runs after B's synchronous part and before B's waiter.
+            const startLateCallers = (): void => {
+                queueMicrotask(() => {
+                    late.push(rejection(crypto.setupHpkeSender(pk, INFO)));
+                });
+                late.push(rejection(crypto.setupHpkeSender(pk, INFO)));
+            };
+            const hop = (left: number): void => {
+                queueMicrotask(
+                    left === 0
+                        ? startLateCallers
+                        : () => {
+                              hop(left - 1);
+                          },
+                );
+            };
+            const h = harness((call) => {
+                if (call === 3) {
+                    hop(offset);
+                }
+                return call <= 3;
+            });
+            expect(codeOf(await rejection(crypto.setupHpkeSender(pk, INFO)))).toBe("UNSUPPORTED");
+            await drainMicrotasks();
+            expect(late).toHaveLength(2);
+            await Promise.all(late);
+            await crypto.setupHpkeSender(pk, INFO);
+            expect(h.probeCalls()).toBe(4);
+            expect(
+                hpkeConstructed.mock.calls.filter(([name]) => name === "CipherSuite"),
+            ).toHaveLength(1);
+        },
+    );
+});
+
+describe("deserialize once, outside the retry (R2.1, C8.1)", () => {
+    it("deserializes the recipient key once per setupHpkeSender, however many attempts run", async () => {
+        const { pk } = x25519();
+        const deserialize = vi.spyOn(DhkemX25519HkdfSha256.prototype, "deserializePublicKey");
+        const h = harness((call) => call === 2);
+        const crypto = createWebCrypto();
+        await crypto.setupHpkeSender(pk, INFO);
+        expect(h.senderCalls()).toBe(2);
+        expect(deserialize).toHaveBeenCalledTimes(1);
+        h.setFault(() => true);
+        expect(codeOf(await rejection(crypto.setupHpkeSender(pk, INFO)))).toBe("UNSUPPORTED");
+        expect(h.senderCalls()).toBe(5);
+        expect(deserialize).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe("a synchronous throw from an attempt is a rejection (B-45 §5)", () => {
+    it("retries a probe whose generateKey throws synchronously", async () => {
+        const { pk } = x25519();
+        const h = harness((call) => (call === 1 ? "sync" : false));
+        const crypto = createWebCrypto();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+        expect(h.probeCalls()).toBe(2);
+        expect(h.senderCalls()).toBe(1);
+    });
+
+    it("retries a createSenderContext that throws NotSupportedError synchronously", async () => {
+        const { pk } = x25519();
+        harness();
+        const createSender = vi
+            .spyOn(CipherSuite.prototype, "createSenderContext")
+            .mockImplementationOnce(() => {
+                throw new NotSupportedError(`${SENTINEL} sync`);
+            });
+        const crypto = createWebCrypto();
+        const sender = await crypto.setupHpkeSender(pk, INFO);
+        expect(sender.encapsulatedKey).toHaveLength(32);
+        expect(createSender).toHaveBeenCalledTimes(2);
     });
 });
 
