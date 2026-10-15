@@ -28,6 +28,8 @@ from teecustody.channel.ports import (
     RemoteErrorCode,
     SessionInfo,
 )
+from teecustody.channel.session import Session
+from teecustody.secrets import Secret
 
 
 def _opened() -> tuple[World, SentOpen, bytes]:
@@ -230,3 +232,44 @@ def test_unencodable_handler_result_is_answered_internal(body: Any) -> None:
     view = read_frame_result(result.response.body, sent.t2c)
     assert view.body == {"re": 0, "ok": False, "error": "INTERNAL"}
     assert view.seq == 1
+
+
+class PlaintextSpy:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.plaintexts: list[Secret] = []
+        real = Session.open_c2t
+
+        def spy(session: Session, *args: Any) -> Secret:
+            plaintext = real(session, *args)
+            self.plaintexts.append(plaintext)
+            return plaintext
+
+        monkeypatch.setattr(Session, "open_c2t", spy)
+
+
+def test_every_decrypted_frame_plaintext_is_wiped(monkeypatch: pytest.MonkeyPatch) -> None:
+    world, sent, session_id = _opened()
+    spy = PlaintextSpy(monkeypatch)
+
+    def explode(_s: SessionInfo, _op: str, _p: Any) -> Any:
+        raise RuntimeError("down")
+
+    _echo(world, sent, session_id, 0)
+    world.process(seal_frame(sent.c2t, session_id, 1, "test.echo", b"\xff"))
+    world.handler.script = explode
+    _echo(world, sent, session_id, 2)
+    world.process(seal_frame(sent.c2t, session_id, 3, "close", cbor(None)))
+
+    assert len(spy.plaintexts) == 4
+    assert all(plaintext.wiped for plaintext in spy.plaintexts)
+
+
+def test_frame_activity_uses_the_unrounded_clock() -> None:
+    world, sent, session_id = _opened()
+    world.clock.now += 10.5
+
+    _echo(world, sent, session_id, 0)
+
+    session = world.sessions.get(session_id)
+    assert session is not None
+    assert session.last_activity == world.clock.now
