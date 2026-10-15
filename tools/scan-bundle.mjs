@@ -50,6 +50,34 @@ function parseCommandLine(argv, cwd) {
     return { entries: values.entry, alias };
 }
 
+// ADR 0011 C7a.1, D-045, D-051 (a)
+export const HPKE_CRYPTO_EXTERNALS = {
+    output: { path: "crypto", kind: "dynamic-import", count: 1 },
+    inputs: {
+        "node_modules/@hpke/common/esm/src/algorithm.js": 1,
+        "node_modules/@hpke/common/esm/src/utils/misc.js": 2,
+    },
+};
+
+const isAllowedCrypto = (imported) =>
+    imported.path === HPKE_CRYPTO_EXTERNALS.output.path &&
+    imported.kind === HPKE_CRYPTO_EXTERNALS.output.kind;
+
+export function checkMetafile(metafile, entry) {
+    const lines = [];
+    const webScan = Object.keys(metafile.inputs).some((input) =>
+        input.includes("node_modules/@hpke/common/"),
+    );
+    for (const output of Object.values(metafile.outputs)) {
+        for (const imported of output.imports) {
+            if (imported.external && !(webScan && isAllowedCrypto(imported))) {
+                lines.push(`external-import\t${entry}\t${imported.path}`);
+            }
+        }
+    }
+    return { code: lines.length > 0 ? 2 : 0, lines };
+}
+
 export function buildOptions(entryPath, alias) {
     return {
         entryPoints: [entryPath],
@@ -80,7 +108,11 @@ async function scanEntry(entry, alias, io) {
             code = 1;
         }
     }
-    return code;
+    const checked = checkMetafile(result.metafile, entry);
+    for (const line of checked.lines) {
+        io.stdout(`${line}\n`);
+    }
+    return Math.max(code, checked.code);
 }
 
 export async function main(argv, io) {

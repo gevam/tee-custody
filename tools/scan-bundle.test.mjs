@@ -193,3 +193,31 @@ describe("criterion 6: the real packages", () => {
         assert.deepEqual(externals, [{ path: "crypto", kind: "dynamic-import", external: true }]);
     });
 });
+
+describe("criterion 7 (C7a.2): a try-guarded Node import", () => {
+    it("exits 2 through the C7a.1 external check", async () => {
+        const entry = join(FIXTURES, "guarded-import.js");
+        assert.deepEqual(await run(["--entry", entry]), {
+            code: 2,
+            stdout: `external-import\t${entry}\tfs\n`,
+            stderr: "",
+        });
+    });
+
+    it("builds with exactly the §9.2 options and no logOverride", () => {
+        const options = buildOptions("/x/src/index.ts", { a: "/x/a.ts" });
+        assert.deepEqual(options, {
+            entryPoints: ["/x/src/index.ts"],
+            bundle: true,
+            format: "esm",
+            platform: "browser",
+            minify: false,
+            legalComments: "none",
+            write: false,
+            metafile: true,
+            logLevel: "silent",
+            alias: { a: "/x/a.ts" },
+        });
+        assert.ok(!("logOverride" in options));
+    });
+});
