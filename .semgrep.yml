@@ -436,6 +436,34 @@ rules:
           - pattern: $S.kem
           - pattern-not-inside: $S.kem.$M(...)
 
+  # A7/A8 (SR Low 6): hpke.py is the one pyhpke importer; it reaches pyhpke only through plain, called,
+  # public names, so no seam can be fetched indirectly.
+  - id: tc-py-hpke-module-confined
+    message: >-
+      channel/hpke.py reaches pyhpke only through called public names: no getattr, attrgetter or
+      methodcaller, no _-prefixed attribute, no uncalled context factory (ADR 0011 C5, SR-14).
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["/packages/teecustody-py/src/teecustody/channel/hpke.py"]
+    pattern-either:
+      - pattern: getattr(...)
+      - pattern: operator.attrgetter(...)
+      - pattern: operator.methodcaller(...)
+      - patterns:
+          - pattern: $S.$A
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^_
+          # A8: exactly the exception constructor chain; the attribute node only, not its arguments.
+          - pattern-not: super().__init__
+      - patterns:
+          - pattern-either:
+              - pattern: $S.create_recipient_context
+              - pattern: $S.create_sender_context
+          - pattern-not-inside: $S.create_recipient_context(...)
+          - pattern-not-inside: $S.create_sender_context(...)
+
   - id: tc-ts-no-hpke-seams
     message: >-
       No HPKE test seam in Core or Web: no injected sender ephemeral key (ekm), PSK, PSK id or

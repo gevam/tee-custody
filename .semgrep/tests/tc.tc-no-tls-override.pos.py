@@ -5,7 +5,7 @@ import httpx
 
 # ruleid: tc-no-tls-override
 httpx.get("https://example.test", verify=False)
-# ruleid: tc-no-tls-override
+# ruleid: tc-no-tls-override, tc-py-hpke-module-confined
 context = ssl._create_unverified_context()
 # ruleid: tc-no-tls-override
 context.verify_mode = ssl.CERT_NONE

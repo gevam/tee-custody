@@ -16,7 +16,7 @@ __import__("cbor2")
 im("socketserver")
 # ruleid: tc-py-no-dynamic-import
 il.import_module("wsgiref.simple_server")
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 importlib.__import__("cbor2")
 # ruleid: tc-py-no-dynamic-import
 importlib.util.spec_from_file_location("x", "/srv/x.py")
@@ -26,11 +26,11 @@ spec_from_file_location("x", "/srv/x.py")
 runpy.run_module("http.server")
 # ruleid: tc-py-no-dynamic-import
 run_path("/srv/x.py")
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 builtins.__import__("cbor2")
 # ruleid: tc-py-no-dynamic-import
 loader = __import__
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 getattr(il, "import_module")("socketserver")
 # ruleid: tc-py-no-dynamic-import
 exec("import socketserver")
@@ -45,9 +45,9 @@ import zipimport
 vars(builtins)["__import__"]("cbor2")
 # ruleid: tc-py-no-dynamic-import
 __builtins__["__import__"]("cbor2")
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 __builtins__.__import__("cbor2")
-# ruleid: tc-py-no-dynamic-import
+# ruleid: tc-py-no-dynamic-import, tc-py-hpke-module-confined
 builtins.__dict__["__import__"]("cbor2")
 # ruleid: tc-py-no-dynamic-import
 pkgutil.resolve_name("http.server:HTTPServer")

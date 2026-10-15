@@ -42,7 +42,7 @@ k = SUITE.kem
 shared = _SUITE.kem.decap(enc, skr, pks)
 # ruleid: tc-py-no-hpke-seams
 k = _SUITE.kem
-# ruleid: tc-py-no-hpke-seams
+# ruleid: tc-py-no-hpke-seams, tc-py-hpke-module-confined
 decap = getattr(_SUITE.kem, "decap")
 # ruleid: tc-py-no-hpke-seams
 y = _SUITE.kem.deserialize_private_key
