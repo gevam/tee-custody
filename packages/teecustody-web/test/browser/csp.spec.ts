@@ -256,6 +256,7 @@ test("C4 Chromium with a PRF-less authenticator: vault UNSUPPORTED and the share
     const result = await runHarness(page);
     expect(result.steps.vault).toBe(NO_PRF_VAULT);
     expect(await sharesCount(page)).toBe(0);
+    expect(result.violations).toBe(0);
 });
 
 // INC-2-API §9.3 rev 3 with the 2026-10-12 addendum (img-src 'self') and §16.7 (connect-src).
