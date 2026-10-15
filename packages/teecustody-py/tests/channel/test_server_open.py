@@ -14,6 +14,7 @@ from support_server import (
     CLIENT_ID,
     INSTANCE_ID,
     MINTED_ID,
+    OTHER_CLIENT_ID,
     OTHER_INSTANCE_ID,
     World,
     cbor,
@@ -25,6 +26,13 @@ from support_server import (
 from support_server import make_world as _make_world
 
 from teecustody.channel import server as server_module
+from teecustody.channel.ports import (
+    CloseReason,
+    OpenAccepted,
+    OpenRequest,
+    OpenResult,
+    SessionInfo,
+)
 from teecustody.channel.server import ProcessResult
 from teecustody.config import ChannelParams
 from teecustody.secrets import Secret
@@ -351,3 +359,48 @@ def test_enroll_on_a_live_clients_route_mints_a_principal_and_leaves_the_victim_
     assert [fields["client_id"] for fields in opened] == [CLIENT_ID, MINTED_ID]
     assert not world.audit.counts
     assert world.audit.other_calls == []
+
+
+# ---------------------------------------------------------------- criterion 6 (R-4)
+def _accept_as(principal: Any) -> Callable[[OpenRequest], OpenResult]:
+    return lambda _request: OpenAccepted(client_id=principal, payload=None)
+
+
+@pytest.mark.parametrize(
+    ("enroll", "principal"),
+    [
+        (False, OTHER_CLIENT_ID),
+        (True, "not-a-client-id"),
+        (True, CLIENT_ID.upper()),
+        (True, CLIENT_ID + "\n"),
+        (True, 7),
+    ],
+    ids=["claim-mismatch", "enroll-pattern", "enroll-upper", "enroll-newline", "enroll-not-str"],
+)
+def test_refused_principal_creates_no_session_and_aborts_the_open(
+    enroll: bool, principal: Any
+) -> None:
+    world = _make_world()
+    world.opener.script = _accept_as(principal)
+    sent = world.enroll() if enroll else world.open_session()
+
+    result = world.process(sent.body)
+
+    request = world.opener.requests[0]
+    assert world.sessions.get(request.session_id) is None
+    assert world.opener.closed_calls == [
+        (
+            SessionInfo(
+                client_id=principal, session_id=request.session_id, instance_id=INSTANCE_ID
+            ),
+            CloseReason.OPEN_ABORTED,
+        )
+    ]
+    assert str(result.outcome) == "OPEN_REJECTED"
+    assert dict(world.audit.counts) == {"OPEN_REJECTED": 1}
+    assert result.response is not None
+    assert result.response.client_id == CLIENT_ID
+    view = read_open_result(result.response.body, sent.t2c)
+    assert view.session_id is None
+    assert view.body == {"ok": False, "error": "INTERNAL"}
+    assert world.logger.calls == []

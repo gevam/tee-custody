@@ -10,6 +10,7 @@ from typing import cast
 
 from teecustody.audit.emitter import AggregateOutcome, AuditEmitter
 from teecustody.channel.codec import (
+    CLIENT_ID_PATTERN,
     EnvelopeError,
     OpenAad,
     OpenRequestEnvelope,
@@ -23,11 +24,13 @@ from teecustody.channel.codec import (
 )
 from teecustody.channel.hpke import HpkeError, OpenedHpke, open_base
 from teecustody.channel.ports import (
+    CloseReason,
     FrameHandler,
     OpenAccepted,
     OpenRejected,
     OpenRequest,
     RemoteErrorCode,
+    SessionInfo,
     SessionOpener,
 )
 from teecustody.channel.prekeys import PreKeyStore
@@ -55,6 +58,13 @@ class OutboundResponse:
 class ProcessResult:
     outcome: str
     response: OutboundResponse | None
+
+
+def _principal_ok(principal: object, claimed: str | None) -> bool:
+    """R-4: open_session must return the claim; enroll must mint a well-formed client id."""
+    if claimed is not None:
+        return principal == claimed
+    return isinstance(principal, str) and CLIENT_ID_PATTERN.fullmatch(principal) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,11 +185,24 @@ class ChannelServer:
             )
         )
         result = cast(OpenAccepted, result)
+        principal = result.client_id
+        info = SessionInfo(
+            client_id=principal, session_id=session_id, instance_id=self._instance_id
+        )
+        if not _principal_ok(principal, claimed):
+            return self._abort(info, AggregateOutcome.OPEN_REJECTED, RemoteErrorCode.INTERNAL)
         plaintext = encode_open_result_plaintext(result)
         session = self._sessions.create(
             session_id=session_id, client_id=result.client_id, sk_c2t=opened.sk_c2t, t2c=sealer
         )
         return _OpenDecision(ChannelOutcome.SESSION_OPENED, plaintext, session)
+
+    def _abort(
+        self, info: SessionInfo, outcome: AggregateOutcome, error: RemoteErrorCode
+    ) -> _OpenDecision:
+        """The opener accepted but the channel refuses: no session exists (TL-2, §4.8)."""
+        self._opener.closed(info, CloseReason.OPEN_ABORTED)
+        return self._refuse(outcome, error)
 
     def _refuse(self, outcome: AggregateOutcome, error: RemoteErrorCode) -> _OpenDecision:
         self._audit.count(outcome)
