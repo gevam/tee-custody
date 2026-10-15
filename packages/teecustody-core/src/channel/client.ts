@@ -1,7 +1,14 @@
 // ChannelClient (INC-2-API §7.4; spec §5.2–§5.6) and the response router its opens and sessions share.
 import type { VerifiedBundle } from "../bundle/types.js";
 import { verifyBundle } from "../bundle/verify.js";
-import type { Bytes, ClientId, InstanceId, ResponseCursor, Transport } from "../capabilities.js";
+import {
+    CapabilityError,
+    type Bytes,
+    type ClientId,
+    type InstanceId,
+    type ResponseCursor,
+    type Transport,
+} from "../capabilities.js";
 import { ChannelError } from "./errors.js";
 import { openChannel } from "./open.js";
 import type { SessionLink } from "./session.js";
@@ -13,6 +20,11 @@ import {
     type OpenOutcome,
     type OpenPayload,
 } from "./types.js";
+
+// Transport CapabilityError → TRANSPORT with its code (INC-2-API §7.5).
+function transportError(error: unknown): ChannelError {
+    return new ChannelError("TRANSPORT", error instanceof CapabilityError ? error.code : undefined);
+}
 
 interface Waiter {
     readonly owner: object;
@@ -132,7 +144,9 @@ export class ChannelClient {
 
     async fetchVerifiedBundles(): Promise<readonly VerifiedBundle[]> {
         const { transport, trustProfile, securityEvents, crypto, fetcher, clock } = this.#config;
-        const published = await transport.listBundles();
+        const published = await transport.listBundles().catch((error: unknown) => {
+            throw transportError(error);
+        });
         const deps = {
             crypto,
             fetcher,
@@ -142,7 +156,7 @@ export class ChannelClient {
         };
         // Spec §5.2: a bundle that fails verification is discarded, never used as a fallback.
         const results = await Promise.all(
-            published.map((p) =>
+            published.slice(0, this.#limits.maxBundles).map((p) =>
                 verifyBundle(p, trustProfile, securityEvents, deps).catch(() => undefined),
             ),
         );

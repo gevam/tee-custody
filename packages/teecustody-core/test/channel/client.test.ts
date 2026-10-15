@@ -8,6 +8,7 @@ import {
     type VerifiedBundle,
 } from "../../src/bundle/types.js";
 import { verifyBundle } from "../../src/bundle/verify.js";
+import { CapabilityError } from "../../src/capabilities.js";
 import { ChannelClient } from "../../src/channel/client.js";
 import { ChannelError } from "../../src/channel/errors.js";
 import {
@@ -288,5 +289,36 @@ describe("criterion 4: no verified bundle, no usable pre-key", () => {
         const second = new ChannelClient(clientConfig(workload, clock));
         await second.open(openSession());
         expect(workload.opens).toHaveLength(fx.prekeys.length + 1);
+    });
+});
+
+describe("fetchVerifiedBundles bounds and transport failures", () => {
+    it("verifies at most maxBundles published bundles and ignores the rest", async () => {
+        const fixtures: InstanceFixture[] = [];
+        for (let i = 0; i < 4; i += 1) {
+            fixtures.push(await instanceFixture(`a${String(i)}`.repeat(16), [1]));
+        }
+        workload = new FakeWorkload(...fixtures);
+        serveBundles(...fixtures);
+        const client = new ChannelClient(
+            clientConfig(workload, clock, { limits: { ...TEST_LIMITS, maxBundles: 3 } }),
+        );
+        const bundles = await client.fetchVerifiedBundles();
+        expect(bundles.map((b) => b.instanceId)).toEqual(
+            fixtures.slice(0, 3).map((f) => f.instanceId),
+        );
+        expect(verifyBundle).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+        [new CapabilityError("UNAVAILABLE"), "UNAVAILABLE"],
+        [new Error("not a capability error"), undefined],
+    ])("maps a listBundles failure to TRANSPORT (%s)", async (error, detail) => {
+        workload.listFailure = error;
+        const client = new ChannelClient(clientConfig(workload, clock));
+        const thrown = await failure(client.fetchVerifiedBundles());
+        expect(thrown.code).toBe("TRANSPORT");
+        expect(thrown.detail).toBe(detail);
+        expect(verifyBundle).not.toHaveBeenCalled();
     });
 });
