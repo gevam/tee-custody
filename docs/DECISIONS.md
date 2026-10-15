@@ -1170,3 +1170,24 @@ Participants: Software Engineer (T-27)
 **Decision:** `lint_command` now passes `--disable-nosem` to semgrep, so a `// nosemgrep` or `# nosemgrep` comment can no longer silence a security rule. T-27 showed that such a comment hid a banned `@hpke/common` import. The Orchestrator verified that the full scan on main exits 0 with the flag, and the repo source contains no nosem comments. The Tech Lead adds the same flag to the CI semgrep step, which T-27 owns.
 
 **Dissent:** none
+
+## D-056 — INC-2 Wave 2 review verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator (recording reviewer verdicts)
+Participants: Code Reviewers, Security Reviewers, Tech Lead
+
+**Verdicts (final round, Code / Security):**
+
+| Task | Tip | Code Review | Security Review | Notes |
+|---|---|---|---|---|
+| T-22 | 188c76e | APPROVE | APPROVE | Lows fixed. The clock-before-keygen change was verified by the Orchestrator. **Merged** dbba6ce. |
+| T-23 | b7bf642 | APPROVE (round 2) | APPROVE (round 2) | T-23 A1: SESSION_ID_IN_USE amended in. **Merged.** |
+| T-24 | 4014832 | APPROVE (round 2) | APPROVE (round 2) | B-33 ruling; the docstring-only commit was verified by the Orchestrator. **Merged.** |
+| T-26 | 3dc5575 | APPROVE (final round, Tech Lead–approved) | APPROVE (final) | Round 1 High (waiter race) fixed. Round 2 Medium (`#live` re-check) fixed. **Merged** e0bef2f. |
+| T-25 | da93b31 | APPROVE | APPROVE | Generated suite: 236/236 Python harness, 6/6 TS contract. Notes recorded as B-34/B-35. Optional private-helper-test Low accepted as is. **Ready to merge.** |
+| T-27 | pending | APPROVE (round 2); round 3 confirm pending | APPROVE (round 2); round 3 confirm pending | A7/A8 Lows fixed in round 3. |
+
+The same pattern appeared in T-23, T-24 and T-26: new error codes outside the frozen contract. The Tech Lead amended each case in (D-053 precedent). The retro should tighten the contract template so engineers return a CONTRACT_ISSUE instead.
+
+**Dissent:** none

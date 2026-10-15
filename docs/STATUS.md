@@ -25,13 +25,14 @@ Wave 0: complete (D-050). Wave 1: complete on main 34d1193 (D-054), incl. MU-1 (
 
 | Wave 2 item | State |
 |---|---|
-| T-22 pre-keys + bundle build | engineer running |
-| T-23 sessions, T2cSealer, session table | DONE; Security APPROVE, Code Review pending |
-| T-24 in-memory queue + audit sink | engineer running |
-| T-25 channel vector generator + CLI | engineer running |
-| T-26 Core ChannelClient/Session | DONE; in review |
-| T-27 SR-13 bundle scan | engineer running |
-| Waves 3–5: T-28..T-32, T-35 | pending |
+| T-22 pre-keys + bundle build | merged dbba6ce (D-056) |
+| T-23 sessions, T2cSealer, session table | merged (D-056) |
+| T-24 in-memory queue + audit sink | merged (D-056) |
+| T-25 channel vector generator + CLI | Code + Security APPROVE (D-056); merging |
+| T-26 Core ChannelClient/Session | merged e0bef2f (D-056) |
+| T-27 SR-13 bundle scan | round 3 confirmations pending |
+| T-28 ChannelServer, T-29 RunLoop (Wave 3) | engineers running |
+| T-30 channel vectors (human-gated), T-31, T-32, T-35 | pending |
 
 Main at 34d1193: Python 133 failed / 3999 passed (all expected red), Core 1272/1272, all lint/type/security gates green.
 
