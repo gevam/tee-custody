@@ -1558,3 +1558,24 @@ Participants: Security Reviewer (found D-05, D-06), Architect (found D-07), Tech
 3. G6 needs D-05, D-06 and D-07 closed, along with D-03 and D-04.
 
 **Dissent:** none
+
+## D-075 — T-42 verdicts (INC-2, 2026-10-15)
+
+Type: gate-routing
+Chair / decider: Orchestrator
+Participants: Code Reviewer, Security Reviewer
+
+**Decision:** T-42 is approved to merge (inc-2/T-42-transport-default, tip 59088da). It makes `FetchTransport` `maxResponseBytes` optional, with a default of 2,097,152 B (fixing D-07).
+
+**Review history:**
+- Code APPROVE at 704d5b4: 11 mutants, all killed.
+  - One Low: the `as unknown as` cast in a test was replaced with `@ts-expect-error`.
+  - That fix is commit 59088da, a test-only, one-line change, checked by the Orchestrator against the reviewer's exact suggestion.
+- Security APPROVE at 704d5b4, no findings.
+  - The cap is enforced unchanged at the default, with no bypass by any invalid value.
+  - Memory per poll is about 10 MiB transient.
+  - SR-11 and SR-13 hold.
+
+D-07 closes when T-40 (A5, README and guard) and T-42 both merge.
+
+**Dissent:** none
