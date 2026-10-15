@@ -1127,3 +1127,38 @@ def test_h11_through_uvicorn_outside_the_locked_gateway_closure_is_still_stale(
     assert "uvicorn" in root
     _write(gateway_tree, "pyproject.toml", root)
     assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def _unlocked_manifest(name: str, *dependencies: str) -> str:
+    return (
+        f'[project]\nname = "{name}"\nversion = "0.1.0"\n'
+        f"dependencies = {json.dumps(list(dependencies))}\n"
+    )
+
+
+@pytest.mark.parametrize("declared", ["uvicorn==0.54.0", "notes-gateway==0.1.0"])
+def test_a_manifest_outside_the_lock_declaring_uvicorn_or_the_gateway_blocks_the_exception(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str], declared: str
+) -> None:
+    _write(gateway_tree, "packages/foo/pyproject.toml", _unlocked_manifest("foo", declared))
+    assert _h11_violations(tool, gateway_tree, capsys) == ["VIOLATION stale h11"]
+
+
+def test_only_uv_workspace_members_are_roots_not_manifest_names_that_collide_with_the_lock(
+    tool: ModuleType, gateway_tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # notes-gateway -> uvicorn-proxy (registry) -> uvicorn -> h11, and an unrelated unlocked
+    # manifest that happens to be named uvicorn-proxy: still only the gateway reaches uvicorn.
+    lock = (gateway_tree / "uv.lock").read_text()
+    gateway = '    { name = "teecustody" },\n    { name = "uvicorn" },\n'
+    lock = lock.replace(gateway, '    { name = "teecustody" },\n    { name = "uvicorn-proxy" },\n')
+    proxy = _uv_entry(
+        "uvicorn-proxy", "1.0.0", '{ registry = "https://pypi.org/simple" }', ["uvicorn"]
+    )
+    lock = lock.replace('[[package]]\nname = "pytest"', proxy + '[[package]]\nname = "pytest"', 1)
+    _write(gateway_tree, "uv.lock", lock)
+    _write(gateway_tree, "packages/proxy/pyproject.toml", _unlocked_manifest("uvicorn-proxy"))
+    repo = tool.load_repo(gateway_tree)
+    assert "uvicorn-proxy" in repo.workspace
+    assert "uvicorn-proxy" not in repo.uv_members
+    assert _h11_violations(tool, gateway_tree, capsys) == []
