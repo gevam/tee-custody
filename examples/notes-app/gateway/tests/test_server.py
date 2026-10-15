@@ -411,3 +411,18 @@ def test_the_deadline_restarts_after_a_response_on_a_kept_alive_connection(
     assert closed_at <= 3.0
     assert live.relay.calls == 1
     assert records.outcomes() == ["GATEWAY_OK", "GATEWAY_HEADER_TIMEOUT"]
+
+
+# ------------------------------------------------------------- criterion 6: pipelining
+def test_two_pipelined_requests_in_one_write_both_get_200(
+    gateway: Callable[..., LiveGateway],
+) -> None:
+    live = gateway(Relay(delay_s=1.5), header_read_timeout_s=1.0)
+    sock = live.connect()
+    sock.sendall(b"GET /bundles HTTP/1.1\r\nHost: x\r\n\r\n" * 2)
+
+    first = read_response(sock, 6.0)
+    second = read_response(sock, 6.0)
+
+    assert first == second == (200, b'{"bundles":[]}')
+    assert live.relay.calls == 2
