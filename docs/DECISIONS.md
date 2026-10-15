@@ -1703,3 +1703,15 @@ Chair / decider: Orchestrator
 **Next:** INC-2 retrospective (PROCESS §3.9).
 
 **Dissent:** none
+
+## D-081 — Human: apply all 5 INC-2 retro recommendations; clean up worktrees; push main + tags (2026-10-15)
+
+Type: human decision
+Decider: human (AskUserQuestion, 2026-10-15)
+
+**Decision:**
+1. Apply INC-2 retro recommendations R1–R5 (docs/retro/INC-2.md) before INC-3 work breakdown. The Orchestrator applies them (PROCESS §3.9).
+2. Remove the git worktrees of merged INC-1/INC-2 branches (branches are kept), and remove `/home/geva/code/tmp/T-30-scratch` and `/home/geva/code/tmp/T-30-inspect` only.
+3. Push `main` and the tags `inc-1` and `inc-2` to origin now. This is the first CI run, and gives the §13.11 evidence and the WebKit browser evidence.
+
+**Dissent:** none
