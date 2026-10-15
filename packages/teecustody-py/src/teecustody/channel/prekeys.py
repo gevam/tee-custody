@@ -63,7 +63,13 @@ class PreKeyStore:
         return tuple(public for public, _ in self._keys.values())
 
     def take(self, prekey_id: int) -> Secret:
-        _, private = self._keys.pop(prekey_id)
+        slot = self._keys.pop(prekey_id, None)
+        if slot is None:
+            raise KeyError("PREKEY_UNKNOWN")
+        public, private = slot
+        if public.not_after <= self._clock():
+            private.wipe()
+            raise KeyError("PREKEY_UNKNOWN")
         return private
 
     def consumed_since(self, since: float) -> int:
