@@ -8,3 +8,6 @@ from cbor2 import dumps
 def main() -> None:
     # ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
     import os, cbor2
+# A7: a statement after `;` on the same line is still an import.
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
+x = 1; import cbor2

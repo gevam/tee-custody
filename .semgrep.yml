@@ -213,6 +213,8 @@ rules:
       - pattern-regex: (?i)#\s*(?:ruff|flake8)\s*:\s*(?:noqa|disable)\b
       # bandit suppression: bandit Lows are gated by ruff `S`, so no finding is silenced in source.
       - pattern-regex: (?i)#\s*nosec\b
+      # A7: formatter pragmas hide a statement's layout from review (SR Low 5).
+      - pattern-regex: (?i)#\s*fmt\s*:\s*(?:skip|off)\b
 
   - id: tc-ts-no-global-object
     message: >-
@@ -380,15 +382,15 @@ rules:
       include: ["/examples/notes-app/gateway/src/**"]
       exclude: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
     pattern-either:
-      - pattern-regex: (?m)^[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
-      - pattern-regex: (?m)^[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+teecustody_sim\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*teecustody_sim\b)
+      - pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
   - id: tc-py-gateway-dev-banned-import
     message: dev.py may import the simulator lazily, but never cbor2 (SR-3).
     severity: ERROR
     languages: [regex]
     paths:
       include: ["/examples/notes-app/gateway/src/notes_gateway/dev.py"]
-    pattern-regex: (?m)^[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
+    pattern-regex: (?m)(?:^|;)[ \t]*(?:from[ \t]+cbor2\b|import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*cbor2\b)
 
   # A4 (T-27; T-05 Security Review round 2): no escape can hide a banned specifier from the rules above.
   - id: tc-ts-no-escaped-specifier

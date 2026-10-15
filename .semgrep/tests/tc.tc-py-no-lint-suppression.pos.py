@@ -21,3 +21,10 @@ FOURTH = 3  # noqa: E501, tid252
 FIFTH = 4  # nosec
 # ruleid: tc-py-no-lint-suppression
 SIXTH = 5  # nosec B105
+# A7: formatter pragmas can hide a statement from review; banned over the rule's paths.
+# ruleid: tc-py-no-lint-suppression
+SEVENTH = 6  # fmt: skip
+# ruleid: tc-py-no-lint-suppression
+# fmt: off
+# ruleid: tc-py-no-lint-suppression
+# FMT:SKIP

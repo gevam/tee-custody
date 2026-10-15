@@ -23,3 +23,8 @@ def handler() -> None:
     import cbor2
     # ruleid: tc-no-sim-import-in-library, tc-py-banned-import, tc-py-banned-import-wire, tc-py-gateway-banned-import
     from teecustody_sim import cli
+# A7: a statement after `;` on the same line is still an import.
+# ruleid: tc-py-banned-import, tc-py-banned-import-wire, tc-py-gateway-banned-import
+x = 1; from teecustody_sim import m
+# ruleid: tc-py-banned-import, tc-py-banned-import-sim, tc-py-gateway-banned-import, tc-py-gateway-dev-banned-import
+y = 2;import cbor2
