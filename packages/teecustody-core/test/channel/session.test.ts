@@ -15,6 +15,7 @@ import {
 } from "../../src/channel/session.js";
 import type { ChannelLimits } from "../../src/channel/types.js";
 import type { CanonicalValue } from "../../src/wire/types.js";
+import { aeadSpy, type AeadSpy } from "../support/channel-crypto.js";
 import {
     CLIENT,
     FakeClock,
@@ -28,6 +29,7 @@ import {
     holdPostUntilPolled,
     instanceFixture,
     polledAfterFrames,
+    sessionNonce,
     keySpy,
     map,
     zeroed,
@@ -96,6 +98,33 @@ function echo(n: number): CanonicalValue {
     return map({ n });
 }
 
+function nOf(frame: SeenFrame): unknown {
+    return asMap(frame.payload).get("n");
+}
+
+// INC-2-API §7.4 promises distinct allocated seqs, not post order (B-26): assert the set, not the sequence.
+function expectAllocatedSeqs(): void {
+    const frames = workload.frames;
+    expect(frames.map((f) => f.seq).sort((a, b) => a - b)).toEqual([0, 1, 2]);
+    expect(frames.find((f) => nOf(f) === 3)?.seq).toBe(2);
+    expect(frames.some((f) => nOf(f) === 2)).toBe(false);
+    expect(
+        frames
+            .filter((f) => nOf(f) === 0 || nOf(f) === 1)
+            .map((f) => f.seq)
+            .sort((a, b) => a - b),
+    ).toEqual([0, 1]);
+}
+
+// A1 (SR-14): every aes256GcmEncrypt call after connect, by nonce. A refused request must make none.
+function sealedNonces(spy: AeadSpy, base: number): string[] {
+    return spy.calls.slice(base).map((c) => c.nonceHex);
+}
+
+function nonces(from: number, to: number): string[] {
+    return Array.from({ length: to - from + 1 }, (_, i) => hex(sessionNonce(from + i)));
+}
+
 describe("criterion 7: Session.request", () => {
     it("seals frames with seq 0, 1, 2 and returns each answer's payload", async () => {
         const session = await connect();
@@ -156,35 +185,49 @@ describe("criterion 7: Session.request", () => {
     it.each(["close", "", "Test.Echo", "1abc", "a b", "x".repeat(65)])(
         "refuses op %j with INVALID_ARGUMENT before sealing",
         async (op) => {
-            const session = await connect();
+            const spy = aeadSpy(workload.crypto);
+            const session = await connect(TEST_LIMITS, spy.crypto);
+            const base = spy.calls.length;
             expect((await failure(session.request(op, null))).code).toBe("INVALID_ARGUMENT");
+            expect(spy.calls.length).toBe(base);
             await session.request("test.echo", echo(0));
             expect(workload.frames.map((f) => f.seq)).toEqual([0]);
+            expect(sealedNonces(spy, base)).toEqual(nonces(0, 0));
         },
     );
 
     it("refuses a non-string op with INVALID_ARGUMENT", async () => {
-        const session = await connect();
+        const spy = aeadSpy(workload.crypto);
+        const session = await connect(TEST_LIMITS, spy.crypto);
+        const base = spy.calls.length;
         const request = session.request.bind(session) as (
             op: unknown,
             p: unknown,
         ) => Promise<unknown>;
         expect((await failure(request(7, null))).code).toBe("INVALID_ARGUMENT");
+        expect(sealedNonces(spy, base)).toEqual([]);
     });
 
     it("refuses an encoded payload above maxPayloadBytes, and an unencodable one", async () => {
-        const session = await connect({ ...TEST_LIMITS, maxPayloadBytes: 64 });
+        const spy = aeadSpy(workload.crypto);
+        const session = await connect({ ...TEST_LIMITS, maxPayloadBytes: 64 }, spy.crypto);
+        const base = spy.calls.length;
         // A 63-byte string encodes to 65 bytes (2-byte head): one above the bound.
         expect((await failure(session.request("test.echo", new Uint8Array(63)))).code).toBe(
             "INVALID_ARGUMENT",
         );
+        expect(spy.calls.length).toBe(base);
         expect((await failure(session.request("test.echo", 1.5))).code).toBe("INVALID_ARGUMENT");
+        expect(spy.calls.length).toBe(base);
         await session.request("test.echo", new Uint8Array(62)); // exactly 64 bytes
         expect(workload.frames.map((f) => f.seq)).toEqual([0]);
+        expect(sealedNonces(spy, base)).toEqual(nonces(0, 0));
     });
 
     it("refuses more than maxInFlight pending requests without consuming a seq", async () => {
-        const session = await connect({ ...TEST_LIMITS, maxInFlight: 2 });
+        const spy = aeadSpy(workload.crypto);
+        const session = await connect({ ...TEST_LIMITS, maxInFlight: 2 }, spy.crypto);
+        const base = spy.calls.length;
         const results = await Promise.allSettled([
             session.request("test.echo", echo(0)),
             session.request("test.echo", echo(1)),
@@ -194,7 +237,47 @@ describe("criterion 7: Session.request", () => {
         const rejected = results[2] as PromiseRejectedResult;
         expect((rejected.reason as ChannelError).code).toBe("INVALID_ARGUMENT");
         await session.request("test.echo", echo(3));
-        expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2]);
+        expectAllocatedSeqs();
+        expect(sealedNonces(spy, base).sort()).toEqual(nonces(0, 2));
+    });
+
+    it("forced reorder: posts in completion order; the seqs are still exactly 0, 1, 2", async () => {
+        const inner = workload.crypto;
+        let armed = false;
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let first = true;
+        const spy = aeadSpy({
+            ...inner,
+            aes256GcmEncrypt: async (key, n, aad, pt) => {
+                if (armed && first) {
+                    first = false;
+                    await gate;
+                }
+                return inner.aes256GcmEncrypt(key, n, aad, pt);
+            },
+        });
+        const session = await connect({ ...TEST_LIMITS, maxInFlight: 2 }, spy.crypto);
+        const base = spy.calls.length;
+        armed = true;
+        workload.afterHandle = () => {
+            release();
+            return Promise.resolve();
+        };
+        const results = await Promise.allSettled([
+            session.request("test.echo", echo(0)),
+            session.request("test.echo", echo(1)),
+            session.request("test.echo", echo(2)),
+        ]);
+        expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
+        const rejected = results[2] as PromiseRejectedResult;
+        expect((rejected.reason as ChannelError).code).toBe("INVALID_ARGUMENT");
+        await session.request("test.echo", echo(3));
+        expect(workload.frames.map((f) => f.seq).slice(0, 2)).toEqual([1, 0]);
+        expectAllocatedSeqs();
+        expect(sealedNonces(spy, base).sort()).toEqual(nonces(0, 2));
     });
 
     it("maps ok:false to REMOTE_ERROR with the detail and stays usable", async () => {
@@ -227,15 +310,20 @@ describe("criterion 7: Session.request", () => {
     });
 
     it("fails SEQUENCE_EXHAUSTED when the next seq would exceed MAX_SEQ, and closes locally", async () => {
-        const session = await connect();
+        const spy = aeadSpy(workload.crypto);
+        const session = await connect(TEST_LIMITS, spy.crypto);
+        const base = spy.calls.length;
         for (let n = 0; n <= 5; n += 1) {
             await session.request("test.echo", echo(n));
         }
+        expect(sealedNonces(spy, base)).toEqual(nonces(0, 5));
         expect((await failure(session.request("test.echo", echo(6)))).code).toBe(
             "SEQUENCE_EXHAUSTED",
         );
+        expect(spy.calls.length).toBe(base + 6);
         expect(session.closed).toBe(true);
         expect((await failure(session.request("test.echo", echo(7)))).code).toBe("SESSION_CLOSED");
+        expect(sealedNonces(spy, base)).toEqual(nonces(0, 5));
         expect(workload.frames.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4, 5]);
     });
 });
@@ -451,23 +539,34 @@ describe("review R2: no post after close, and a failed post leaves no waiter", (
 });
 
 describe("criterion 10: close", () => {
-    async function keyed(): Promise<{ session: Session; keys: () => Uint8Array[] }> {
+    async function keyed(): Promise<{
+        session: Session;
+        keys: () => Uint8Array[];
+        encrypts: () => number;
+    }> {
         const spy = keySpy(workload.crypto);
         const session = await connect(TEST_LIMITS, spy.crypto);
         await session.request("test.echo", echo(0));
-        return { session, keys: () => [...spy.encryptKeys, ...spy.decryptKeys] };
+        return {
+            session,
+            keys: () => [...spy.encryptKeys, ...spy.decryptKeys],
+            encrypts: () => spy.encryptKeys.length,
+        };
     }
 
     it("seals op close with a null payload, waits for its result and zeroes the keys", async () => {
-        const { session, keys } = await keyed();
+        const { session, keys, encrypts } = await keyed();
         await session.close();
+        const sealedAtClose = encrypts();
         const last = workload.frames.at(-1);
         expect([last?.op, last?.payload, last?.seq]).toEqual(["close", null, 1]);
         expect(session.closed).toBe(true);
         expect(keys().length).toBeGreaterThanOrEqual(2);
         expect(keys().every(zeroed)).toBe(true);
         expect((await failure(session.request("test.echo", echo(1)))).code).toBe("SESSION_CLOSED");
+        expect(encrypts()).toBe(sealedAtClose);
         await session.close();
+        expect(encrypts()).toBe(sealedAtClose);
         expect(workload.frames).toHaveLength(2);
         expect(workload.posts).toHaveLength(3);
     });
@@ -531,11 +630,14 @@ describe("criterion 10: close", () => {
     });
 
     it("closes locally without sending when the seq space is exhausted", async () => {
-        const session = await connect();
+        const spy = aeadSpy(workload.crypto);
+        const session = await connect(TEST_LIMITS, spy.crypto);
+        const base = spy.calls.length;
         for (let n = 0; n <= 5; n += 1) {
             await session.request("test.echo", echo(n));
         }
         expect((await failure(session.close())).code).toBe("SEQUENCE_EXHAUSTED");
+        expect(sealedNonces(spy, base)).toEqual(nonces(0, 5));
         expect(session.closed).toBe(true);
         expect(workload.frames).toHaveLength(6);
     });
