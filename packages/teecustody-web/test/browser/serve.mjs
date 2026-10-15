@@ -89,9 +89,14 @@ function page(res, html) {
     );
 }
 
+// DNS rebinding: only the two loopback names of this port are answered (set once listening).
+let hosts = new Set();
+
 const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
-    if (req.method !== "GET" || site === undefined) {
+    if (!hosts.has(req.headers.host)) {
+        send(res, 421, {}, Buffer.alloc(0));
+    } else if (req.method !== "GET" || site === undefined) {
         send(res, 404, {}, Buffer.alloc(0));
     } else if (path === "/" || path === "/index.html") {
         page(res, site.index);
@@ -115,7 +120,9 @@ function stop() {
 }
 
 server.listen(0, "127.0.0.1", () => {
-    process.stdout.write(`serve=http://localhost:${String(server.address().port)}\n`);
+    const port = String(server.address().port);
+    hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+    process.stdout.write(`serve=http://localhost:${port}\n`);
     const lines = createInterface({ input: process.stdin });
     lines.once("line", (line) => {
         configure(line).then(

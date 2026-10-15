@@ -2,6 +2,7 @@
 // rev 3 and its 2026-10-12 addendum, §16.7, §16.9 B1–B3, §8.4; SR-13, SR-1, FR-4, FR-5, FR-6, V-2.2). The
 // served page and the live end-to-end harness come from global-setup.ts; only origins reach this file.
 import { createHash } from "node:crypto";
+import { request as httpRequest } from "node:http";
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -305,4 +306,31 @@ test("C6 Firefox loading index.html records no img-src violation for its automat
     await sleep(FAVICON_WINDOW_MS);
     const live = await page.evaluate(() => (window as { __result?: HarnessResult }).__result);
     expect(live?.violations).toBe(0);
+});
+
+// SR review (DNS rebinding): only the loopback names the page is served under are answered.
+function statusFor(path: string, host: string): Promise<number> {
+    const origin = new URL(env("TC_SERVE_ORIGIN"));
+    return new Promise((resolveStatus, reject) => {
+        const req = httpRequest(
+            { host: "127.0.0.1", port: origin.port, path, method: "GET", headers: { Host: host } },
+            (res) => {
+                res.resume();
+                resolveStatus(res.statusCode ?? 0);
+            },
+        );
+        req.on("error", reject);
+        req.end();
+    });
+}
+
+test("SR serve.mjs refuses a request whose Host is not 127.0.0.1:<port> or localhost:<port>", async () => {
+    const port = new URL(env("TC_SERVE_ORIGIN")).port;
+    for (const path of ["/", "/harness.js", "/control/inline.html", "/favicon.ico"]) {
+        expect(await statusFor(path, `evil.example:${port}`), path).toBe(421);
+        expect(await statusFor(path, `localhost:${port}`), path).not.toBe(421);
+        expect(await statusFor(path, `127.0.0.1:${port}`), path).not.toBe(421);
+    }
+    expect(await statusFor("/", "localhost")).toBe(421);
+    expect(await statusFor("/", `localhost:${port}.evil.example`)).toBe(421);
 });
